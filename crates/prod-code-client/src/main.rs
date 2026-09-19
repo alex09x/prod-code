@@ -128,6 +128,66 @@ pub fn detect_workspace_name(dir: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+/// Find the root of the workspace or git worktree containing the specified file.
+pub fn find_workspace_root(file_path: &Path) -> Option<PathBuf> {
+    let abs_path = if file_path.is_absolute() {
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf())
+    } else if let Ok(cwd) = env::current_dir() {
+        let joined = cwd.join(file_path);
+        std::fs::canonicalize(&joined).unwrap_or(joined)
+    } else {
+        file_path.to_path_buf()
+    };
+
+    let mut current = if abs_path.is_file() {
+        abs_path.parent()?
+    } else {
+        abs_path.as_path()
+    };
+
+    let mut candidate_manifest = None;
+
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        if candidate_manifest.is_none()
+            && (current.join("Cargo.toml").exists()
+                || current.join("go.mod").exists()
+                || current.join("package.json").exists()
+                || current.join("pyproject.toml").exists())
+        {
+            candidate_manifest = Some(current.to_path_buf());
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => break,
+        }
+    }
+
+    candidate_manifest
+}
+
+fn detect_language_id(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "rs" => "rust",
+        "go" => "go",
+        "py" | "pyi" => "python",
+        "ts" | "mts" | "cts" => "typescript",
+        "tsx" => "typescriptreact",
+        "js" | "mjs" | "cjs" => "javascript",
+        "jsx" => "javascriptreact",
+        "c" | "h" => "c",
+        "cpp" | "hpp" | "cc" | "cxx" | "hh" => "cpp",
+        "proto" => "proto",
+        "toml" => "toml",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "sh" | "bash" | "zsh" => "shellscript",
+        _ => "plaintext",
+    }
+}
+
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
 async fn execute_lsp_query(
     remote: SocketAddr,
@@ -136,13 +196,17 @@ async fn execute_lsp_query(
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
-    let cwd_str = cwd.to_string_lossy().to_string();
 
     let abs_path = if file_path.is_absolute() {
-        file_path.to_path_buf()
+        std::fs::canonicalize(file_path).unwrap_or_else(|_| file_path.to_path_buf())
     } else {
-        cwd.join(file_path)
+        let joined = cwd.join(file_path);
+        std::fs::canonicalize(&joined).unwrap_or(joined)
     };
+
+    let ws_root = find_workspace_root(&abs_path).unwrap_or_else(|| cwd.clone());
+    let ws_root_str = ws_root.to_string_lossy().to_string();
+    let base_ws_name = detect_workspace_name(&ws_root);
 
     let file_uri = Url::from_file_path(&abs_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", abs_path))?
@@ -164,9 +228,9 @@ async fn execute_lsp_query(
             client_name: "prod-code-cli".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
-            client_workspace_root: cwd_str.clone(),
+            client_workspace_root: ws_root_str.clone(),
             preferred_engine: None,
-            base_workspace_name: detect_workspace_name(&cwd),
+            base_workspace_name: base_ws_name.clone(),
         }))
         .await?;
 
@@ -176,14 +240,14 @@ async fn execute_lsp_query(
     };
 
     // 1b. Fast transparent pre-flight sync for dirty, modified, or untracked files
-    if let Ok(dirty_files) = prod_code_mcp::sync::collect_dirty_files(&cwd)
+    if let Ok(dirty_files) = prod_code_mcp::sync::collect_dirty_files(&ws_root)
         && !dirty_files.is_empty()
     {
         let sync_req = SyncRequest {
-            client_workspace_root: cwd_str,
+            client_workspace_root: ws_root_str.clone(),
             files: dirty_files,
             clean_others: false,
-            base_workspace_name: detect_workspace_name(&cwd),
+            base_workspace_name: base_ws_name.clone(),
         };
         framed.send(WireMessage::SyncRequest(sync_req)).await?;
         if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
@@ -192,7 +256,7 @@ async fn execute_lsp_query(
     }
 
     // 2. LSP Initialize
-    let folder_name = cwd
+    let folder_name = ws_root
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("workspace");
@@ -202,11 +266,11 @@ async fn execute_lsp_query(
         "method": "initialize",
         "params": {
             "processId": null,
-            "rootUri": format!("file://{}", cwd.to_string_lossy()),
+            "rootUri": format!("file://{}", ws_root.to_string_lossy()),
             "workspaceFolders": [
                 {
                     "name": folder_name,
-                    "uri": format!("file://{}", cwd.to_string_lossy())
+                    "uri": format!("file://{}", ws_root.to_string_lossy())
                 }
             ],
             "capabilities": {
@@ -265,13 +329,14 @@ async fn execute_lsp_query(
         .await?;
 
     // 4. LSP didOpen notification
+    let language_id = detect_language_id(&abs_path);
     let did_open = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
         "params": {
             "textDocument": {
                 "uri": file_uri,
-                "languageId": "rust",
+                "languageId": language_id,
                 "version": 1,
                 "text": file_content
             }
@@ -692,6 +757,7 @@ async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
 async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let start = std::time::Instant::now();
+    prod_code_mcp::sync::clear_sync_cache(&cwd);
     let deltas = prod_code_mcp::scan_workspace_files(&cwd, subpath.as_deref())?;
     let file_count = deltas.len();
 
