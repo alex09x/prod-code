@@ -54,6 +54,21 @@ enum Commands {
     Refs { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// Benchmark throughput and concurrency across workspaces and worktrees.
+    Bench {
+        /// Target workspace directories (or worktrees). If omitted, uses current working directory.
+        #[arg(short, long)]
+        workspaces: Vec<PathBuf>,
+        /// Number of concurrent client worker connections.
+        #[arg(short, long, default_value_t = 16)]
+        concurrency: usize,
+        /// Pipeline depth per connection (in-flight queries sent without waiting).
+        #[arg(short, long, default_value_t = 8)]
+        depth: usize,
+        /// Benchmark duration in seconds.
+        #[arg(long, default_value_t = 5)]
+        duration_secs: u64,
+    },
 }
 
 #[tokio::main]
@@ -69,7 +84,46 @@ async fn main() -> Result<()> {
         Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
         Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
         Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
+        Commands::Bench {
+            workspaces,
+            concurrency,
+            depth,
+            duration_secs,
+        } => run_benchmark(cli.remote, workspaces, concurrency, depth, duration_secs).await,
     }
+}
+
+/// Dynamically detect the base repository name if current directory is a git worktree or repository.
+pub fn detect_workspace_name(dir: &Path) -> Option<String> {
+    let dot_git = dir.join(".git");
+    if dot_git.is_file() {
+        if let Ok(content) = std::fs::read_to_string(&dot_git) {
+            for line in content.lines() {
+                if let Some(gitdir) = line.trim().strip_prefix("gitdir:") {
+                    let gitdir_path = PathBuf::from(gitdir.trim());
+                    let mut cur = gitdir_path.as_path();
+                    while let Some(parent) = cur.parent() {
+                        if cur.file_name().is_some_and(|n| n == ".git") {
+                            return parent
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .map(|s| s.to_string());
+                        }
+                        cur = parent;
+                    }
+                }
+            }
+        }
+    } else if dot_git.is_dir() {
+        return dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string());
+    }
+
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())
 }
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
@@ -110,6 +164,7 @@ async fn execute_lsp_query(
             auth_token: None,
             client_workspace_root: cwd_str,
             preferred_engine: None,
+            base_workspace_name: detect_workspace_name(&cwd),
         }))
         .await?;
 
@@ -521,6 +576,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             auth_token: None,
             client_workspace_root: cwd_str,
             preferred_engine: None,
+            base_workspace_name: detect_workspace_name(&cwd),
         }))
         .await?;
 
@@ -630,6 +686,7 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
         client_workspace_root: cwd.to_string_lossy().to_string(),
         files: deltas,
         clean_others: false,
+        base_workspace_name: detect_workspace_name(&cwd),
     };
 
     framed.send(WireMessage::SyncRequest(req)).await?;
@@ -657,6 +714,272 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     } else {
         anyhow::bail!("Remote gateway closed connection prematurely without sync response");
     }
+
+    Ok(())
+}
+
+fn find_first_code_file(dir: &Path) -> Option<PathBuf> {
+    let candidates = [
+        "src/main.rs",
+        "src/lib.rs",
+        "main.go",
+        "app.py",
+        "index.ts",
+        "lib.rs",
+        "main.rs",
+    ];
+    for c in candidates {
+        let p = dir.join(c);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(dir.join("src")) {
+        for entry in entries.flatten() {
+            if entry.path().is_file() {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+/// Run concurrent pipelined benchmark against remote gateway across workspaces and worktrees.
+async fn run_benchmark(
+    remote: SocketAddr,
+    workspaces: Vec<PathBuf>,
+    concurrency: usize,
+    depth: usize,
+    duration_secs: u64,
+) -> Result<()> {
+    let target_workspaces: Vec<PathBuf> = if workspaces.is_empty() {
+        vec![env::current_dir()?]
+    } else {
+        workspaces
+    };
+
+    println!("⚡ prod-code Multi-Tenant Benchmark (Pipelined Concurrent Load)");
+    println!("────────────────────────────────────────────────────────────────");
+    println!("Target Remote:       {remote}");
+    println!("Concurrency:         {concurrency} worker connections");
+    println!("Pipeline Depth:      {depth} in-flight queries per worker");
+    println!("Duration:            {duration_secs}s");
+    println!("Target Workspaces:   {} total", target_workspaces.len());
+    for (i, ws) in target_workspaces.iter().enumerate() {
+        let name = detect_workspace_name(ws).unwrap_or_else(|| "default".to_string());
+        println!("  • [{}] {} (base: {})", i + 1, ws.display(), name);
+    }
+    println!("────────────────────────────────────────────────────────────────");
+    println!("Connecting workers and starting load test...");
+
+    let start_instant = std::time::Instant::now();
+    let end_deadline = start_instant + std::time::Duration::from_secs(duration_secs);
+
+    let mut handles = Vec::new();
+
+    for worker_id in 0..concurrency {
+        let ws_path = target_workspaces[worker_id % target_workspaces.len()].clone();
+        let handle = tokio::spawn(async move {
+            let mut latencies_us = Vec::new();
+            let mut completed: u64 = 0;
+            let mut errors: u64 = 0;
+
+            let ws_str = ws_path.to_string_lossy().to_string();
+            let base_name = detect_workspace_name(&ws_path);
+
+            let stream = match TcpStream::connect(remote).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("Worker {worker_id} connection failed: {e}");
+                    return (completed, errors + 1, latencies_us);
+                }
+            };
+            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+            // 1. Handshake
+            let handshake = HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                client_name: format!("bench-worker-{worker_id}"),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: ws_str.clone(),
+                preferred_engine: None,
+                base_workspace_name: base_name,
+            };
+
+            if framed
+                .send(WireMessage::HandshakeRequest(handshake))
+                .await
+                .is_err()
+            {
+                return (completed, errors + 1, latencies_us);
+            }
+
+            match framed.next().await {
+                Some(Ok(WireMessage::HandshakeResponse(_))) => {}
+                _ => return (completed, errors + 1, latencies_us),
+            }
+
+            // 2. Initialize LSP
+            let init_req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "processId": null,
+                    "rootUri": format!("file://{ws_str}"),
+                    "capabilities": {}
+                }
+            });
+
+            if framed
+                .send(WireMessage::LspPayload(init_req.to_string()))
+                .await
+                .is_err()
+            {
+                return (completed, errors + 1, latencies_us);
+            }
+
+            let _ = framed.next().await;
+
+            let initialized = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "initialized",
+                "params": {}
+            });
+            let _ = framed
+                .send(WireMessage::LspPayload(initialized.to_string()))
+                .await;
+
+            let code_file =
+                find_first_code_file(&ws_path).unwrap_or_else(|| ws_path.join("src/main.rs"));
+            let file_uri = format!("file://{}", code_file.to_string_lossy());
+
+            let mut req_id: u64 = 2;
+            let mut in_flight: std::collections::HashMap<u64, std::time::Instant> =
+                std::collections::HashMap::new();
+
+            while std::time::Instant::now() < end_deadline {
+                // Keep the pipeline filled up to `depth`
+                while in_flight.len() < depth && std::time::Instant::now() < end_deadline {
+                    let id = req_id;
+                    req_id += 1;
+                    let hover_req = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "method": "textDocument/hover",
+                        "params": {
+                            "textDocument": { "uri": file_uri },
+                            "position": { "line": 5, "character": 5 }
+                        }
+                    });
+
+                    let send_time = std::time::Instant::now();
+                    if framed
+                        .send(WireMessage::LspPayload(hover_req.to_string()))
+                        .await
+                        .is_ok()
+                    {
+                        in_flight.insert(id, send_time);
+                    } else {
+                        errors += 1;
+                        break;
+                    }
+                }
+
+                // Drain ready responses
+                tokio::select! {
+                    msg_opt = framed.next() => {
+                        match msg_opt {
+                            Some(Ok(WireMessage::LspPayload(payload))) => {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
+                                    let maybe_id = val.get("id").and_then(|v| v.as_u64());
+                                    if let Some(send_time) = maybe_id.and_then(|id| in_flight.remove(&id)) {
+                                        let elapsed = send_time.elapsed().as_micros() as u64;
+                                        latencies_us.push(elapsed);
+                                        completed += 1;
+                                    }
+                                }
+                            }
+                            Some(Ok(_)) => {}
+                            Some(Err(_)) | None => {
+                                errors += 1;
+                                break;
+                            }
+                        }
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+                }
+            }
+
+            let _ = framed
+                .send(WireMessage::Disconnect {
+                    reason: "bench finished".to_string(),
+                })
+                .await;
+            (completed, errors, latencies_us)
+        });
+        handles.push(handle);
+    }
+
+    let mut total_completed = 0;
+    let mut total_errors = 0;
+    let mut all_latencies = Vec::new();
+
+    for h in handles {
+        if let Ok((comp, errs, mut lats)) = h.await {
+            total_completed += comp;
+            total_errors += errs;
+            all_latencies.append(&mut lats);
+        }
+    }
+
+    let elapsed = start_instant.elapsed().as_secs_f64();
+    let qps = if elapsed > 0.0 {
+        (total_completed as f64) / elapsed
+    } else {
+        0.0
+    };
+
+    all_latencies.sort_unstable();
+    let p50 = if !all_latencies.is_empty() {
+        all_latencies[all_latencies.len() * 50 / 100] as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let p90 = if !all_latencies.is_empty() {
+        all_latencies[all_latencies.len() * 90 / 100] as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let p95 = if !all_latencies.is_empty() {
+        all_latencies[all_latencies.len() * 95 / 100] as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let p99 = if !all_latencies.is_empty() {
+        all_latencies[all_latencies.len() * 99 / 100] as f64 / 1000.0
+    } else {
+        0.0
+    };
+    let min = if !all_latencies.is_empty() {
+        all_latencies[0] as f64 / 1000.0
+    } else {
+        0.0
+    };
+
+    println!("\n📊 Benchmark Results:");
+    println!("────────────────────────────────────────────────────────────────");
+    println!("Elapsed Time:        {:.2}s", elapsed);
+    println!("Completed Queries:   {}", total_completed);
+    println!("Errors:              {}", total_errors);
+    println!("Throughput:          \x1b[1;32m{:.1} QPS\x1b[0m", qps);
+    println!("Latency (min):       {:.2} ms", min);
+    println!("Latency (p50):       {:.2} ms", p50);
+    println!("Latency (p90):       {:.2} ms", p90);
+    println!("Latency (p95):       {:.2} ms", p95);
+    println!("Latency (p99):       {:.2} ms", p99);
+    println!("────────────────────────────────────────────────────────────────");
 
     Ok(())
 }

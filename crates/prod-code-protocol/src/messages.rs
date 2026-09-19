@@ -70,6 +70,8 @@ pub struct HandshakeRequest {
     pub client_workspace_root: String,
     #[serde(default)]
     pub preferred_engine: Option<String>,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
 }
 
 /// Handshake acknowledgement sent by remote gateway.
@@ -122,6 +124,8 @@ pub struct SyncRequest {
     pub files: Vec<FileDelta>,
     #[serde(default)]
     pub clean_others: bool,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
 }
 
 /// Response returned after remote gateway writes files to storage and updates in-memory engines.

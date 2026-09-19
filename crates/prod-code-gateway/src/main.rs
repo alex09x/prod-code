@@ -92,28 +92,15 @@ impl ServerState {
 /// Apply batch file synchronization to server workspace storage.
 pub async fn apply_sync(storage_root: &std::path::Path, req: SyncRequest) -> SyncResponse {
     let start = Instant::now();
-    let client_root_path = PathBuf::from(&req.client_workspace_root);
-    let folder_name = client_root_path
+    let server_workspace = workspace::resolve_server_workspace(
+        storage_root,
+        &req.client_workspace_root,
+        req.base_workspace_name.as_deref(),
+    );
+    let folder_name = server_workspace
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("default");
-
-    let mut server_workspace = storage_root.join(folder_name);
-    if !server_workspace.exists() {
-        if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
-            let home_candidate = home.join(folder_name);
-            let projects_candidate = home.join("Projects").join(folder_name);
-            if home_candidate.exists() {
-                server_workspace = home_candidate;
-            } else if projects_candidate.exists() {
-                server_workspace = projects_candidate;
-            } else {
-                let _ = tokio::fs::create_dir_all(&server_workspace).await;
-            }
-        } else {
-            let _ = tokio::fs::create_dir_all(&server_workspace).await;
-        }
-    }
 
     let mut files_updated = 0;
     let mut files_deleted = 0;
@@ -185,32 +172,11 @@ pub async fn handle_client(
                 state.active_sessions.fetch_add(1, Ordering::Relaxed);
 
                 let client_root_path = PathBuf::from(&req.client_workspace_root);
-                let folder_name = client_root_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("default");
-
-                // Discover server workspace:
-                // 1. Direct match in storage_root
-                // 2. Home directory ~/folder_name (e.g. /home/alex09x/prod-code)
-                // 3. ~/Projects/folder_name
-                // 4. Default to storage_root/folder_name
-                let mut server_workspace = state.storage_root.join(folder_name);
-                if !server_workspace.exists() {
-                    if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
-                        let home_candidate = home.join(folder_name);
-                        let projects_candidate = home.join("Projects").join(folder_name);
-                        if home_candidate.exists() {
-                            server_workspace = home_candidate;
-                        } else if projects_candidate.exists() {
-                            server_workspace = projects_candidate;
-                        } else {
-                            let _ = tokio::fs::create_dir_all(&server_workspace).await;
-                        }
-                    } else {
-                        let _ = tokio::fs::create_dir_all(&server_workspace).await;
-                    }
-                }
+                let server_workspace = workspace::resolve_server_workspace(
+                    &state.storage_root,
+                    &req.client_workspace_root,
+                    req.base_workspace_name.as_deref(),
+                );
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
 
                 let engine_kind =
@@ -252,7 +218,7 @@ pub async fn handle_client(
                     .await?;
 
                 // Session loop for streaming LSP and control messages
-                let session_res = run_session_loop(&mut framed, &translator, &session_view).await;
+                let session_res = run_session_loop(framed, &translator, &session_view).await;
 
                 state
                     .workspace_manager
@@ -277,10 +243,21 @@ pub async fn handle_client(
 }
 
 async fn run_session_loop(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: Framed<TcpStream, ProdCodeCodec>,
     translator: &PathTranslator,
     view: &SessionView,
 ) -> Result<()> {
+    let (mut socket_tx, mut socket_rx) = framed.split();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<WireMessage>(4096);
+
+    let writer_handle = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if socket_tx.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
     let mut backend_rx = if let Some(ref go) = view.workspace.go_engine {
         Some(go.subscribe())
     } else if let Some(ref generic_eng) = view.workspace.generic_engine {
@@ -291,10 +268,10 @@ async fn run_session_loop(
 
     loop {
         tokio::select! {
-            client_msg_res = framed.next() => {
+            client_msg_res = socket_rx.next() => {
                 match client_msg_res {
                     Some(Ok(WireMessage::Ping)) => {
-                        framed.send(WireMessage::Pong).await?;
+                        let _ = out_tx.send(WireMessage::Pong).await;
                     }
                     Some(Ok(WireMessage::LspPayload(raw_client_lsp))) => {
                         let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
@@ -340,7 +317,7 @@ async fn run_session_loop(
                                     }
                                 });
                                 let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
-                                framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                let _ = out_tx.send(WireMessage::LspPayload(client_resp)).await;
                                 continue;
                             }
 
@@ -357,7 +334,7 @@ async fn run_session_loop(
                                     "id": req_id,
                                     "result": null
                                 });
-                                framed.send(WireMessage::LspPayload(shutdown_resp.to_string())).await?;
+                                let _ = out_tx.send(WireMessage::LspPayload(shutdown_resp.to_string())).await;
                                 continue;
                             }
 
@@ -394,59 +371,65 @@ async fn run_session_loop(
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
-                                            let hover_res = tokio::task::spawn_blocking(move || {
-                                                snapshot.hover(&fp_clone, line + 1, col + 1).ok().flatten()
-                                            })
-                                            .await
-                                            .unwrap_or(None);
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
 
-                                            let duration = query_start.elapsed();
-                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                            let ms = duration.as_secs_f64() * 1000.0;
-                                            let found = hover_res.is_some();
+                                            tokio::task::spawn(async move {
+                                                let hover_res = tokio::task::spawn_blocking(move || {
+                                                    snapshot.hover(&fp_clone, line + 1, col + 1).ok().flatten()
+                                                })
+                                                .await
+                                                .unwrap_or(None);
 
-                                            if ms > 200.0 {
-                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/hover",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    found,
-                                                    in_flight = remaining,
-                                                    "⚠️ [LSP SLOW >200ms]"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/hover",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    found,
-                                                    in_flight = remaining,
-                                                    "✅ [LSP DONE]"
-                                                );
-                                            }
+                                                let duration = query_start.elapsed();
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let ms = duration.as_secs_f64() * 1000.0;
+                                                let found = hover_res.is_some();
 
-                                            let resp = match hover_res {
-                                                Some(markup) => serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": req_id,
-                                                    "result": {
-                                                        "contents": {
-                                                            "kind": "markdown",
-                                                            "value": markup
+                                                if ms > 200.0 {
+                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                    tracing::warn!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/hover",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        found,
+                                                        in_flight = remaining,
+                                                        "⚠️ [LSP SLOW >200ms]"
+                                                    );
+                                                } else {
+                                                    tracing::info!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/hover",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        found,
+                                                        in_flight = remaining,
+                                                        "✅ [LSP DONE]"
+                                                    );
+                                                }
+
+                                                let resp = match hover_res {
+                                                    Some(markup) => serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": req_id,
+                                                        "result": {
+                                                            "contents": {
+                                                                "kind": "markdown",
+                                                                "value": markup
+                                                            }
                                                         }
-                                                    }
-                                                }),
-                                                None => serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": req_id,
-                                                    "result": null
-                                                }),
-                                            };
-                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                                    }),
+                                                    None => serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": req_id,
+                                                        "result": null
+                                                    }),
+                                                };
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            });
                                             continue;
                                         }
                                     }
@@ -479,57 +462,63 @@ async fn run_session_loop(
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
-                                            let defs = tokio::task::spawn_blocking(move || {
-                                                snapshot.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_default()
-                                            })
-                                            .await
-                                            .unwrap_or_default();
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
 
-                                            let duration = query_start.elapsed();
-                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                            let ms = duration.as_secs_f64() * 1000.0;
-                                            let count = defs.len();
-
-                                            if ms > 200.0 {
-                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/definition",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    targets = count,
-                                                    in_flight = remaining,
-                                                    "⚠️ [LSP SLOW >200ms]"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/definition",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    targets = count,
-                                                    in_flight = remaining,
-                                                    "✅ [LSP DONE]"
-                                                );
-                                            }
-
-                                            let locations: Vec<_> = defs.into_iter().map(|t| {
-                                                serde_json::json!({
-                                                    "uri": format!("file://{}", t.path.display()),
-                                                    "range": {
-                                                        "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
-                                                        "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
-                                                    }
+                                            tokio::task::spawn(async move {
+                                                let defs = tokio::task::spawn_blocking(move || {
+                                                    snapshot.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_default()
                                                 })
-                                            }).collect();
+                                                .await
+                                                .unwrap_or_default();
 
-                                            let resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": req_id,
-                                                "result": locations
+                                                let duration = query_start.elapsed();
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let ms = duration.as_secs_f64() * 1000.0;
+                                                let count = defs.len();
+
+                                                if ms > 200.0 {
+                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                    tracing::warn!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/definition",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        targets = count,
+                                                        in_flight = remaining,
+                                                        "⚠️ [LSP SLOW >200ms]"
+                                                    );
+                                                } else {
+                                                    tracing::info!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/definition",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        targets = count,
+                                                        in_flight = remaining,
+                                                        "✅ [LSP DONE]"
+                                                    );
+                                                }
+
+                                                let locations: Vec<_> = defs.into_iter().map(|t| {
+                                                    serde_json::json!({
+                                                        "uri": format!("file://{}", t.path.display()),
+                                                        "range": {
+                                                            "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                                                            "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                                                        }
+                                                    })
+                                                }).collect();
+
+                                                let resp = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": locations
+                                                });
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
                                             });
-                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
                                             continue;
                                         }
                                     }
@@ -562,153 +551,165 @@ async fn run_session_loop(
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
-                                            let refs = tokio::task::spawn_blocking(move || {
-                                                snapshot.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_default()
-                                            })
-                                            .await
-                                            .unwrap_or_default();
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
 
-                                            let duration = query_start.elapsed();
-                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                            let ms = duration.as_secs_f64() * 1000.0;
-                                            let count = refs.len();
-
-                                            if ms > 200.0 {
-                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/references",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    references = count,
-                                                    in_flight = remaining,
-                                                    "⚠️ [LSP SLOW >200ms]"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/references",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    references = count,
-                                                    in_flight = remaining,
-                                                    "✅ [LSP DONE]"
-                                                );
-                                            }
-
-                                            let locations: Vec<_> = refs.into_iter().map(|t| {
-                                                serde_json::json!({
-                                                    "uri": format!("file://{}", t.path.display()),
-                                                    "range": {
-                                                        "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
-                                                        "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
-                                                    }
+                                            tokio::task::spawn(async move {
+                                                let refs = tokio::task::spawn_blocking(move || {
+                                                    snapshot.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_default()
                                                 })
-                                            }).collect();
+                                                .await
+                                                .unwrap_or_default();
 
-                                            let resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": req_id,
-                                                "result": locations
+                                                let duration = query_start.elapsed();
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let ms = duration.as_secs_f64() * 1000.0;
+                                                let count = refs.len();
+
+                                                if ms > 200.0 {
+                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                    tracing::warn!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/references",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        references = count,
+                                                        in_flight = remaining,
+                                                        "⚠️ [LSP SLOW >200ms]"
+                                                    );
+                                                } else {
+                                                    tracing::info!(
+                                                        req = req_num,
+                                                        session = session_id,
+                                                        method = "textDocument/references",
+                                                        duration_ms = format!("{:.2}ms", ms),
+                                                        references = count,
+                                                        in_flight = remaining,
+                                                        "✅ [LSP DONE]"
+                                                    );
+                                                }
+
+                                                let locations: Vec<_> = refs.into_iter().map(|t| {
+                                                    serde_json::json!({
+                                                        "uri": format!("file://{}", t.path.display()),
+                                                        "range": {
+                                                            "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                                                            "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                                                        }
+                                                    })
+                                                }).collect();
+
+                                                let resp = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": locations
+                                                });
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
                                             });
-                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
                                             continue;
                                         }
                                     }
                                     Some("textDocument/documentSymbol") => {
                                         if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                             let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
 
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
+                                             let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                             let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                             TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                             let query_start = Instant::now();
 
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "textDocument/documentSymbol",
-                                                file = %file_path.display(),
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
+                                             tracing::info!(
+                                                 req = req_num,
+                                                 session = view.session_id,
+                                                 method = "textDocument/documentSymbol",
+                                                 file = %file_path.display(),
+                                                 in_flight,
+                                                 "🚀 [LSP START]"
+                                             );
 
-                                            let snapshot = {
-                                                let engine = engine_lock.lock().await;
-                                                engine.snapshot()
-                                            };
+                                             let snapshot = {
+                                                 let engine = engine_lock.lock().await;
+                                                 engine.snapshot()
+                                             };
 
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let syms = tokio::task::spawn_blocking(move || {
-                                                snapshot.document_symbols(&fp_clone).unwrap_or_default()
-                                            })
-                                            .await
-                                            .unwrap_or_default();
+                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                             let fp_clone = file_path.clone();
+                                             let out_tx_task = out_tx.clone();
+                                             let translator_task = translator.clone();
+                                             let session_id = view.session_id;
 
-                                            let duration = query_start.elapsed();
-                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                            let ms = duration.as_secs_f64() * 1000.0;
-                                            let count = syms.len();
+                                             tokio::task::spawn(async move {
+                                                 let syms = tokio::task::spawn_blocking(move || {
+                                                     snapshot.document_symbols(&fp_clone).unwrap_or_default()
+                                                 })
+                                                 .await
+                                                 .unwrap_or_default();
 
-                                            if ms > 200.0 {
-                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/documentSymbol",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    symbols = count,
-                                                    in_flight = remaining,
-                                                    "⚠️ [LSP SLOW >200ms]"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    req = req_num,
-                                                    session = view.session_id,
-                                                    method = "textDocument/documentSymbol",
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    symbols = count,
-                                                    in_flight = remaining,
-                                                    "✅ [LSP DONE]"
-                                                );
-                                            }
+                                                 let duration = query_start.elapsed();
+                                                 let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                 let ms = duration.as_secs_f64() * 1000.0;
+                                                 let count = syms.len();
 
-                                            let sym_list: Vec<_> = syms.into_iter().map(|s| {
-                                                let kind_num = match s.kind.as_str() {
-                                                    "Fn" | "Function" => 12,
-                                                    "Struct" => 23,
-                                                    "Enum" => 10,
-                                                    "Const" | "Constant" => 14,
-                                                    "Trait" => 11,
-                                                    "Module" => 2,
-                                                    _ => 13,
-                                                };
-                                                serde_json::json!({
-                                                    "name": s.name,
-                                                    "kind": kind_num,
-                                                    "location": {
-                                                        "uri": uri,
-                                                        "range": {
-                                                            "start": { "line": s.line.saturating_sub(1), "character": 0 },
-                                                            "end": { "line": s.line.saturating_sub(1), "character": 0 }
-                                                        }
-                                                    },
-                                                    "containerName": s.detail
-                                                })
-                                            }).collect();
+                                                 if ms > 200.0 {
+                                                     SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                     tracing::warn!(
+                                                         req = req_num,
+                                                         session = session_id,
+                                                         method = "textDocument/documentSymbol",
+                                                         duration_ms = format!("{:.2}ms", ms),
+                                                         symbols = count,
+                                                         in_flight = remaining,
+                                                         "⚠️ [LSP SLOW >200ms]"
+                                                     );
+                                                 } else {
+                                                     tracing::info!(
+                                                         req = req_num,
+                                                         session = session_id,
+                                                         method = "textDocument/documentSymbol",
+                                                         duration_ms = format!("{:.2}ms", ms),
+                                                         symbols = count,
+                                                         in_flight = remaining,
+                                                         "✅ [LSP DONE]"
+                                                     );
+                                                 }
 
-                                            let resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": req_id,
-                                                "result": sym_list
-                                            });
-                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
-                                            continue;
-                                        }
+                                                 let sym_list: Vec<_> = syms.into_iter().map(|s| {
+                                                     let kind_num = match s.kind.as_str() {
+                                                         "Fn" | "Function" => 12,
+                                                         "Struct" => 23,
+                                                         "Enum" => 10,
+                                                         "Const" | "Constant" => 14,
+                                                         "Trait" => 11,
+                                                         "Module" => 2,
+                                                         _ => 13,
+                                                     };
+                                                     serde_json::json!({
+                                                         "name": s.name,
+                                                         "kind": kind_num,
+                                                         "location": {
+                                                             "uri": uri,
+                                                             "range": {
+                                                                 "start": { "line": s.line.saturating_sub(1), "character": 0 },
+                                                                 "end": { "line": s.line.saturating_sub(1), "character": 0 }
+                                                             }
+                                                         },
+                                                         "containerName": s.detail
+                                                     })
+                                                 }).collect();
+
+                                                 let resp = serde_json::json!({
+                                                     "jsonrpc": "2.0",
+                                                     "id": req_id,
+                                                     "result": sym_list
+                                                 });
+                                                 let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                 let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                             });
+                                             continue;
+                                         }
                                     }
                                     Some("textDocument/didOpen") => {
                                         if let Some(params) = val.get("params") {
@@ -839,49 +840,58 @@ async fn run_session_loop(
                                         );
 
                                         let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                        let resp_res = go.send_request(m, params).await;
-                                        let duration = start.elapsed();
-                                        let duration_ms = duration.as_secs_f64() * 1000.0;
-                                        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                        let out_tx_task = out_tx.clone();
+                                        let go_clone = Arc::clone(go);
+                                        let translator_task = translator.clone();
+                                        let session_id = view.session_id;
+                                        let method_str = m.to_string();
+                                        let req_id = id.clone();
 
-                                        if duration_ms > 200.0 {
-                                            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            tracing::warn!(
-                                                req = req_id_log,
-                                                session = view.session_id,
-                                                method = m,
-                                                duration_ms = %format!("{:.2}ms", duration_ms),
-                                                in_flight = remaining,
-                                                "⚠️ [LSP SLOW >200ms] GoEngine query exceeded threshold"
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                req = req_id_log,
-                                                session = view.session_id,
-                                                method = m,
-                                                duration_ms = %format!("{:.2}ms", duration_ms),
-                                                in_flight = remaining,
-                                                "✅ [LSP DONE] GoEngine query complete"
-                                            );
-                                        }
+                                        tokio::task::spawn(async move {
+                                            let resp_res = go_clone.send_request(&method_str, params).await;
+                                            let duration = start.elapsed();
+                                            let duration_ms = duration.as_secs_f64() * 1000.0;
+                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
 
-                                        match resp_res {
-                                            Ok(mut resp) => {
-                                                if let Some(ref req_id) = id {
-                                                    resp["id"] = req_id.clone();
+                                            if duration_ms > 200.0 {
+                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    req = req_id_log,
+                                                    session = session_id,
+                                                    method = %method_str,
+                                                    duration_ms = %format!("{:.2}ms", duration_ms),
+                                                    in_flight = remaining,
+                                                    "⚠️ [LSP SLOW >200ms] GoEngine query exceeded threshold"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    req = req_id_log,
+                                                    session = session_id,
+                                                    method = %method_str,
+                                                    duration_ms = %format!("{:.2}ms", duration_ms),
+                                                    in_flight = remaining,
+                                                    "✅ [LSP DONE] GoEngine query complete"
+                                                );
+                                            }
+
+                                            match resp_res {
+                                                Ok(mut resp) => {
+                                                    if let Some(ref r_id) = req_id {
+                                                        resp["id"] = r_id.clone();
+                                                    }
+                                                    let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                    let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
                                                 }
-                                                let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                                framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                                Err(err) => {
+                                                    let err_resp = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": req_id,
+                                                        "error": { "code": -32603, "message": err.to_string() }
+                                                    });
+                                                    let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
+                                                }
                                             }
-                                            Err(err) => {
-                                                let err_resp = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": id,
-                                                    "error": { "code": -32603, "message": err.to_string() }
-                                                });
-                                                framed.send(WireMessage::LspPayload(err_resp.to_string())).await?;
-                                            }
-                                        }
+                                        });
                                         continue;
                                     }
                                     Some(m) => {
@@ -910,47 +920,56 @@ async fn run_session_loop(
                                     );
 
                                     let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                    let resp_res = generic_eng.send_request(m, params).await;
-                                    let duration = start.elapsed();
-                                    let duration_ms = duration.as_secs_f64() * 1000.0;
-                                    let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                    let out_tx_task = out_tx.clone();
+                                    let generic_eng_clone = Arc::clone(generic_eng);
+                                    let translator_task = translator.clone();
+                                    let session_id = view.session_id;
+                                    let method_str = m.to_string();
+                                    let r_id = req_id.clone();
 
-                                    if duration_ms > 200.0 {
-                                        SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                        tracing::warn!(
-                                            req = req_id_log,
-                                            session = view.session_id,
-                                            method = m,
-                                            duration_ms = %format!("{:.2}ms", duration_ms),
-                                            in_flight = remaining,
-                                            "⚠️ [LSP SLOW >200ms] GenericLspEngine query exceeded threshold"
-                                        );
-                                    } else {
-                                        tracing::info!(
-                                            req = req_id_log,
-                                            session = view.session_id,
-                                            method = m,
-                                            duration_ms = %format!("{:.2}ms", duration_ms),
-                                            in_flight = remaining,
-                                            "✅ [LSP DONE] GenericLspEngine query complete"
-                                        );
-                                    }
+                                    tokio::task::spawn(async move {
+                                        let resp_res = generic_eng_clone.send_request(&method_str, params).await;
+                                        let duration = start.elapsed();
+                                        let duration_ms = duration.as_secs_f64() * 1000.0;
+                                        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
 
-                                    match resp_res {
-                                        Ok(mut resp) => {
-                                            resp["id"] = req_id.clone();
-                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
-                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                        if duration_ms > 200.0 {
+                                            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            tracing::warn!(
+                                                req = req_id_log,
+                                                session = session_id,
+                                                method = %method_str,
+                                                duration_ms = %format!("{:.2}ms", duration_ms),
+                                                in_flight = remaining,
+                                                "⚠️ [LSP SLOW >200ms] GenericLspEngine query exceeded threshold"
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                req = req_id_log,
+                                                session = session_id,
+                                                method = %method_str,
+                                                duration_ms = %format!("{:.2}ms", duration_ms),
+                                                in_flight = remaining,
+                                                "✅ [LSP DONE] GenericLspEngine query complete"
+                                            );
                                         }
-                                        Err(err) => {
-                                            let err_resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": req_id,
-                                                "error": { "code": -32603, "message": err.to_string() }
-                                            });
-                                            framed.send(WireMessage::LspPayload(err_resp.to_string())).await?;
+
+                                        match resp_res {
+                                            Ok(mut resp) => {
+                                                resp["id"] = r_id;
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            }
+                                            Err(err) => {
+                                                let err_resp = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": r_id,
+                                                    "error": { "code": -32603, "message": err.to_string() }
+                                                });
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
+                                            }
                                         }
-                                    }
+                                    });
                                     continue;
                                 } else if let Some(m) = method {
                                     let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
@@ -982,7 +1001,7 @@ async fn run_session_loop(
                                     "id": req_id,
                                     "result": null
                                 });
-                                framed.send(WireMessage::LspPayload(empty_resp.to_string())).await?;
+                                let _ = out_tx.send(WireMessage::LspPayload(empty_resp.to_string())).await;
                                 continue;
                             }
                         }
@@ -1028,7 +1047,7 @@ async fn run_session_loop(
                         }
 
                         let duration_ms = start.elapsed().as_millis() as u64;
-                        framed
+                        let _ = out_tx
                             .send(WireMessage::SyncResponse(SyncResponse {
                                 files_updated,
                                 files_deleted,
@@ -1036,14 +1055,14 @@ async fn run_session_loop(
                                 duration_ms,
                                 server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
                             }))
-                            .await?;
+                            .await;
                     }
                     Some(Ok(WireMessage::Disconnect { reason })) => {
                         tracing::info!(reason, "Client terminated session");
                         break;
                     }
                     Some(Ok(WireMessage::StatusRequest)) => {
-                        framed
+                        let _ = out_tx
                             .send(WireMessage::StatusResponse(StatusResponse {
                                 server_pid: std::process::id(),
                                 uptime_seconds: 0,
@@ -1054,7 +1073,7 @@ async fn run_session_loop(
                                 total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
                                 active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
                             }))
-                            .await?;
+                            .await;
                     }
                     Some(Err(e)) => {
                         tracing::error!(error = %e, "TCP frame decode error");
@@ -1078,8 +1097,8 @@ async fn run_session_loop(
                 match backend_msg {
                     Ok(server_lsp) => {
                         let client_lsp = translator.translate_lsp_to_client(&server_lsp);
-                        if let Err(e) = framed.send(WireMessage::LspPayload(client_lsp)).await {
-                            tracing::error!(error = %e, "Failed to send LSP message to client");
+                        if out_tx.send(WireMessage::LspPayload(client_lsp)).await.is_err() {
+                            tracing::error!("Failed to send LSP message to client channel");
                             break;
                         }
                     }
@@ -1094,6 +1113,8 @@ async fn run_session_loop(
             }
         }
     }
+    drop(out_tx);
+    let _ = writer_handle.await;
     Ok(())
 }
 
@@ -1193,6 +1214,7 @@ mod tests {
                 },
             ],
             clean_others: false,
+            base_workspace_name: None,
         };
 
         let resp = apply_sync(storage_temp.path(), req).await;
@@ -1214,6 +1236,7 @@ mod tests {
                 is_executable: false,
             }],
             clean_others: false,
+            base_workspace_name: None,
         };
 
         let del_resp = apply_sync(storage_temp.path(), del_req).await;

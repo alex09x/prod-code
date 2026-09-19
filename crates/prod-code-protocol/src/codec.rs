@@ -106,6 +106,7 @@ mod tests {
             auth_token: None,
             client_workspace_root: "/home/user/project".to_string(),
             preferred_engine: None,
+            base_workspace_name: None,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();
@@ -141,6 +142,7 @@ mod tests {
                 },
             ],
             clean_others: false,
+            base_workspace_name: None,
         });
 
         codec.encode(req.clone(), &mut buf).unwrap();

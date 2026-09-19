@@ -317,6 +317,102 @@ impl WorkspaceManager {
     }
 }
 
+/// Extract a clean, generic workspace identifier from any client workspace or worktree path.
+pub fn extract_workspace_identifier(client_root: &str) -> String {
+    let path = Path::new(client_root);
+
+    // Normalize path components
+    let components: Vec<&str> = path
+        .iter()
+        .filter_map(|c| c.to_str())
+        .filter(|&c| c != "/" && c != "\\" && !c.is_empty())
+        .collect();
+
+    // 1. Check for standard runner worktree container:
+    // e.g. ".../worktrees/<workspace_name>/task-<id>/..."
+    for (i, &seg) in components.iter().enumerate() {
+        if seg == "worktrees" && i + 1 < components.len() {
+            let next_seg = components[i + 1];
+            // If followed by task-* or attempt-*, next_seg is the workspace identifier
+            if i + 2 < components.len()
+                && (components[i + 2].starts_with("task-")
+                    || components[i + 2].starts_with("attempt-"))
+            {
+                return sanitize_identifier(next_seg);
+            }
+        }
+    }
+
+    // 2. Check for local worktrees inside repository:
+    // e.g. ".../<project_name>/.worktrees/..." or ".../<project_name>/worktrees/..."
+    for (i, &seg) in components.iter().enumerate() {
+        if (seg == ".worktrees" || seg == "worktrees") && i > 0 {
+            let prev_seg = components[i - 1];
+            // Disregard generic container prefixes
+            if prev_seg != "Volumes"
+                && prev_seg != "mnt"
+                && prev_seg != "srv"
+                && prev_seg != "home"
+                && prev_seg != "var"
+            {
+                return sanitize_identifier(prev_seg);
+            }
+        }
+    }
+
+    // 3. Fallback: nearest ancestor that is not a task-* or attempt-* runner directory
+    if let Some(pos) = components.iter().rposition(|&c| {
+        !c.starts_with("task-") && !c.starts_with("attempt-") && c != "worktree" && c != "worktrees"
+    }) {
+        let name = components[pos];
+        if !name.is_empty() {
+            return sanitize_identifier(name);
+        }
+    }
+
+    // 4. Fallback: folder name of client_root
+    let fallback = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("default");
+
+    sanitize_identifier(fallback)
+}
+
+pub fn sanitize_identifier(s: &str) -> String {
+    let sanitized: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.is_empty() {
+        "workspace".to_string()
+    } else {
+        sanitized
+    }
+}
+
+/// Resolve client workspace path or worktree path to the canonical server workspace root.
+pub fn resolve_server_workspace(
+    storage_root: &Path,
+    client_root: &str,
+    explicit_base_name: Option<&str>,
+) -> PathBuf {
+    let candidate_name = match explicit_base_name {
+        Some(name) if !name.trim().is_empty() => sanitize_identifier(name.trim()),
+        _ => extract_workspace_identifier(client_root),
+    };
+
+    let target_dir = storage_root.join(&candidate_name);
+    let _ = std::fs::create_dir_all(&target_dir);
+    target_dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +473,35 @@ mod tests {
         manager.unregister_session_view(&view1).await;
         manager.unregister_session_view(&view2).await;
         manager.unregister_session_view(&view3).await;
+    }
+
+    #[test]
+    fn test_resolve_server_workspace_generic_worktree_mapping() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = temp_dir.path();
+
+        // 1. Nested runner worktree container: .../worktrees/<workspace_name>/task-123/attempt-0
+        let wt1 = "/Volumes/worktrees/worktrees/repo-alpha/task-1531/attempt-0";
+        let res1 = resolve_server_workspace(storage, wt1, None);
+        assert_eq!(res1, storage.join("repo-alpha"));
+        assert!(res1.is_dir(), "Workspace directory must be auto-created");
+
+        // 2. In-repo dot-worktrees pattern: .../project-beta/.worktrees/branch-1
+        let wt2 = "/home/dev/projects/project-beta/.worktrees/branch-1";
+        let res2 = resolve_server_workspace(storage, wt2, None);
+        assert_eq!(res2, storage.join("project-beta"));
+        assert!(res2.is_dir());
+
+        // 3. Worktree with explicit base name provided by client
+        let wt3 = "/Users/dev/scratch/temp-worktree";
+        let res3 = resolve_server_workspace(storage, wt3, Some("core-service"));
+        assert_eq!(res3, storage.join("core-service"));
+        assert!(res3.is_dir());
+
+        // 4. Standard repository folder
+        let std_repo = "/Users/dev/workspace/payment-gateway";
+        let res4 = resolve_server_workspace(storage, std_repo, None);
+        assert_eq!(res4, storage.join("payment-gateway"));
+        assert!(res4.is_dir());
     }
 }

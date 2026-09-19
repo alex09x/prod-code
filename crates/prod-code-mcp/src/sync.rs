@@ -92,7 +92,6 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
                 || name == "__pycache__"
                 || name == "artifacts"
                 || name == "dogfood-output"
-                || name == "questiontocase-search"
                 || name == "data"
                 || name == "state"
                 || name == ".DS_Store"

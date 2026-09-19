@@ -487,6 +487,7 @@ pub async fn execute_tool(
                 client_workspace_root: workspace_root.to_string_lossy().to_string(),
                 files: deltas,
                 clean_others: false,
+                base_workspace_name: None,
             };
 
             framed.send(WireMessage::SyncRequest(req)).await?;
@@ -564,6 +565,7 @@ async fn execute_lsp_query(
             auth_token: None,
             client_workspace_root: root_str.clone(),
             preferred_engine: None,
+            base_workspace_name: None,
         }))
         .await?;
 
