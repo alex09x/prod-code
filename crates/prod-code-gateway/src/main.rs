@@ -1,5 +1,7 @@
 //! prod-code gateway daemon: multi-tenant server for remote code intelligence over 10 GbE LAN.
 
+pub mod workspace;
+
 use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
@@ -13,6 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
+use workspace::{SessionView, WorkspaceManager};
 
 #[derive(Parser, Debug)]
 #[command(name = "prod-code-server", author, version, about = "Remote Code Intelligence Gateway")]
@@ -32,6 +35,7 @@ pub struct ServerState {
     pub next_session_id: AtomicU64,
     pub active_sessions: AtomicUsize,
     pub storage_root: PathBuf,
+    pub workspace_manager: Arc<WorkspaceManager>,
 }
 
 impl ServerState {
@@ -42,15 +46,16 @@ impl ServerState {
             next_session_id: AtomicU64::new(1),
             active_sessions: AtomicUsize::new(0),
             storage_root,
+            workspace_manager: Arc::new(WorkspaceManager::new()),
         }
     }
 
-    pub fn status(&self) -> StatusResponse {
+    pub async fn status(&self) -> StatusResponse {
         StatusResponse {
             server_pid: self.server_pid,
             uptime_seconds: self.start_time.elapsed().as_secs(),
             active_sessions: self.active_sessions.load(Ordering::Relaxed),
-            loaded_workspaces: 0,
+            loaded_workspaces: self.workspace_manager.loaded_count().await,
             detected_engines: vec![
                 "rust (ra_ap_ide)".to_string(),
                 "go (gopls)".to_string(),
@@ -60,7 +65,7 @@ impl ServerState {
     }
 }
 
-fn detect_engine(root: &Path) -> &'static str {
+pub fn detect_engine(root: &Path) -> &'static str {
     if root.join("Cargo.toml").exists() {
         "rust"
     } else if root.join("go.mod").exists() {
@@ -85,7 +90,7 @@ pub async fn handle_client(
         let msg = msg_res?;
         match msg {
             WireMessage::StatusRequest => {
-                let status = state.status();
+                let status = state.status().await;
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }
             WireMessage::Ping => {
@@ -104,7 +109,19 @@ pub async fn handle_client(
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
 
                 let engine = detect_engine(&client_root_path);
-                let translator = PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
+                let translator =
+                    PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
+
+                // Attach to shared workspace using leader-follower coalescing
+                let shared_ws = state
+                    .workspace_manager
+                    .get_or_load(&server_workspace, engine)
+                    .await?;
+
+                let session_view = state
+                    .workspace_manager
+                    .register_session_view(session_id, client_root_path.clone(), shared_ws)
+                    .await;
 
                 tracing::info!(
                     session_id,
@@ -112,7 +129,9 @@ pub async fn handle_client(
                     client_root = %req.client_workspace_root,
                     server_root = %server_workspace_str,
                     engine,
-                    "Client session established"
+                    is_single_owner = session_view.is_single_owner,
+                    "Client session established (Direct-Edit fast path active: {})",
+                    session_view.is_single_owner
                 );
 
                 framed
@@ -126,9 +145,16 @@ pub async fn handle_client(
                     .await?;
 
                 // Session loop for streaming LSP and control messages
-                let session_res = run_session_loop(&mut framed, &translator).await;
+                let session_res =
+                    run_session_loop(&mut framed, &translator, &session_view).await;
+
+                state
+                    .workspace_manager
+                    .unregister_session_view(&session_view)
+                    .await;
                 state.active_sessions.fetch_sub(1, Ordering::Relaxed);
-                tracing::info!(session_id, "Client session closed: {:?}", session_res);
+
+                tracing::info!(session_id, "Client session retired: {:?}", session_res);
                 return session_res;
             }
             WireMessage::Disconnect { reason } => {
@@ -147,6 +173,7 @@ pub async fn handle_client(
 async fn run_session_loop(
     framed: &mut Framed<TcpStream, ProdCodeCodec>,
     translator: &PathTranslator,
+    view: &SessionView,
 ) -> Result<()> {
     while let Some(msg_res) = framed.next().await {
         let msg = msg_res?;
@@ -157,9 +184,13 @@ async fn run_session_loop(
             WireMessage::LspPayload(raw_client_lsp) => {
                 // Translate client paths to server paths
                 let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
-                tracing::debug!(payload_len = server_lsp.len(), "Processed incoming LSP message");
+                tracing::debug!(
+                    payload_len = server_lsp.len(),
+                    single_owner = view.is_single_owner,
+                    "Processed incoming LSP message"
+                );
 
-                // Route message. If it's initialize, synthesize capability response for Phase 1
+                // Route message. If it's initialize, synthesize capability response
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
                     if val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
                         let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
@@ -192,12 +223,14 @@ async fn run_session_loop(
                             "id": id,
                             "result": null
                         });
-                        framed.send(WireMessage::LspPayload(shutdown_resp.to_string())).await?;
+                        framed
+                            .send(WireMessage::LspPayload(shutdown_resp.to_string()))
+                            .await?;
                         continue;
                     }
                 }
 
-                // Default echo for notification/requests in Phase 1 wire validation
+                // Default echo/pass-through with path translation
                 let client_resp = translator.translate_lsp_to_client(&server_lsp);
                 framed.send(WireMessage::LspPayload(client_resp)).await?;
             }
@@ -206,14 +239,13 @@ async fn run_session_loop(
                 break;
             }
             WireMessage::StatusRequest => {
-                // Return status in-session
                 framed
                     .send(WireMessage::StatusResponse(StatusResponse {
                         server_pid: std::process::id(),
                         uptime_seconds: 0,
                         active_sessions: 1,
                         loaded_workspaces: 1,
-                        detected_engines: vec!["active-session".to_string()],
+                        detected_engines: vec![view.workspace.engine.clone()],
                     }))
                     .await?;
             }
@@ -253,11 +285,11 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_server_state_status() {
+    #[tokio::test]
+    async fn test_server_state_status() {
         let temp = tempfile::tempdir().unwrap();
         let state = ServerState::new(temp.path().to_path_buf());
-        let status = state.status();
+        let status = state.status().await;
         assert_eq!(status.server_pid, std::process::id());
         assert_eq!(status.active_sessions, 0);
         assert_eq!(status.loaded_workspaces, 0);
@@ -285,4 +317,3 @@ mod tests {
         assert_eq!(detect_engine(ts_temp.path()), "typescript");
     }
 }
-
