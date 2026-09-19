@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Session churn stress (Phase 5.5): `divergent-bench --persistent --churn N` kills N% of
+  sessions mid-run without a goodbye and verifies the gateway retires them all.
+- `prod-code check | lint | test --json` print the full structured report.
+
 - Safe delete (Phase 7.1.1): `prod-code safe-delete <file> <line> <col>` and MCP
   `code_safe_delete` remove an item only when rust-analyzer finds no references to it in the
   workspace; otherwise the usages that block the deletion are listed.
