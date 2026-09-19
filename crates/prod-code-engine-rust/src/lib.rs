@@ -390,6 +390,75 @@ impl RustEngineSnapshot {
         Ok(Ok(self.outcome_from_change(&change)?))
     }
 
+    /// Deletes the item (function, type, const, field, module …) whose name is at the 1-based
+    /// position, but only when nothing else in the workspace references it.
+    /// `Ok(Err(dossier))` lists the usages that block the deletion.
+    pub fn safe_delete(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        let usages = self.find_all_refs(path, line, col)?;
+        if !usages.is_empty() {
+            let mut listed: Vec<String> = usages
+                .iter()
+                .take(20)
+                .map(|u| format!("{}:{}:{}", u.path.display(), u.line, u.col))
+                .collect();
+            if usages.len() > listed.len() {
+                listed.push(format!("… {} more", usages.len() - listed.len()));
+            }
+            return Ok(Err(format!(
+                "{} usage(s) reference this item; delete refused:\n{}",
+                usages.len(),
+                listed.join("\n")
+            )));
+        }
+        let file_id = self
+            .file_id_for_path(path)
+            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let text = self.analysis.file_text(file_id)?;
+        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let config = FileStructureConfig {
+            exclude_locals: false,
+        };
+        let nodes = self.analysis.file_structure(&config, file_id)?;
+        let node = nodes
+            .iter()
+            .filter(|n| n.navigation_range.contains_inclusive(offset))
+            .min_by_key(|n| n.node_range.len())
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .filter(|n| n.node_range.contains_inclusive(offset))
+                    .min_by_key(|n| n.node_range.len())
+            });
+        let Some(node) = node else {
+            return Ok(Err("no deletable item at this position".to_string()));
+        };
+        let start = usize::from(node.node_range.start());
+        let mut end = usize::from(node.node_range.end());
+        // Take the line terminator with the item, and one blank line if that leaves two.
+        if text[end..].starts_with('\n') {
+            end += 1;
+        }
+        let mut new_text = String::with_capacity(text.len());
+        new_text.push_str(&text[..start]);
+        new_text.push_str(&text[end..]);
+        let new_text = new_text.replace("\n\n\n", "\n\n");
+        Ok(Ok(RefactorOutcome {
+            files: vec![RewrittenFile {
+                path: normalize_vfs_path(path, &self.workspace_root),
+                new_text,
+                edits: 1,
+                old_line_count: text.lines().count() as u32,
+            }],
+            created: Vec::new(),
+            moves: Vec::new(),
+        }))
+    }
+
     fn anchored_path(&self, anchored: &AnchoredPathBuf) -> Option<PathBuf> {
         let anchor = self.path_for_file_id(anchored.anchor)?;
         Some(anchor.parent()?.join(&anchored.path))
@@ -854,6 +923,16 @@ impl RustEngine {
             .apply_assist(path, line, col, end, id, subtype)
     }
 
+    /// Delete an unreferenced item; see [`RustEngineSnapshot::safe_delete`].
+    pub fn safe_delete(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        self.snapshot().safe_delete(path, line, col)
+    }
+
     /// Rename the symbol at (line, col); see [`RustEngineSnapshot::rename`].
     pub fn rename(
         &self,
@@ -1174,6 +1253,37 @@ impl PathTranslator {
         // Not a symbol: rust-analyzer refuses instead of the engine erroring.
         let refused = engine.rename(&lib_path, 1, 1, "x").expect("rename query");
         assert!(refused.is_err());
+    }
+
+    #[test]
+    fn test_safe_delete_refuses_used_and_removes_unused() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        let lib = temp.path().join("src/lib.rs");
+        std::fs::write(
+            &lib,
+            "pub fn used() -> u8 {\n    1\n}\n\npub fn unused() -> u8 {\n    2\n}\n\npub fn caller() -> u8 {\n    used()\n}\n",
+        )
+        .unwrap();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+
+        let refused = engine.safe_delete(&lib, 1, 8).unwrap().unwrap_err();
+        assert!(refused.contains("1 usage(s)"), "{refused}");
+        assert!(refused.contains("lib.rs:10:"), "{refused}");
+
+        let outcome = engine
+            .safe_delete(&lib, 5, 8)
+            .unwrap()
+            .expect("unused item deletes");
+        let text = &outcome.files[0].new_text;
+        assert!(!text.contains("unused"), "{text}");
+        assert!(text.contains("pub fn used()") && text.contains("pub fn caller()"));
+        assert!(!text.contains("\n\n\n"), "{text:?}");
     }
 
     #[test]

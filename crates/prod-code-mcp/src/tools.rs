@@ -107,6 +107,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_safe_delete".to_string(),
+            description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. The edit is written into the checkout."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line of the item's name" },
+                    "character": { "type": "integer", "description": "1-based column of the item's name" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
             name: "code_rename".to_string(),
             description: "Semantic rename of the symbol at a 1-based line/column (type, function, field, variable, module) across the whole workspace, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
                 .to_string(),
@@ -270,6 +284,50 @@ pub async fn execute_tool(
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     match tool_name {
+        "code_safe_delete" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument")? as u32;
+            let character = args
+                .get("character")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'character' argument")? as u32;
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let file_uri = Url::from_file_path(&file_path)
+                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+                .to_string();
+            let params = serde_json::json!({
+                "textDocument": { "uri": file_uri },
+                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
+            });
+            let edit = match execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "prodCode/safeDelete",
+                params,
+            )
+            .await
+            {
+                Ok(edit) => edit,
+                Err(e) => {
+                    return Ok(McpToolCallResult::error(format!(
+                        "safe delete refused: {e:#}"
+                    )));
+                }
+            };
+            let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+            Ok(McpToolCallResult::text(format!(
+                "deleted; {} path(s) updated in the checkout:\n{}",
+                touched.len(),
+                touched.join("\n")
+            )))
+        }
         "code_assists" | "code_assist" => {
             let path_str = args
                 .get("path")

@@ -82,6 +82,9 @@ enum Commands {
         #[arg(long)]
         subtype: Option<u64>,
     },
+    /// Delete the item at 1-based <line> <col> if nothing references it, else list the usages:
+    /// prod-code safe-delete <file> <line> <col>
+    SafeDelete { file: PathBuf, line: u32, col: u32 },
     /// Rename the symbol at 1-based <line> <col> across the workspace and apply the edits
     /// locally: prod-code rename <file> <line> <col> <new_name>
     Rename {
@@ -204,6 +207,7 @@ async fn main() -> Result<()> {
             col,
             new_name,
         } => run_rename(remote, &file, line, col, &new_name).await,
+        Commands::SafeDelete { file, line, col } => run_safe_delete(remote, &file, line, col).await,
         Commands::Assists {
             file,
             line,
@@ -1060,6 +1064,35 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
         }
     }
     None
+}
+
+/// Delete an unreferenced item through the remote analyzer and apply the edit locally.
+async fn run_safe_delete(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) }
+    });
+    let started = std::time::Instant::now();
+    let edit = execute_lsp_query(remote, file, "prodCode/safeDelete", params).await?;
+    if edit.is_null() {
+        anyhow::bail!("safe delete produced no edits");
+    }
+    let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
+    println!(
+        "deleted in {:.2}s; {} path(s) updated:",
+        started.elapsed().as_secs_f64(),
+        touched.len()
+    );
+    for path in touched {
+        println!("  {path}");
+    }
+    Ok(())
 }
 
 fn parse_line_col(spec: &str) -> Result<(u32, u32)> {
