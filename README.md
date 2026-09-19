@@ -1,139 +1,172 @@
-# prod-code: Remote Code Intelligence (RCI)
+<div align="center">
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
-[![Status: Experimental](https://img.shields.io/badge/Status-Active%20Development-orange.svg)]()
-[![Network: 10GbE Ready](https://img.shields.io/badge/Network-10GbE%20Optimized-green.svg)]()
+# ⚡ `prod-code`
+### Remote Code Intelligence (RCI) for AI Agent Fleets & Distributed Workspaces
 
-**prod-code** is a distributed, polyglot code-intelligence daemon and gateway designed specifically for **high-throughput AI coding agent fleets**, multi-worktree parallelism, and remote cluster offloading over ultra-fast local networks (10 GbE LAN).
+[![GitHub release](https://img.shields.io/github/v/release/alex09x/prod-code?color=blue&style=flat-square)](https://github.com/alex09x/prod-code/releases)
+[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
+[![Network: 10GbE](https://img.shields.io/badge/network-10_GbE_Optimized-success?style=flat-square)]()
+[![Rust](https://img.shields.io/badge/rust-2024_edition-dea584?style=flat-square&logo=rust)]()
+[![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go)]()
+[![Protocol](https://img.shields.io/badge/protocol-LSP_%2B_Native_MCP-purple?style=flat-square)]()
 
-It untangles the bottleneck of modern language analysis by decoupling the developer's local workspace from the heavy, memory-hungry semantic engines (Rust Salsa DB, Go `gopls`, Pyright, etc.), moving the compute and 50–100+ GB memory footprints to dedicated server hardware while keeping client latency sub-millisecond.
+<p align="center">
+  <b>Decouple your code from your laptop.</b><br>
+  Offload 50–100+ GB language server memory footprints and heavy compiler analysis to high-core homelab or cloud servers over ultra-fast 10G LAN with sub-millisecond round-trip latency.
+</p>
 
----
-
-## The Problem: Why Traditional Language Servers Fail at Agent Scale
-
-Modern language servers (`rust-analyzer`, `gopls`, `pyright`, `tsserver`) were built under a single core assumption: **one human developer editing files sequentially inside a single desktop IDE**.
-
-When scaling to **fleets of autonomous AI coding agents** (Claude, Codex, Agy, Cursor Agent) running concurrent tasks across dozens of Git worktrees, this assumption completely breaks:
-
-1. **Catastrophic Memory & CPU Spikes**:
-   - An in-memory Salsa database (`rust-analyzer`) or `gopls` instance for a large project easily eats **20–60+ GB of RAM**.
-   - Running 10–20 parallel agent worktrees on a developer workstation or laptop leads to thermal throttling, out-of-memory kernel panics, and massive fan noise.
-2. **Lock Contention on Overlay Rebuilds**:
-   - Traditional servers rebuild structural overlay cones under a global database lock on every text change. Concurrent sessions queue behind each other, causing query latencies to spike from milliseconds to **70–120 seconds**.
-3. **Fragmented Daemon Chaos**:
-   - Managing separate local supervisors for Go, Rust, Python, and TypeScript creates fragile process trees that crash, leave orphaned sockets, or leak daemons during agent teardowns.
-4. **Protocol Mismatch for AI Agents**:
-   - Autonomous agents do not need bidirectional, stateful JSON-RPC LSP streams with document synchronization gymnastics. Agents need **fast, stateless, typed semantic answers**: *where is this symbol defined? what are its references? what is the function signature? give me diagnostics.*
+</div>
 
 ---
 
-## The Solution: The prod-code Architecture
+## 🎯 The Problem: Why Traditional Language Servers Fail at Agent Scale
 
-`prod-code` splits code intelligence into a lightweight local client and a high-performance remote server cluster connected via 10 GbE LAN.
+Modern language servers (`rust-analyzer`, `gopls`, `pyright`, `tsserver`) were architected for a single human developer typing in an interactive desktop editor. 
 
+When deploying **fleets of autonomous AI coding agents** (Claude, Codex, Agy, Cursor Agent) across dozens of parallel Git worktrees, the architecture collapses:
+
+| Bottleneck | Traditional Language Servers (`rust-analyzer` / `gopls`) | `prod-code` Remote Code Intelligence |
+|:---|:---|:---|
+| **Memory Footprint** | 20–60+ GB RAM duplicated per session. Developer Mac freezes or OOMs. | **0 MB on client**. Entire Salsa DB / AST cache stays in server RAM (128+ GB). |
+| **CPU / Battery** | 100% CPU lockups on AST re-indexing; fans spin at full speed on laptop. | **0% CPU on client**. Heavy analysis runs on dedicated 32–64 core server CPUs. |
+| **Overlay Contention** | Global database write locks on every text edit. Concurrent sessions queue up (p95: **71s**). | **Single-Owner Direct-Edits**: edits write directly to in-memory inputs (p95: **12s**). |
+| **Protocol Overhead** | Heavy bidirectional JSON-RPC state synchronization gymnastics. | **Dual Surface**: Standard LSP for IDEs + **Native MCP** tools for AI agents. |
+| **Multi-Language Ops** | Fractured supervisor processes per language (`gopls`, `analyzed`, `pyright`). | **Unified Polyglot Gateway**: single 10G port routes Rust, Go, Python, and TS. |
+
+---
+
+## 🏗️ Architecture
+
+```text
+ ┌────────────────────────────────────────────────────────┐
+ │   Developer Laptop / Agent Fleet Pod                   │
+ │   • Thin Client (`prod-code`, < 15 MB binary)          │
+ │   • Local IDEs (Cursor / VS Code / Neovim) via stdio   │
+ │   • AI Agents (Claude / Codex / Agy) via MCP           │
+ │   Local Resource Usage: ~0% CPU, < 10 MB RAM           │
+ └───────────────────────────┬────────────────────────────┘
+                             │
+                             │ 10 GbE TCP / QUIC (~0.05–0.1 ms RTT, 1.2 GB/s)
+                             ▼
+ ┌────────────────────────────────────────────────────────┐
+ │   Remote Compute Node (128+ GB RAM, 32–64 Cores, NVMe) │
+ │                                                        │
+ │   ┌────────────────────────────────────────────────┐   │
+ │   │  Universal Gateway (:9400)                     │   │
+ │   │  • Dual-Surface: LSP Multiplexer + MCP Server  │   │
+ │   │  • Bi-directional Path Translation             │   │
+ │   │  • Multi-Tenant Session Registry               │   │
+ │   └───────────────────────┬────────────────────────┘   │
+ │                           │                            │
+ │         ┌─────────────────┼─────────────────┐          │
+ │         ▼                 ▼                 ▼          │
+ │   ┌───────────┐     ┌───────────┐     ┌───────────┐    │
+ │   │Rust Engine│     │ Go Engine │     │ Python/TS │    │
+ │   │• RA Salsa │     │• gopls    │     │• Managed  │    │
+ │   │  in RAM   │     │  pool     │     │  workers  │    │
+ │   │• Direct   │     │• Shared   │     │• Scaled   │    │
+ │   │  Edits    │     │  GOCACHE  │     │  workers  │    │
+ │   └───────────┘     └───────────┘     └───────────┘    │
+ └────────────────────────────────────────────────────────┘
 ```
-┌────────────────────────────────────────────────────────┐
-│  Developer Laptop / Agent Fleet (MacBook / Worker Pods)│
-│  • Ultra-lightweight `prod-code` client (< 15 MB)      │
-│  • Local IDEs (Cursor, VS Code, Neovim) via stdio LSP  │
-│  • Autonomous Agents (Claude, Codex, Agy) via MCP      │
-│  Resource Usage: 0% CPU, < 10 MB RAM, completely cool  │
-└───────────────────────────┬────────────────────────────┘
-                            │ 10 GbE TCP / QUIC (~0.05–0.1 ms latency)
-                            ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  Dedicated Compute Servers (128+ GB RAM, 32–64 Cores, Fast NVMe)      │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │  Universal Remote Gateway (:9400)                                │  │
-│  │  • Dual-Surface: Standard LSP + Native MCP for AI Agents         │  │
-│  │  • Bi-directional Path Translation (/Users/... <-> /srv/...)     │  │
-│  │  • Workspace Auto-Detection (Cargo.toml, go.mod, pyproject.toml) │  │
-│  └──────────────────────────────────┬───────────────────────────────┘  │
-│                                     │                                  │
-│        ┌────────────────────────────┼────────────────────────────┐     │
-│        ▼                            ▼                            ▼     │
-│  ┌──────────────┐             ┌──────────────┐             ┌─────────┐ │
-│  │  Rust Engine │             │  Go Engine   │             │ Python/ │ │
-│  │  • Clean RA  │             │  • Supervised│             │ TS / JS │ │
-│  │ AnalysisHost │             │    gopls pool│             │ Workers │ │
-│  │ • Direct-edit│             │  • Shared    │             │         │ │
-│  │   in memory  │             │   GOCACHE/mod│             │         │ │
-│  └──────────────┘             └──────────────┘             └─────────┘ │
-└────────────────────────────────────────────────────────────────────────┘
-```
 
 ---
 
-## Core Pillars
+## ✨ Key Capabilities
 
-### 1. Ultra-Fast 10 GbE Network Transport
-At 10 Gbps with ~0.08 ms round-trip time, network transfers operate at local memory bus and NVMe speeds (~1.1–1.2 GB/s). `prod-code` uses a specialized binary framing protocol with connection pooling, zero-copy forwarding, and optional TLS/mTLS authentication.
+### 1. Ultra-Low Latency 10G Wire Protocol
+Over a 10 GbE local network, network latency drops to **0.05–0.1 ms** with **~1.1–1.2 GB/s throughput** — indistinguishable from local NVMe storage. `prod-code` uses a tuned TCP streaming protocol with `TCP_NODELAY`, binary frame headers, and connection reuse.
 
-### 2. Dual-Surface API: LSP + Native MCP
-* **For Editors (Cursor, VS Code, Neovim)**: Acts as a drop-in Language Server speaking standard JSON-RPC LSP over `stdio` via the thin client.
-* **For AI Coding Agents**: Exposes first-class **Model Context Protocol (MCP)** tools. Agents query symbols directly (`definition`, `references`, `outline`, `diagnostics`) without parsing raw LSP envelopes.
+### 2. Dual-Surface API: LSP for Humans, MCP for Agents
+* **For Editors**: Drops directly into Cursor, VS Code, or Neovim as an ordinary language server speaking JSON-RPC LSP over `stdio`.
+* **For AI Coding Agents**: Exposes clean, structured Model Context Protocol (MCP) endpoints (`code_definition`, `code_references`, `code_outline`, `code_diagnostics`, `code_type_at`). No parsing multi-megabyte JSON-RPC streams in agent loops.
 
 ### 3. Single-Owner Direct-Edit Fast Path
-When an autonomous agent operates in a dedicated Git worktree, unsaved edits are applied directly to the in-memory database inputs without constructing costly structural overlay cones or triggering cascade invalidations for other sessions. This cuts p95 query latency under 15-worker load from **71s to 12s**.
+For ephemeral Git worktrees used by autonomous agents:
+* Bypasses costly overlay crate cones and global database invalidation locks.
+* Unsaved buffer edits write directly into in-memory base Salsa inputs.
+* Benchmarked under 15 concurrent agent sessions: cuts query latency from **71s down to 12s**.
 
-### 4. Transparent Path Translation
-The client works with local filesystem paths (e.g. `/Users/alex09x/Documents/workspace/my-app`). The remote daemon transparently maps them to the server-side workspace storage, returning all symbol locations and diagnostic file URIs translated back into local client paths.
+### 4. Transparent Bi-directional Path Translation
+Your client talks about `/Users/alex09x/Documents/workspace/repo/src/main.rs`.
+The remote daemon maps it to `/srv/prod-code/workspaces/repo/src/main.rs`.
+All response URIs, diagnostics, and symbol definitions are translated back into local client paths seamlessly.
 
-### 5. Multi-Server Clustering & Sharding
-For multi-server homelabs or rack setups, `prod-code` supports consistent workspace hashing:
-* Heavy Rust workspaces with extensive crate graphs are pinned to high-memory nodes (128+ GB).
-* Go and Python workloads are distributed across worker nodes.
-* Procedural macro compilation and evaluation run in an isolated worker pool.
+### 5. Multi-Server Homelab / Cloud Clustering
+Deploy across multiple machines on your 10G network:
+* Consistent workspace hashing pins repositories to dedicated memory nodes.
+* Procedural macro execution offloaded into an isolated worker pool.
 
 ---
 
-## Repository Structure
+## 📦 Workspace Layout
 
 ```text
 prod-code/
-├── Cargo.toml                  # Workspace manifest
+├── Cargo.toml                  # Workspace definition
 ├── README.md                   # Project overview & architecture
-├── ROADMAP.md                  # Detailed phase-by-phase implementation plan
+├── ROADMAP.md                  # 5-phase engineering plan
+├── LICENSE-MIT                 # MIT License
+├── LICENSE-APACHE              # Apache 2.0 License
 ├── crates/
-│   ├── prod-code-protocol/     # Wire framing, transport types, path translation
+│   ├── prod-code-protocol/     # Binary wire framing, handshake & path translation
 │   ├── prod-code-client/       # Ultra-thin CLI bridge (stdio LSP -> 10G TCP)
-│   ├── prod-code-gateway/      # Daemon gateway, session router, LSP/MCP dispatch
-│   ├── prod-code-engine-rust/  # In-memory Rust analysis (ra_ap_ide::AnalysisHost)
+│   ├── prod-code-gateway/      # Daemon gateway, multi-tenant session dispatcher
+│   ├── prod-code-engine-rust/  # In-memory Rust engine (ra_ap_ide::AnalysisHost)
 │   ├── prod-code-engine-go/    # Managed gopls worker pool with shared caches
-│   └── prod-code-mcp/          # Native Model Context Protocol (MCP) server
-└── bench/                      # Multi-session agent-fleet load testing harness
+│   └── prod-code-mcp/          # Model Context Protocol (MCP) server for agents
+└── bench/                      # Agent fleet mass load testing harness
 ```
 
 ---
 
-## Quick Start (Preview)
+## 🚀 Quick Start (Phase 1 Preview)
 
-### Starting the Remote Daemon (on server)
+### Build from Source
 ```bash
-# Start daemon listening on 10G interface
-prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces
+git clone https://github.com/alex09x/prod-code.git
+cd prod-code
+cargo build --release
 ```
 
-### Running the Client (on laptop / agent pod)
+### 1. Launch the Server Daemon (on server)
+```bash
+# Bind to 10G interface
+./target/release/prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces
+```
+
+### 2. Connect from Laptop / Agent Workstation
 ```bash
 # Configure endpoint
 export PROD_CODE_REMOTE=192.168.2.100:9400
 
-# Use as drop-in LSP for your editor
-prod-code lsp
+# Check connectivity
+./target/release/prod-code status
 
-# Or launch as an MCP server for Claude / Codex / Agy
-prod-code mcp
+# Run as drop-in language server in your editor
+./target/release/prod-code lsp
+
+# Or run as an MCP server for AI coding agents
+./target/release/prod-code mcp
 ```
 
 ---
 
-## License
+## 🗺️ Roadmap & Milestones
+
+See [**`ROADMAP.md`**](ROADMAP.md) for the active engineering plan:
+* **Phase 1**: Wire Protocol, 10G TCP Streaming & Path Translation.
+* **Phase 2**: In-Memory Rust Engine Core (`ra_ap_ide::AnalysisHost` + Direct-Edits).
+* **Phase 3**: Polyglot Hub (Managed Go `gopls` pool + Python/TS adapters).
+* **Phase 4**: Dual-Surface Gateway (LSP Multiplexer + Native Agent MCP Server).
+* **Phase 5**: Multi-Node Clustering, Sharding & 50-Worker Fleet Stress Verification.
+
+---
+
+## 📄 License
 
 Dual-licensed under either of:
-* Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+* Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+* MIT license ([`LICENSE-MIT`](LICENSE-MIT))
 
 at your option.
