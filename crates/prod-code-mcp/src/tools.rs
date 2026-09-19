@@ -552,44 +552,72 @@ async fn execute_lsp_query(
         .await
         .unwrap_or_default();
 
-    let stream = TcpStream::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let mut framed = {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let stream = TcpStream::connect(remote)
+                .await
+                .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+            let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
-    // 1a. Transparent pre-flight sync before the handshake: commits since the last sync, dirty
-    // and untracked files and reverts, tracked by the persistent per-worktree watermark. It
-    // runs first so a brand-new workspace directory is populated before engine detection.
-    let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
-    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
-        let sync_req = SyncRequest {
-            client_workspace_root: root_str.clone(),
-            files: plan.files.clone(),
-            clean_others: false,
-            base_workspace_name: Some(workspace_name.clone()),
-        };
-        framed.send(WireMessage::SyncRequest(sync_req)).await?;
-        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-            crate::sync::commit_workspace_sync(workspace_root, plan);
+            // 1a. Transparent pre-flight sync before the handshake: commits since the last sync, dirty
+            // and untracked files and reverts, tracked by the persistent per-worktree watermark. It
+            // runs first so a brand-new workspace directory is populated before engine detection.
+            let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
+            if let Some(plan) = sync_plan.as_ref().filter(|plan| plan.files.is_empty()) {
+                // Nothing to send; still record the watermark so revert tracking has a baseline.
+                crate::sync::commit_workspace_sync(workspace_root, plan);
+            }
+            if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
+                let sync_req = SyncRequest {
+                    client_workspace_root: root_str.clone(),
+                    files: plan.files.clone(),
+                    clean_others: false,
+                    base_workspace_name: Some(workspace_name.clone()),
+                };
+                framed.send(WireMessage::SyncRequest(sync_req)).await?;
+                if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+                    crate::sync::commit_workspace_sync(workspace_root, plan);
+                }
+            }
+
+            // 1. Handshake
+            framed
+                .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    client_name: "prod-code-mcp".to_string(),
+                    client_pid: std::process::id(),
+                    auth_token: None,
+                    client_workspace_root: root_str.clone(),
+                    preferred_engine: None,
+                    base_workspace_name: Some(workspace_name.clone()),
+                }))
+                .await?;
+
+            let handshake = match framed.next().await {
+                Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+                other => anyhow::bail!("Unexpected handshake response: {:?}", other),
+            };
+
+            // Self-heal: the gateway keyed this workspace on an empty or reset directory (its
+            // detected engine does not match our manifest) while our watermark still claims
+            // everything was sent. Forget the watermark, push the full tree and reconnect;
+            // the gateway reloads a workspace whose engine kind changed.
+            if attempt == 1
+                && let Some(expected) = crate::sync::expected_engine(workspace_root)
+                && handshake.detected_engine != expected
+            {
+                crate::sync::clear_sync_cache(workspace_root);
+                let _ = framed
+                    .send(WireMessage::Disconnect {
+                        reason: "engine mismatch; resyncing workspace".to_string(),
+                    })
+                    .await;
+                continue;
+            }
+            break framed;
         }
-    }
-
-    // 1. Handshake
-    framed
-        .send(WireMessage::HandshakeRequest(HandshakeRequest {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: "prod-code-mcp".to_string(),
-            client_pid: std::process::id(),
-            auth_token: None,
-            client_workspace_root: root_str.clone(),
-            preferred_engine: None,
-            base_workspace_name: Some(workspace_name.clone()),
-        }))
-        .await?;
-
-    let _ = match framed.next().await {
-        Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-        other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
 
     // 2. LSP Initialize

@@ -44,6 +44,18 @@ pub struct WorkspaceIdentity {
     pub base: Option<String>,
 }
 
+/// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
+/// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
+pub fn expected_engine(root: &Path) -> Option<&'static str> {
+    if root.join("Cargo.toml").exists() {
+        Some("rust")
+    } else if root.join("go.mod").exists() || root.join("go.work").exists() {
+        Some("go")
+    } else {
+        None
+    }
+}
+
 /// Derives the server workspace identity of `dir`.
 pub fn workspace_identity(dir: &Path) -> WorkspaceIdentity {
     let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -1037,6 +1049,69 @@ mod tests {
     }
 
     #[test]
+    fn test_first_sync_includes_modified_tracked_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub fn a() -> u8 { 1 }").unwrap();
+        std::fs::write(root.join("src/b.rs"), "pub fn b() -> u8 { 1 }").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "initial"][..]] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        // Modified before any sync ever happened: must be sent with its modified content.
+        std::fs::write(
+            root.join("src/a.rs"),
+            "pub fn a(divergent_marker: i64) -> u8 { 1 }",
+        )
+        .unwrap();
+        let first = prepare_workspace_sync(root, None).unwrap();
+        let mut names: Vec<&str> = first
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["src/a.rs", "src/b.rs"], "{first:?}");
+        let a = first
+            .files
+            .iter()
+            .find(|f| f.relative_path == "src/a.rs")
+            .unwrap();
+        assert!(
+            std::str::from_utf8(a.content.as_deref().unwrap())
+                .unwrap()
+                .contains("divergent_marker")
+        );
+        clear_sync_cache(root);
+    }
+
+    #[test]
     fn test_reverted_dirty_file_is_resent_clean() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
@@ -1096,6 +1171,16 @@ mod tests {
         commit_workspace_sync(root, &reverted);
         assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
         clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_expected_engine_follows_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(expected_engine(temp.path()), None);
+        std::fs::write(temp.path().join("go.mod"), "module x\n").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("go"));
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("rust"));
     }
 
     #[test]

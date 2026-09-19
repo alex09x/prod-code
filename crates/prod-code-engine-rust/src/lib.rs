@@ -837,6 +837,27 @@ impl PathTranslator {
     }
 
     #[test]
+    fn test_update_base_adds_module_file_missing_at_load() {
+        let (temp, lib_path) = create_test_fixture();
+        // The crate declares a module whose file does not exist yet when the engine loads.
+        let mut lib = std::fs::read_to_string(&lib_path).unwrap();
+        lib.push_str("\nmod late_module;\n");
+        std::fs::write(&lib_path, lib).unwrap();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+
+        let late = temp.path().join("src/late_module.rs");
+        std::fs::write(&late, "pub fn late_fn() -> u8 {{ 3 }}\n").unwrap();
+        engine
+            .update_base(&late, Some("pub fn late_fn() -> u8 {{ 3 }}\n".to_string()))
+            .unwrap();
+        let hover = engine.hover(&late, 1, 8).unwrap();
+        assert!(
+            hover.as_deref().is_some_and(|h| h.contains("late_fn")),
+            "{hover:?}"
+        );
+    }
+
+    #[test]
     fn test_update_base_respects_open_buffers() {
         let (temp, lib_path) = create_test_fixture();
         let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
