@@ -757,9 +757,8 @@ async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
 async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let start = std::time::Instant::now();
-    prod_code_mcp::sync::clear_sync_cache(&cwd);
-    let deltas = prod_code_mcp::scan_workspace_files(&cwd, subpath.as_deref())?;
-    let file_count = deltas.len();
+    let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&cwd, subpath.as_deref())?;
+    let file_count = sync_plan.files.len();
 
     let stream = TcpStream::connect(remote)
         .await
@@ -768,7 +767,7 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
 
     let req = prod_code_protocol::SyncRequest {
         client_workspace_root: cwd.to_string_lossy().to_string(),
-        files: deltas,
+        files: sync_plan.files.clone(),
         clean_others: false,
         base_workspace_name: detect_workspace_name(&cwd),
     };
@@ -778,6 +777,7 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     if let Some(msg_res) = framed.next().await {
         match msg_res? {
             WireMessage::SyncResponse(resp) => {
+                prod_code_mcp::sync::commit_workspace_sync(&cwd, &sync_plan);
                 let total_ms = start.elapsed().as_millis();
                 let kb = (resp.bytes_transferred as f64) / 1024.0;
                 println!(

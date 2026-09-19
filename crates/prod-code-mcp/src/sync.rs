@@ -3,8 +3,9 @@
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB per source file limit
 const MAX_JSON_CONFIG_SIZE: u64 = 256 * 1024; // 256 KiB for .json configs (reject datasets)
@@ -14,28 +15,29 @@ pub struct SyncFileEntry {
     pub mtime_sec: u64,
     pub mtime_nsec: u32,
     pub size: u64,
+    #[serde(default)]
+    pub hash: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncCache {
+    #[serde(default)]
+    pub base_commit_sha: Option<String>,
+    #[serde(default)]
+    pub last_sync_timestamp_ms: u64,
+    #[serde(default)]
     pub files: HashMap<String, SyncFileEntry>,
 }
 
 fn cache_file_path(root: &Path) -> PathBuf {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    root.hash(&mut hasher);
-    let hash = hasher.finish();
-
-    let folder_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("ws");
-    let sanitized: String = folder_name
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '_' })
-        .collect();
-
-    let cache_dir = std::env::temp_dir().join("prod_code_sync_cache");
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let worktree_id = stable_hash(canonical_root.to_string_lossy().as_bytes());
+    let cache_dir = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".local/share/prod_code/sync"))
+        .unwrap_or_else(|| std::env::temp_dir().join("prod_code_sync_cache"));
     let _ = std::fs::create_dir_all(&cache_dir);
-    cache_dir.join(format!("{sanitized}_{hash:016x}.json"))
+    cache_dir.join(format!("{worktree_id:016x}.json"))
 }
 
 pub fn load_sync_cache(root: &Path) -> SyncCache {
@@ -51,13 +53,232 @@ pub fn load_sync_cache(root: &Path) -> SyncCache {
 pub fn save_sync_cache(root: &Path, cache: &SyncCache) {
     let path = cache_file_path(root);
     if let Ok(data) = serde_json::to_vec(cache) {
-        let _ = std::fs::write(path, data);
+        let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+        if std::fs::write(&temporary, data).is_ok() {
+            let _ = std::fs::rename(temporary, path);
+        }
     }
 }
 
 pub fn clear_sync_cache(root: &Path) {
     let path = cache_file_path(root);
     let _ = std::fs::remove_file(path);
+}
+
+/// A prepared incremental sync. The state is committed only after the remote accepts the files.
+#[derive(Debug)]
+pub struct SyncPlan {
+    pub files: Vec<FileDelta>,
+    state: SyncCache,
+}
+
+/// Build a sync plan from the last acknowledged git base plus the current working tree.
+///
+/// The first plan for a worktree includes tracked source/manifest files. Later plans use both
+/// `git diff <base>` and `git status --porcelain -uall`, then verify candidates against the
+/// persisted mtime/size/hash watermark before reading them.
+pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<SyncPlan> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut state = load_sync_cache(&canonical_root);
+    let current_base = git_head(&canonical_root)?;
+    let changes = changed_paths(&canonical_root, state.base_commit_sha.as_deref())?;
+    let filter = SyncPathFilter::new(&canonical_root, subpath)?;
+    let mut files = Vec::new();
+
+    for (relative_path, deleted) in changes {
+        if !filter.includes(&relative_path) || !is_relevant_code_or_manifest_file(&relative_path) {
+            continue;
+        }
+
+        if deleted {
+            files.push(FileDelta {
+                relative_path: relative_path.clone(),
+                content: None,
+                is_executable: false,
+            });
+            state.files.remove(&relative_path);
+            continue;
+        }
+
+        let full_path = canonical_root.join(&relative_path);
+        let Ok(metadata) = full_path.metadata() else {
+            continue;
+        };
+        if !metadata.is_file()
+            || metadata.len() > MAX_FILE_SIZE
+            || (relative_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
+        {
+            continue;
+        }
+
+        let content = std::fs::read(&full_path)?;
+        let entry = sync_file_entry(&metadata, &content);
+        if state.files.get(&relative_path) == Some(&entry) {
+            continue;
+        }
+
+        #[cfg(unix)]
+        let is_executable = {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let is_executable = false;
+
+        files.push(FileDelta {
+            relative_path: relative_path.clone(),
+            content: Some(content),
+            is_executable,
+        });
+        state.files.insert(relative_path, entry);
+    }
+
+    // A partial sync cannot advance the workspace-wide base: changes outside the selected path
+    // still need to be included by the next full sync.
+    if subpath.is_none() {
+        state.base_commit_sha = Some(current_base);
+    }
+    Ok(SyncPlan { files, state })
+}
+
+/// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
+pub fn commit_workspace_sync(root: &Path, plan: &SyncPlan) {
+    let mut state = plan.state.clone();
+    state.last_sync_timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    save_sync_cache(root, &state);
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+fn sync_file_entry(metadata: &std::fs::Metadata, content: &[u8]) -> SyncFileEntry {
+    let modified = metadata.modified().unwrap_or(UNIX_EPOCH);
+    let duration = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
+    SyncFileEntry {
+        mtime_sec: duration.as_secs(),
+        mtime_nsec: duration.subsec_nanos(),
+        size: metadata.len(),
+        hash: stable_hash(content),
+    }
+}
+
+fn git_head(root: &Path) -> Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "HEAD"])
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("git rev-parse HEAD non-zero exit");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn changed_paths(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, bool>> {
+    let mut paths = BTreeMap::new();
+    match base {
+        Some(base) if !base.is_empty() => {
+            let output = git_output(root, ["diff", "--name-status", "-z", base])?;
+            parse_name_status(&output, &mut paths);
+        }
+        _ => {
+            let output = git_output(root, ["ls-files", "-z"])?;
+            for path in output
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+            {
+                paths.insert(String::from_utf8_lossy(path).to_string(), false);
+            }
+        }
+    }
+
+    let output = git_output(root, ["status", "--porcelain=v1", "-z", "-uall"])?;
+    parse_porcelain_status(&output, &mut paths);
+    Ok(paths)
+}
+
+fn git_output<const N: usize>(root: &Path, args: [&str; N]) -> Result<Vec<u8>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        anyhow::bail!("git command non-zero exit");
+    }
+    Ok(output.stdout)
+}
+
+fn parse_name_status(output: &[u8], paths: &mut BTreeMap<String, bool>) {
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(status) = fields.next() {
+        let status = String::from_utf8_lossy(status);
+        let Some(path) = fields.next() else { break };
+        if status.starts_with('R') || status.starts_with('C') {
+            let Some(new_path) = fields.next() else { break };
+            paths.insert(String::from_utf8_lossy(path).to_string(), true);
+            paths.insert(String::from_utf8_lossy(new_path).to_string(), false);
+        } else {
+            paths.insert(
+                String::from_utf8_lossy(path).to_string(),
+                status.starts_with('D'),
+            );
+        }
+    }
+}
+
+fn parse_porcelain_status(output: &[u8], paths: &mut BTreeMap<String, bool>) {
+    let mut fields = output
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty());
+    while let Some(entry) = fields.next() {
+        if entry.len() < 4 {
+            continue;
+        }
+        let status = &entry[..2];
+        let path = String::from_utf8_lossy(&entry[3..]).to_string();
+        if status.contains(&b'R') || status.contains(&b'C') {
+            let Some(old_path) = fields.next() else { break };
+            paths.insert(String::from_utf8_lossy(old_path).to_string(), true);
+        }
+        paths.insert(path, status.contains(&b'D'));
+    }
+}
+
+struct SyncPathFilter {
+    relative: Option<PathBuf>,
+}
+
+impl SyncPathFilter {
+    fn new(root: &Path, subpath: Option<&Path>) -> Result<Self> {
+        let relative = match subpath {
+            Some(path) => {
+                let path = if path.is_absolute() {
+                    path.to_path_buf()
+                } else {
+                    root.join(path)
+                };
+                let path = std::fs::canonicalize(&path).unwrap_or(path);
+                Some(path.strip_prefix(root)?.to_path_buf())
+            }
+            None => None,
+        };
+        Ok(Self { relative })
+    }
+
+    fn includes(&self, relative_path: &str) -> bool {
+        self.relative.as_ref().is_none_or(|filter| {
+            Path::new(relative_path) == filter || Path::new(relative_path).starts_with(filter)
+        })
+    }
 }
 
 /// Returns true if the relative path represents a code or configuration file relevant to language servers.
@@ -328,25 +549,6 @@ fn collect_git_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
                     continue;
                 }
 
-                let mtime = metadata
-                    .modified()
-                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                let dur = mtime
-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default();
-                let mtime_sec = dur.as_secs();
-                let mtime_nsec = dur.subsec_nanos();
-
-                if let Some(entry) = cache.files.get(rel_path) {
-                    if entry.mtime_sec == mtime_sec
-                        && entry.mtime_nsec == mtime_nsec
-                        && entry.size == size
-                    {
-                        // File was already synced and has not changed
-                        continue;
-                    }
-                }
-
                 #[cfg(unix)]
                 let is_executable = {
                     use std::os::unix::fs::PermissionsExt;
@@ -356,19 +558,17 @@ fn collect_git_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
                 let is_executable = false;
 
                 if let Ok(content) = std::fs::read(&full_path) {
+                    let entry = sync_file_entry(&metadata, &content);
+                    if cache.files.get(rel_path) == Some(&entry) {
+                        // File was already synced and has not changed.
+                        continue;
+                    }
                     deltas.push(FileDelta {
                         relative_path: rel_path.to_string(),
                         content: Some(content),
                         is_executable,
                     });
-                    cache.files.insert(
-                        rel_path.to_string(),
-                        SyncFileEntry {
-                            mtime_sec,
-                            mtime_nsec,
-                            size,
-                        },
-                    );
+                    cache.files.insert(rel_path.to_string(), entry);
                     cache_modified = true;
                 }
             }
@@ -623,5 +823,137 @@ mod tests {
         let deltas_recheck = collect_dirty_files(root).unwrap();
         assert_eq!(deltas_recheck.len(), 1);
         assert!(deltas_recheck[0].relative_path.contains("lib.rs"));
+    }
+
+    #[test]
+    fn test_workspace_sync_state_uses_base_commit_and_watermarks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            let configured = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(configured.success());
+        }
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 1 }").unwrap();
+        for args in [
+            &["add", "src/lib.rs"][..],
+            &["commit", "-qm", "initial"][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let first = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(first.files.len(), 1);
+        commit_workspace_sync(root, &first);
+        let state = load_sync_cache(root);
+        assert!(state.base_commit_sha.is_some());
+        assert!(state.last_sync_timestamp_ms > 0);
+        assert!(
+            state
+                .files
+                .get("src/lib.rs")
+                .is_some_and(|entry| entry.hash != 0)
+        );
+
+        let unchanged = prepare_workspace_sync(root, None).unwrap();
+        assert!(unchanged.files.is_empty());
+
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 2 }").unwrap();
+        for args in [
+            &["add", "src/lib.rs"][..],
+            &["commit", "-qm", "changed"][..],
+        ] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let changed = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(changed.files.len(), 1);
+        assert_eq!(changed.files[0].relative_path, "src/lib.rs");
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_partial_sync_does_not_advance_workspace_base() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            let configured = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(configured.success());
+        }
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub const A: u8 = 1;").unwrap();
+        std::fs::write(root.join("src/b.rs"), "pub const B: u8 = 1;").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "initial"][..]] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let initial = prepare_workspace_sync(root, None).unwrap();
+        commit_workspace_sync(root, &initial);
+        let initial_base = load_sync_cache(root).base_commit_sha;
+
+        std::fs::write(root.join("src/a.rs"), "pub const A: u8 = 2;").unwrap();
+        std::fs::write(root.join("src/b.rs"), "pub const B: u8 = 2;").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "both changed"][..]] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+
+        let partial = prepare_workspace_sync(root, Some(Path::new("src/a.rs"))).unwrap();
+        assert_eq!(partial.files.len(), 1);
+        commit_workspace_sync(root, &partial);
+        assert_eq!(load_sync_cache(root).base_commit_sha, initial_base);
+
+        let remaining = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(remaining.files.len(), 1);
+        assert_eq!(remaining.files[0].relative_path, "src/b.rs");
+        clear_sync_cache(root);
     }
 }
