@@ -9,8 +9,10 @@
   `eslint` / `npm test`, `basedpyright` / `ruff` / `pytest`, with parsed diagnostics. Build and
   tool manifests (`CMakeLists.txt`, `compile_commands.json`, `.clangd`, `requirements*.txt`,
   `pytest.ini`, `tox.ini`, `Pipfile`, Bazel `BUILD`, `project.pbxproj`, ...) are now synced.
-  Swift (Phase 3.7) is wired (`sourcekit-lsp`, `swift build` / `swift test`) and needs a macOS
-  gateway node.
+  Swift (Phase 3.7) runs on a macOS gateway node (`sourcekit-lsp` from Xcode): hover,
+  definition, references, symbols, `swift build` diagnostics and `swift test` results (XCTest
+  and swift-testing parsed). `cpp test` parses ctest output. Diagnostic paths are relative to
+  the checkout instead of the server copy.
 - Engine-aware placement (Phase 5.1): gateway status lists the engines whose language
   server is actually installed on the host; the client places a checkout only on a node that
   serves its engine, re-places a remembered node that no longer fits, and `prod-code cluster`

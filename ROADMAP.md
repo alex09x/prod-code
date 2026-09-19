@@ -85,7 +85,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
   - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
   - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
-- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — engine wired 2026-09-19 (`sourcekit-lsp`, or `xcrun sourcekit-lsp` on macOS; `swift build` / `swift test` for check and test). Needs a macOS node: the Linux gateways do not list `swift`, so the client places Swift checkouts only on a node whose status lists it (see 5.1).
+- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: the Mac Studio (192.168.2.242:9400, launchd unit `com.prod-code.gateway`) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
   - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
   - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
 
