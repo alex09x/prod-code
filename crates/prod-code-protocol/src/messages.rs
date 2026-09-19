@@ -111,9 +111,23 @@ pub struct StatusResponse {
     pub total_queries: u64,
     #[serde(default)]
     pub active_queries: usize,
+    /// 1-minute load average of the host in thousandths (1500 = 1.5), when known.
+    #[serde(default)]
+    pub load_average_millis: Option<u32>,
+    /// Logical CPUs of the host, when known.
+    #[serde(default)]
+    pub cpu_count: Option<usize>,
 }
 
 impl StatusResponse {
+    /// Load per CPU (1-minute load average divided by CPU count); lower is quieter.
+    pub fn load_per_cpu(&self) -> Option<f64> {
+        match (self.load_average_millis, self.cpu_count) {
+            (Some(load), Some(cpus)) if cpus > 0 => Some(load as f64 / 1000.0 / cpus as f64),
+            _ => None,
+        }
+    }
+
     pub fn memory_rss_mb(&self) -> Option<f64> {
         self.memory_rss_bytes
             .map(|b| (b as f64) / (1024.0 * 1024.0))

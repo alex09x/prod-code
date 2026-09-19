@@ -1186,8 +1186,10 @@ async fn run_cluster(nodes: &[SocketAddr], workspace_name: &str) -> Result<()> {
         let started = std::time::Instant::now();
         match prod_code_mcp::cluster::node_status(*node).await {
             Ok(status) => println!(
-                "{node:<22} UP    {:>6.2} ms  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
+                "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
                 started.elapsed().as_secs_f64() * 1000.0,
+                status.load_per_cpu().unwrap_or(0.0),
+                status.cpu_count.unwrap_or(0),
                 status.uptime_seconds / 3600,
                 (status.uptime_seconds % 3600) / 60,
                 status.loaded_workspaces,

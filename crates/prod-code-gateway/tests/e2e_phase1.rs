@@ -68,6 +68,8 @@ async fn handle_test_client(
                     memory_rss_bytes: Some(1024 * 1024 * 50),
                     total_queries: 0,
                     active_queries: 0,
+                    load_average_millis: None,
+                    cpu_count: None,
                 };
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }

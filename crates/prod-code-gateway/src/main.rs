@@ -94,6 +94,8 @@ impl ServerState {
             memory_rss_bytes: memory::get_process_rss_bytes(),
             total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
             active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
+            load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
+            cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
         }
     }
 }
@@ -1844,6 +1846,8 @@ async fn run_session_loop(
                                 memory_rss_bytes: memory::get_process_rss_bytes(),
                                 total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
                                 active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
+                                load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
+                                cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
                             }))
                             .await;
                     }
@@ -1929,25 +1933,33 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Puts `~/.cargo/bin` first on PATH so remote commands and rust-analyzer's `cargo metadata`
-/// use the rustup toolchain the workspaces were built with, not a distro/snap cargo that a
-/// systemd user session may resolve first.
+/// Puts the user's toolchain directories (`~/.cargo/bin`, `~/go/bin`) first on PATH so remote
+/// commands, rust-analyzer's `cargo metadata` and the gopls engine use the toolchains the
+/// workspaces were built with, not a distro/snap binary a systemd user session resolves first.
 fn prefer_rustup_toolchain() {
     let Some(home) = std::env::var_os("HOME") else {
         return;
     };
-    let cargo_bin = PathBuf::from(home).join(".cargo/bin");
-    if !cargo_bin.is_dir() {
+    let home = PathBuf::from(home);
+    let preferred: Vec<PathBuf> = [".cargo/bin", "go/bin"]
+        .iter()
+        .map(|rel| home.join(rel))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    if preferred.is_empty() {
         return;
     }
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths: Vec<PathBuf> = std::env::split_paths(&current).collect();
-    paths.retain(|p| p != &cargo_bin);
-    paths.insert(0, cargo_bin.clone());
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current)
+        .filter(|p| !preferred.contains(p))
+        .collect();
+    for dir in preferred.iter().rev() {
+        paths.insert(0, dir.clone());
+    }
     if let Ok(joined) = std::env::join_paths(paths) {
         // SAFETY: called once at startup before any other thread exists.
         unsafe { std::env::set_var("PATH", joined) };
-        tracing::info!(cargo_bin = %cargo_bin.display(), "rustup toolchain put first on PATH");
+        tracing::info!(dirs = ?preferred, "user toolchain directories put first on PATH");
     }
 }
 

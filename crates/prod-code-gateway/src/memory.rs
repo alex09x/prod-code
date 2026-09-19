@@ -49,6 +49,28 @@ pub fn get_process_rss_mb() -> Option<f64> {
     get_process_rss_bytes().map(|b| (b as f64) / (1024.0 * 1024.0))
 }
 
+/// 1-minute load average from `/proc/loadavg` (Linux) or `sysctl vm.loadavg` (macOS).
+pub fn load_average_1m() -> Option<f64> {
+    if let Ok(text) = std::fs::read_to_string("/proc/loadavg") {
+        return text.split_whitespace().next()?.parse().ok();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("sysctl")
+            .args(["-n", "vm.loadavg"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        return text
+            .split_whitespace()
+            .find(|t| t.parse::<f64>().is_ok())?
+            .parse()
+            .ok();
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

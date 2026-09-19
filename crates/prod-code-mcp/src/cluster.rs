@@ -109,16 +109,27 @@ pub async fn pick_node_with(
         {
             return Ok(remembered);
         }
+        // First placement: prefer the quietest node (load per CPU) among the ones that
+        // answer, keeping rendezvous order as the tie-break and the fallback.
+        let mut candidates = Vec::new();
         for candidate in rendezvous_order(nodes, workspace_name) {
-            if is_alive(candidate).await {
-                if let Some(path) = placement_file {
-                    placement
-                        .workspaces
-                        .insert(workspace_name.to_string(), candidate);
-                    save_placement(path, &placement);
+            match node_status(candidate).await {
+                Ok(status) => candidates.push((candidate, status.load_per_cpu())),
+                Err(_) => {
+                    if is_alive(candidate).await {
+                        candidates.push((candidate, None));
+                    }
                 }
-                return Ok(candidate);
             }
+        }
+        if let Some(chosen) = choose_quietest(&candidates) {
+            if let Some(path) = placement_file {
+                placement
+                    .workspaces
+                    .insert(workspace_name.to_string(), chosen);
+                save_placement(path, &placement);
+            }
+            return Ok(chosen);
         }
         return Err(anyhow!(
             "no gateway reachable among {}",
@@ -130,6 +141,19 @@ pub async fn pick_node_with(
         ));
     };
     Ok(*only)
+}
+
+/// Among alive candidates in rendezvous order with their load per CPU, the quietest one;
+/// nodes without a load figure rank after those with one, and ties keep rendezvous order.
+pub fn choose_quietest(candidates: &[(SocketAddr, Option<f64>)]) -> Option<SocketAddr> {
+    candidates
+        .iter()
+        .enumerate()
+        .min_by(|(ia, (_, la)), (ib, (_, lb))| {
+            let key = |load: &Option<f64>| load.map(|l| (l * 1000.0) as i64).unwrap_or(i64::MAX);
+            key(la).cmp(&key(lb)).then(ia.cmp(ib))
+        })
+        .map(|(_, (addr, _))| *addr)
 }
 
 /// The remembered placement of `workspace_name`, if any.
@@ -187,6 +211,20 @@ mod tests {
             .map(|i| rendezvous_order(&nodes, &format!("repo-{i}"))[0])
             .collect();
         assert_eq!(homes.len(), 3, "64 workspaces should land on all 3 nodes");
+    }
+
+    #[test]
+    fn quietest_prefers_low_load_then_rendezvous_order() {
+        let a: SocketAddr = "10.0.0.1:9400".parse().unwrap();
+        let b: SocketAddr = "10.0.0.2:9400".parse().unwrap();
+        let c: SocketAddr = "10.0.0.3:9400".parse().unwrap();
+        assert_eq!(
+            choose_quietest(&[(a, Some(0.8)), (b, Some(0.1)), (c, None)]),
+            Some(b)
+        );
+        assert_eq!(choose_quietest(&[(a, None), (b, None)]), Some(a));
+        assert_eq!(choose_quietest(&[(a, Some(0.2)), (b, Some(0.2))]), Some(a));
+        assert_eq!(choose_quietest(&[]), None);
     }
 
     #[tokio::test]
