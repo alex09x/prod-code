@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Multi-gateway placement (Phase 5.1, client side): `--remote` / `PROD_CODE_REMOTE` take a
+  comma-separated node list; a checkout is placed by rendezvous hashing, remembered locally,
+  and fails over to the next alive node. `prod-code cluster` shows node status and placement.
+
 - Code actions (Phase 7.1): `prod-code assists <file> <line> <col> [--to LINE:COL]` lists the
   rust-analyzer assists at a position or selection, `prod-code assist … <id> [--subtype N]`
   applies one; MCP tools `code_assists` / `code_assist`. Inline, extract function/variable/

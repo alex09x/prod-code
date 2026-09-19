@@ -119,7 +119,7 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers) with dynamic load balancing, repository affinity, and zero-configuration service discovery.
 
-- [ ] **5.1. Cluster Gateway & L4/L7 Dispatcher**
+- [~] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19: `--remote a:9400,b:9400`, rendezvous hashing of the workspace identity, remembered placement, failover to the next alive node, `prod-code cluster`; second node rama (192.168.2.190) deployed. Server-side `Redirect` and least-loaded dispatch still open.
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
   - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
   - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.
