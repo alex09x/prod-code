@@ -15,7 +15,12 @@ pub enum WireMessage {
     SyncResponse(SyncResponse),
     Ping,
     Pong,
-    Disconnect { reason: String },
+    Disconnect {
+        reason: String,
+    },
+    /// Client manifest of its complete relevant file set; answered by `SyncProbeResponse`.
+    SyncProbeRequest(SyncProbeRequest),
+    SyncProbeResponse(SyncProbeResponse),
 }
 
 /// Supported code intelligence engine kinds.
@@ -136,4 +141,43 @@ pub struct SyncResponse {
     pub bytes_transferred: usize,
     pub duration_ms: u64,
     pub server_workspace_root: String,
+}
+
+/// FNV-1a hash of file content, shared by client manifests and gateway probes.
+pub fn content_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+    })
+}
+
+/// Size and content hash of one client file, for a manifest probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileStamp {
+    pub relative_path: String,
+    pub size: u64,
+    pub hash: u64,
+}
+
+/// The client's complete manifest of relevant files, sent on first contact with a workspace
+/// before any content. The gateway seeds a missing workspace directory from `seed_from`
+/// (the origin repository's workspace, for a worktree), deletes server files that are not in
+/// the manifest, and answers with the paths it still needs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncProbeRequest {
+    pub client_workspace_root: String,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
+    #[serde(default)]
+    pub seed_from: Option<String>,
+    pub files: Vec<FileStamp>,
+}
+
+/// Outcome of a manifest probe: what was seeded and deleted, and which files the client must
+/// still send with a `SyncRequest`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncProbeResponse {
+    pub server_workspace_root: String,
+    pub seeded: bool,
+    pub files_deleted: usize,
+    pub missing: Vec<String>,
 }

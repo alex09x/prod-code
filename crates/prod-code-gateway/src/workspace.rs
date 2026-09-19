@@ -4,7 +4,8 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Unique identifier for a shared workspace based on its canonical root.
@@ -17,6 +18,8 @@ pub struct SharedWorkspace {
     pub root: PathBuf,
     pub engine: String,
     pub active_sessions: AtomicUsize,
+    /// Unix seconds of the last session registration or retirement, for idle eviction.
+    pub last_used: AtomicU64,
     pub direct_edit_eligible: AtomicBool,
     pub rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
     pub go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
@@ -38,6 +41,7 @@ impl SharedWorkspace {
             root,
             engine,
             active_sessions: AtomicUsize::new(0),
+            last_used: AtomicU64::new(unix_now()),
             direct_edit_eligible: AtomicBool::new(true),
             rust_engine,
             go_engine,
@@ -45,6 +49,19 @@ impl SharedWorkspace {
             backend,
         }
     }
+}
+
+impl SharedWorkspace {
+    pub fn touch(&self) {
+        self.last_used.store(unix_now(), Ordering::Relaxed);
+    }
+}
+
+pub fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// A session's private view over a shared workspace (e.g. an agent's Git worktree).
@@ -79,6 +96,46 @@ impl WorkspaceManager {
             workspaces: RwLock::new(HashMap::new()),
             worktree_owners: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Drops every loaded workspace that has had no session for `idle` (engines and their
+    /// databases are freed once the last reference goes). Returns the evicted roots.
+    pub async fn evict_idle(&self, idle: Duration) -> Vec<PathBuf> {
+        let now = unix_now();
+        let mut guard = self.workspaces.write().await;
+        let stale: Vec<WorkspaceKey> = guard
+            .iter()
+            .filter_map(|(key, state)| match state {
+                LoadState::Ready(ws)
+                    if ws.active_sessions.load(Ordering::Relaxed) == 0
+                        && now.saturating_sub(ws.last_used.load(Ordering::Relaxed))
+                            >= idle.as_secs() =>
+                {
+                    Some(key.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        let mut evicted = Vec::with_capacity(stale.len());
+        for key in stale {
+            guard.remove(&key);
+            evicted.push(key.0);
+        }
+        evicted
+    }
+
+    /// Whether a workspace is currently loaded (or loading) at `workspace_root`.
+    pub async fn is_loaded(&self, workspace_root: &Path) -> bool {
+        self.workspaces
+            .read()
+            .await
+            .contains_key(&WorkspaceKey(workspace_root.to_path_buf()))
+    }
+
+    #[cfg(test)]
+    pub async fn insert_ready_for_test(&self, workspace: Arc<SharedWorkspace>) {
+        let mut guard = self.workspaces.write().await;
+        guard.insert(workspace.key.clone(), LoadState::Ready(workspace));
     }
 
     /// The already loaded workspace at `workspace_root`, if any.
@@ -314,6 +371,7 @@ impl WorkspaceManager {
         worktree_root: PathBuf,
         workspace: Arc<SharedWorkspace>,
     ) -> SessionView {
+        workspace.touch();
         let mut owners = self.worktree_owners.lock().await;
         let count = owners.entry(worktree_root.clone()).or_insert(0);
         *count += 1;
@@ -329,6 +387,7 @@ impl WorkspaceManager {
 
     /// Release a session's view on disconnect.
     pub async fn unregister_session_view(&self, view: &SessionView) {
+        view.workspace.touch();
         view.workspace
             .active_sessions
             .fetch_sub(1, Ordering::Relaxed);
@@ -439,14 +498,75 @@ pub fn resolve_server_workspace(
     client_root: &str,
     explicit_base_name: Option<&str>,
 ) -> PathBuf {
+    let target_dir = server_workspace_path(storage_root, client_root, explicit_base_name);
+    let _ = std::fs::create_dir_all(&target_dir);
+    target_dir
+}
+
+/// The server workspace directory for a client, without creating it.
+pub fn server_workspace_path(
+    storage_root: &Path,
+    client_root: &str,
+    explicit_base_name: Option<&str>,
+) -> PathBuf {
     let candidate_name = match explicit_base_name {
         Some(name) if !name.trim().is_empty() => sanitize_identifier(name.trim()),
         _ => extract_workspace_identifier(client_root),
     };
+    storage_root.join(candidate_name)
+}
 
-    let target_dir = storage_root.join(&candidate_name);
-    let _ = std::fs::create_dir_all(&target_dir);
-    target_dir
+/// Marker file whose mtime records the last handshake on a workspace directory.
+pub const LAST_USED_MARKER: &str = ".prod-code-last-used";
+
+/// Removes `<repo>--wt-*` workspace directories that have not been used for `max_age` and are
+/// not loaded. A client whose worktree reappears simply resyncs. Returns the removed paths.
+pub async fn prune_stale_worktree_dirs(
+    storage_root: &Path,
+    max_age: Duration,
+    manager: &WorkspaceManager,
+) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(storage_root) else {
+        return removed;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !path.is_dir() || !name.contains("--wt-") {
+            continue;
+        }
+        if manager.is_loaded(&path).await {
+            continue;
+        }
+        let stamp = std::fs::metadata(path.join(LAST_USED_MARKER))
+            .or_else(|_| std::fs::metadata(&path))
+            .and_then(|m| m.modified())
+            .ok();
+        let idle = stamp
+            .and_then(|t| now.duration_since(t).ok())
+            .unwrap_or_default();
+        if idle < max_age {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                tracing::info!(workspace = %path.display(), idle_days = idle.as_secs() / 86_400, "🧹 pruned stale worktree workspace");
+                removed.push(path);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, workspace = %path.display(), "failed to prune worktree workspace")
+            }
+        }
+    }
+    removed
+}
+
+/// Records a handshake on the workspace directory for [`prune_stale_worktree_dirs`].
+pub fn touch_last_used(workspace_dir: &Path) {
+    let marker = workspace_dir.join(LAST_USED_MARKER);
+    let _ = std::fs::write(&marker, unix_now().to_string());
 }
 
 #[cfg(test)]
@@ -509,6 +629,82 @@ mod tests {
         manager.unregister_session_view(&view1).await;
         manager.unregister_session_view(&view2).await;
         manager.unregister_session_view(&view3).await;
+    }
+
+    #[tokio::test]
+    async fn test_evict_idle_drops_only_idle_unused_workspaces() {
+        let manager = WorkspaceManager::new();
+        let idle = Arc::new(SharedWorkspace::new(
+            PathBuf::from("/srv/ws/idle"),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        idle.last_used.store(unix_now() - 7200, Ordering::Relaxed);
+        let busy = Arc::new(SharedWorkspace::new(
+            PathBuf::from("/srv/ws/busy"),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        busy.last_used.store(unix_now() - 7200, Ordering::Relaxed);
+        busy.active_sessions.store(1, Ordering::Relaxed);
+        let fresh = Arc::new(SharedWorkspace::new(
+            PathBuf::from("/srv/ws/fresh"),
+            "rust".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        manager.insert_ready_for_test(idle).await;
+        manager.insert_ready_for_test(busy).await;
+        manager.insert_ready_for_test(fresh).await;
+
+        let evicted = manager.evict_idle(Duration::from_secs(3600)).await;
+        assert_eq!(evicted, vec![PathBuf::from("/srv/ws/idle")]);
+        assert_eq!(manager.loaded_count().await, 2);
+        assert!(manager.is_loaded(Path::new("/srv/ws/busy")).await);
+        assert!(!manager.is_loaded(Path::new("/srv/ws/idle")).await);
+    }
+
+    #[tokio::test]
+    async fn test_prune_stale_worktree_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path();
+        let manager = WorkspaceManager::new();
+        let old = storage.join("repo--wt-deadbeef");
+        let recent = storage.join("repo--wt-cafebabe");
+        let main = storage.join("repo");
+        for d in [&old, &recent, &main] {
+            std::fs::create_dir_all(d).unwrap();
+            touch_last_used(d);
+        }
+        let long_ago = SystemTime::now() - Duration::from_secs(30 * 86_400);
+        std::fs::File::options()
+            .write(true)
+            .open(old.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+        // An old main-repository directory is never pruned, only worktree copies.
+        std::fs::File::options()
+            .write(true)
+            .open(main.join(LAST_USED_MARKER))
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        let removed =
+            prune_stale_worktree_dirs(storage, Duration::from_secs(7 * 86_400), &manager).await;
+        assert_eq!(removed, vec![old.clone()]);
+        assert!(!old.exists());
+        assert!(recent.exists());
+        assert!(main.exists());
     }
 
     #[test]

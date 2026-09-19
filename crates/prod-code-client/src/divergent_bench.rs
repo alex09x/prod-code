@@ -35,9 +35,7 @@
 use crate::LatencyStats;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
-};
+use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -787,13 +785,26 @@ pub fn setup(
     })
 }
 
+/// Position of `symbol`'s definition (`fn name(` / `func name(`), falling back to its first
+/// occurrence. A doc comment that mentions the symbol must not win over the declaration.
 fn locate_symbol(content: &str, symbol: &str) -> Result<(u32, u32)> {
+    let mut fallback = None;
     for (idx, line) in content.lines().enumerate() {
-        if let Some(col) = line.find(symbol) {
-            return Ok((idx as u32, col as u32));
+        let mut search_from = 0;
+        while let Some(rel) = line[search_from..].find(symbol) {
+            let col = search_from + rel;
+            let before = line[..col].trim_end();
+            let after = &line[col + symbol.len()..];
+            let is_definition = (before.ends_with("fn") || before.ends_with("func"))
+                && after.starts_with(['(', '<']);
+            if is_definition {
+                return Ok((idx as u32, col as u32));
+            }
+            fallback.get_or_insert((idx as u32, col as u32));
+            search_from = col + symbol.len();
         }
     }
-    bail!("symbol `{symbol}` not found in file content")
+    fallback.ok_or_else(|| anyhow!("symbol `{symbol}` not found in file content"))
 }
 
 fn extract_hover_text(result: &serde_json::Value) -> String {
@@ -855,66 +866,28 @@ pub async fn initial_sync(
     workspace_name: &str,
 ) -> Result<SyncSummary> {
     prod_code_mcp::sync::clear_sync_cache(root);
-    let plan = prod_code_mcp::sync::prepare_workspace_sync(root, None)?;
-    let files = plan.files.len();
+    let identity = prod_code_mcp::sync::WorkspaceIdentity {
+        name: workspace_name.to_string(),
+        base: None,
+    };
     let start = Instant::now();
-
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
-    framed
-        .send(WireMessage::SyncRequest(SyncRequest {
-            client_workspace_root: root.to_string_lossy().to_string(),
-            files: plan.files.clone(),
-            clean_others: false,
-            base_workspace_name: Some(workspace_name.to_string()),
-        }))
-        .await?;
-    let bytes = match timeout(Duration::from_secs(120), framed.next()).await {
-        Ok(Some(Ok(WireMessage::SyncResponse(resp)))) => resp.bytes_transferred as u64,
-        Ok(Some(Ok(other))) => bail!("unexpected sync response: {other:?}"),
-        Ok(Some(Err(e))) => bail!("frame decode error during sync: {e}"),
-        Ok(None) => bail!("remote gateway closed connection during sync"),
-        Err(_) => bail!("timed out waiting for initial sync of {workspace_name}"),
-    };
+    let outcome =
+        prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
     let _ = framed
         .send(WireMessage::Disconnect {
             reason: "divergent-bench initial sync finished".to_string(),
         })
         .await;
-    prod_code_mcp::sync::commit_workspace_sync(root, &plan);
-
     Ok(SyncSummary {
         workspace_name: workspace_name.to_string(),
-        files,
-        bytes,
+        files: outcome.files_updated,
+        bytes: outcome.bytes_transferred as u64,
         duration: start.elapsed(),
     })
-}
-
-/// Waits for the `SyncResponse` of an in-session sync, skipping LSP traffic the gateway may
-/// stream in the meantime (gopls and generic backends emit `window/showMessage` and
-/// `workspace/configuration` notifications on the same socket).
-async fn wait_for_sync_response(
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
-    wait: Duration,
-) -> Result<()> {
-    let deadline = Instant::now() + wait;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            bail!("timed out waiting for pre-flight sync response");
-        }
-        match timeout(remaining, framed.next()).await {
-            Ok(Some(Ok(WireMessage::SyncResponse(_)))) => return Ok(()),
-            Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {}
-            Ok(Some(Ok(other))) => bail!("unexpected pre-flight sync response: {other:?}"),
-            Ok(Some(Err(e))) => bail!("frame decode error during pre-flight sync: {e}"),
-            Ok(None) => bail!("remote gateway closed connection during pre-flight sync"),
-            Err(_) => bail!("timed out waiting for pre-flight sync response"),
-        }
-    }
 }
 
 /// Connects to `remote`, performs the full handshake/sync/initialize/hover/close cycle against
@@ -945,19 +918,11 @@ async fn query_once(
     // Transparent pre-flight sync before the handshake, exactly like a live editor session: a
     // mutated-but-uncommitted file (worktree A), an untracked scratch file (worktree C) or
     // commits since the last sync reach the gateway before engine detection and the query.
-    let plan = prod_code_mcp::sync::prepare_workspace_sync(&wt.root, None)?;
-    if !plan.files.is_empty() {
-        framed
-            .send(WireMessage::SyncRequest(SyncRequest {
-                client_workspace_root: ws_root_str.clone(),
-                files: plan.files.clone(),
-                clean_others: false,
-                base_workspace_name: Some(wt.workspace_name.clone()),
-            }))
-            .await?;
-        wait_for_sync_response(&mut framed, Duration::from_secs(30)).await?;
-        prod_code_mcp::sync::commit_workspace_sync(&wt.root, &plan);
-    }
+    let identity = prod_code_mcp::sync::WorkspaceIdentity {
+        name: wt.workspace_name.clone(),
+        base: None,
+    };
+    prod_code_mcp::sync::push_workspace_sync(&mut framed, &wt.root, &identity, None).await?;
 
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
@@ -1394,6 +1359,16 @@ mod tests {
                 .find("compute_signal")
                 .unwrap() as u32
         );
+    }
+
+    #[test]
+    fn locate_symbol_prefers_definition_over_doc_comment() {
+        let content = "package main\n\n// DivergentUntrackedSymbol is introduced by the benchmark.\nfunc DivergentUntrackedSymbol() string {\n";
+        let (line, col) = locate_symbol(content, "DivergentUntrackedSymbol").unwrap();
+        assert_eq!(line, 3);
+        assert_eq!(col, 5);
+        let rust = "/// compute_signal docs\npub fn compute_signal(input: i64) -> i64 {\n";
+        assert_eq!(locate_symbol(rust, "compute_signal").unwrap(), (1, 7));
     }
 
     #[test]

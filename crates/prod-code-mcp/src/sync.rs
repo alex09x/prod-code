@@ -1,11 +1,16 @@
 //! Workspace file scanner for fast sync over 10G LAN.
 
-use anyhow::Result;
-use prod_code_protocol::FileDelta;
+use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use prod_code_protocol::{
+    FileDelta, FileStamp, ProdCodeCodec, SyncProbeRequest, SyncRequest, WireMessage, content_hash,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
 
 const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB per source file limit
 const MAX_JSON_CONFIG_SIZE: u64 = 256 * 1024; // 256 KiB for .json configs (reject datasets)
@@ -135,6 +140,142 @@ pub fn clear_sync_cache(root: &Path) {
 pub struct SyncPlan {
     pub files: Vec<FileDelta>,
     state: SyncCache,
+    /// True when this is the worktree's first contact (no recorded base): the plan carries the
+    /// complete relevant tree and the gateway should be probed with a manifest first.
+    pub initial: bool,
+}
+
+impl SyncPlan {
+    /// Size/hash stamps of every relevant file this worktree considers synced after the plan.
+    pub fn manifest(&self) -> Vec<FileStamp> {
+        let mut stamps: Vec<FileStamp> = self
+            .state
+            .files
+            .iter()
+            .map(|(path, entry)| FileStamp {
+                relative_path: path.clone(),
+                size: entry.size,
+                hash: entry.hash,
+            })
+            .collect();
+        stamps.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+        stamps
+    }
+
+    /// Keeps only the uploads the gateway asked for (deletions are always kept).
+    pub fn retain_uploads(&mut self, keep: &HashSet<String>) {
+        self.files
+            .retain(|f| f.content.is_none() || keep.contains(&f.relative_path));
+    }
+}
+
+/// What a [`push_workspace_sync`] round did.
+#[derive(Debug, Clone, Default)]
+pub struct SyncOutcome {
+    /// Files the local plan wanted to send before the probe.
+    pub planned: usize,
+    /// Files actually uploaded.
+    pub files_updated: usize,
+    pub files_deleted: usize,
+    pub bytes_transferred: usize,
+    pub probed: bool,
+    /// The gateway seeded the workspace from the origin repository's copy.
+    pub seeded: bool,
+    pub server_workspace_root: String,
+}
+
+async fn wait_for_message<T>(
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    what: &str,
+    pick: impl Fn(WireMessage) -> Option<T>,
+) -> Result<T> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            anyhow::bail!("timed out waiting for {what}");
+        }
+        match tokio::time::timeout(remaining, framed.next()).await {
+            Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {}
+            Ok(Some(Ok(WireMessage::Disconnect { reason }))) => {
+                anyhow::bail!("gateway disconnected while waiting for {what}: {reason}")
+            }
+            Ok(Some(Ok(msg))) => match pick(msg) {
+                Some(value) => return Ok(value),
+                None => anyhow::bail!("unexpected message while waiting for {what}"),
+            },
+            Ok(Some(Err(e))) => anyhow::bail!("frame decode error while waiting for {what}: {e}"),
+            Ok(None) => anyhow::bail!("gateway closed connection while waiting for {what}"),
+            Err(_) => anyhow::bail!("timed out waiting for {what}"),
+        }
+    }
+}
+
+/// Brings the gateway's copy of `root` up to date on an open, not yet handshaken connection.
+///
+/// First contact (no recorded base) sends a manifest probe so the gateway can seed the
+/// workspace from the origin repository's copy and report only the files it still lacks;
+/// later rounds send the watermark delta. The watermark is committed once the gateway has
+/// acknowledged the uploads.
+pub async fn push_workspace_sync(
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    subpath: Option<&Path>,
+) -> Result<SyncOutcome> {
+    let mut plan = prepare_workspace_sync(root, subpath)?;
+    let root_str = root.to_string_lossy().to_string();
+    let mut outcome = SyncOutcome {
+        planned: plan.files.len(),
+        ..SyncOutcome::default()
+    };
+
+    if plan.initial && !plan.files.is_empty() {
+        framed
+            .send(WireMessage::SyncProbeRequest(SyncProbeRequest {
+                client_workspace_root: root_str.clone(),
+                base_workspace_name: Some(identity.name.clone()),
+                seed_from: identity.base.clone(),
+                files: plan.manifest(),
+            }))
+            .await?;
+        let probe = wait_for_message(framed, "sync probe response", |m| match m {
+            WireMessage::SyncProbeResponse(r) => Some(r),
+            _ => None,
+        })
+        .await?;
+        outcome.probed = true;
+        outcome.seeded = probe.seeded;
+        outcome.files_deleted += probe.files_deleted;
+        outcome.server_workspace_root = probe.server_workspace_root;
+        let keep: HashSet<String> = probe.missing.into_iter().collect();
+        plan.retain_uploads(&keep);
+    }
+
+    if !plan.files.is_empty() {
+        let files = std::mem::take(&mut plan.files);
+        framed
+            .send(WireMessage::SyncRequest(SyncRequest {
+                client_workspace_root: root_str,
+                files,
+                clean_others: false,
+                base_workspace_name: Some(identity.name.clone()),
+            }))
+            .await?;
+        let resp = wait_for_message(framed, "sync response", |m| match m {
+            WireMessage::SyncResponse(r) => Some(r),
+            _ => None,
+        })
+        .await
+        .context("workspace sync was not acknowledged")?;
+        outcome.files_updated = resp.files_updated;
+        outcome.files_deleted += resp.files_deleted;
+        outcome.bytes_transferred = resp.bytes_transferred;
+        outcome.server_workspace_root = resp.server_workspace_root;
+    }
+
+    commit_workspace_sync(root, &plan);
+    Ok(outcome)
 }
 
 /// Build a sync plan from the last acknowledged git base plus the current working tree.
@@ -145,6 +286,7 @@ pub struct SyncPlan {
 pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<SyncPlan> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut state = load_sync_cache(&canonical_root);
+    let initial = state.base_commit_sha.is_none() && subpath.is_none();
     let current_base = git_head(&canonical_root)?;
     let (mut changes, current_dirty) =
         changed_paths(&canonical_root, state.base_commit_sha.as_deref())?;
@@ -213,7 +355,11 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
         state.base_commit_sha = Some(current_base);
         state.dirty_paths = current_dirty;
     }
-    Ok(SyncPlan { files, state })
+    Ok(SyncPlan {
+        files,
+        state,
+        initial,
+    })
 }
 
 /// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
@@ -239,7 +385,7 @@ fn sync_file_entry(metadata: &std::fs::Metadata, content: &[u8]) -> SyncFileEntr
         mtime_sec: duration.as_secs(),
         mtime_nsec: duration.subsec_nanos(),
         size: metadata.len(),
-        hash: stable_hash(content),
+        hash: content_hash(content),
     }
 }
 
@@ -1045,6 +1191,63 @@ mod tests {
         let changed = prepare_workspace_sync(root, None).unwrap();
         assert_eq!(changed.files.len(), 1);
         assert_eq!(changed.files[0].relative_path, "src/lib.rs");
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_initial_plan_carries_manifest_and_retains_only_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub fn a() {}").unwrap();
+        std::fs::write(root.join("src/b.rs"), "pub fn b() {}").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "initial"][..]] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let mut plan = prepare_workspace_sync(root, None).unwrap();
+        assert!(plan.initial);
+        let manifest = plan.manifest();
+        assert_eq!(manifest.len(), 2);
+        assert_eq!(manifest[0].relative_path, "src/a.rs");
+        assert_eq!(manifest[0].hash, content_hash(b"pub fn a() {}"));
+        assert_eq!(manifest[0].size, 13);
+
+        let keep: HashSet<String> = ["src/b.rs".to_string()].into_iter().collect();
+        plan.retain_uploads(&keep);
+        assert_eq!(plan.files.len(), 1);
+        assert_eq!(plan.files[0].relative_path, "src/b.rs");
+        commit_workspace_sync(root, &plan);
+
+        // The skipped file counts as synced: the next plan is a pure delta and not initial.
+        let next = prepare_workspace_sync(root, None).unwrap();
+        assert!(!next.initial);
+        assert!(next.files.is_empty());
         clear_sync_cache(root);
     }
 

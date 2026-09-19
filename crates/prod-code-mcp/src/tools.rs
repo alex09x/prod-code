@@ -561,25 +561,13 @@ async fn execute_lsp_query(
                 .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
-            // 1a. Transparent pre-flight sync before the handshake: commits since the last sync, dirty
-            // and untracked files and reverts, tracked by the persistent per-worktree watermark. It
-            // runs first so a brand-new workspace directory is populated before engine detection.
-            let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
-            if let Some(plan) = sync_plan.as_ref().filter(|plan| plan.files.is_empty()) {
-                // Nothing to send; still record the watermark so revert tracking has a baseline.
-                crate::sync::commit_workspace_sync(workspace_root, plan);
-            }
-            if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
-                let sync_req = SyncRequest {
-                    client_workspace_root: root_str.clone(),
-                    files: plan.files.clone(),
-                    clean_others: false,
-                    base_workspace_name: Some(workspace_name.clone()),
-                };
-                framed.send(WireMessage::SyncRequest(sync_req)).await?;
-                if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-                    crate::sync::commit_workspace_sync(workspace_root, plan);
-                }
+            // 1a. Transparent pre-flight sync before the handshake: manifest probe on first contact
+            // (seeded from the origin repository's copy), watermark delta afterwards.
+            let identity = crate::sync::workspace_identity(workspace_root);
+            if let Err(e) =
+                crate::sync::push_workspace_sync(&mut framed, workspace_root, &identity, None).await
+            {
+                tracing::warn!(error = %e, "pre-flight workspace sync failed");
             }
 
             // 1. Handshake

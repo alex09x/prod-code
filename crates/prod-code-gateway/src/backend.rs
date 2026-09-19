@@ -37,6 +37,7 @@ impl BackendWorker {
         );
 
         let mut cmd = Command::new(binary);
+        cmd.kill_on_drop(true);
         cmd.current_dir(workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

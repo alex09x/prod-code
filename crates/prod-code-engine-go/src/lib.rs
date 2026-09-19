@@ -109,6 +109,7 @@ impl GoEngine {
         );
 
         let mut cmd = Command::new(&gopls_bin);
+        cmd.kill_on_drop(true);
         cmd.current_dir(workspace_root)
             .env("GOCACHE", &gocache)
             .env("GOMODCACHE", &gomodcache)

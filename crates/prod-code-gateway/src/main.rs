@@ -11,8 +11,8 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse,
-    SyncRequest, SyncResponse, WireMessage,
+    FileStamp, HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse,
+    SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -48,6 +48,14 @@ pub struct ServerCli {
         default_value = "/srv/prod-code/workspaces"
     )]
     pub storage: PathBuf,
+
+    /// Unload a workspace's engine after this many seconds without a session (0 disables).
+    #[arg(long, env = "PROD_CODE_IDLE_EVICT_SECS", default_value_t = 1800)]
+    pub idle_evict_secs: u64,
+
+    /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
+    #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
+    pub prune_worktree_days: u64,
 }
 
 pub struct ServerState {
@@ -86,6 +94,184 @@ impl ServerState {
             total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
             active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
         }
+    }
+}
+
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usize> {
+    let mut copied = 0;
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str == ".git"
+            || name_str == "target"
+            || name_str == "node_modules"
+            || name_str == workspace::LAST_USED_MARKER
+        {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            copied += copy_tree(&from, &to)?;
+        } else if from.is_file() {
+            std::fs::copy(&from, &to)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == ".git"
+            || name == "target"
+            || name == "node_modules"
+            || name == workspace::LAST_USED_MARKER
+        {
+            continue;
+        }
+        if path.is_dir() {
+            walk_files(root, &path, out);
+        } else if path.is_file()
+            && let Ok(rel) = path.strip_prefix(root)
+        {
+            let rel = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            out.push((rel, path));
+        }
+    }
+}
+
+/// Compares the workspace directory with the client's manifest: deletes files the client does
+/// not have, and returns `(missing, deleted)` where `missing` are manifest paths the server
+/// lacks or holds with different content.
+fn reconcile_manifest(root: &std::path::Path, stamps: &[FileStamp]) -> (Vec<String>, Vec<String>) {
+    let wanted: std::collections::HashMap<&str, &FileStamp> = stamps
+        .iter()
+        .map(|s| (s.relative_path.as_str(), s))
+        .collect();
+    let mut present = Vec::new();
+    walk_files(root, root, &mut present);
+    let mut missing = Vec::new();
+    let mut deleted = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for (rel, path) in &present {
+        match wanted.get(rel.as_str()) {
+            None => {
+                if std::fs::remove_file(path).is_ok() {
+                    deleted.push(rel.clone());
+                }
+            }
+            Some(stamp) => {
+                seen.insert(stamp.relative_path.as_str());
+                let same = std::fs::metadata(path)
+                    .map(|m| m.len() == stamp.size)
+                    .unwrap_or(false)
+                    && std::fs::read(path)
+                        .map(|bytes| content_hash(&bytes) == stamp.hash)
+                        .unwrap_or(false);
+                if !same {
+                    missing.push(rel.clone());
+                }
+            }
+        }
+    }
+    for stamp in stamps {
+        if !seen.contains(stamp.relative_path.as_str()) {
+            missing.push(stamp.relative_path.clone());
+        }
+    }
+    missing.sort();
+    missing.dedup();
+    (missing, deleted)
+}
+
+/// Answers a manifest probe: seeds a fresh workspace from the origin repository's copy,
+/// reconciles it with the client's manifest, and reports what the client must still upload.
+pub async fn apply_sync_probe(
+    storage_root: &std::path::Path,
+    workspace_manager: &WorkspaceManager,
+    req: SyncProbeRequest,
+) -> SyncProbeResponse {
+    let start = Instant::now();
+    let target = workspace::server_workspace_path(
+        storage_root,
+        &req.client_workspace_root,
+        req.base_workspace_name.as_deref(),
+    );
+    let fresh = !target.exists()
+        || std::fs::read_dir(&target)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(true);
+    let mut seeded = false;
+    if fresh && let Some(seed) = req.seed_from.as_deref() {
+        let seed_dir = storage_root.join(workspace::sanitize_identifier(seed.trim()));
+        if seed_dir.is_dir() && seed_dir != target {
+            let (from, to) = (seed_dir.clone(), target.clone());
+            match tokio::task::spawn_blocking(move || copy_tree(&from, &to)).await {
+                Ok(Ok(files)) => {
+                    seeded = true;
+                    tracing::info!(
+                        workspace = %target.display(),
+                        seed = %seed_dir.display(),
+                        files,
+                        "🌱 [SEED] new worktree workspace seeded from origin copy"
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, seed = %seed_dir.display(), "seeding failed")
+                }
+                Err(e) => tracing::warn!(error = %e, "seeding task failed"),
+            }
+        }
+    }
+    let _ = std::fs::create_dir_all(&target);
+
+    let root = target.clone();
+    let stamps = req.files;
+    let manifest_len = stamps.len();
+    let (missing, deleted) =
+        tokio::task::spawn_blocking(move || reconcile_manifest(&root, &stamps))
+            .await
+            .unwrap_or_default();
+
+    if !deleted.is_empty()
+        && let Some(engine_lock) = workspace_manager
+            .get_loaded(&target)
+            .await
+            .and_then(|ws| ws.rust_engine.clone())
+    {
+        let mut engine = engine_lock.lock().await;
+        for rel in &deleted {
+            let _ = engine.update_base(&target.join(rel), None);
+        }
+    }
+
+    tracing::info!(
+        workspace = %target.display(),
+        manifest = manifest_len,
+        missing = missing.len(),
+        deleted = deleted.len(),
+        seeded,
+        duration_ms = %format!("{}ms", start.elapsed().as_millis()),
+        "🔎 [PROBE] manifest reconciled"
+    );
+
+    SyncProbeResponse {
+        server_workspace_root: target.to_string_lossy().to_string(),
+        seeded,
+        files_deleted: deleted.len(),
+        missing,
     }
 }
 
@@ -187,6 +373,11 @@ pub async fn handle_client(
                 let resp = apply_sync(&state.storage_root, &state.workspace_manager, req).await;
                 framed.send(WireMessage::SyncResponse(resp)).await?;
             }
+            WireMessage::SyncProbeRequest(req) => {
+                let resp =
+                    apply_sync_probe(&state.storage_root, &state.workspace_manager, req).await;
+                framed.send(WireMessage::SyncProbeResponse(resp)).await?;
+            }
             WireMessage::Ping => {
                 framed.send(WireMessage::Pong).await?;
             }
@@ -201,6 +392,7 @@ pub async fn handle_client(
                     req.base_workspace_name.as_deref(),
                 );
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
+                workspace::touch_last_used(&server_workspace);
 
                 let engine_kind =
                     detect::resolve_engine(&server_workspace, req.preferred_engine.as_deref());
@@ -1253,6 +1445,12 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(cli.bind).await?;
     tracing::info!("prod-code gateway listening on {}", cli.bind);
 
+    tokio::spawn(janitor(
+        Arc::clone(&state),
+        cli.idle_evict_secs,
+        cli.prune_worktree_days,
+    ));
+
     loop {
         let (socket, addr) = listener.accept().await?;
         let state_clone = Arc::clone(&state);
@@ -1264,9 +1462,106 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Periodically unloads idle engines and prunes stale worktree workspace directories.
+async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_days: u64) {
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+    ticker.tick().await;
+    loop {
+        ticker.tick().await;
+        if idle_evict_secs > 0 {
+            let evicted = state
+                .workspace_manager
+                .evict_idle(std::time::Duration::from_secs(idle_evict_secs))
+                .await;
+            for root in evicted {
+                tracing::info!(workspace = %root.display(), idle_secs = idle_evict_secs, "💤 [EVICT] unloaded idle workspace engine");
+            }
+        }
+        if prune_worktree_days > 0 {
+            workspace::prune_stale_worktree_dirs(
+                &state.storage_root,
+                std::time::Duration::from_secs(prune_worktree_days * 86_400),
+                &state.workspace_manager,
+            )
+            .await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn test_sync_probe_seeds_and_reconciles() {
+        let storage = tempfile::tempdir().unwrap();
+        let origin = storage.path().join("repo");
+        std::fs::create_dir_all(origin.join("src")).unwrap();
+        std::fs::write(origin.join("Cargo.toml"), "[package]\nname = \"repo\"\n").unwrap();
+        std::fs::write(origin.join("src/lib.rs"), "pub fn a() {}").unwrap();
+        std::fs::write(origin.join("src/only_in_origin.rs"), "pub fn gone() {}").unwrap();
+        let manager = WorkspaceManager::new();
+
+        let req = SyncProbeRequest {
+            client_workspace_root: "/tmp/wt".to_string(),
+            base_workspace_name: Some("repo--wt-0001".to_string()),
+            seed_from: Some("repo".to_string()),
+            files: vec![
+                FileStamp {
+                    relative_path: "Cargo.toml".to_string(),
+                    size: 24,
+                    hash: content_hash(b"[package]\nname = \"repo\"\n"),
+                },
+                FileStamp {
+                    relative_path: "src/lib.rs".to_string(),
+                    size: 21,
+                    hash: content_hash(b"pub fn a() -> u8 {}"),
+                },
+                FileStamp {
+                    relative_path: "src/new.rs".to_string(),
+                    size: 3,
+                    hash: content_hash(b"// n"),
+                },
+            ],
+        };
+        let resp = apply_sync_probe(storage.path(), &manager, req).await;
+        assert!(resp.seeded);
+        assert_eq!(resp.files_deleted, 1);
+        assert_eq!(
+            resp.missing,
+            vec!["src/lib.rs".to_string(), "src/new.rs".to_string()]
+        );
+        let wt = storage.path().join("repo--wt-0001");
+        assert!(wt.join("Cargo.toml").exists());
+        assert!(!wt.join("src/only_in_origin.rs").exists());
+        assert!(
+            origin.join("src/only_in_origin.rs").exists(),
+            "origin copy untouched"
+        );
+
+        // A second probe on the now-populated directory does not seed again.
+        let again = apply_sync_probe(
+            storage.path(),
+            &manager,
+            SyncProbeRequest {
+                client_workspace_root: "/tmp/wt".to_string(),
+                base_workspace_name: Some("repo--wt-0001".to_string()),
+                seed_from: Some("repo".to_string()),
+                files: vec![FileStamp {
+                    relative_path: "Cargo.toml".to_string(),
+                    size: 24,
+                    hash: content_hash(b"[package]\nname = \"repo\"\n"),
+                }],
+            },
+        )
+        .await;
+        assert!(!again.seeded);
+        assert!(again.missing.is_empty());
+        assert_eq!(
+            again.files_deleted, 1,
+            "src/lib.rs is not in the manifest any more"
+        );
+    }
 
     #[tokio::test]
     async fn test_server_state_status() {

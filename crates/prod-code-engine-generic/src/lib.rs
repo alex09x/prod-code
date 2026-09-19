@@ -123,6 +123,7 @@ impl GenericLspEngine {
         );
 
         let mut cmd = Command::new(&config.command);
+        cmd.kill_on_drop(true);
         cmd.args(&config.args)
             .current_dir(&work_dir)
             .stdin(Stdio::piped())

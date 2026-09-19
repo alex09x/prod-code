@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
-use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
-};
+use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -247,27 +245,14 @@ async fn execute_lsp_query(
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             // 1. Handshake
-            // 1a. Transparent pre-flight sync before the handshake: everything this worktree has that
-            // the gateway has not seen yet (commits since the last sync, dirty and untracked files,
-            // reverts), tracked by the persistent per-worktree watermark. It runs before the handshake
-            // so a brand-new workspace directory is populated before the gateway detects its engine.
-            let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&ws_root, None).ok();
-            if let Some(plan) = sync_plan.as_ref().filter(|plan| plan.files.is_empty()) {
-                // Nothing to send; still record the watermark so revert tracking has a baseline.
-                prod_code_mcp::sync::commit_workspace_sync(&ws_root, plan);
-            }
-            if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
-                let sync_req = SyncRequest {
-                    client_workspace_root: ws_root_str.clone(),
-                    files: plan.files.clone(),
-                    clean_others: false,
-                    base_workspace_name: base_ws_name.clone(),
-                };
-                framed.send(WireMessage::SyncRequest(sync_req)).await?;
-                if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-                    prod_code_mcp::sync::commit_workspace_sync(&ws_root, plan);
-                    // Dirty sync completed
-                }
+            // 1a. Transparent pre-flight sync before the handshake: manifest probe on first
+            // contact (seeded from the origin repository's copy), watermark delta afterwards.
+            let identity = prod_code_mcp::sync::workspace_identity(&ws_root);
+            if let Err(e) =
+                prod_code_mcp::sync::push_workspace_sync(&mut framed, &ws_root, &identity, None)
+                    .await
+            {
+                tracing::warn!(error = %e, "pre-flight workspace sync failed");
             }
 
             framed
@@ -809,48 +794,47 @@ async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
 async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let start = std::time::Instant::now();
-    let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&cwd, subpath.as_deref())?;
-    let file_count = sync_plan.files.len();
+    let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
-    let req = prod_code_protocol::SyncRequest {
-        client_workspace_root: cwd.to_string_lossy().to_string(),
-        files: sync_plan.files.clone(),
-        clean_others: false,
-        base_workspace_name: detect_workspace_name(&cwd),
-    };
+    let outcome =
+        prod_code_mcp::sync::push_workspace_sync(&mut framed, &cwd, &identity, subpath.as_deref())
+            .await?;
+    let _ = framed
+        .send(WireMessage::Disconnect {
+            reason: "sync finished".to_string(),
+        })
+        .await;
 
-    framed.send(WireMessage::SyncRequest(req)).await?;
-
-    if let Some(msg_res) = framed.next().await {
-        match msg_res? {
-            WireMessage::SyncResponse(resp) => {
-                prod_code_mcp::sync::commit_workspace_sync(&cwd, &sync_plan);
-                let total_ms = start.elapsed().as_millis();
-                let kb = (resp.bytes_transferred as f64) / 1024.0;
-                println!(
-                    "⚡ prod-code Fast-Sync Completed in {}ms (server: {}ms)",
-                    total_ms, resp.duration_ms
-                );
-                println!("────────────────────────────────────────────────────");
-                println!("Local Workspace:   {}", cwd.display());
-                println!("Remote Workspace:  {}", resp.server_workspace_root);
-                println!("Files Scanned:     {}", file_count);
-                println!("Files Updated:     {}", resp.files_updated);
-                println!("Files Deleted:     {}", resp.files_deleted);
-                println!("Data Transferred:  {:.1} KB", kb);
-                println!("Status:            SYNCHRONIZED");
-            }
-            other => anyhow::bail!("Unexpected response from gateway: {:?}", other),
-        }
-    } else {
-        anyhow::bail!("Remote gateway closed connection prematurely without sync response");
+    let total_ms = start.elapsed().as_millis();
+    let kb = (outcome.bytes_transferred as f64) / 1024.0;
+    println!("⚡ prod-code Fast-Sync Completed in {total_ms}ms");
+    println!("────────────────────────────────────────────────────");
+    println!("Local Workspace:   {}", cwd.display());
+    println!("Server Workspace:  {}", identity.name);
+    if !outcome.server_workspace_root.is_empty() {
+        println!("Remote Path:       {}", outcome.server_workspace_root);
     }
-
+    println!("Files Planned:     {}", outcome.planned);
+    if outcome.probed {
+        println!(
+            "Manifest Probe:    {} files already on server{}",
+            outcome.planned.saturating_sub(outcome.files_updated),
+            if outcome.seeded {
+                " (seeded from origin copy)"
+            } else {
+                ""
+            }
+        );
+    }
+    println!("Files Updated:     {}", outcome.files_updated);
+    println!("Files Deleted:     {}", outcome.files_deleted);
+    println!("Data Transferred:  {kb:.1} KB");
+    println!("Status:            SYNCHRONIZED");
     Ok(())
 }
 

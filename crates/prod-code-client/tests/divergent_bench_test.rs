@@ -6,7 +6,9 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, MIN_WORKERS, WorkspaceMode};
-use prod_code_protocol::{HandshakeResponse, ProdCodeCodec, SyncResponse, WireMessage};
+use prod_code_protocol::{
+    HandshakeResponse, ProdCodeCodec, SyncProbeResponse, SyncResponse, WireMessage,
+};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
@@ -49,6 +51,18 @@ async fn handle_connection(stream: TcpStream) {
                     session_id,
                     server_workspace_root: req.client_workspace_root.clone(),
                     detected_engine: "mock".to_string(),
+                });
+                if framed.send(resp).await.is_err() {
+                    break;
+                }
+            }
+            WireMessage::SyncProbeRequest(req) => {
+                // The mock holds nothing: every manifest entry is missing, nothing is seeded.
+                let resp = WireMessage::SyncProbeResponse(SyncProbeResponse {
+                    server_workspace_root: req.client_workspace_root.clone(),
+                    seeded: false,
+                    files_deleted: 0,
+                    missing: req.files.into_iter().map(|f| f.relative_path).collect(),
                 });
                 if framed.send(resp).await.is_err() {
                     break;
