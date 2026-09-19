@@ -13,6 +13,7 @@ use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
 use ra_ap_vfs::{Vfs, VfsPath};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -251,9 +252,190 @@ pub struct RustEngine {
     host: AnalysisHost,
     vfs: Arc<std::sync::RwLock<Vfs>>,
     source_root_config: Arc<SourceRootConfig>,
+    overlays: SessionOverlays,
+}
+
+/// Per-session live buffers layered over the shared base workspace.
+///
+/// Several sessions (agent worktrees) share one Salsa database. Each session's `didOpen` /
+/// `didChange` / dirty-file sync goes into its own overlay instead of the shared base, and a
+/// query first activates its session so the database reflects exactly that session's buffers.
+/// `owner` records whose text currently sits in the database for a path; `base` keeps the text
+/// the database held before the first overlay touched that path (`None` = file absent).
+#[derive(Default)]
+struct SessionOverlays {
+    sessions: HashMap<u64, HashMap<PathBuf, Option<String>>>,
+    owner: HashMap<PathBuf, u64>,
+    base: HashMap<PathBuf, Option<String>>,
 }
 
 impl RustEngine {
+    /// Text the database currently holds for `norm`, or `None` when the file is unknown.
+    fn current_db_text(&self, norm: &Path) -> Option<String> {
+        let file_id = self.file_id_for_path(norm)?;
+        self.host
+            .analysis()
+            .file_text(file_id)
+            .ok()
+            .map(|text| text.to_string())
+    }
+
+    /// Writes `text` for `norm` into the database; `None` empties the file (rust-analyzer's
+    /// representation of a deleted file) without touching the VFS registration.
+    fn apply_text(&mut self, norm: &Path, text: Option<String>) -> Result<()> {
+        match text {
+            Some(text) => self.apply_file_change(norm, text),
+            None => {
+                if let Some(file_id) = self.file_id_for_path(norm) {
+                    let mut change = ChangeWithProcMacros::default();
+                    change.change_file(file_id, None);
+                    self.host.apply_change(change);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn restore_base(&mut self, norm: &Path) -> Result<()> {
+        let base = self.overlays.base.get(norm).cloned().flatten();
+        self.apply_text(norm, base)?;
+        self.overlays.owner.remove(norm);
+        let still_referenced = self
+            .overlays
+            .sessions
+            .values()
+            .any(|files| files.contains_key(norm));
+        if !still_referenced {
+            self.overlays.base.remove(norm);
+        }
+        Ok(())
+    }
+
+    /// Records `text` (or a deletion) as `session`'s private view of `path`. The database is
+    /// updated immediately when nobody else's buffer currently occupies that path.
+    pub fn set_session_overlay(
+        &mut self,
+        session: u64,
+        path: &Path,
+        text: Option<String>,
+    ) -> Result<()> {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        if !self.overlays.base.contains_key(&norm) {
+            let base = self.current_db_text(&norm);
+            self.overlays.base.insert(norm.clone(), base);
+        }
+        self.overlays
+            .sessions
+            .entry(session)
+            .or_default()
+            .insert(norm.clone(), text.clone());
+        match self.overlays.owner.get(&norm) {
+            Some(owner) if *owner != session => Ok(()),
+            _ => {
+                self.apply_text(&norm, text)?;
+                self.overlays.owner.insert(norm, session);
+                Ok(())
+            }
+        }
+    }
+
+    /// Drops `session`'s buffer for `path`, restoring the shared base text if that buffer was
+    /// the one in the database.
+    pub fn clear_session_overlay(&mut self, session: u64, path: &Path) -> Result<()> {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        let removed = self
+            .overlays
+            .sessions
+            .get_mut(&session)
+            .map(|files| files.remove(&norm).is_some())
+            .unwrap_or(false);
+        if !removed {
+            return Ok(());
+        }
+        if self.overlays.owner.get(&norm) == Some(&session) {
+            self.restore_base(&norm)?;
+        } else {
+            let still_referenced = self
+                .overlays
+                .sessions
+                .values()
+                .any(|files| files.contains_key(&norm));
+            if !still_referenced && !self.overlays.owner.contains_key(&norm) {
+                self.overlays.base.remove(&norm);
+            }
+        }
+        if self
+            .overlays
+            .sessions
+            .get(&session)
+            .is_some_and(|files| files.is_empty())
+        {
+            self.overlays.sessions.remove(&session);
+        }
+        Ok(())
+    }
+
+    /// Drops every buffer of `session` (session teardown).
+    pub fn clear_session(&mut self, session: u64) -> Result<()> {
+        let paths: Vec<PathBuf> = self
+            .overlays
+            .sessions
+            .get(&session)
+            .map(|files| files.keys().cloned().collect())
+            .unwrap_or_default();
+        for norm in paths {
+            self.clear_session_overlay(session, &norm)?;
+        }
+        Ok(())
+    }
+
+    /// Makes the database reflect `session`'s view: its own buffers are applied and every other
+    /// session's buffer on a path this session has not opened is replaced by the base text.
+    /// Returns the number of files rewritten. Must run before every query of that session, under
+    /// the same lock as the query, so no other session can switch the view in between.
+    pub fn activate_session(&mut self, session: u64) -> Result<usize> {
+        let mut switched = 0;
+        let mine: HashMap<PathBuf, Option<String>> = self
+            .overlays
+            .sessions
+            .get(&session)
+            .cloned()
+            .unwrap_or_default();
+
+        let foreign: Vec<PathBuf> = self
+            .overlays
+            .owner
+            .iter()
+            .filter(|(norm, owner)| **owner != session && !mine.contains_key(*norm))
+            .map(|(norm, _)| norm.clone())
+            .collect();
+        for norm in foreign {
+            let base = self.overlays.base.get(&norm).cloned().flatten();
+            self.apply_text(&norm, base)?;
+            self.overlays.owner.remove(&norm);
+            switched += 1;
+        }
+
+        for (norm, text) in mine {
+            if self.overlays.owner.get(&norm) == Some(&session) {
+                continue;
+            }
+            self.apply_text(&norm, text)?;
+            self.overlays.owner.insert(norm, session);
+            switched += 1;
+        }
+        Ok(switched)
+    }
+
+    /// Number of buffers `session` currently overlays.
+    pub fn session_overlay_count(&self, session: u64) -> usize {
+        self.overlays
+            .sessions
+            .get(&session)
+            .map(|files| files.len())
+            .unwrap_or(0)
+    }
+
     /// Detect whether a directory contains a Rust workspace manifest (Cargo.toml).
     pub fn is_rust_workspace(path: &Path) -> bool {
         path.join("Cargo.toml").exists()
@@ -302,6 +484,7 @@ impl RustEngine {
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
             source_root_config,
+            overlays: SessionOverlays::default(),
         })
     }
 
@@ -539,6 +722,78 @@ impl PathTranslator {
             .expect("Must query hover on newly added in-memory symbol");
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("IN_MEMORY_SUPER_FAST"));
+    }
+
+    #[test]
+    fn test_session_overlays_do_not_bleed_between_sessions() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let base = std::fs::read_to_string(&lib_path).unwrap();
+        let text_a = format!("{base}pub const ONLY_IN_SESSION_A: u8 = 1;\n");
+        let text_b = format!("{base}pub const ONLY_IN_SESSION_B: u8 = 2;\n");
+
+        engine
+            .set_session_overlay(1, &lib_path, Some(text_a))
+            .unwrap();
+        engine
+            .set_session_overlay(2, &lib_path, Some(text_b))
+            .unwrap();
+
+        let names = |engine: &RustEngine| -> Vec<String> {
+            engine
+                .document_symbols(&lib_path)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+
+        engine.activate_session(1).unwrap();
+        let a = names(&engine);
+        assert!(a.contains(&"ONLY_IN_SESSION_A".to_string()), "{a:?}");
+        assert!(!a.contains(&"ONLY_IN_SESSION_B".to_string()), "{a:?}");
+
+        assert_eq!(engine.activate_session(2).unwrap(), 1);
+        let b = names(&engine);
+        assert!(b.contains(&"ONLY_IN_SESSION_B".to_string()), "{b:?}");
+        assert!(!b.contains(&"ONLY_IN_SESSION_A".to_string()), "{b:?}");
+
+        // A session without its own buffer sees the untouched base.
+        assert_eq!(engine.activate_session(3).unwrap(), 1);
+        let plain = names(&engine);
+        assert!(plain.contains(&"DEFAULT_PORT".to_string()));
+        assert!(!plain.iter().any(|n| n.starts_with("ONLY_IN_SESSION")));
+        assert_eq!(engine.activate_session(3).unwrap(), 0);
+
+        // Closing the buffer returns that session to the base as well.
+        engine.clear_session(1).unwrap();
+        engine.activate_session(1).unwrap();
+        let after_close = names(&engine);
+        assert!(!after_close.contains(&"ONLY_IN_SESSION_A".to_string()));
+        assert_eq!(engine.session_overlay_count(1), 0);
+        assert_eq!(engine.session_overlay_count(2), 1);
+    }
+
+    #[test]
+    fn test_session_overlay_untracked_file_is_private() {
+        let (temp, _lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let scratch = temp.path().join("src/scratch.rs");
+        engine
+            .set_session_overlay(7, &scratch, Some("pub fn scratch_only() {}\n".to_string()))
+            .unwrap();
+
+        engine.activate_session(7).unwrap();
+        let mine = engine.document_symbols(&scratch).unwrap();
+        assert!(mine.iter().any(|s| s.name == "scratch_only"));
+
+        engine.activate_session(8).unwrap();
+        let theirs = engine.document_symbols(&scratch).unwrap_or_default();
+        assert!(theirs.is_empty(), "{theirs:?}");
+
+        engine.activate_session(7).unwrap();
+        let again = engine.document_symbols(&scratch).unwrap();
+        assert!(again.iter().any(|s| s.name == "scratch_only"));
     }
 
     #[test]

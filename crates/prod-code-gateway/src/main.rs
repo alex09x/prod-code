@@ -220,6 +220,13 @@ pub async fn handle_client(
                 // Session loop for streaming LSP and control messages
                 let session_res = run_session_loop(framed, &translator, &session_view).await;
 
+                if let Some(engine_lock) = &session_view.workspace.rust_engine {
+                    let mut engine = engine_lock.lock().await;
+                    if let Err(e) = engine.clear_session(session_id) {
+                        tracing::warn!(error = %e, session_id, "failed to drop session overlays");
+                    }
+                }
+
                 state
                     .workspace_manager
                     .unregister_session_view(&session_view)
@@ -364,10 +371,7 @@ async fn run_session_loop(
                                             );
 
                                             // Acquire cheap snapshot (<1 µs) without holding mutex during query
-                                            let snapshot = {
-                                                let engine = engine_lock.lock().await;
-                                                engine.snapshot()
-                                            };
+                                            let engine_arc = Arc::clone(engine_lock);
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
@@ -376,11 +380,23 @@ async fn run_session_loop(
                                             let session_id = view.session_id;
 
                                             tokio::task::spawn(async move {
-                                                let hover_res = tokio::task::spawn_blocking(move || {
-                                                    snapshot.hover(&fp_clone, line + 1, col + 1).ok().flatten()
-                                                })
-                                                .await
-                                                .unwrap_or(None);
+                                                let hover_res = {
+                                                    // Hold the engine for the whole query: activating the session view and
+                                                    // running the query under one lock keeps other sessions' buffers out and
+                                                    // prevents a concurrent edit from cancelling this snapshot.
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.hover(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                                                            tracing::warn!(error = %e, session = session_id, "query failed");
+                                                            None
+                                                        })
+                                                    })
+                                                    .await
+                                                    .unwrap_or(None)
+                                                };
 
                                                 let duration = query_start.elapsed();
                                                 let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -455,10 +471,7 @@ async fn run_session_loop(
                                                 "🚀 [LSP START]"
                                             );
 
-                                            let snapshot = {
-                                                let engine = engine_lock.lock().await;
-                                                engine.snapshot()
-                                            };
+                                            let engine_arc = Arc::clone(engine_lock);
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
@@ -467,11 +480,23 @@ async fn run_session_loop(
                                             let session_id = view.session_id;
 
                                             tokio::task::spawn(async move {
-                                                let defs = tokio::task::spawn_blocking(move || {
-                                                    snapshot.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_default()
-                                                })
-                                                .await
-                                                .unwrap_or_default();
+                                                let defs = {
+                                                    // Hold the engine for the whole query: activating the session view and
+                                                    // running the query under one lock keeps other sessions' buffers out and
+                                                    // prevents a concurrent edit from cancelling this snapshot.
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                                                            tracing::warn!(error = %e, session = session_id, "query failed");
+                                                            Vec::new()
+                                                        })
+                                                    })
+                                                    .await
+                                                    .unwrap_or_default()
+                                                };
 
                                                 let duration = query_start.elapsed();
                                                 let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -544,10 +569,7 @@ async fn run_session_loop(
                                                 "🚀 [LSP START]"
                                             );
 
-                                            let snapshot = {
-                                                let engine = engine_lock.lock().await;
-                                                engine.snapshot()
-                                            };
+                                            let engine_arc = Arc::clone(engine_lock);
 
                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                             let fp_clone = file_path.clone();
@@ -556,11 +578,23 @@ async fn run_session_loop(
                                             let session_id = view.session_id;
 
                                             tokio::task::spawn(async move {
-                                                let refs = tokio::task::spawn_blocking(move || {
-                                                    snapshot.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_default()
-                                                })
-                                                .await
-                                                .unwrap_or_default();
+                                                let refs = {
+                                                    // Hold the engine for the whole query: activating the session view and
+                                                    // running the query under one lock keeps other sessions' buffers out and
+                                                    // prevents a concurrent edit from cancelling this snapshot.
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                                                            tracing::warn!(error = %e, session = session_id, "query failed");
+                                                            Vec::new()
+                                                        })
+                                                    })
+                                                    .await
+                                                    .unwrap_or_default()
+                                                };
 
                                                 let duration = query_start.elapsed();
                                                 let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -630,10 +664,7 @@ async fn run_session_loop(
                                                  "🚀 [LSP START]"
                                              );
 
-                                             let snapshot = {
-                                                 let engine = engine_lock.lock().await;
-                                                 engine.snapshot()
-                                             };
+                                             let engine_arc = Arc::clone(engine_lock);
 
                                              let req_id = id.clone().unwrap_or(serde_json::json!(1));
                                              let fp_clone = file_path.clone();
@@ -642,11 +673,23 @@ async fn run_session_loop(
                                              let session_id = view.session_id;
 
                                              tokio::task::spawn(async move {
-                                                 let syms = tokio::task::spawn_blocking(move || {
-                                                     snapshot.document_symbols(&fp_clone).unwrap_or_default()
-                                                 })
-                                                 .await
-                                                 .unwrap_or_default();
+                                                 let syms = {
+                                                     // Hold the engine for the whole query: activating the session view and
+                                                     // running the query under one lock keeps other sessions' buffers out and
+                                                     // prevents a concurrent edit from cancelling this snapshot.
+                                                     let mut engine = engine_arc.lock_owned().await;
+                                                     tokio::task::spawn_blocking(move || {
+                                                         if let Err(e) = engine.activate_session(session_id) {
+                                                             tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                         }
+                                                         engine.document_symbols(&fp_clone).unwrap_or_else(|e| {
+                                                             tracing::warn!(error = %e, session = session_id, "query failed");
+                                                             Vec::new()
+                                                         })
+                                                     })
+                                                     .await
+                                                     .unwrap_or_default()
+                                                 };
 
                                                  let duration = query_start.elapsed();
                                                  let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -720,7 +763,9 @@ async fn run_session_loop(
                                                 let text_len = text.len();
                                                 {
                                                     let mut engine = engine_lock.lock().await;
-                                                    let _ = engine.apply_file_change(&file_path, text.to_string());
+                                                    if let Err(e) = engine.set_session_overlay(view.session_id, &file_path, Some(text.to_string())) {
+                                                        tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                                    }
                                                 }
                                                 let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
                                                 tracing::info!(
@@ -728,7 +773,7 @@ async fn run_session_loop(
                                                     file = %file_path.display(),
                                                     bytes = text_len,
                                                     duration_ms = format!("{:.2}ms", ms),
-                                                    "📝 [DIRECT-EDIT] applied didOpen directly into Salsa DB in RAM"
+                                                    "📝 [OVERLAY] didOpen recorded as session buffer in Salsa DB"
                                                 );
                                             }
                                         }
@@ -748,7 +793,9 @@ async fn run_session_loop(
                                                 let text_len = text.len();
                                                 {
                                                     let mut engine = engine_lock.lock().await;
-                                                    let _ = engine.apply_file_change(&file_path, text.to_string());
+                                                    if let Err(e) = engine.set_session_overlay(view.session_id, &file_path, Some(text.to_string())) {
+                                                        tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                                    }
                                                 }
                                                 let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
                                                 tracing::info!(
@@ -756,10 +803,21 @@ async fn run_session_loop(
                                                     file = %file_path.display(),
                                                     bytes = text_len,
                                                     duration_ms = format!("{:.2}ms", ms),
-                                                    "📝 [DIRECT-EDIT] applied didChange directly into Salsa DB in RAM"
+                                                    "📝 [OVERLAY] didChange recorded as session buffer in Salsa DB"
                                                 );
                                             }
                                         }
+                                    }
+                                    Some("textDocument/didClose") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                            let mut engine = engine_lock.lock().await;
+                                            if let Err(e) = engine.clear_session_overlay(view.session_id, &file_path) {
+                                                tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
+                                            }
+                                        }
+                                        continue;
                                     }
                                     _ => {}
                                 }
@@ -1020,6 +1078,26 @@ async fn run_session_loop(
 
                         for delta in &req.files {
                             let target_path = view.workspace.root.join(&delta.relative_path);
+                            if let Some(engine_lock) = &view.workspace.rust_engine {
+                                // A session's dirty/untracked files are that worktree's private
+                                // view: they go into the session overlay, never into the shared
+                                // base on disk that every other worktree session resolves against.
+                                let text = match &delta.content {
+                                    Some(bytes) => match std::str::from_utf8(bytes) {
+                                        Ok(text) => Some(text.to_string()),
+                                        Err(_) => continue,
+                                    },
+                                    None => None,
+                                };
+                                bytes_transferred += delta.content.as_ref().map(|c| c.len()).unwrap_or(0);
+                                let mut engine = engine_lock.lock().await;
+                                match engine.set_session_overlay(view.session_id, &target_path, text) {
+                                    Ok(()) if delta.content.is_some() => files_updated += 1,
+                                    Ok(()) => files_deleted += 1,
+                                    Err(e) => tracing::warn!(error = %e, file = %target_path.display(), "session overlay sync failed"),
+                                }
+                                continue;
+                            }
                             match &delta.content {
                                 Some(content_bytes) => {
                                     if let Some(parent) = target_path.parent() {
@@ -1028,12 +1106,6 @@ async fn run_session_loop(
                                     bytes_transferred += content_bytes.len();
                                     if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
                                         files_updated += 1;
-                                    }
-                                    if let (Some(engine_lock), Ok(text)) =
-                                        (&view.workspace.rust_engine, std::str::from_utf8(content_bytes))
-                                    {
-                                        let mut engine = engine_lock.lock().await;
-                                        let _ = engine.apply_file_change(&target_path, text.to_string());
                                     }
                                 }
                                 None => {
