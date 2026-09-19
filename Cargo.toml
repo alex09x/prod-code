@@ -28,3 +28,30 @@ crossbeam-channel = "0.5"
 lsp-server = "0.7"
 lsp-types = "0.97"
 tempfile = "3.17"
+bytes = "1.10"
+tokio-util = { version = "0.7", features = ["codec"] }
+futures-util = { version = "0.3", features = ["sink"] }
+url = "2.5"
+
+[profile.dev]
+opt-level = 0
+debug = 1
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 0
+
+[profile.test]
+opt-level = 0
+debug = 1
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+
+
+

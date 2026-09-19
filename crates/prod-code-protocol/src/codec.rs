@@ -1,0 +1,117 @@
+//! Binary framing codec for prod-code WireMessage streams.
+
+use crate::messages::WireMessage;
+use bytes::{Buf, BufMut, BytesMut};
+use std::io;
+use tokio_util::codec::{Decoder, Encoder};
+
+/// Maximum allowed wire frame size (64 MiB) to accommodate large ASTs or symbol queries.
+pub const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
+
+/// Length-delimited codec for `WireMessage`.
+///
+/// Format on wire:
+/// `[4-byte big-endian length N] [N bytes UTF-8 JSON encoded WireMessage]`
+#[derive(Debug, Default, Clone)]
+pub struct ProdCodeCodec;
+
+impl ProdCodeCodec {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Decoder for ProdCodeCodec {
+    type Item = WireMessage;
+    type Error = io::Error;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        if src.len() < 4 {
+            return Ok(None);
+        }
+
+        let mut length_bytes = [0u8; 4];
+        length_bytes.copy_from_slice(&src[..4]);
+        let frame_len = u32::from_be_bytes(length_bytes) as usize;
+
+        if frame_len > MAX_FRAME_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Frame size {frame_len} exceeds maximum {MAX_FRAME_SIZE}"),
+            ));
+        }
+
+        if src.len() < 4 + frame_len {
+            // Need more data
+            src.reserve(4 + frame_len - src.len());
+            return Ok(None);
+        }
+
+        // Consume the length header
+        src.advance(4);
+        let frame_data = src.split_to(frame_len);
+
+        let message = serde_json::from_slice::<WireMessage>(&frame_data).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse WireMessage: {e}"),
+            )
+        })?;
+
+        Ok(Some(message))
+    }
+}
+
+impl Encoder<WireMessage> for ProdCodeCodec {
+    type Error = io::Error;
+
+    fn encode(&mut self, item: WireMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let json_bytes = serde_json::to_vec(&item).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to serialize WireMessage: {e}"),
+            )
+        })?;
+
+        let frame_len = json_bytes.len();
+        if frame_len > MAX_FRAME_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Message size {frame_len} exceeds maximum {MAX_FRAME_SIZE}"),
+            ));
+        }
+
+        dst.reserve(4 + frame_len);
+        dst.put_u32(frame_len as u32);
+        dst.put_slice(&json_bytes);
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::messages::HandshakeRequest;
+
+    #[test]
+    fn test_codec_roundtrip() {
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+
+        let original = WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: 1,
+            client_name: "test-client".to_string(),
+            client_pid: 1234,
+            auth_token: None,
+            client_workspace_root: "/home/user/project".to_string(),
+        });
+
+        codec.encode(original.clone(), &mut buf).unwrap();
+        assert!(buf.len() > 4);
+
+        let decoded = codec.decode(&mut buf).unwrap().expect("should decode message");
+        assert_eq!(decoded, original);
+        assert_eq!(buf.len(), 0);
+    }
+}

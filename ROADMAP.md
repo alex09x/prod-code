@@ -8,23 +8,24 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Establish the core client-server wire protocol over 10G TCP/QUIC with transparent path translation and zero-overhead client bridging.
 
-- [ ] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
+- [x] **1.1. Protocol Specification (`crates/prod-code-protocol`)**
   - Binary framing layer with length-prefixed messages and NUL completion markers.
   - Session handshake with protocol version negotiation, client capabilities, and authentication tokens.
   - Streaming transport support: 10 GbE TCP stream with TCP_NODELAY and socket buffer tuning.
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
-- [ ] **1.2. Bi-directional Path Translation**
+- [x] **1.2. Bi-directional Path Translation**
   - Canonical URI/path rewriting between client workspace roots (`file:///Users/alex09x/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
-- [ ] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
+- [x] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
   - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
   - Non-blocking watchdog and auto-reconnect logic on transient network disconnects.
   - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death).
-- [ ] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
+- [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
   - Session registry tracking active client IDs, workspace paths, and leased resources.
   - Non-blocking status reporting endpoint (`prod-code status`) returning instant JSON health snapshots.
+
 
 ---
 

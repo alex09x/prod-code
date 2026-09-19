@@ -15,5 +15,9 @@ prod-code-protocol = { path = "../prod-code-protocol" }
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
+futures-util.workspace = true
+bytes.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
