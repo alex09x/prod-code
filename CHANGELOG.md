@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Sync watermarks are kept per gateway node: a checkout placed on a second node (or moved by
+  failover) is uploaded to it in full instead of receiving an empty delta computed against the
+  first node. An empty delta is still sent, so a node whose workspace copy was pruned answers
+  "fresh" and the client resyncs before the query or `exec` runs. Files rewritten by the client
+  for rename / assists / safe-delete are no longer recorded as synced (the gateway only computed
+  those edits); the next sync uploads them, so hover after rename sees the new code.
+- Third Linux node ram9 (192.168.2.143, Ryzen 9 7950X) joined the cluster with all Linux
+  engines; the Mac Studio (192.168.2.242) is the macOS node for Swift.
+
 - Language engines (Phase 3.4–3.6): C/C++ (`clangd`), TypeScript (native TypeScript 7
   `tsc --lsp`, fallback `typescript-language-server`) and Python (`basedpyright`) workspaces
   get hover, definition, references and document symbols through the gateway; `prod-code
