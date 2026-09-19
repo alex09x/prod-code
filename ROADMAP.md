@@ -57,17 +57,18 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Expand the daemon into a unified multi-language hub by adding supervised Go language analysis and pluggable LSP adapters.
 
-- [ ] **3.1. Automatic Workspace Detection**
+- [x] **3.1. Automatic Workspace Detection**
   - Inspect project roots for language manifests:
     - `Cargo.toml` -> Rust Engine
-    - `go.mod` -> Go Engine
-    - `pyproject.toml` / `requirements.txt` -> Python Engine
-    - `package.json` -> TypeScript / JavaScript Engine
-- [ ] **3.2. Managed Go Engine (`crates/prod-code-engine-go`)**
+    - `go.mod` / `go.work` -> Go Engine
+    - `pyproject.toml` / `requirements.txt` / `setup.py` / `Pipfile` -> Python Engine
+    - `package.json` / `tsconfig.json` -> TypeScript / JavaScript Engine
+  - Typed `EngineKind` enum, preference resolution, and monorepo detection.
+- [x] **3.2. Managed Go Engine (`crates/prod-code-engine-go`)**
   - Supervised `gopls` worker pool running in daemon mode.
   - Shared `GOCACHE` and `GOPATH/pkg/mod` volume on fast NVMe for instant warm symbol resolution across all worktrees.
   - Path mapping translation for Go workspace URIs and build tags.
-- [ ] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
+- [x] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
 

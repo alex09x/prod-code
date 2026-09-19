@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 prod-code-protocol = { path = "../prod-code-protocol" }
 prod-code-engine-rust = { path = "../prod-code-engine-rust" }
+prod-code-engine-go = { path = "../prod-code-engine-go" }
+prod-code-engine-generic = { path = "../prod-code-engine-generic" }
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

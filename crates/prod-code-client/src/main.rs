@@ -106,6 +106,7 @@ async fn execute_lsp_query(
             client_pid: std::process::id(),
             auth_token: None,
             client_workspace_root: cwd_str,
+            preferred_engine: None,
         }))
         .await?;
 
@@ -516,6 +517,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             client_pid: std::process::id(),
             auth_token: None,
             client_workspace_root: cwd_str,
+            preferred_engine: None,
         }))
         .await?;
 

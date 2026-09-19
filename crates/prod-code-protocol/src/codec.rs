@@ -105,6 +105,7 @@ mod tests {
             client_pid: 1234,
             auth_token: None,
             client_workspace_root: "/home/user/project".to_string(),
+            preferred_engine: None,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();

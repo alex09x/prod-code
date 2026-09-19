@@ -1039,6 +1039,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "prod-code-engine-generic"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "prod-code-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "prod-code-engine-go"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "prod-code-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "prod-code-engine-rust"
 version = "0.1.0"
 dependencies = [
@@ -1065,6 +1095,8 @@ dependencies = [
  "clap",
  "futures-util",
  "libc",
+ "prod-code-engine-generic",
+ "prod-code-engine-go",
  "prod-code-engine-rust",
  "prod-code-protocol",
  "serde_json",

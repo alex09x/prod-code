@@ -19,6 +19,8 @@ pub struct SharedWorkspace {
     pub active_sessions: AtomicUsize,
     pub direct_edit_eligible: AtomicBool,
     pub rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
+    pub go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
+    pub generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
     pub backend: Option<Arc<crate::backend::BackendWorker>>,
 }
 
@@ -27,6 +29,8 @@ impl SharedWorkspace {
         root: PathBuf,
         engine: String,
         rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
+        go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
+        generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
         backend: Option<Arc<crate::backend::BackendWorker>>,
     ) -> Self {
         Self {
@@ -36,6 +40,8 @@ impl SharedWorkspace {
             active_sessions: AtomicUsize::new(0),
             direct_edit_eligible: AtomicBool::new(true),
             rust_engine,
+            go_engine,
+            generic_engine,
             backend,
         }
     }
@@ -151,45 +157,113 @@ impl WorkspaceManager {
 
         // Leader performs actual workspace load
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
-        let (rust_engine, backend) = if engine == "rust" {
-            let ws_path = workspace_root.to_path_buf();
-            let loaded_engine = tokio::task::spawn_blocking(move || {
-                prod_code_engine_rust::RustEngine::load(&ws_path)
-            })
-            .await
-            .ok()
-            .and_then(|res| match res {
-                Ok(e) => {
-                    tracing::info!(workspace = ?workspace_root, "In-memory RustEngine (ra_ap_ide) loaded into RAM");
-                    Some(Arc::new(Mutex::new(e)))
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, "Failed to load in-memory RustEngine; falling back to subprocess");
-                    None
-                }
-            });
+        let mut rust_engine = None;
+        let mut go_engine = None;
+        let mut generic_engine = None;
+        let mut backend = None;
 
-            if let Some(re) = loaded_engine {
-                (Some(re), None)
-            } else {
-                let bw = crate::backend::BackendWorker::spawn(workspace_root, engine)
+        match engine {
+            "rust" => {
+                let ws_path = workspace_root.to_path_buf();
+                let loaded_engine = tokio::task::spawn_blocking(move || {
+                    prod_code_engine_rust::RustEngine::load(&ws_path)
+                })
+                .await
+                .ok()
+                .and_then(|res| match res {
+                    Ok(e) => {
+                        tracing::info!(workspace = ?workspace_root, "In-memory RustEngine (ra_ap_ide) loaded into RAM");
+                        Some(Arc::new(Mutex::new(e)))
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, "Failed to load in-memory RustEngine; falling back to subprocess");
+                        None
+                    }
+                });
+
+                if let Some(re) = loaded_engine {
+                    rust_engine = Some(re);
+                } else {
+                    backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                        .await
+                        .ok()
+                        .map(Arc::new);
+                }
+            }
+            "go" => {
+                match prod_code_engine_go::GoEngine::load(
+                    workspace_root,
+                    prod_code_engine_go::GoConfig::default(),
+                )
+                .await
+                {
+                    Ok(ge) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GoEngine (gopls) active");
+                        go_engine = Some(Arc::new(ge));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn GoEngine; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "python" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_python(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Python) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Python LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "typescript" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_typescript(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (TypeScript) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn TypeScript LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            _ => {
+                backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
                     .await
                     .ok()
                     .map(Arc::new);
-                (None, bw)
             }
-        } else {
-            let bw = crate::backend::BackendWorker::spawn(workspace_root, engine)
-                .await
-                .ok()
-                .map(Arc::new);
-            (None, bw)
-        };
+        }
 
         let ws = Arc::new(SharedWorkspace::new(
             workspace_root.to_path_buf(),
             engine.to_string(),
             rust_engine,
+            go_engine,
+            generic_engine,
             backend,
         ));
         ws.active_sessions.fetch_add(1, Ordering::Relaxed);

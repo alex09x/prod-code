@@ -175,6 +175,7 @@ async fn test_full_phase1_e2e_flow() {
                 client_pid: 9999,
                 auth_token: None,
                 client_workspace_root: client_root.to_string(),
+                preferred_engine: None,
             }))
             .await
             .unwrap();

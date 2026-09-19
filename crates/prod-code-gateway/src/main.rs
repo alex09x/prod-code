@@ -1,8 +1,11 @@
 //! prod-code gateway daemon: multi-tenant server for remote code intelligence over 10 GbE LAN.
 
 pub mod backend;
+pub mod detect;
 pub mod memory;
 pub mod workspace;
+
+pub use detect::detect_engine;
 
 use anyhow::Result;
 use clap::Parser;
@@ -11,7 +14,7 @@ use prod_code_protocol::{
     HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse, WireMessage,
 };
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -85,20 +88,6 @@ impl ServerState {
     }
 }
 
-pub fn detect_engine(root: &Path) -> &'static str {
-    if root.join("Cargo.toml").exists() {
-        "rust"
-    } else if root.join("go.mod").exists() {
-        "go"
-    } else if root.join("pyproject.toml").exists() || root.join("requirements.txt").exists() {
-        "python"
-    } else if root.join("package.json").exists() {
-        "typescript"
-    } else {
-        "generic"
-    }
-}
-
 pub async fn handle_client(
     socket: TcpStream,
     addr: SocketAddr,
@@ -149,7 +138,9 @@ pub async fn handle_client(
                 }
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
 
-                let engine = detect_engine(&server_workspace);
+                let engine_kind =
+                    detect::resolve_engine(&server_workspace, req.preferred_engine.as_deref());
+                let engine = engine_kind.as_str();
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
 
@@ -215,7 +206,13 @@ async fn run_session_loop(
     translator: &PathTranslator,
     view: &SessionView,
 ) -> Result<()> {
-    let mut backend_rx = view.workspace.backend.as_ref().map(|b| b.subscribe());
+    let mut backend_rx = if let Some(ref go) = view.workspace.go_engine {
+        Some(go.subscribe())
+    } else if let Some(ref generic_eng) = view.workspace.generic_engine {
+        Some(generic_eng.subscribe())
+    } else {
+        view.workspace.backend.as_ref().map(|b| b.subscribe())
+    };
 
     loop {
         tokio::select! {
@@ -240,7 +237,11 @@ async fn run_session_loop(
                             // 1. Intercept "initialize": reply immediately with cached server capabilities
                             if method == Some("initialize") {
                                 let req_id = id.unwrap_or(serde_json::json!(1));
-                                let caps = if let Some(ref backend) = view.workspace.backend {
+                                let caps = if let Some(ref go) = view.workspace.go_engine {
+                                    go.capabilities.read().await.clone()
+                                } else if let Some(ref generic_eng) = view.workspace.generic_engine {
+                                    generic_eng.capabilities.read().await.clone()
+                                } else if let Some(ref backend) = view.workspace.backend {
                                     backend.capabilities.read().await.clone()
                                 } else {
                                     None
@@ -727,6 +728,162 @@ async fn run_session_loop(
                                 }
                             }
 
+                            // 5b. Supervised GoEngine fast path
+                            if let Some(ref go) = view.workspace.go_engine {
+                                match method {
+                                    Some("textDocument/didOpen") => {
+                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                        let text = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("text")).and_then(|t| t.as_str()).unwrap_or("");
+                                        let _ = go.did_open(uri, text).await;
+                                        continue;
+                                    }
+                                    Some("textDocument/didChange") => {
+                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                        let version = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("version")).and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+                                        let text = val.get("params").and_then(|p| p.get("contentChanges")).and_then(|c| c.as_array()).and_then(|a| a.first()).and_then(|ch| ch.get("text")).and_then(|t| t.as_str()).unwrap_or("");
+                                        let _ = go.did_change(uri, text, version).await;
+                                        continue;
+                                    }
+                                    Some("textDocument/didClose") => {
+                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                        let _ = go.did_close(uri).await;
+                                        continue;
+                                    }
+                                    Some(m) if id.is_some() => {
+                                        let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                        let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                        let start = Instant::now();
+
+                                        tracing::info!(
+                                            req = req_id_log,
+                                            session = view.session_id,
+                                            method = m,
+                                            in_flight,
+                                            "🚀 [LSP START] dispatching to GoEngine"
+                                        );
+
+                                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                        let resp_res = go.send_request(m, params).await;
+                                        let duration = start.elapsed();
+                                        let duration_ms = duration.as_secs_f64() * 1000.0;
+                                        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+
+                                        if duration_ms > 200.0 {
+                                            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            tracing::warn!(
+                                                req = req_id_log,
+                                                session = view.session_id,
+                                                method = m,
+                                                duration_ms = %format!("{:.2}ms", duration_ms),
+                                                in_flight = remaining,
+                                                "⚠️ [LSP SLOW >200ms] GoEngine query exceeded threshold"
+                                            );
+                                        } else {
+                                            tracing::info!(
+                                                req = req_id_log,
+                                                session = view.session_id,
+                                                method = m,
+                                                duration_ms = %format!("{:.2}ms", duration_ms),
+                                                in_flight = remaining,
+                                                "✅ [LSP DONE] GoEngine query complete"
+                                            );
+                                        }
+
+                                        match resp_res {
+                                            Ok(mut resp) => {
+                                                if let Some(ref req_id) = id {
+                                                    resp["id"] = req_id.clone();
+                                                }
+                                                let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                                framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                            }
+                                            Err(err) => {
+                                                let err_resp = serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id,
+                                                    "error": { "code": -32603, "message": err.to_string() }
+                                                });
+                                                framed.send(WireMessage::LspPayload(err_resp.to_string())).await?;
+                                            }
+                                        }
+                                        continue;
+                                    }
+                                    Some(m) => {
+                                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                        let _ = go.send_notification(m, params).await;
+                                        continue;
+                                    }
+                                    None => {}
+                                }
+                            }
+
+                            // 5c. Supervised GenericLspEngine fast path
+                            if let Some(ref generic_eng) = view.workspace.generic_engine {
+                                if let (Some(m), Some(req_id)) = (method, &id) {
+                                    let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                    let start = Instant::now();
+
+                                    tracing::info!(
+                                        req = req_id_log,
+                                        session = view.session_id,
+                                        method = m,
+                                        in_flight,
+                                        "🚀 [LSP START] dispatching to GenericLspEngine"
+                                    );
+
+                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                    let resp_res = generic_eng.send_request(m, params).await;
+                                    let duration = start.elapsed();
+                                    let duration_ms = duration.as_secs_f64() * 1000.0;
+                                    let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+
+                                    if duration_ms > 200.0 {
+                                        SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                        tracing::warn!(
+                                            req = req_id_log,
+                                            session = view.session_id,
+                                            method = m,
+                                            duration_ms = %format!("{:.2}ms", duration_ms),
+                                            in_flight = remaining,
+                                            "⚠️ [LSP SLOW >200ms] GenericLspEngine query exceeded threshold"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            req = req_id_log,
+                                            session = view.session_id,
+                                            method = m,
+                                            duration_ms = %format!("{:.2}ms", duration_ms),
+                                            in_flight = remaining,
+                                            "✅ [LSP DONE] GenericLspEngine query complete"
+                                        );
+                                    }
+
+                                    match resp_res {
+                                        Ok(mut resp) => {
+                                            resp["id"] = req_id.clone();
+                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                        }
+                                        Err(err) => {
+                                            let err_resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "error": { "code": -32603, "message": err.to_string() }
+                                            });
+                                            framed.send(WireMessage::LspPayload(err_resp.to_string())).await?;
+                                        }
+                                    }
+                                    continue;
+                                } else if let Some(m) = method {
+                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                    let _ = generic_eng.send_notification(m, params).await;
+                                    continue;
+                                }
+                            }
+
                             // 6. Handle "textDocument/didClose"
                             if let (Some("textDocument/didClose"), Some(backend)) = (method, &view.workspace.backend) {
                                 let uri = val.get("params")
@@ -738,7 +895,13 @@ async fn run_session_loop(
                             }
 
                             // 7. If no backend is attached and client expects a response, return empty result
-                            if let (Some(req_id), None) = (id, &view.workspace.backend) {
+                            if let (Some(req_id), None, None, None, None) = (
+                                id,
+                                &view.workspace.backend,
+                                &view.workspace.rust_engine,
+                                &view.workspace.go_engine,
+                                &view.workspace.generic_engine,
+                            ) {
                                 let empty_resp = serde_json::json!({
                                     "jsonrpc": "2.0",
                                     "id": req_id,
@@ -789,7 +952,7 @@ async fn run_session_loop(
                 if let Some(ref mut rx) = backend_rx {
                     rx.recv().await
                 } else {
-                    futures_util::future::pending().await
+                    futures_util::future::pending::<Result<String, tokio::sync::broadcast::error::RecvError>>().await
                 }
             } => {
                 match backend_msg {
@@ -867,22 +1030,24 @@ mod tests {
 
     #[test]
     fn test_engine_detection() {
+        use prod_code_protocol::messages::EngineKind;
+
         let temp = tempfile::tempdir().unwrap();
-        assert_eq!(detect_engine(temp.path()), "generic");
+        assert_eq!(detect_engine(temp.path()), EngineKind::Generic);
 
         std::fs::write(temp.path().join("Cargo.toml"), "").unwrap();
-        assert_eq!(detect_engine(temp.path()), "rust");
+        assert_eq!(detect_engine(temp.path()), EngineKind::Rust);
 
         let go_temp = tempfile::tempdir().unwrap();
         std::fs::write(go_temp.path().join("go.mod"), "").unwrap();
-        assert_eq!(detect_engine(go_temp.path()), "go");
+        assert_eq!(detect_engine(go_temp.path()), EngineKind::Go);
 
         let py_temp = tempfile::tempdir().unwrap();
         std::fs::write(py_temp.path().join("pyproject.toml"), "").unwrap();
-        assert_eq!(detect_engine(py_temp.path()), "python");
+        assert_eq!(detect_engine(py_temp.path()), EngineKind::Python);
 
         let ts_temp = tempfile::tempdir().unwrap();
         std::fs::write(ts_temp.path().join("package.json"), "").unwrap();
-        assert_eq!(detect_engine(ts_temp.path()), "typescript");
+        assert_eq!(detect_engine(ts_temp.path()), EngineKind::TypeScript);
     }
 }

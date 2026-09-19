@@ -5,6 +5,8 @@ members = [
     "crates/prod-code-client",
     "crates/prod-code-gateway",
     "crates/prod-code-engine-rust",
+    "crates/prod-code-engine-go",
+    "crates/prod-code-engine-generic",
 ]
 
 [workspace.package]

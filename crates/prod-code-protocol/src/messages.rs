@@ -16,6 +16,48 @@ pub enum WireMessage {
     Disconnect { reason: String },
 }
 
+/// Supported code intelligence engine kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EngineKind {
+    Rust,
+    Go,
+    Python,
+    TypeScript,
+    Generic,
+}
+
+impl EngineKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EngineKind::Rust => "rust",
+            EngineKind::Go => "go",
+            EngineKind::Python => "python",
+            EngineKind::TypeScript => "typescript",
+            EngineKind::Generic => "generic",
+        }
+    }
+}
+
+impl std::fmt::Display for EngineKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl std::str::FromStr for EngineKind {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "rust" => EngineKind::Rust,
+            "go" | "golang" => EngineKind::Go,
+            "python" | "py" => EngineKind::Python,
+            "typescript" | "ts" | "javascript" | "js" => EngineKind::TypeScript,
+            _ => EngineKind::Generic,
+        })
+    }
+}
+
 /// Initial handshake request sent by client upon connection.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeRequest {
@@ -24,6 +66,8 @@ pub struct HandshakeRequest {
     pub client_pid: u32,
     pub auth_token: Option<String>,
     pub client_workspace_root: String,
+    #[serde(default)]
+    pub preferred_engine: Option<String>,
 }
 
 /// Handshake acknowledgement sent by remote gateway.
