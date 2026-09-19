@@ -2,12 +2,14 @@
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{
-    AnalysisHost, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
-    GotoDefinitionConfig, HoverConfig, HoverDocFormat, RaFixtureConfig, RenameConfig, TextRange,
-    TextSize,
+    AnalysisHost, AssistConfig, AssistResolveStrategy, DiagnosticsConfig, FileId, FilePosition,
+    FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig, HoverConfig,
+    HoverDocFormat, RaFixtureConfig, RenameConfig, SingleResolve, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
+use ra_ap_ide_db::SnippetCap;
 use ra_ap_ide_db::source_change::FileSystemEdit;
+use ra_ap_ide_db::source_change::SourceChange;
 use ra_ap_load_cargo::{
     LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
 };
@@ -80,6 +82,17 @@ impl RefactorOutcome {
     pub fn total_edits(&self) -> usize {
         self.files.iter().map(|f| f.edits).sum()
     }
+}
+
+/// A code action rust-analyzer offers at a position or selection (inline, extract, generate,
+/// rewrite, quick fix). `id` plus `subtype` identify it for [`RustEngineSnapshot::apply_assist`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssistInfo {
+    pub id: String,
+    pub kind: String,
+    pub subtype: Option<usize>,
+    pub label: String,
+    pub group: Option<String>,
 }
 
 /// Canonical path normalizer for VFS keys: removes `.` and `..` lexically, resolves absolute path.
@@ -193,7 +206,11 @@ impl RustEngineSnapshot {
             Ok(change) => change,
             Err(refused) => return Ok(Err(refused.to_string())),
         };
+        Ok(Ok(self.outcome_from_change(&change)?))
+    }
 
+    /// Turns a rust-analyzer `SourceChange` into rewritten files, created files and moves.
+    fn outcome_from_change(&self, change: &SourceChange) -> Result<RefactorOutcome> {
         let mut outcome = RefactorOutcome::default();
         for (edited_id, (edit, _snippet)) in change.source_file_edits.iter() {
             let Some(edited_path) = self.path_for_file_id(*edited_id) else {
@@ -242,7 +259,135 @@ impl RustEngineSnapshot {
             }
         }
         outcome.files.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(Ok(outcome))
+        Ok(outcome)
+    }
+
+    fn assist_configs() -> (AssistConfig, DiagnosticsConfig) {
+        let diagnostics = DiagnosticsConfig::test_sample();
+        let assists = AssistConfig {
+            snippet_cap: SnippetCap::new(false),
+            allowed: None,
+            insert_use: diagnostics.insert_use,
+            prefer_no_std: false,
+            prefer_prelude: true,
+            prefer_absolute: false,
+            assist_emit_must_use: false,
+            term_search_fuel: 1800,
+            term_search_borrowck: true,
+            code_action_grouping: true,
+            expr_fill_default: Default::default(),
+            prefer_self_ty: false,
+            show_rename_conflicts: true,
+        };
+        (assists, diagnostics)
+    }
+
+    fn file_range(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        end: Option<(u32, u32)>,
+    ) -> Result<FileRange> {
+        let file_id = self
+            .file_id_for_path(path)
+            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let text = self.analysis.file_text(file_id)?;
+        let start = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let end = end
+            .and_then(|(l, c)| line_col_to_offset(&text, l, c))
+            .unwrap_or(start);
+        let (start, end) = if end < start {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        Ok(FileRange {
+            file_id,
+            range: TextRange::new(start, end),
+        })
+    }
+
+    /// Code actions available at a 1-based position or selection (`end` inclusive-exclusive).
+    pub fn list_assists(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        end: Option<(u32, u32)>,
+    ) -> Result<Vec<AssistInfo>> {
+        let frange = self.file_range(path, line, col, end)?;
+        let (assist_config, diagnostics_config) = Self::assist_configs();
+        let assists = self.analysis.assists_with_fixes(
+            &assist_config,
+            &diagnostics_config,
+            AssistResolveStrategy::None,
+            frange,
+        )?;
+        Ok(assists
+            .into_iter()
+            .map(|a| AssistInfo {
+                id: a.id.0.to_string(),
+                kind: format!("{:?}", a.id.1),
+                subtype: a.id.2,
+                label: a.label.to_string(),
+                group: a.group.map(|g| g.0),
+            })
+            .collect())
+    }
+
+    /// Computes the edit of one assist (by `id` and optional `subtype`) at the position.
+    /// `Ok(Err(reason))` when no such assist is offered there.
+    pub fn apply_assist(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        end: Option<(u32, u32)>,
+        id: &str,
+        subtype: Option<usize>,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        let frange = self.file_range(path, line, col, end)?;
+        let (assist_config, diagnostics_config) = Self::assist_configs();
+        let offered = self.analysis.assists_with_fixes(
+            &assist_config,
+            &diagnostics_config,
+            AssistResolveStrategy::None,
+            frange,
+        )?;
+        let Some(target) = offered
+            .iter()
+            .find(|a| a.id.0 == id && (subtype.is_none() || a.id.2 == subtype))
+        else {
+            let available: Vec<String> = offered.iter().map(|a| a.id.0.to_string()).collect();
+            return Ok(Err(format!(
+                "assist `{id}` is not offered here; available: {}",
+                if available.is_empty() {
+                    "none".to_string()
+                } else {
+                    available.join(", ")
+                }
+            )));
+        };
+        let resolve = AssistResolveStrategy::Single(SingleResolve {
+            assist_id: target.id.0.to_string(),
+            assist_kind: target.id.1,
+            assist_subtype: target.id.2,
+        });
+        let resolved = self.analysis.assists_with_fixes(
+            &assist_config,
+            &diagnostics_config,
+            resolve,
+            frange,
+        )?;
+        let Some(change) = resolved
+            .into_iter()
+            .find(|a| a.id.0 == id && (subtype.is_none() || a.id.2 == subtype))
+            .and_then(|a| a.source_change)
+        else {
+            return Ok(Err(format!("assist `{id}` produced no edit")));
+        };
+        Ok(Ok(self.outcome_from_change(&change)?))
     }
 
     fn anchored_path(&self, anchored: &AnchoredPathBuf) -> Option<PathBuf> {
@@ -684,6 +829,31 @@ impl RustEngine {
         self.snapshot().find_all_refs(path, line, col)
     }
 
+    /// Code actions at a position; see [`RustEngineSnapshot::list_assists`].
+    pub fn list_assists(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        end: Option<(u32, u32)>,
+    ) -> Result<Vec<AssistInfo>> {
+        self.snapshot().list_assists(path, line, col, end)
+    }
+
+    /// Apply one code action; see [`RustEngineSnapshot::apply_assist`].
+    pub fn apply_assist(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        end: Option<(u32, u32)>,
+        id: &str,
+        subtype: Option<usize>,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        self.snapshot()
+            .apply_assist(path, line, col, end, id, subtype)
+    }
+
     /// Rename the symbol at (line, col); see [`RustEngineSnapshot::rename`].
     pub fn rename(
         &self,
@@ -1003,6 +1173,45 @@ impl PathTranslator {
 
         // Not a symbol: rust-analyzer refuses instead of the engine erroring.
         let refused = engine.rename(&lib_path, 1, 1, "x").expect("rename query");
+        assert!(refused.is_err());
+    }
+
+    #[test]
+    fn test_assists_list_and_apply_inline_variable() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        let lib = temp.path().join("src/lib.rs");
+        std::fs::write(
+            &lib,
+            "pub fn f() -> i32 {\n    let value = 40 + 2;\n    value\n}\n",
+        )
+        .unwrap();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+
+        // Cursor on `value` in `let value = ...` (line 2, col 9).
+        let offered = engine.list_assists(&lib, 2, 9, None).unwrap();
+        assert!(
+            offered.iter().any(|a| a.id == "inline_local_variable"),
+            "{offered:?}"
+        );
+
+        let outcome = engine
+            .apply_assist(&lib, 2, 9, None, "inline_local_variable", None)
+            .unwrap()
+            .expect("assist applies");
+        assert_eq!(outcome.files.len(), 1);
+        let text = &outcome.files[0].new_text;
+        assert!(!text.contains("let value"), "{text}");
+        assert!(text.contains("40 + 2"), "{text}");
+
+        let refused = engine
+            .apply_assist(&lib, 2, 9, None, "no_such_assist", None)
+            .unwrap();
         assert!(refused.is_err());
     }
 
