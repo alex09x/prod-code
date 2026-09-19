@@ -743,11 +743,17 @@ pub async fn execute_tool(
                     let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
                     let kind_str = match kind {
-                        5 => "Class/Struct",
+                        2 => "Module",
+                        5 => "Class",
                         6 => "Method",
-                        11 => "Function",
-                        12 => "Variable",
-                        13 => "Constant",
+                        8 => "Field",
+                        9 => "Constructor",
+                        10 => "Enum",
+                        11 => "Interface",
+                        12 => "Function",
+                        13 => "Variable",
+                        14 => "Constant",
+                        22 => "EnumMember",
                         23 => "Struct",
                         _ => "Symbol",
                     };
@@ -1086,7 +1092,7 @@ async fn execute_lsp_query(
         "params": {
             "textDocument": {
                 "uri": file_uri.clone(),
-                "languageId": "rust",
+                "languageId": crate::lang::language_id_for_path(file_path),
                 "version": 1,
                 "text": file_content
             }

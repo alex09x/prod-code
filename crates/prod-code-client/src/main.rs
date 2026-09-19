@@ -328,26 +328,6 @@ pub fn find_workspace_root(file_path: &Path) -> Option<PathBuf> {
     candidate_manifest
 }
 
-fn detect_language_id(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
-        "rs" => "rust",
-        "go" => "go",
-        "py" | "pyi" => "python",
-        "ts" | "mts" | "cts" => "typescript",
-        "tsx" => "typescriptreact",
-        "js" | "mjs" | "cjs" => "javascript",
-        "jsx" => "javascriptreact",
-        "c" | "h" => "c",
-        "cpp" | "hpp" | "cc" | "cxx" | "hh" => "cpp",
-        "proto" => "proto",
-        "toml" => "toml",
-        "json" => "json",
-        "yaml" | "yml" => "yaml",
-        "sh" | "bash" | "zsh" => "shellscript",
-        _ => "plaintext",
-    }
-}
-
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
 /// Phase timings for one query, printed to stderr when `PROD_CODE_TIMING=1`.
 struct QueryTiming {
@@ -555,7 +535,7 @@ async fn execute_lsp_query(
         .await?;
 
     // 4. LSP didOpen notification
-    let language_id = detect_language_id(&abs_path);
+    let language_id = prod_code_mcp::lang::language_id_for_path(&abs_path);
     let did_open = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "textDocument/didOpen",
@@ -808,11 +788,17 @@ async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
             let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
             let kind_str = match kind {
-                5 => "Class/Struct",
+                2 => "Module",
+                5 => "Class",
                 6 => "Method",
-                11 => "Function",
-                12 => "Variable",
-                13 => "Constant",
+                8 => "Field",
+                9 => "Constructor",
+                10 => "Enum",
+                11 => "Interface",
+                12 => "Function",
+                13 => "Variable",
+                14 => "Constant",
+                22 => "EnumMember",
                 23 => "Struct",
                 _ => "Symbol",
             };

@@ -200,7 +200,11 @@ pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> R
         ("python", VerifyKind::Check) => vec!["basedpyright", "--outputjson"],
         ("python", VerifyKind::Lint) => vec!["ruff", "check", ".", "--output-format", "concise"],
         ("python", VerifyKind::Test) => vec!["python3", "-m", "pytest", "-q", "-rf"],
-        ("cpp", VerifyKind::Check) => vec!["cmake", "--build", "build"],
+        ("cpp", VerifyKind::Check) => vec![
+            "sh",
+            "-c",
+            "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null && cmake --build build",
+        ],
         ("cpp", VerifyKind::Test) => vec!["ctest", "--test-dir", "build", "--output-on-failure"],
         ("swift", VerifyKind::Check) => vec!["swift", "build"],
         ("swift", VerifyKind::Test) => vec!["swift", "test"],

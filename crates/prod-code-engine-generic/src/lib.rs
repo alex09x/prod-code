@@ -31,6 +31,32 @@ pub struct GenericLspConfig {
     pub initialization_options: Option<serde_json::Value>,
 }
 
+/// The native TypeScript 7 compiler binary, which doubles as the language server
+/// (`tsc --lsp --stdio`): `tsgo` on PATH, or the platform package under the global
+/// `typescript` install (`@typescript/typescript-<os>-<arch>/lib/tsc`).
+fn native_typescript_lsp() -> Option<PathBuf> {
+    if let Ok(tsgo) = which_bin("tsgo") {
+        return Some(tsgo);
+    }
+    let os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let candidate = npm_global_root()?
+        .join("typescript")
+        .join("node_modules")
+        .join("@typescript")
+        .join(format!("typescript-{os}-{arch}"))
+        .join("lib")
+        .join("tsc");
+    candidate.is_file().then_some(candidate)
+}
+
 /// Global npm module root (`npm root -g`), where `npm install -g` puts packages.
 fn npm_global_root() -> Option<PathBuf> {
     let out = std::process::Command::new("npm")
@@ -110,7 +136,14 @@ impl GenericLspConfig {
 
     /// Create a standard configuration for TypeScript / JavaScript language servers.
     pub fn for_typescript() -> Self {
-        let (cmd, args) = if which_bin("typescript-language-server").is_ok() {
+        // TypeScript 7 (native) ships its own LSP: `tsc --lsp --stdio` from the platform
+        // package. It needs no tsserver and no Node at all, so it wins when present.
+        let (cmd, args) = if let Some(native) = native_typescript_lsp() {
+            (
+                native.to_string_lossy().into_owned(),
+                vec!["--lsp".to_string(), "--stdio".to_string()],
+            )
+        } else if which_bin("typescript-language-server").is_ok() {
             (
                 "typescript-language-server".to_string(),
                 vec!["--stdio".to_string()],
@@ -291,16 +324,50 @@ impl GenericLspEngine {
                                                             .await;
                                                 }
                                                 "workspace/configuration" => {
+                                                    // One entry per requested item, or the
+                                                    // server waits for a reply that never comes.
+                                                    let items = val
+                                                        .get("params")
+                                                        .and_then(|p| p.get("items"))
+                                                        .and_then(|i| i.as_array())
+                                                        .map(|i| i.len())
+                                                        .unwrap_or(1)
+                                                        .max(1);
                                                     let resp = serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
-                                                        "result": [{}]
+                                                        "result": vec![serde_json::Value::Null; items]
                                                     });
                                                     let _ =
                                                         Self::write_frame_raw(&stdin_writer, &resp)
                                                             .await;
                                                 }
-                                                _ => {}
+                                                "workspace/workspaceFolders" => {
+                                                    let resp = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": id_val,
+                                                        "result": null
+                                                    });
+                                                    let _ =
+                                                        Self::write_frame_raw(&stdin_writer, &resp)
+                                                            .await;
+                                                }
+                                                other => {
+                                                    // Unknown server request: refuse it instead of
+                                                    // leaving the server blocked on the answer.
+                                                    tracing::debug!(
+                                                        method = other,
+                                                        "unsupported server request refused"
+                                                    );
+                                                    let resp = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": id_val,
+                                                        "error": { "code": -32601, "message": format!("{other} is not supported by prod-code") }
+                                                    });
+                                                    let _ =
+                                                        Self::write_frame_raw(&stdin_writer, &resp)
+                                                            .await;
+                                                }
                                             }
                                         }
                                     }
