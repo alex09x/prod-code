@@ -57,7 +57,7 @@ enum Commands {
     /// Benchmark throughput and concurrency across workspaces and worktrees.
     Bench {
         /// Target workspace directories (or worktrees). If omitted, uses current working directory.
-        #[arg(short, long)]
+        #[arg(short, long, num_args = 1..)]
         workspaces: Vec<PathBuf>,
         /// Number of concurrent client worker connections.
         #[arg(short, long, default_value_t = 16)]
