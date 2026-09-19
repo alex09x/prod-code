@@ -73,19 +73,19 @@ This document outlines the architectural milestones and engineering phases for b
 - [x] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
-- [ ] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)**
+- [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on booster and rama; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. Shared PCH / index cache across worktrees still open.
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
   - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
   - Offloads multi-gigabyte AST indexing for massive C++ codebases (e.g. Chromium, ClickHouse, trading engines) from local laptops to 32–128 core servers.
-- [ ] **3.5. TypeScript & JavaScript Engine (`crates/prod-code-engine-ts` / `vtsls`)**
+- [~] **3.5. TypeScript & JavaScript Engine (`crates/prod-code-engine-ts` / `vtsls`)** — shipped 2026-09-19: the native TypeScript 7 language server (`tsc --lsp --stdio` from the global `typescript` install, no Node in the query path) with fallback to `typescript-language-server`; hover / definition / references / symbols verified on both nodes, `prod-code check` = `tsc --noEmit`. Shared `node_modules` volume still open.
   - Supervised `vtsls` worker pool running on server Bun/Node runtime.
   - Shared global `@types/*` and `node_modules` cache volume to eliminate duplicate multi-gigabyte `node_modules` across concurrent agent worktrees.
   - Instant type inference and signature resolution for React, Vue, Svelte, Next.js, and large monorepos (5–15 ms latency).
-- [ ] **3.6. Python Semantic Engine (`crates/prod-code-engine-python` / `basedpyright`)**
+- [~] **3.6. Python Semantic Engine (`crates/prod-code-engine-python` / `basedpyright`)** — shipped 2026-09-19: `basedpyright-langserver` (fallback pyright / ruff / pylsp), hover / symbols verified on both nodes, `prod-code check` = `basedpyright --outputjson`, `prod-code test` = pytest with parsed failures. Shared venv stub cache still open.
   - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
   - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
   - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
-- [ ] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)**
+- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — engine wired 2026-09-19 (`sourcekit-lsp`, or `xcrun sourcekit-lsp` on macOS; `swift build` / `swift test` for check and test). Needs a macOS node: the Linux gateways do not list `swift`, so the client places Swift checkouts only on a node whose status lists it (see 5.1).
   - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
   - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
 
@@ -119,7 +119,7 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers) with dynamic load balancing, repository affinity, and zero-configuration service discovery.
 
-- [~] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19: `--remote a:9400,b:9400`, rendezvous hashing of the workspace identity, remembered placement, failover to the next alive node, `prod-code cluster`; second node rama (192.168.2.190) deployed. Server-side `Redirect` and least-loaded dispatch still open.
+- [~] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19: `--remote a:9400,b:9400`, rendezvous hashing of the workspace identity, remembered placement, failover to the next alive node, `prod-code cluster`; second node rama (192.168.2.190) deployed. Engine-aware placement (same day): a gateway's status lists only the engines whose language server is installed on that host, and a checkout is placed only on a node that serves its engine (Swift → macOS node). Server-side `Redirect` and least-loaded dispatch still open.
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
   - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
   - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.

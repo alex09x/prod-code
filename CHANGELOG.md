@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Language engines (Phase 3.4–3.6): C/C++ (`clangd`), TypeScript (native TypeScript 7
+  `tsc --lsp`, fallback `typescript-language-server`) and Python (`basedpyright`) workspaces
+  get hover, definition, references and document symbols through the gateway; `prod-code
+  check | lint | test` run `cmake --build` (configuring the build dir first), `tsc --noEmit` /
+  `eslint` / `npm test`, `basedpyright` / `ruff` / `pytest`, with parsed diagnostics. Build and
+  tool manifests (`CMakeLists.txt`, `compile_commands.json`, `.clangd`, `requirements*.txt`,
+  `pytest.ini`, `tox.ini`, `Pipfile`, Bazel `BUILD`, `project.pbxproj`, ...) are now synced.
+  Swift (Phase 3.7) is wired (`sourcekit-lsp`, `swift build` / `swift test`) and needs a macOS
+  gateway node.
+- Engine-aware placement (Phase 5.1): gateway status lists the engines whose language
+  server is actually installed on the host; the client places a checkout only on a node that
+  serves its engine, re-places a remembered node that no longer fits, and `prod-code cluster`
+  shows each node's engines.
+- MCP tools open files with the languageId of their extension (was always `rust`); LSP symbol
+  kinds are named correctly in outlines.
+
 - Session churn stress (Phase 5.5): `divergent-bench --persistent --churn N` kills N% of
   sessions mid-run without a goodbye and verifies the gateway retires them all.
 - `prod-code check | lint | test --json` print the full structured report.
