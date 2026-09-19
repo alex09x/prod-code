@@ -65,36 +65,45 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     let path = Path::new(rel_path);
 
     // 1. Check directory components for non-code / build / data trees
+    let mut under_code_dir = false;
     for component in path.components() {
         if let std::path::Component::Normal(comp) = component {
             let s = comp.to_string_lossy();
             if s.starts_with('.') && s != ".cargo" {
                 return false;
             }
-            if matches!(
-                s.as_ref(),
-                "target"
-                    | "node_modules"
-                    | "vendor"
-                    | "dist"
-                    | "build"
-                    | "results"
-                    | "samples"
-                    | "__pycache__"
-                    | "artifacts"
-                    | "dogfood-output"
-                    | "data"
-                    | "dataset"
-                    | "datasets"
-                    | "corpus"
-                    | "traces"
-                    | "state"
-                    | "research"
-                    | "benchmarks"
-                    | "benchmark"
-                    | ".idea"
-                    | ".vscode"
-            ) {
+            if matches!(s.as_ref(), "crates" | "packages" | "src") {
+                under_code_dir = true;
+            }
+            if !under_code_dir
+                && matches!(
+                    s.as_ref(),
+                    "target"
+                        | "node_modules"
+                        | "vendor"
+                        | "dist"
+                        | "build"
+                        | "results"
+                        | "samples"
+                        | "__pycache__"
+                        | "artifacts"
+                        | "dogfood-output"
+                        | "data"
+                        | "dataset"
+                        | "datasets"
+                        | "corpus"
+                        | "traces"
+                        | "state"
+                        | "research"
+                        | "benchmarks"
+                        | "benchmark"
+                        | ".idea"
+                        | ".vscode"
+                )
+            {
+                return false;
+            }
+            if under_code_dir && matches!(s.as_ref(), "target" | "node_modules" | "__pycache__") {
                 return false;
             }
         }
@@ -408,6 +417,31 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
         .max_filesize(Some(MAX_FILE_SIZE))
         .filter_entry(|entry| {
             let name = entry.file_name().to_string_lossy();
+            let path = entry.path();
+            let is_under_code = path.components().any(|c| {
+                if let std::path::Component::Normal(p) = c {
+                    matches!(p.to_string_lossy().as_ref(), "crates" | "packages" | "src")
+                } else {
+                    false
+                }
+            });
+
+            if !is_under_code
+                && matches!(
+                    name.as_ref(),
+                    "research"
+                        | "benchmarks"
+                        | "benchmark"
+                        | "data"
+                        | "dataset"
+                        | "datasets"
+                        | "corpus"
+                        | "traces"
+                )
+            {
+                return false;
+            }
+
             if name == ".git"
                 || name == "target"
                 || name == "node_modules"
@@ -419,15 +453,7 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
                 || name == "__pycache__"
                 || name == "artifacts"
                 || name == "dogfood-output"
-                || name == "data"
-                || name == "dataset"
-                || name == "datasets"
-                || name == "corpus"
-                || name == "traces"
                 || name == "state"
-                || name == "research"
-                || name == "benchmarks"
-                || name == "benchmark"
                 || name == ".idea"
                 || name == ".vscode"
                 || name == ".DS_Store"
