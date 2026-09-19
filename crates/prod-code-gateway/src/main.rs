@@ -279,6 +279,17 @@ pub async fn apply_sync_probe(
 /// Default wall-clock limit for a remote command when the client does not set one.
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
+/// Kills the command and everything it spawned (its process group), then the child itself.
+fn kill_exec_tree(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", "--", &format!("-{pid}")])
+            .status();
+    }
+    let _ = child.start_kill();
+}
+
 /// Runs `req.command` inside the client's server workspace, streaming stdout/stderr chunks to
 /// the client and finishing with an `ExecExit`. The child is killed if the client goes away
 /// or the timeout elapses.
@@ -327,6 +338,10 @@ pub async fn run_exec(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // Own process group, so a timeout or client disconnect can take down the whole tree
+    // (cargo -> test binary -> its helpers), not just the direct child.
+    #[cfg(unix)]
+    cmd.process_group(0);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -410,12 +425,12 @@ pub async fn run_exec(
             }
             _ = tokio::time::sleep_until(deadline), if !timed_out => {
                 timed_out = true;
-                let _ = child.start_kill();
+                kill_exec_tree(&mut child);
             }
             incoming = framed.next(), if status.is_none() => match incoming {
                 Some(Ok(WireMessage::Ping)) => framed.send(WireMessage::Pong).await?,
                 Some(Ok(WireMessage::Disconnect { .. })) | None => {
-                    let _ = child.start_kill();
+                    kill_exec_tree(&mut child);
                     tracing::info!(workspace = %workspace_str, "🛠️ [EXEC] client left; command killed");
                     return Ok(());
                 }
@@ -1613,6 +1628,7 @@ async fn main() -> Result<()> {
         )
         .init();
     let cli = ServerCli::parse();
+    prefer_rustup_toolchain();
 
     tracing::info!(
         "prod-code gateway daemon starting on {} (storage: {:?})",
@@ -1638,6 +1654,28 @@ async fn main() -> Result<()> {
                 tracing::error!(%addr, %err, "Error in client connection");
             }
         });
+    }
+}
+
+/// Puts `~/.cargo/bin` first on PATH so remote commands and rust-analyzer's `cargo metadata`
+/// use the rustup toolchain the workspaces were built with, not a distro/snap cargo that a
+/// systemd user session may resolve first.
+fn prefer_rustup_toolchain() {
+    let Some(home) = std::env::var_os("HOME") else {
+        return;
+    };
+    let cargo_bin = PathBuf::from(home).join(".cargo/bin");
+    if !cargo_bin.is_dir() {
+        return;
+    }
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<PathBuf> = std::env::split_paths(&current).collect();
+    paths.retain(|p| p != &cargo_bin);
+    paths.insert(0, cargo_bin.clone());
+    if let Ok(joined) = std::env::join_paths(paths) {
+        // SAFETY: called once at startup before any other thread exists.
+        unsafe { std::env::set_var("PATH", joined) };
+        tracing::info!(cargo_bin = %cargo_bin.display(), "rustup toolchain put first on PATH");
     }
 }
 

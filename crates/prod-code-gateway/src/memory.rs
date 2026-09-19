@@ -6,11 +6,11 @@ pub fn get_process_rss_bytes() -> Option<u64> {
     {
         if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
             let parts: Vec<&str> = statm.split_whitespace().collect();
-            if parts.len() >= 2 {
-                if let Ok(pages) = parts[1].parse::<u64>() {
-                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 };
-                    return Some(pages * page_size);
-                }
+            if parts.len() >= 2
+                && let Ok(pages) = parts[1].parse::<u64>()
+            {
+                let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 };
+                return Some(pages * page_size);
             }
         }
         None

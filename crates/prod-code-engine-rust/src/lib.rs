@@ -857,6 +857,9 @@ impl PathTranslator {
         let snapshot = engine.snapshot();
         engine.apply_file_change(&lib_path, text.clone()).unwrap();
         assert!(snapshot.hover(&lib_path, 1, 15).unwrap().is_some());
+        // Release the snapshot before a real change: apply_change waits for outstanding
+        // snapshots, so holding one here would deadlock the test.
+        drop(snapshot);
         // A genuine change still lands.
         engine
             .apply_file_change(&lib_path, format!("{text}pub const CHANGED: u8 = 1;\n"))

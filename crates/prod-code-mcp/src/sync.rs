@@ -36,7 +36,16 @@ pub struct SyncCache {
     /// this set without a commit was reverted and must be sent again in its clean form.
     #[serde(default)]
     pub dirty_paths: BTreeSet<String>,
+    /// [`RELEVANCE_VERSION`] the watermark was built with. When the relevance filter learns
+    /// about new file kinds, older watermarks would wrongly assume those files were sent.
+    #[serde(default)]
+    pub filter_version: u32,
 }
+
+/// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
+/// recorded under an older version is treated as first contact, which costs one manifest probe
+/// (the gateway then asks only for the files it lacks).
+pub const RELEVANCE_VERSION: u32 = 2;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,6 +295,11 @@ pub async fn push_workspace_sync(
 pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<SyncPlan> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut state = load_sync_cache(&canonical_root);
+    if state.filter_version != RELEVANCE_VERSION && subpath.is_none() {
+        state.base_commit_sha = None;
+        state.files.clear();
+        state.filter_version = RELEVANCE_VERSION;
+    }
     let initial = state.base_commit_sha.is_none() && subpath.is_none();
     let current_base = git_head(&canonical_root)?;
     let (mut changes, current_dirty) = changed_paths(
@@ -640,6 +654,7 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "bash"
                 | "zsh"
                 | "toml"
+                | "lock" // Cargo.lock, yarn.lock, poetry.lock: pin what the server builds
                 | "yaml"
                 | "yml"
                 | "json"
@@ -1256,6 +1271,78 @@ mod tests {
         assert!(!next.initial);
         assert!(next.files.is_empty());
         clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_stale_filter_version_forces_manifest_probe() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(root.join("Cargo.lock"), "# lock").unwrap();
+        std::fs::write(root.join("a.rs"), "pub fn a() {}").unwrap();
+        for args in [&["add", "."][..], &["commit", "-qm", "initial"][..]] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        // A watermark written by an older client that never sent Cargo.lock.
+        let first = prepare_workspace_sync(root, None).unwrap();
+        commit_workspace_sync(root, &first);
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let mut old = load_sync_cache(&canonical);
+        old.filter_version = 0;
+        old.files.remove("Cargo.lock");
+        save_sync_cache(&canonical, &old);
+
+        let upgraded = prepare_workspace_sync(root, None).unwrap();
+        assert!(
+            upgraded.initial,
+            "old watermark must be treated as first contact"
+        );
+        assert!(
+            upgraded
+                .files
+                .iter()
+                .any(|f| f.relative_path == "Cargo.lock"),
+            "{upgraded:?}"
+        );
+        commit_workspace_sync(root, &upgraded);
+        assert_eq!(
+            load_sync_cache(&canonical).filter_version,
+            RELEVANCE_VERSION
+        );
+        assert!(!prepare_workspace_sync(root, None).unwrap().initial);
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_lockfiles_are_relevant() {
+        assert!(is_relevant_code_or_manifest_file("Cargo.lock"));
+        assert!(is_relevant_code_or_manifest_file("web/yarn.lock"));
+        assert!(is_relevant_code_or_manifest_file("go.sum"));
     }
 
     #[test]
