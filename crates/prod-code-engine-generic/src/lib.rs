@@ -324,8 +324,9 @@ impl GenericLspEngine {
                                                             .await;
                                                 }
                                                 "workspace/configuration" => {
-                                                    // One entry per requested item, or the
-                                                    // server waits for a reply that never comes.
+                                                    // One empty settings object per requested
+                                                    // item: pyright stalls on `null` settings, and
+                                                    // a short array leaves the server waiting.
                                                     let items = val
                                                         .get("params")
                                                         .and_then(|p| p.get("items"))
@@ -336,7 +337,7 @@ impl GenericLspEngine {
                                                     let resp = serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
-                                                        "result": vec![serde_json::Value::Null; items]
+                                                        "result": vec![serde_json::json!({}); items]
                                                     });
                                                     let _ =
                                                         Self::write_frame_raw(&stdin_writer, &resp)
