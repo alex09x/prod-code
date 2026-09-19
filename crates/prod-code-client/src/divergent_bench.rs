@@ -551,6 +551,10 @@ fn parse_signature_line(line: &str, language: Language) -> Option<(String, usize
     };
     let name_end = after_keyword.find(['(', '<'])?;
     let name = &after_keyword[..name_end];
+    // Entry points hover as package/crate documentation rather than as a signature.
+    if matches!(name, "main" | "init") {
+        return None;
+    }
     if name.is_empty()
         || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         || name.starts_with(|c: char| c.is_ascii_digit())
@@ -888,6 +892,30 @@ pub async fn initial_sync(
     })
 }
 
+/// Waits for the `SyncResponse` of an in-session sync, skipping LSP traffic the gateway may
+/// stream in the meantime (gopls and generic backends emit `window/showMessage` and
+/// `workspace/configuration` notifications on the same socket).
+async fn wait_for_sync_response(
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    wait: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("timed out waiting for pre-flight sync response");
+        }
+        match timeout(remaining, framed.next()).await {
+            Ok(Some(Ok(WireMessage::SyncResponse(_)))) => return Ok(()),
+            Ok(Some(Ok(WireMessage::LspPayload(_)))) | Ok(Some(Ok(WireMessage::Pong))) => {}
+            Ok(Some(Ok(other))) => bail!("unexpected pre-flight sync response: {other:?}"),
+            Ok(Some(Err(e))) => bail!("frame decode error during pre-flight sync: {e}"),
+            Ok(None) => bail!("remote gateway closed connection during pre-flight sync"),
+            Err(_) => bail!("timed out waiting for pre-flight sync response"),
+        }
+    }
+}
+
 /// Connects to `remote`, performs the full handshake/sync/initialize/hover/close cycle against
 /// `wt.query_file` within `wt.root`, and returns the hover text the gateway reports for
 /// `wt.symbol`.
@@ -944,13 +972,7 @@ async fn query_once(
                 base_workspace_name: Some(wt.workspace_name.clone()),
             }))
             .await?;
-        match timeout(Duration::from_secs(30), framed.next()).await {
-            Ok(Some(Ok(WireMessage::SyncResponse(_)))) => {}
-            Ok(Some(Ok(other))) => bail!("unexpected pre-flight sync response: {other:?}"),
-            Ok(Some(Err(e))) => bail!("frame decode error during pre-flight sync: {e}"),
-            Ok(None) => bail!("remote gateway closed connection during pre-flight sync"),
-            Err(_) => bail!("timed out waiting for pre-flight sync response"),
-        }
+        wait_for_sync_response(&mut framed, Duration::from_secs(30)).await?;
     }
 
     let init_req = serde_json::json!({
@@ -1409,6 +1431,12 @@ mod tests {
         );
         assert_eq!(
             parse_signature_line("func (s *Server) Method() error {", Language::Go),
+            None
+        );
+        assert_eq!(parse_signature_line("func main() {", Language::Go), None);
+        assert_eq!(parse_signature_line("func init() {", Language::Go), None);
+        assert_eq!(
+            parse_signature_line("pub fn main() {", Language::Rust),
             None
         );
     }
