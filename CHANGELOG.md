@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Load-aware placement (Phase 5.3 first step): gateways report host load and CPU count in
+  their status; the first placement of a checkout picks the quietest alive node.
+
 - Multi-gateway placement (Phase 5.1, client side): `--remote` / `PROD_CODE_REMOTE` take a
   comma-separated node list; a checkout is placed by rendezvous hashing, remembered locally,
   and fails over to the next alive node. `prod-code cluster` shows node status and placement.

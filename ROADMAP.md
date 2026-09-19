@@ -127,7 +127,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `btcr.code.internal` -> `192.168.2.168:9400`, `codehaus.code.internal` -> `192.168.2.190:9400`).
   - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
   - Dynamic SRV record publication for active daemon instances across the LAN.
-- [ ] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing**
+- [~] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing** — nodes report 1-minute load average and CPU count in `StatusResponse`; a checkout's first placement goes to the quietest alive node (load per CPU, rendezvous order as tie-break), then sticks (2026-09-19). Gossip between nodes and rebalancing of existing placements still open.
   - Background gossip heartbeat between daemon nodes reporting CPU load, available RAM, active engine count, and in-flight builds.
   - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. 128-core `rama` with 250 GB RAM).
   - [x] Idle LRU eviction: workspaces untouched for > 30 minutes are unloaded (`--idle-evict-secs`) and stale `<repo>--wt-*` copies pruned after 7 days (`--prune-worktree-days`); done 2026-09-19.
