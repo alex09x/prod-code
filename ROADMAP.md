@@ -112,16 +112,25 @@ This document outlines the architectural milestones and engineering phases for b
 
 ---
 
-## Phase 5: Multi-Server Clustering & Fleet Scale
+## Phase 5: Multi-Server Clustering, Smart Discovery & Fleet Scale
 
-**Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers).
+**Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers) with dynamic load balancing, repository affinity, and zero-configuration service discovery.
 
 - [ ] **5.1. Cluster Gateway & L4/L7 Dispatcher**
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
-  - Consistent hashing based on workspace repository identity so sessions for the same codebase share warm Salsa and Go caches.
-- [ ] **5.2. Isolated Proc-Macro Worker Farm**
+  - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
+  - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.
+- [ ] **5.2. Smart DNS & Service Discovery (`*.code.internal`)**
+  - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `btcr.code.internal` -> `192.168.2.168:9400`, `codehaus.code.internal` -> `192.168.2.190:9400`).
+  - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
+  - Dynamic SRV record publication for active daemon instances across the LAN.
+- [ ] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing**
+  - Background gossip heartbeat between daemon nodes reporting CPU load, available RAM, active engine count, and in-flight builds.
+  - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. 128-core `rama` with 250 GB RAM).
+  - Idle LRU eviction: workspaces untouched for > 30 minutes are gracefully serialized/quiesced to free RAM for active agent fleets.
+- [ ] **5.4. Isolated Proc-Macro Worker Farm**
   - Offload compilation and execution of heavy Rust procedural macros into a sandboxed worker pool.
-- [ ] **5.3. Agent Fleet Stress Verification**
+- [ ] **5.5. Agent Fleet Stress Verification**
   - End-to-end load tests using `bench/masstest.py`:
     - 20+ concurrent workers across 500+ file codebases.
     - Continuous semantic queries mixed with uncommitted `didChange` edits.
@@ -129,47 +138,58 @@ This document outlines the architectural milestones and engineering phases for b
 
 ---
 
-## Phase 6: Remote Build & Test Execution (RTE / RBE)
+## Phase 6: Polyglot Remote Build & Test Execution (RTE / RBE)
 
-**Objective**: Offload heavy Rust (and polyglot) compilation, test execution, clippy verification, and benchmarks from local workstations to high-performance remote server nodes (32–128 cores) over the 10 GbE LAN, eliminating local CPU lockups, thermal throttling, and battery drain.
+**Objective**: Offload heavy compilation, test execution, linters, and benchmarks across all supported languages (Rust, Go, C++, TypeScript, Python, Swift) from local workstations to high-performance remote server nodes (32–128 cores) over the 10 GbE LAN, eliminating local CPU lockups, thermal throttling, and battery drain.
 
-### The Problem: Local Rust Compilation Bottleneck
-- Compiling and testing large Rust projects (`cargo check`, `cargo test`, `cargo clippy`, `cargo bench`) on developer workstations and laptops is notoriously slow: LLVM code generation, monomorphization, macro expansion, and final linking cause heavy CPU spikes, thermal throttling, noisy cooling fans, and severe battery drain.
-- For autonomous AI coding agents (Claude, Codex, Agy), 95% of compilation and test invocations are executed solely for **verification feedback** (confirming whether changes compile without errors, verifying that unit/integration test assertions pass, and checking clippy lints). The binary itself is rarely needed locally on macOS.
-- Running multi-agent fleets with concurrent local builds quickly freezes workstation UI, locks `target/` directories, and throttles agent iteration speed.
+### The Problem: Local Workstation Bottlenecks Across Stacks
+- Compiling and running test suites across modern tech stacks is notoriously punishing on laptops:
+  - **Rust**: `cargo check/test/clippy` monomorphization, macro expansion, and linking spike CPU to 100% and drain battery.
+  - **C / C++**: `cmake/ninja` compilation of template-heavy headers consumes dozens of gigabytes and freezes developer UI.
+  - **TypeScript**: `tsc --noEmit` and `vitest/jest` run single-threaded Node.js processes that choke on large mono-repos and duplicate multi-gigabyte `node_modules`.
+  - **Go**: `go test -race ./...` compiles and links multiple package test binaries concurrently.
+  - **Python**: `pytest` across large test suites stalls on single-machine CPU cores.
+- For autonomous AI coding agents (Claude, Codex, Agy), 95% of compilation and test invocations are executed solely for **verification feedback** (checking if edits compile cleanly, if test assertions pass, and if linters are satisfied). The binary itself is rarely needed locally on macOS.
+- Running multi-agent fleets with concurrent local builds quickly freezes workstation UI, locks file caches, and throttles agent iteration speed.
 
 ### Engineering Milestones
 
-- [ ] **6.1. Remote Execution Wire Protocol (`crates/prod-code-protocol`)**
+- [ ] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)**
   - Define `RemoteExecRequest`:
-    - `command`: `check`, `test`, `clippy`, `bench`, or arbitrary binary runner.
-    - `args`: Command arguments and test filters (e.g. `["--lib", "test_order_manager"]`).
-    - `env`: Explicit environment variables (e.g. `RUST_BACKTRACE=1`, feature flags).
-    - `format`: `raw` streaming or `json` (parsing Cargo's `--message-format=json` and libtest JSON output into structured events).
+    - `language`: `rust`, `go`, `cpp`, `typescript`, `python`, `swift`.
+    - `command`: `check`, `test`, `lint`, `bench`, or custom runner command.
+    - `args`: Command arguments and test filters (e.g. `["--lib", "test_order_manager"]` or `["-k", "test_auth"]`).
+    - `env`: Explicit environment variables (e.g. `RUST_BACKTRACE=1`, `NODE_ENV=test`).
+    - `format`: `raw` streaming or structured `json` (parsing Cargo `--message-format=json`, `go test -json`, `vitest --reporter=json`, `pytest --json-report`).
   - Define `RemoteExecStream` and `RemoteExecResult`:
     - Real-time streaming of stdout/stderr chunks over 10G TCP with sub-millisecond latency.
-    - Structured compiler diagnostic events (spans, error codes, suggestions) streamed directly to client/agent.
+    - Structured compiler and test diagnostic events (spans, error codes, failed assertion diffs, stack traces) streamed directly to client/agent.
     - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
 
-- [ ] **6.2. Server-Side Execution Engine & Warm Target Caches (`crates/prod-code-gateway`)**
+- [ ] **6.2. Server-Side Execution Engine & Warm Polyglot Caches (`crates/prod-code-gateway`)**
   - Dispatch execution to dedicated high-performance Linux worker nodes (`booster` with 32 cores, or `rama` with 128 Ampere cores / 250 GB RAM).
-  - Persistent server-side `target/` directories located on high-speed NVMe or RAM-disk (`/dev/shm`).
-  - Pre-warmed shared Cargo cache (`~/.cargo/registry`, `~/.cargo/git`) and toolchains (stable, beta, nightly).
-  - Because code deltas are synced incrementally via Phase 4.2 in < 2 ms, only modified crates recompile; dependencies stay permanently warm in server RAM.
+  - Persistent server-side build caches on fast NVMe / RAM-disk (`/dev/shm`):
+    - Rust: shared `~/.cargo/registry`, `target/` on NVMe.
+    - Go: warm shared `GOCACHE` and `GOPATH/pkg/mod`.
+    - C++: shared `ccache` / `sccache` and precompiled headers.
+    - TypeScript: shared global `pnpm` store and pre-resolved `@types/*`.
+    - Python: pre-warmed `.venv` wheels and pycache.
+  - Because code deltas are synced incrementally in < 2 ms, only modified files trigger re-compilation; dependencies stay permanently warm in server RAM.
 
 - [ ] **6.3. Concurrent Multi-Worktree Build Isolation**
-  - Isolated build artifacts per worktree session to eliminate `target/.cargo-lock` build contention across concurrent agents.
-  - Shared read-only dependency artifact cache (`sccache` integration on server or hardlinked shared target directories).
+  - Isolated build artifacts per worktree session to eliminate build cache lock contention across concurrent agents.
+  - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
 
 - [ ] **6.4. Client CLI & Native Agent MCP Integration**
   - **Client CLI Commands**:
-    - `prod-code check`: remote `cargo check` with instant terminal diagnostics.
-    - `prod-code test [FILTER]`: remote `cargo test` with real-time test output streaming.
-    - `prod-code clippy`: remote `cargo clippy -- -D warnings`.
-    - `prod-code bench [BENCH_NAME]`: remote `cargo bench` running on quiet, isolated server cores without desktop thermal noise.
+    - `prod-code check`: remote compilation check across any language with instant terminal diagnostics.
+    - `prod-code test [FILTER]`: remote test runner with real-time test output streaming.
+    - `prod-code lint`: remote linter (`clippy`, `golangci-lint`, `eslint`, `ruff`).
+    - `prod-code bench [FILTER]`: remote benchmark runner on quiet, dedicated server cores without workstation thermal noise.
   - **Agent MCP Tools (`crates/prod-code-mcp`)**:
     - `code_check(path)`: returns structured compiler errors and warnings directly into agent context.
-    - `code_test(path, filter)`: runs targeted tests and returns failures with panic backtraces and diffs.
-    - Instant verification feedback in 1–3 seconds per edit without touching local machine CPU.
+    - `code_test(path, filter)`: runs targeted tests and returns failures with panic backtraces and assertion diffs.
+    - Instant verification feedback in 1–3 seconds per edit without touching local machine CPU or battery.
+
 
