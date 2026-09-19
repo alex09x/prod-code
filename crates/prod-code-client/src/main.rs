@@ -3,9 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{
-    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, StatusResponse, WireMessage,
-};
+use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -218,7 +216,7 @@ async fn execute_lsp_query(
         .await?;
 
     // 6. Read response matching id = 2
-    let query_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(25);
+    let query_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(60);
     while tokio::time::Instant::now() < query_deadline {
         let remaining = query_deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, framed.next()).await {
@@ -469,25 +467,26 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
 
     if let Some(msg) = framed.next().await {
         match msg? {
-            WireMessage::StatusResponse(StatusResponse {
-                server_pid,
-                uptime_seconds,
-                active_sessions,
-                loaded_workspaces,
-                detected_engines,
-            }) => {
-                let hours = uptime_seconds / 3600;
-                let minutes = (uptime_seconds % 3600) / 60;
-                let seconds = uptime_seconds % 60;
+            WireMessage::StatusResponse(resp) => {
+                let hours = resp.uptime_seconds / 3600;
+                let minutes = (resp.uptime_seconds % 3600) / 60;
+                let seconds = resp.uptime_seconds % 60;
 
                 println!("⚡ prod-code Remote Code Intelligence Gateway");
                 println!("────────────────────────────────────────────────────");
                 println!("Remote Address:    {remote} ({:.2?} RTT)", rtt);
-                println!("Server PID:        {server_pid}");
+                println!("Server PID:        {}", resp.server_pid);
                 println!("Uptime:            {}h {}m {}s", hours, minutes, seconds);
-                println!("Active Sessions:   {active_sessions}");
-                println!("Loaded Workspaces: {loaded_workspaces}");
-                println!("Engines Available: {}", detected_engines.join(", "));
+                if let Some(mb) = resp.memory_rss_mb() {
+                    println!("Memory RSS:        {:.2} MB", mb);
+                }
+                println!("Active Sessions:   {}", resp.active_sessions);
+                println!("Loaded Workspaces: {}", resp.loaded_workspaces);
+                println!(
+                    "Queries Handled:   {} (in-flight: {})",
+                    resp.total_queries, resp.active_queries
+                );
+                println!("Engines Available: {}", resp.detected_engines.join(", "));
                 println!("Status:            HEALTHY");
             }
             other => anyhow::bail!("Unexpected response from gateway: {:?}", other),

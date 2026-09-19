@@ -65,6 +65,9 @@ async fn handle_test_client(
                         .load(std::sync::atomic::Ordering::Relaxed),
                     loaded_workspaces: 0,
                     detected_engines: vec!["rust (ra_ap_ide)".to_string()],
+                    memory_rss_bytes: Some(1024 * 1024 * 50),
+                    total_queries: 0,
+                    active_queries: 0,
                 };
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }

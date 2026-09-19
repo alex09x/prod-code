@@ -42,12 +42,14 @@ This document outlines the architectural milestones and engineering phases for b
   - Apply unsaved document edits (`didChange`) directly into base Salsa file inputs.
   - Bypass overlay crate cones and global database invalidation locks for unshared workspaces.
   - Target: Maintain sub-15s p95 query latency under 15 concurrent agent worktrees.
-- [ ] **2.3. Safe FileId & Edition Handling**
+- [x] **2.3. Safe FileId & Edition Handling**
   - Comply with `EditionedFileId` 24-bit mask (`0x007F_FFFF`) to prevent Rust Edition bit corruption.
   - Path-normalized FileId deduplication and reuse across concurrent sessions.
-- [ ] **2.4. Daemon Tracing & Health Observability**
+- [x] **2.4. Daemon Tracing & Health Observability**
+  - Multi-core query offload via `RustEngineSnapshot` and Tokio blocking thread pool.
+  - Complete request execution timing and in-flight tracking with `[LSP START]`, `[LSP DONE]`, and `[LSP SLOW >200ms]` warnings.
   - Native `tracing-subscriber` integration with structured log filtering (`RUST_LOG=info,prod_code=debug`).
-  - Memory watchdog: monitor server RSS, alert at memory thresholds, safe interner GC gated on zero active queries.
+  - Memory watchdog: monitor server RSS, alert at memory thresholds, dynamic metrics in `StatusResponse`.
 
 ---
 

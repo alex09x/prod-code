@@ -44,4 +44,17 @@ pub struct StatusResponse {
     pub active_sessions: usize,
     pub loaded_workspaces: usize,
     pub detected_engines: Vec<String>,
+    #[serde(default)]
+    pub memory_rss_bytes: Option<u64>,
+    #[serde(default)]
+    pub total_queries: u64,
+    #[serde(default)]
+    pub active_queries: usize,
+}
+
+impl StatusResponse {
+    pub fn memory_rss_mb(&self) -> Option<f64> {
+        self.memory_rss_bytes
+            .map(|b| (b as f64) / (1024.0 * 1024.0))
+    }
 }

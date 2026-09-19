@@ -1,6 +1,7 @@
 //! prod-code gateway daemon: multi-tenant server for remote code intelligence over 10 GbE LAN.
 
 pub mod backend;
+pub mod memory;
 pub mod workspace;
 
 use anyhow::Result;
@@ -17,6 +18,11 @@ use std::time::Instant;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 use workspace::{SessionView, WorkspaceManager};
+
+pub static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
+pub static ACTIVE_QUERIES: AtomicUsize = AtomicUsize::new(0);
+pub static TOTAL_QUERIES: AtomicU64 = AtomicU64::new(0);
+pub static SLOW_QUERIES: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -72,6 +78,9 @@ impl ServerState {
                 "go (gopls)".to_string(),
                 "generic-lsp".to_string(),
             ],
+            memory_rss_bytes: memory::get_process_rss_bytes(),
+            total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
+            active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
         }
     }
 }
@@ -276,7 +285,7 @@ async fn run_session_loop(
                                 continue;
                             }
 
-                            // 4. In-Memory RustEngine fast path: hover, definition, references, documentSymbol
+                            // 4. In-Memory RustEngine multi-core fast path: hover, definition, references, documentSymbol
                             if let Some(ref engine_lock) = view.workspace.rust_engine {
                                 match method {
                                     Some("textDocument/hover") => {
@@ -286,11 +295,62 @@ async fn run_session_loop(
                                             let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
 
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let hover_res = {
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "textDocument/hover",
+                                                file = %file_path.display(),
+                                                pos = format!("{}:{}", line + 1, col + 1),
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            // Acquire cheap snapshot (<1 µs) without holding mutex during query
+                                            let snapshot = {
                                                 let engine = engine_lock.lock().await;
-                                                engine.hover(&file_path, line + 1, col + 1).ok().flatten()
+                                                engine.snapshot()
                                             };
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let hover_res = tokio::task::spawn_blocking(move || {
+                                                snapshot.hover(&fp_clone, line + 1, col + 1).ok().flatten()
+                                            })
+                                            .await
+                                            .unwrap_or(None);
+
+                                            let duration = query_start.elapsed();
+                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                            let ms = duration.as_secs_f64() * 1000.0;
+                                            let found = hover_res.is_some();
+
+                                            if ms > 200.0 {
+                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/hover",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    found,
+                                                    in_flight = remaining,
+                                                    "⚠️ [LSP SLOW >200ms]"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/hover",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    found,
+                                                    in_flight = remaining,
+                                                    "✅ [LSP DONE]"
+                                                );
+                                            }
 
                                             let resp = match hover_res {
                                                 Some(markup) => serde_json::json!({
@@ -321,11 +381,61 @@ async fn run_session_loop(
                                             let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
 
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let defs = {
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "textDocument/definition",
+                                                file = %file_path.display(),
+                                                pos = format!("{}:{}", line + 1, col + 1),
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            let snapshot = {
                                                 let engine = engine_lock.lock().await;
-                                                engine.goto_definition(&file_path, line + 1, col + 1).unwrap_or_default()
+                                                engine.snapshot()
                                             };
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let defs = tokio::task::spawn_blocking(move || {
+                                                snapshot.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_default()
+                                            })
+                                            .await
+                                            .unwrap_or_default();
+
+                                            let duration = query_start.elapsed();
+                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                            let ms = duration.as_secs_f64() * 1000.0;
+                                            let count = defs.len();
+
+                                            if ms > 200.0 {
+                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/definition",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    targets = count,
+                                                    in_flight = remaining,
+                                                    "⚠️ [LSP SLOW >200ms]"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/definition",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    targets = count,
+                                                    in_flight = remaining,
+                                                    "✅ [LSP DONE]"
+                                                );
+                                            }
 
                                             let locations: Vec<_> = defs.into_iter().map(|t| {
                                                 serde_json::json!({
@@ -354,11 +464,61 @@ async fn run_session_loop(
                                             let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
 
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let refs = {
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "textDocument/references",
+                                                file = %file_path.display(),
+                                                pos = format!("{}:{}", line + 1, col + 1),
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            let snapshot = {
                                                 let engine = engine_lock.lock().await;
-                                                engine.find_all_refs(&file_path, line + 1, col + 1).unwrap_or_default()
+                                                engine.snapshot()
                                             };
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let refs = tokio::task::spawn_blocking(move || {
+                                                snapshot.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_default()
+                                            })
+                                            .await
+                                            .unwrap_or_default();
+
+                                            let duration = query_start.elapsed();
+                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                            let ms = duration.as_secs_f64() * 1000.0;
+                                            let count = refs.len();
+
+                                            if ms > 200.0 {
+                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/references",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    references = count,
+                                                    in_flight = remaining,
+                                                    "⚠️ [LSP SLOW >200ms]"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/references",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    references = count,
+                                                    in_flight = remaining,
+                                                    "✅ [LSP DONE]"
+                                                );
+                                            }
 
                                             let locations: Vec<_> = refs.into_iter().map(|t| {
                                                 serde_json::json!({
@@ -385,11 +545,60 @@ async fn run_session_loop(
                                             let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
 
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let syms = {
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "textDocument/documentSymbol",
+                                                file = %file_path.display(),
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            let snapshot = {
                                                 let engine = engine_lock.lock().await;
-                                                engine.document_symbols(&file_path).unwrap_or_default()
+                                                engine.snapshot()
                                             };
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let syms = tokio::task::spawn_blocking(move || {
+                                                snapshot.document_symbols(&fp_clone).unwrap_or_default()
+                                            })
+                                            .await
+                                            .unwrap_or_default();
+
+                                            let duration = query_start.elapsed();
+                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                            let ms = duration.as_secs_f64() * 1000.0;
+                                            let count = syms.len();
+
+                                            if ms > 200.0 {
+                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                                tracing::warn!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/documentSymbol",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    symbols = count,
+                                                    in_flight = remaining,
+                                                    "⚠️ [LSP SLOW >200ms]"
+                                                );
+                                            } else {
+                                                tracing::info!(
+                                                    req = req_num,
+                                                    session = view.session_id,
+                                                    method = "textDocument/documentSymbol",
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    symbols = count,
+                                                    in_flight = remaining,
+                                                    "✅ [LSP DONE]"
+                                                );
+                                            }
 
                                             let sym_list: Vec<_> = syms.into_iter().map(|s| {
                                                 let kind_num = match s.kind.as_str() {
@@ -430,11 +639,20 @@ async fn run_session_loop(
                                             let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
                                             if let Some(text) = params.get("textDocument").and_then(|td| td.get("text")).and_then(|t| t.as_str()) {
+                                                let edit_start = Instant::now();
+                                                let text_len = text.len();
                                                 {
                                                     let mut engine = engine_lock.lock().await;
                                                     let _ = engine.apply_file_change(&file_path, text.to_string());
                                                 }
-                                                tracing::debug!(?file_path, "Applied didOpen directly to Salsa DB in RAM");
+                                                let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
+                                                tracing::info!(
+                                                    session = view.session_id,
+                                                    file = %file_path.display(),
+                                                    bytes = text_len,
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    "📝 [DIRECT-EDIT] applied didOpen directly into Salsa DB in RAM"
+                                                );
                                             }
                                         }
                                     }
@@ -449,11 +667,20 @@ async fn run_session_loop(
                                                 .and_then(|c| c.get("text"))
                                                 .and_then(|t| t.as_str());
                                             if let Some(text) = first {
+                                                let edit_start = Instant::now();
+                                                let text_len = text.len();
                                                 {
                                                     let mut engine = engine_lock.lock().await;
                                                     let _ = engine.apply_file_change(&file_path, text.to_string());
                                                 }
-                                                tracing::debug!(?file_path, "Applied didChange directly to Salsa DB in RAM");
+                                                let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
+                                                tracing::info!(
+                                                    session = view.session_id,
+                                                    file = %file_path.display(),
+                                                    bytes = text_len,
+                                                    duration_ms = format!("{:.2}ms", ms),
+                                                    "📝 [DIRECT-EDIT] applied didChange directly into Salsa DB in RAM"
+                                                );
                                             }
                                         }
                                     }
@@ -540,6 +767,9 @@ async fn run_session_loop(
                                 active_sessions: 1,
                                 loaded_workspaces: 1,
                                 detected_engines: vec![view.workspace.engine.clone()],
+                                memory_rss_bytes: memory::get_process_rss_bytes(),
+                                total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
+                                active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
                             }))
                             .await?;
                     }
@@ -586,7 +816,13 @@ async fn run_session_loop(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "info,prod_code_gateway=debug,prod_code_engine_rust=debug".into()
+            }),
+        )
+        .init();
     let cli = ServerCli::parse();
 
     tracing::info!(
