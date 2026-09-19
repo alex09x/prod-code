@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Call hierarchy and implementations (Phase 7.5): `prod-code callers | callees | impls` and MCP
+  `code_callers` / `code_callees` / `code_implementations` for every engine (rust-analyzer
+  in-memory, gopls, clangd, native TypeScript, basedpyright, sourcekit-lsp), with call sites.
+- Rust document symbols report their real kinds and lines (all were `Variable (line 1)`).
+- Second macOS node: the MacBook Pro (192.168.2.40, Xcode 15.4 with iOS simulators, live GUI
+  session) runs a gateway for Swift and Xcode UI tests.
+
 - Sync watermarks are kept per gateway node: a checkout placed on a second node (or moved by
   failover) is uploaded to it in full instead of receiving an empty delta computed against the
   first node. An empty delta is still sent, so a node whose workspace copy was pruned answers

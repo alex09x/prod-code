@@ -947,8 +947,10 @@ async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
                 23 => "Struct",
                 _ => "Symbol",
             };
+            // DocumentSymbol carries `range`; SymbolInformation nests it under `location`.
             let start_line = sym
                 .get("range")
+                .or_else(|| sym.get("location").and_then(|l| l.get("range")))
                 .and_then(|r| r.get("start"))
                 .and_then(|s| s.get("line"))
                 .and_then(|l| l.as_u64())

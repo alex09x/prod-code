@@ -307,7 +307,7 @@ This document outlines the architectural milestones and engineering phases for b
     - The server returns only the winning hypothesis's unified diff back to the client.
     - Local Mac disk and Git history remain clean of failed experimental churn.
 
-- [ ] **7.5. Call Graph & Type Hierarchy Navigation**
+- [~] **7.5. Call Graph & Type Hierarchy Navigation** — shipped 2026-09-19: `prod-code callers | callees | impls <file> <line> <col>` and MCP `code_callers`, `code_callees`, `code_implementations`; the Rust engine answers through rust-analyzer's call hierarchy and goto-implementation in-memory, the managed engines (gopls, clangd, native tsc, basedpyright, sourcekit-lsp) through the standard LSP call-hierarchy requests; verified on Rust, C++, TypeScript, Python and Swift fixtures. `code_dead_code` still open (see 8.6).
   - Graph-level codebase exploration endpoints:
     - `code_callers(path, line, col)`: incoming call hierarchy across the entire workspace/monorepo in < 5 ms.
     - `code_callees(path, line, col)`: outgoing call graph tree.
