@@ -7,26 +7,36 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, PathTranslator, ProdCodeCodec, StatusResponse, WireMessage, PROTOCOL_VERSION,
+    HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 use workspace::{SessionView, WorkspaceManager};
 
 #[derive(Parser, Debug)]
-#[command(name = "prod-code-server", author, version, about = "Remote Code Intelligence Gateway")]
+#[command(
+    name = "prod-code-server",
+    author,
+    version,
+    about = "Remote Code Intelligence Gateway"
+)]
 pub struct ServerCli {
     /// Bind address (IP:port). Defaults to 0.0.0.0:9400.
     #[arg(short, long, env = "PROD_CODE_BIND", default_value = "0.0.0.0:9400")]
     pub bind: SocketAddr,
 
     /// Workspace root storage directory on server.
-    #[arg(short, long, env = "PROD_CODE_STORAGE", default_value = "/srv/prod-code/workspaces")]
+    #[arg(
+        short,
+        long,
+        env = "PROD_CODE_STORAGE",
+        default_value = "/srv/prod-code/workspaces"
+    )]
     pub storage: PathBuf,
 }
 
@@ -167,8 +177,7 @@ pub async fn handle_client(
                     .await?;
 
                 // Session loop for streaming LSP and control messages
-                let session_res =
-                    run_session_loop(&mut framed, &translator, &session_view).await;
+                let session_res = run_session_loop(&mut framed, &translator, &session_view).await;
 
                 state
                     .workspace_manager
@@ -267,64 +276,256 @@ async fn run_session_loop(
                                 continue;
                             }
 
-                            // 4. Handle "textDocument/didOpen" vs "textDocument/didChange"
-                            if method == Some("textDocument/didOpen") {
-                                if let Some(ref backend) = view.workspace.backend {
-                                    let uri = val.get("params")
-                                        .and_then(|p| p.get("textDocument"))
-                                        .and_then(|td| td.get("uri"))
-                                        .and_then(|u| u.as_str())
-                                        .unwrap_or("");
-                                    let is_open = backend.open_files.read().await.contains(uri);
-                                    if is_open {
-                                        let text = val.get("params")
-                                            .and_then(|p| p.get("textDocument"))
-                                            .and_then(|td| td.get("text"))
-                                            .and_then(|t| t.as_str())
-                                            .unwrap_or("");
-                                        let version = val.get("params")
-                                            .and_then(|p| p.get("textDocument"))
-                                            .and_then(|td| td.get("version"))
-                                            .and_then(|v| v.as_i64())
-                                            .unwrap_or(2);
-                                        let did_change = serde_json::json!({
-                                            "jsonrpc": "2.0",
-                                            "method": "textDocument/didChange",
-                                            "params": {
-                                                "textDocument": {
-                                                    "uri": uri,
-                                                    "version": version
-                                                },
-                                                "contentChanges": [
-                                                    { "text": text }
-                                                ]
-                                            }
-                                        });
-                                        let _ = backend.send_lsp(&did_change.to_string()).await;
-                                        continue;
-                                    } else {
-                                        backend.open_files.write().await.insert(uri.to_string());
+                            // 4. In-Memory RustEngine fast path: hover, definition, references, documentSymbol
+                            if let Some(ref engine_lock) = view.workspace.rust_engine {
+                                match method {
+                                    Some("textDocument/hover") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let hover_res = {
+                                                let engine = engine_lock.lock().await;
+                                                engine.hover(&file_path, line + 1, col + 1).ok().flatten()
+                                            };
+
+                                            let resp = match hover_res {
+                                                Some(markup) => serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": {
+                                                        "contents": {
+                                                            "kind": "markdown",
+                                                            "value": markup
+                                                        }
+                                                    }
+                                                }),
+                                                None => serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": req_id,
+                                                    "result": null
+                                                }),
+                                            };
+                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                            continue;
+                                        }
                                     }
+                                    Some("textDocument/definition") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let defs = {
+                                                let engine = engine_lock.lock().await;
+                                                engine.goto_definition(&file_path, line + 1, col + 1).unwrap_or_default()
+                                            };
+
+                                            let locations: Vec<_> = defs.into_iter().map(|t| {
+                                                serde_json::json!({
+                                                    "uri": format!("file://{}", t.path.display()),
+                                                    "range": {
+                                                        "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                                                        "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                                                    }
+                                                })
+                                            }).collect();
+
+                                            let resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "result": locations
+                                            });
+                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                            continue;
+                                        }
+                                    }
+                                    Some("textDocument/references") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let refs = {
+                                                let engine = engine_lock.lock().await;
+                                                engine.find_all_refs(&file_path, line + 1, col + 1).unwrap_or_default()
+                                            };
+
+                                            let locations: Vec<_> = refs.into_iter().map(|t| {
+                                                serde_json::json!({
+                                                    "uri": format!("file://{}", t.path.display()),
+                                                    "range": {
+                                                        "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                                                        "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                                                    }
+                                                })
+                                            }).collect();
+
+                                            let resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "result": locations
+                                            });
+                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                            continue;
+                                        }
+                                    }
+                                    Some("textDocument/documentSymbol") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let syms = {
+                                                let engine = engine_lock.lock().await;
+                                                engine.document_symbols(&file_path).unwrap_or_default()
+                                            };
+
+                                            let sym_list: Vec<_> = syms.into_iter().map(|s| {
+                                                let kind_num = match s.kind.as_str() {
+                                                    "Fn" | "Function" => 12,
+                                                    "Struct" => 23,
+                                                    "Enum" => 10,
+                                                    "Const" | "Constant" => 14,
+                                                    "Trait" => 11,
+                                                    "Module" => 2,
+                                                    _ => 13,
+                                                };
+                                                serde_json::json!({
+                                                    "name": s.name,
+                                                    "kind": kind_num,
+                                                    "location": {
+                                                        "uri": uri,
+                                                        "range": {
+                                                            "start": { "line": s.line.saturating_sub(1), "character": 0 },
+                                                            "end": { "line": s.line.saturating_sub(1), "character": 0 }
+                                                        }
+                                                    },
+                                                    "containerName": s.detail
+                                                })
+                                            }).collect();
+
+                                            let resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": req_id,
+                                                "result": sym_list
+                                            });
+                                            let client_resp = translator.translate_lsp_to_client(&resp.to_string());
+                                            framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                            continue;
+                                        }
+                                    }
+                                    Some("textDocument/didOpen") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                            if let Some(text) = params.get("textDocument").and_then(|td| td.get("text")).and_then(|t| t.as_str()) {
+                                                {
+                                                    let mut engine = engine_lock.lock().await;
+                                                    let _ = engine.apply_file_change(&file_path, text.to_string());
+                                                }
+                                                tracing::debug!(?file_path, "Applied didOpen directly to Salsa DB in RAM");
+                                            }
+                                        }
+                                    }
+                                    Some("textDocument/didChange") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                            let first = params
+                                                .get("contentChanges")
+                                                .and_then(|c| c.as_array())
+                                                .and_then(|arr| arr.first())
+                                                .and_then(|c| c.get("text"))
+                                                .and_then(|t| t.as_str());
+                                            if let Some(text) = first {
+                                                {
+                                                    let mut engine = engine_lock.lock().await;
+                                                    let _ = engine.apply_file_change(&file_path, text.to_string());
+                                                }
+                                                tracing::debug!(?file_path, "Applied didChange directly to Salsa DB in RAM");
+                                            }
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
 
-                            // 5. Handle "textDocument/didClose"
-                            if method == Some("textDocument/didClose") {
-                                if let Some(ref backend) = view.workspace.backend {
-                                    let uri = val.get("params")
+                            // 5. Fallback handling for textDocument/didOpen vs didChange on backend worker
+                            if let (Some("textDocument/didOpen"), Some(backend)) = (method, &view.workspace.backend) {
+                                let uri = val.get("params")
+                                    .and_then(|p| p.get("textDocument"))
+                                    .and_then(|td| td.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                let is_open = backend.open_files.read().await.contains(uri);
+                                if is_open {
+                                    let text = val.get("params")
                                         .and_then(|p| p.get("textDocument"))
-                                        .and_then(|td| td.get("uri"))
-                                        .and_then(|u| u.as_str())
+                                        .and_then(|td| td.get("text"))
+                                        .and_then(|t| t.as_str())
                                         .unwrap_or("");
-                                    backend.open_files.write().await.remove(uri);
+                                    let version = val.get("params")
+                                        .and_then(|p| p.get("textDocument"))
+                                        .and_then(|td| td.get("version"))
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(2);
+                                    let did_change = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "textDocument/didChange",
+                                        "params": {
+                                            "textDocument": {
+                                                "uri": uri,
+                                                "version": version
+                                            },
+                                            "contentChanges": [
+                                                { "text": text }
+                                            ]
+                                        }
+                                    });
+                                    let _ = backend.send_lsp(&did_change.to_string()).await;
+                                    continue;
+                                } else {
+                                    backend.open_files.write().await.insert(uri.to_string());
                                 }
+                            }
+
+                            // 6. Handle "textDocument/didClose"
+                            if let (Some("textDocument/didClose"), Some(backend)) = (method, &view.workspace.backend) {
+                                let uri = val.get("params")
+                                    .and_then(|p| p.get("textDocument"))
+                                    .and_then(|td| td.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                backend.open_files.write().await.remove(uri);
+                            }
+
+                            // 7. If no backend is attached and client expects a response, return empty result
+                            if let (Some(req_id), None) = (id, &view.workspace.backend) {
+                                let empty_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": null
+                                });
+                                framed.send(WireMessage::LspPayload(empty_resp.to_string())).await?;
+                                continue;
                             }
                         }
 
-                        if let Some(ref backend) = view.workspace.backend {
-                            if let Err(e) = backend.send_lsp(&server_lsp).await {
+                        if let Some(backend) = &view.workspace.backend {
+                            let _ = backend.send_lsp(&server_lsp).await.inspect_err(|e| {
                                 tracing::error!(error = %e, "Failed to forward LSP to backend worker");
-                            }
+                            });
                         }
                     }
                     Some(Ok(WireMessage::Disconnect { reason })) => {
@@ -421,7 +622,11 @@ mod tests {
         assert_eq!(status.server_pid, std::process::id());
         assert_eq!(status.active_sessions, 0);
         assert_eq!(status.loaded_workspaces, 0);
-        assert!(status.detected_engines.contains(&"rust (ra_ap_ide)".to_string()));
+        assert!(
+            status
+                .detected_engines
+                .contains(&"rust (ra_ap_ide)".to_string())
+        );
     }
 
     #[test]

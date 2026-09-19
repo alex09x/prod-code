@@ -92,15 +92,22 @@ mod tests {
             "/srv/prod-code/workspaces/my-app",
         );
 
-        let server_path = translator.to_server_path("/Users/alex09x/Documents/workspace/my-app/src/main.rs");
+        let server_path =
+            translator.to_server_path("/Users/alex09x/Documents/workspace/my-app/src/main.rs");
         assert_eq!(server_path, "/srv/prod-code/workspaces/my-app/src/main.rs");
 
         let client_path = translator.to_client_path("/srv/prod-code/workspaces/my-app/src/main.rs");
-        assert_eq!(client_path, "/Users/alex09x/Documents/workspace/my-app/src/main.rs");
+        assert_eq!(
+            client_path,
+            "/Users/alex09x/Documents/workspace/my-app/src/main.rs"
+        );
 
         let client_uri = "file:///Users/alex09x/Documents/workspace/my-app/src/lib.rs";
         let server_uri = translator.to_server_uri(client_uri);
-        assert_eq!(server_uri, "file:///srv/prod-code/workspaces/my-app/src/lib.rs");
+        assert_eq!(
+            server_uri,
+            "file:///srv/prod-code/workspaces/my-app/src/lib.rs"
+        );
 
         let roundtrip_uri = translator.to_client_uri(&server_uri);
         assert_eq!(roundtrip_uri, client_uri);

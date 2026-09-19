@@ -110,7 +110,10 @@ mod tests {
         codec.encode(original.clone(), &mut buf).unwrap();
         assert!(buf.len() > 4);
 
-        let decoded = codec.decode(&mut buf).unwrap().expect("should decode message");
+        let decoded = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode message");
         assert_eq!(decoded, original);
         assert_eq!(buf.len(), 0);
     }

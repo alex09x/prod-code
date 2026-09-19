@@ -33,11 +33,11 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Deliver a purpose-built, multi-tenant Rust analysis engine directly utilizing `ra_ap_*` public APIs (`AnalysisHost`), featuring direct-edits and shared dependency caching in server RAM.
 
-- [ ] **2.1. Clean `ra_ap_*` Integration (`crates/prod-code-engine-rust`)**
+- [x] **2.1. Clean `ra_ap_*` Integration (`crates/prod-code-engine-rust`)**
   - Direct dependency on upstream `ra_ap_ide::AnalysisHost`, `ra_ap_project_model`, and `ra_ap_vfs`.
   - Zero build-time AST patching hacks: clean usage of public APIs and structured input mutation.
   - Persistent base database: Cargo metadata and crate graphs loaded and cached in server RAM once per workspace.
-- [ ] **2.2. Single-Owner Direct-Edit Fast Path**
+- [x] **2.2. Single-Owner Direct-Edit Fast Path**
   - Detect dedicated worktree sessions (single session per worktree path).
   - Apply unsaved document edits (`didChange`) directly into base Salsa file inputs.
   - Bypass overlay crate cones and global database invalidation locks for unshared workspaces.

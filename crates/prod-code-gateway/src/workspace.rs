@@ -3,9 +3,9 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Unique identifier for a shared workspace based on its canonical root.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18,6 +18,7 @@ pub struct SharedWorkspace {
     pub engine: String,
     pub active_sessions: AtomicUsize,
     pub direct_edit_eligible: AtomicBool,
+    pub rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
     pub backend: Option<Arc<crate::backend::BackendWorker>>,
 }
 
@@ -25,6 +26,7 @@ impl SharedWorkspace {
     pub fn new(
         root: PathBuf,
         engine: String,
+        rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
         backend: Option<Arc<crate::backend::BackendWorker>>,
     ) -> Self {
         Self {
@@ -33,11 +35,11 @@ impl SharedWorkspace {
             engine,
             active_sessions: AtomicUsize::new(0),
             direct_edit_eligible: AtomicBool::new(true),
+            rust_engine,
             backend,
         }
     }
 }
-
 
 /// A session's private view over a shared workspace (e.g. an agent's Git worktree).
 pub struct SessionView {
@@ -57,6 +59,12 @@ enum LoadState {
 pub struct WorkspaceManager {
     workspaces: RwLock<HashMap<WorkspaceKey, LoadState>>,
     worktree_owners: Mutex<HashMap<PathBuf, usize>>,
+}
+
+impl Default for WorkspaceManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkspaceManager {
@@ -143,18 +151,45 @@ impl WorkspaceManager {
 
         // Leader performs actual workspace load
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
-        let backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
-            .await
-            .map_err(|e| {
-                tracing::warn!(error = %e, "Could not spawn background language server; falling back to stub");
-                e
+        let (rust_engine, backend) = if engine == "rust" {
+            let ws_path = workspace_root.to_path_buf();
+            let loaded_engine = tokio::task::spawn_blocking(move || {
+                prod_code_engine_rust::RustEngine::load(&ws_path)
             })
+            .await
             .ok()
-            .map(Arc::new);
+            .and_then(|res| match res {
+                Ok(e) => {
+                    tracing::info!(workspace = ?workspace_root, "In-memory RustEngine (ra_ap_ide) loaded into RAM");
+                    Some(Arc::new(Mutex::new(e)))
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "Failed to load in-memory RustEngine; falling back to subprocess");
+                    None
+                }
+            });
+
+            if let Some(re) = loaded_engine {
+                (Some(re), None)
+            } else {
+                let bw = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                    .await
+                    .ok()
+                    .map(Arc::new);
+                (None, bw)
+            }
+        } else {
+            let bw = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                .await
+                .ok()
+                .map(Arc::new);
+            (None, bw)
+        };
 
         let ws = Arc::new(SharedWorkspace::new(
             workspace_root.to_path_buf(),
             engine.to_string(),
+            rust_engine,
             backend,
         ));
         ws.active_sessions.fetch_add(1, Ordering::Relaxed);
@@ -195,7 +230,9 @@ impl WorkspaceManager {
 
     /// Release a session's view on disconnect.
     pub async fn unregister_session_view(&self, view: &SessionView) {
-        view.workspace.active_sessions.fetch_sub(1, Ordering::Relaxed);
+        view.workspace
+            .active_sessions
+            .fetch_sub(1, Ordering::Relaxed);
         let mut owners = self.worktree_owners.lock().await;
         if let Some(count) = owners.get_mut(&view.worktree_root) {
             *count = count.saturating_sub(1);
@@ -218,15 +255,11 @@ mod tests {
         // Concurrent requests for the same workspace
         let m1 = Arc::clone(&manager);
         let r1 = root.clone();
-        let handle1 = tokio::spawn(async move {
-            m1.get_or_load(&r1, "rust").await.unwrap()
-        });
+        let handle1 = tokio::spawn(async move { m1.get_or_load(&r1, "rust").await.unwrap() });
 
         let m2 = Arc::clone(&manager);
         let r2 = root.clone();
-        let handle2 = tokio::spawn(async move {
-            m2.get_or_load(&r2, "rust").await.unwrap()
-        });
+        let handle2 = tokio::spawn(async move { m2.get_or_load(&r2, "rust").await.unwrap() });
 
         let (ws1, ws2) = tokio::join!(handle1, handle2);
         let ws1 = ws1.unwrap();
@@ -247,15 +280,24 @@ mod tests {
         let wt1 = PathBuf::from("/test/repo/worktree-1");
         let wt2 = PathBuf::from("/test/repo/worktree-2");
 
-        let view1 = manager.register_session_view(1, wt1.clone(), Arc::clone(&ws)).await;
+        let view1 = manager
+            .register_session_view(1, wt1.clone(), Arc::clone(&ws))
+            .await;
         assert!(view1.is_single_owner, "First agent on wt1 is sole owner");
 
-        let view2 = manager.register_session_view(2, wt2.clone(), Arc::clone(&ws)).await;
+        let view2 = manager
+            .register_session_view(2, wt2.clone(), Arc::clone(&ws))
+            .await;
         assert!(view2.is_single_owner, "First agent on wt2 is sole owner");
 
         // Second session attaches to wt1
-        let view3 = manager.register_session_view(3, wt1.clone(), Arc::clone(&ws)).await;
-        assert!(!view3.is_single_owner, "Second agent on wt1 is NOT sole owner");
+        let view3 = manager
+            .register_session_view(3, wt1.clone(), Arc::clone(&ws))
+            .await;
+        assert!(
+            !view3.is_single_owner,
+            "Second agent on wt1 is NOT sole owner"
+        );
 
         // Cleanup
         manager.unregister_session_view(&view1).await;

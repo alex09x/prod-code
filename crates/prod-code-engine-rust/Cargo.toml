@@ -12,6 +12,14 @@ anyhow.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+serde.workspace = true
+
+ra_ap_ide = "=0.0.344"
+ra_ap_load-cargo = "=0.0.344"
+ra_ap_project_model = "=0.0.344"
+ra_ap_vfs = "=0.0.344"
+ra_ap_syntax = "=0.0.344"
+ra_ap_ide_db = "=0.0.344"
 
 [dev-dependencies]
 tempfile.workspace = true

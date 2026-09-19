@@ -7,7 +7,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 /// Managed backend worker running a language server process on the host.
 pub struct BackendWorker {
@@ -29,7 +29,12 @@ impl BackendWorker {
             _ => "rust-analyzer",
         };
 
-        tracing::info!(engine, binary, ?workspace_root, "Spawning backend language server");
+        tracing::info!(
+            engine,
+            binary,
+            ?workspace_root,
+            "Spawning backend language server"
+        );
 
         let mut cmd = Command::new(binary);
         cmd.current_dir(workspace_root)
@@ -73,45 +78,62 @@ impl BackendWorker {
                                 let _ = reader.read_line(&mut line).await;
 
                                 let mut buf = vec![0u8; len];
-                                if reader.read_exact(&mut buf).await.is_ok() {
-                                    if let Ok(json) = String::from_utf8(buf) {
-                                        // Auto-respond to server-initiated requests
-                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                                            if let (Some(id), Some(method)) = (val.get("id"), val.get("method").and_then(|m| m.as_str())) {
-                                                match method {
-                                                    "window/workDoneProgress/create" | "client/registerCapability" => {
-                                                        let auto_resp = serde_json::json!({
-                                                            "jsonrpc": "2.0",
-                                                            "id": id,
-                                                            "result": null
-                                                        }).to_string();
-                                                        let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
-                                                        let mut sin = stdin_writer.lock().await;
-                                                        let _ = sin.write_all(header.as_bytes()).await;
-                                                        let _ = sin.write_all(auto_resp.as_bytes()).await;
-                                                        let _ = sin.flush().await;
-                                                    }
-                                                    "workspace/configuration" => {
-                                                        let auto_resp = serde_json::json!({
-                                                            "jsonrpc": "2.0",
-                                                            "id": id,
-                                                            "result": [{}]
-                                                        }).to_string();
-                                                        let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
-                                                        let mut sin = stdin_writer.lock().await;
-                                                        let _ = sin.write_all(header.as_bytes()).await;
-                                                        let _ = sin.write_all(auto_resp.as_bytes()).await;
-                                                        let _ = sin.flush().await;
-                                                    }
-                                                    _ => {}
-                                                }
-                                            }
-                                        }
+                                if reader.read_exact(&mut buf).await.is_err() {
+                                    continue;
+                                }
+                                let Ok(json) = String::from_utf8(buf) else {
+                                    continue;
+                                };
 
-                                        // Broadcast frame to all connected sessions
-                                        let _ = tx_clone.send(json);
+                                // Auto-respond to server-initiated requests
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                                    let id = val.get("id");
+                                    let method = val.get("method").and_then(|m| m.as_str());
+                                    match (id, method) {
+                                        (
+                                            Some(id),
+                                            Some(
+                                                "window/workDoneProgress/create"
+                                                | "client/registerCapability",
+                                            ),
+                                        ) => {
+                                            let auto_resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": id,
+                                                "result": null
+                                            })
+                                            .to_string();
+                                            let header = format!(
+                                                "Content-Length: {}\r\n\r\n",
+                                                auto_resp.len()
+                                            );
+                                            let mut sin = stdin_writer.lock().await;
+                                            let _ = sin.write_all(header.as_bytes()).await;
+                                            let _ = sin.write_all(auto_resp.as_bytes()).await;
+                                            let _ = sin.flush().await;
+                                        }
+                                        (Some(id), Some("workspace/configuration")) => {
+                                            let auto_resp = serde_json::json!({
+                                                "jsonrpc": "2.0",
+                                                "id": id,
+                                                "result": [{}]
+                                            })
+                                            .to_string();
+                                            let header = format!(
+                                                "Content-Length: {}\r\n\r\n",
+                                                auto_resp.len()
+                                            );
+                                            let mut sin = stdin_writer.lock().await;
+                                            let _ = sin.write_all(header.as_bytes()).await;
+                                            let _ = sin.write_all(auto_resp.as_bytes()).await;
+                                            let _ = sin.flush().await;
+                                        }
+                                        _ => {}
                                     }
                                 }
+
+                                // Broadcast frame to all connected sessions
+                                let _ = tx_clone.send(json);
                             }
                         }
                     }
@@ -190,13 +212,14 @@ impl BackendWorker {
             let remaining = deadline - tokio::time::Instant::now();
             match tokio::time::timeout(remaining, rx.recv()).await {
                 Ok(Ok(json)) => {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                        if val.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                            if let Some(caps) = val.get("result").and_then(|r| r.get("capabilities")) {
-                                *self.capabilities.write().await = Some(caps.clone());
-                            }
-                            break;
+                    let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) else {
+                        continue;
+                    };
+                    if val.get("id").and_then(|id| id.as_i64()) == Some(1) {
+                        if let Some(caps) = val.get("result").and_then(|r| r.get("capabilities")) {
+                            *self.capabilities.write().await = Some(caps.clone());
                         }
+                        break;
                     }
                 }
                 Ok(Err(_)) => {}

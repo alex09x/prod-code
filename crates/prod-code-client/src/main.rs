@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, ProdCodeCodec, StatusResponse, WireMessage, PROTOCOL_VERSION,
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, StatusResponse, WireMessage,
 };
 use std::env;
 use std::net::SocketAddr;
@@ -23,7 +23,12 @@ use url::Url;
 )]
 struct Cli {
     /// Remote gateway address (host:port). Defaults to PROD_CODE_REMOTE env var or 127.0.0.1:9400.
-    #[arg(short, long, env = "PROD_CODE_REMOTE", default_value = "127.0.0.1:9400")]
+    #[arg(
+        short,
+        long,
+        env = "PROD_CODE_REMOTE",
+        default_value = "127.0.0.1:9400"
+    )]
     remote: SocketAddr,
 
     #[command(subcommand)]
@@ -41,27 +46,13 @@ enum Commands {
     /// Push current worktree delta to remote storage.
     Sync,
     /// Jump to symbol definition: prod-code def <file> <line> <col>
-    Def {
-        file: PathBuf,
-        line: u32,
-        col: u32,
-    },
+    Def { file: PathBuf, line: u32, col: u32 },
     /// Inspect symbol type & docs: prod-code hover <file> <line> <col>
-    Hover {
-        file: PathBuf,
-        line: u32,
-        col: u32,
-    },
+    Hover { file: PathBuf, line: u32, col: u32 },
     /// Find all references to symbol: prod-code refs <file> <line> <col>
-    Refs {
-        file: PathBuf,
-        line: u32,
-        col: u32,
-    },
+    Refs { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
-    Symbols {
-        file: PathBuf,
-    },
+    Symbols { file: PathBuf },
 }
 
 #[tokio::main]
@@ -163,7 +154,9 @@ async fn execute_lsp_query(
             }
         }
     });
-    framed.send(WireMessage::LspPayload(init_req.to_string())).await?;
+    framed
+        .send(WireMessage::LspPayload(init_req.to_string()))
+        .await?;
 
     // Await init response (matching id: 1)
     let init_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
@@ -171,10 +164,12 @@ async fn execute_lsp_query(
         let remaining = init_deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, framed.next()).await {
             Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json) {
-                    if val.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                        break;
-                    }
+                if serde_json::from_str::<serde_json::Value>(&resp_json)
+                    .ok()
+                    .and_then(|val| val.get("id").and_then(|id| id.as_i64()))
+                    == Some(1)
+                {
+                    break;
                 }
             }
             Ok(Some(Ok(_))) => {}
@@ -190,7 +185,9 @@ async fn execute_lsp_query(
         "method": "initialized",
         "params": {}
     });
-    framed.send(WireMessage::LspPayload(initialized.to_string())).await?;
+    framed
+        .send(WireMessage::LspPayload(initialized.to_string()))
+        .await?;
 
     // 4. LSP didOpen notification
     let did_open = serde_json::json!({
@@ -205,7 +202,9 @@ async fn execute_lsp_query(
             }
         }
     });
-    framed.send(WireMessage::LspPayload(did_open.to_string())).await?;
+    framed
+        .send(WireMessage::LspPayload(did_open.to_string()))
+        .await?;
 
     // 5. Send targeted query with id = 2
     let query_req = serde_json::json!({
@@ -214,7 +213,9 @@ async fn execute_lsp_query(
         "method": method,
         "params": params
     });
-    framed.send(WireMessage::LspPayload(query_req.to_string())).await?;
+    framed
+        .send(WireMessage::LspPayload(query_req.to_string()))
+        .await?;
 
     // 6. Read response matching id = 2
     let query_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(25);
@@ -222,25 +223,37 @@ async fn execute_lsp_query(
         let remaining = query_deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, framed.next()).await {
             Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json) {
-                    if val.get("id").and_then(|id| id.as_i64()) == Some(2) {
-                        let did_close = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "method": "textDocument/didClose",
-                            "params": {
-                                "textDocument": {
-                                    "uri": file_uri
-                                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json)
+                    .map_err(|_| ())
+                    .and_then(|v| {
+                        if v.get("id").and_then(|id| id.as_i64()) == Some(2) {
+                            Ok(v)
+                        } else {
+                            Err(())
+                        }
+                    })
+                {
+                    let did_close = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didClose",
+                        "params": {
+                            "textDocument": {
+                                "uri": file_uri
                             }
-                        });
-                        let _ = framed.send(WireMessage::LspPayload(did_close.to_string())).await;
-                        let _ = framed
-                            .send(WireMessage::Disconnect {
-                                reason: "query finished".to_string(),
-                            })
-                            .await;
-                        return Ok(val.get("result").cloned().unwrap_or(serde_json::Value::Null));
-                    }
+                        }
+                    });
+                    let _ = framed
+                        .send(WireMessage::LspPayload(did_close.to_string()))
+                        .await;
+                    let _ = framed
+                        .send(WireMessage::Disconnect {
+                            reason: "query finished".to_string(),
+                        })
+                        .await;
+                    return Ok(val
+                        .get("result")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null));
                 }
             }
             Ok(Some(Ok(_))) => {}
@@ -308,17 +321,43 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
             println!("No definition found.");
         } else {
             for loc in arr {
-                let uri = loc.get("uri").or_else(|| loc.get("targetUri")).and_then(|u| u.as_str()).unwrap_or("");
+                let uri = loc
+                    .get("uri")
+                    .or_else(|| loc.get("targetUri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
                 let range = loc.get("range").or_else(|| loc.get("targetSelectionRange"));
-                let start_line = range.and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
-                let start_col = range.and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+                let start_line = range
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let start_col = range
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
                 println!("📍 Definition: {uri}:{start_line}:{start_col}");
             }
         }
     } else if let Some(obj) = result.as_object() {
         let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        let start_line = obj.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
-        let start_col = obj.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+        let start_line = obj
+            .get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let start_col = obj
+            .get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
         println!("📍 Definition: {uri}:{start_line}:{start_col}");
     } else {
         println!("{:#}", result);
@@ -351,8 +390,20 @@ async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
             println!("Found {} reference(s):", arr.len());
             for loc in arr {
                 let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start_line = loc.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
-                let start_col = loc.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+                let start_line = loc
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let start_col = loc
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
                 println!("  • {uri}:{start_line}:{start_col}");
             }
         }
@@ -389,7 +440,13 @@ async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
                 23 => "Struct",
                 _ => "Symbol",
             };
-            let start_line = sym.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
+            let start_line = sym
+                .get("range")
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
             println!("  [{kind_str}] {name} (line {start_line})");
         }
     } else {
@@ -521,9 +578,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
 
         // Parse Content-Length header
         if header_line.starts_with("Content-Length:") {
-            let len_str = header_line
-                .trim_start_matches("Content-Length:")
-                .trim();
+            let len_str = header_line.trim_start_matches("Content-Length:").trim();
             let content_len: usize = len_str.parse().context("Invalid Content-Length header")?;
 
             // Read the empty separating line \r\n
@@ -534,8 +589,8 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             let mut body_buf = vec![0u8; content_len];
             stdin_reader.read_exact(&mut body_buf).await?;
 
-            let json_payload = String::from_utf8(body_buf)
-                .context("LSP payload was not valid UTF-8 string")?;
+            let json_payload =
+                String::from_utf8(body_buf).context("LSP payload was not valid UTF-8 string")?;
 
             if socket_tx
                 .send(WireMessage::LspPayload(json_payload))
@@ -560,7 +615,10 @@ async fn run_mcp_stub(remote: SocketAddr) -> Result<()> {
 
 async fn run_sync_stub(remote: SocketAddr) -> Result<()> {
     let cwd = env::current_dir()?;
-    println!("Syncing workspace {:?} with remote gateway at {}", cwd, remote);
+    println!(
+        "Syncing workspace {:?} with remote gateway at {}",
+        cwd, remote
+    );
     println!("Sync: OK (Phase 1)");
     Ok(())
 }

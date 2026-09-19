@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, HandshakeResponse, PathTranslator, ProdCodeCodec, StatusResponse,
-    WireMessage, PROTOCOL_VERSION,
+    HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec,
+    StatusResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -60,7 +60,9 @@ async fn handle_test_client(
                 let status = StatusResponse {
                     server_pid: state.server_pid,
                     uptime_seconds: state.start_time.elapsed().as_secs(),
-                    active_sessions: state.active_sessions.load(std::sync::atomic::Ordering::Relaxed),
+                    active_sessions: state
+                        .active_sessions
+                        .load(std::sync::atomic::Ordering::Relaxed),
                     loaded_workspaces: 0,
                     detected_engines: vec!["rust (ra_ap_ide)".to_string()],
                 };
@@ -147,7 +149,11 @@ async fn test_full_phase1_e2e_flow() {
         match resp {
             WireMessage::StatusResponse(status) => {
                 assert_eq!(status.active_sessions, 0);
-                assert!(status.detected_engines.contains(&"rust (ra_ap_ide)".to_string()));
+                assert!(
+                    status
+                        .detected_engines
+                        .contains(&"rust (ra_ap_ide)".to_string())
+                );
             }
             other => panic!("Unexpected status response: {:?}", other),
         }
@@ -201,7 +207,11 @@ async fn test_full_phase1_e2e_flow() {
             WireMessage::LspPayload(json) => {
                 let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
                 assert_eq!(parsed["id"], 1);
-                assert!(parsed["result"]["capabilities"]["hoverProvider"].as_bool().unwrap());
+                assert!(
+                    parsed["result"]["capabilities"]["hoverProvider"]
+                        .as_bool()
+                        .unwrap()
+                );
             }
             other => panic!("Unexpected LSP response: {:?}", other),
         }
