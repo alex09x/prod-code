@@ -1072,6 +1072,7 @@ dependencies = [
  "prod-code-mcp",
  "prod-code-protocol",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",

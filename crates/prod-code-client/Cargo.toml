@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[lib]
+name = "prod_code_client"
+path = "src/bench.rs"
+
 [[bin]]
 name = "prod-code"
 path = "src/main.rs"
@@ -23,5 +27,6 @@ url.workspace = true
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ignore = "0.4"
+tempfile.workspace = true
 
 

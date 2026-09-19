@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
+use prod_code_client::divergent_bench::{self, DivergentBenchConfig};
 use prod_code_protocol::{
     HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
 };
@@ -71,6 +72,29 @@ enum Commands {
         #[arg(long, default_value_t = 5)]
         duration_secs: u64,
     },
+    /// Multi-worktree divergence and correctness benchmark: forks isolated git worktrees from a
+    /// base repo (e.g. BTCR or govcon-intel), applies controlled mutations (signature change,
+    /// dependency manifest change, untracked file), then hammers them with concurrent LSP queries
+    /// from a simulated agent fleet to assert zero cross-worktree bleed.
+    DivergentBench {
+        /// Base git repository to fork worktrees from. If omitted, a disposable scratch
+        /// repository with a synthetic fixture crate is created instead.
+        #[arg(long)]
+        base_repo: Option<PathBuf>,
+        /// Scratch directory to materialize the origin clone and worktrees in. Defaults to a
+        /// temp directory that is cleaned up afterwards.
+        #[arg(long)]
+        workdir: Option<PathBuf>,
+        /// Number of concurrent simulated workers (minimum 10).
+        #[arg(long, default_value_t = 12)]
+        workers: usize,
+        /// Number of queries each worker issues against its assigned worktree.
+        #[arg(long, default_value_t = 5)]
+        queries_per_worker: usize,
+        /// Keep the generated scratch worktrees on disk after the run for inspection.
+        #[arg(long, default_value_t = false)]
+        keep_workdir: bool,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +116,23 @@ async fn main() -> Result<()> {
             depth,
             duration_secs,
         } => run_benchmark(cli.remote, workspaces, concurrency, depth, duration_secs).await,
+        Commands::DivergentBench {
+            base_repo,
+            workdir,
+            workers,
+            queries_per_worker,
+            keep_workdir,
+        } => {
+            run_divergent_bench(
+                cli.remote,
+                base_repo,
+                workdir,
+                workers,
+                queries_per_worker,
+                keep_workdir,
+            )
+            .await
+        }
     }
 }
 
@@ -1081,6 +1122,49 @@ async fn run_benchmark(
     println!("Latency (p95):       {:.2} ms", p95);
     println!("Latency (p99):       {:.2} ms", p99);
     println!("────────────────────────────────────────────────────────────────");
+
+    Ok(())
+}
+
+/// Run the multi-worktree divergence and correctness benchmark against the remote gateway.
+async fn run_divergent_bench(
+    remote: SocketAddr,
+    base_repo: Option<PathBuf>,
+    workdir: Option<PathBuf>,
+    workers: usize,
+    queries_per_worker: usize,
+    keep_workdir: bool,
+) -> Result<()> {
+    println!("⚡ prod-code Divergent Worktree Benchmark (Multi-Agent Fleet Simulation)");
+    println!("────────────────────────────────────────────────────────────────");
+    println!("Target Remote:       {remote}");
+    println!(
+        "Base Repo:           {}",
+        base_repo
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<scratch fixture repo>".to_string())
+    );
+    println!("Concurrent Workers:  {workers}");
+    println!("Queries Per Worker:  {queries_per_worker}");
+    println!("────────────────────────────────────────────────────────────────");
+    println!("Forking isolated git worktrees and applying controlled mutations...");
+
+    let config = DivergentBenchConfig {
+        remote,
+        base_repo,
+        workdir,
+        workers,
+        queries_per_worker,
+        keep_workdir,
+    };
+
+    let report = divergent_bench::run(config).await?;
+    report.print();
+
+    if !report.all_passed {
+        anyhow::bail!("divergent worktree benchmark FAILED correctness verification");
+    }
 
     Ok(())
 }
