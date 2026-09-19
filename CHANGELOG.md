@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Semantic rename (Phase 7.1.1): `prod-code rename <file> <line> <col> <new_name>`, MCP tool
+  `code_rename`, and LSP `textDocument/rename` on the gateway. rust-analyzer computes the
+  workspace-wide edit (including module file renames); the client applies it to the checkout
+  and records the rewritten files in the sync watermark. Refused renames (no symbol, conflicts)
+  are reported as errors instead of empty results.
+
 ## v0.1.0 — 2026-09-19
 
 First release of prod-code, the Remote Code Intelligence gateway: one warm, in-memory

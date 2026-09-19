@@ -211,7 +211,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Implement a compiler-grade distributed refactoring engine providing full behavioral parity with modern IDE refactoring suites. Remote language servers (`rust-analyzer`, `clangd`, `gopls`, `vtsls`, `basedpyright`) compute mathematically sound, AST-level code transformations, resolving all symbol references across the monorepo and returning structured, atomic `WorkspaceEdit` payloads:
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
-    - `refactor.rename(path, line, col, new_name)`:
+    - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
       - Semantic symbol renaming (types, traits, fields, parameters, local variables, modules/packages, filenames).
       - Cross-reference propagation: automatically updates all references, doc comments, test names, and optionally paired getters/setters/accessors in < 20 ms with zero regex hallucinations.
     - `refactor.change_signature(path, symbol, new_params, new_return_type)`:
