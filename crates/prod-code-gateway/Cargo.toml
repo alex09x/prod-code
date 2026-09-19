@@ -1,0 +1,19 @@
+[package]
+name = "prod-code-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "prod-code-server"
+path = "src/main.rs"
+
+[dependencies]
+prod-code-protocol = { path = "../prod-code-protocol" }
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
