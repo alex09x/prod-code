@@ -1068,6 +1068,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "ignore",
  "prod-code-mcp",
  "prod-code-protocol",
  "serde_json",

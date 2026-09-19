@@ -718,26 +718,59 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn find_first_code_file(dir: &Path) -> Option<PathBuf> {
-    let candidates = [
-        "src/main.rs",
-        "src/lib.rs",
-        "main.go",
-        "app.py",
-        "index.ts",
-        "lib.rs",
-        "main.rs",
-    ];
-    for c in candidates {
-        let p = dir.join(c);
-        if p.is_file() {
-            return Some(p);
+fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
+    let mut builder = ignore::WalkBuilder::new(dir);
+    builder.hidden(true).git_ignore(true).max_depth(Some(4));
+
+    for entry in builder.build().flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
         }
-    }
-    if let Ok(entries) = std::fs::read_dir(dir.join("src")) {
-        for entry in entries.flatten() {
-            if entry.path().is_file() {
-                return Some(entry.path());
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "rs" | "go" | "py" | "ts") || path.to_string_lossy().contains("/tests/") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+
+        for (line_idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with("#")
+                || trimmed.is_empty()
+            {
+                continue;
+            }
+            if let Some(pos) = trimmed.find("pub const ") {
+                return Some((
+                    path.to_path_buf(),
+                    line_idx as u32,
+                    (pos + 12) as u32,
+                ));
+            }
+            if let Some(pos) = trimmed.find("pub struct ") {
+                return Some((
+                    path.to_path_buf(),
+                    line_idx as u32,
+                    (pos + 13) as u32,
+                ));
+            }
+            if let Some(pos) = trimmed.find("pub fn ") {
+                return Some((
+                    path.to_path_buf(),
+                    line_idx as u32,
+                    (pos + 9) as u32,
+                ));
+            }
+            if let Some(pos) = trimmed.find("func ") {
+                return Some((
+                    path.to_path_buf(),
+                    line_idx as u32,
+                    (pos + 6) as u32,
+                ));
             }
         }
     }
@@ -851,8 +884,8 @@ async fn run_benchmark(
                 .send(WireMessage::LspPayload(initialized.to_string()))
                 .await;
 
-            let code_file =
-                find_first_code_file(&ws_path).unwrap_or_else(|| ws_path.join("src/main.rs"));
+            let (code_file, sym_line, sym_col) = find_first_code_file(&ws_path)
+                .unwrap_or_else(|| (ws_path.join("src/main.rs"), 5, 5));
             let file_uri = format!("file://{}", code_file.to_string_lossy());
 
             let mut req_id: u64 = 2;
@@ -870,7 +903,7 @@ async fn run_benchmark(
                         "method": "textDocument/hover",
                         "params": {
                             "textDocument": { "uri": file_uri },
-                            "position": { "line": 5, "character": 5 }
+                            "position": { "line": sym_line, "character": sym_col }
                         }
                     });
 
