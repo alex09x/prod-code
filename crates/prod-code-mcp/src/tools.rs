@@ -232,12 +232,10 @@ pub async fn execute_tool(
                 }
             );
             text.push_str(&tail.text());
-            Ok(McpToolCallResult {
-                content: vec![McpContentItem {
-                    content_type: "text".to_string(),
-                    text,
-                }],
-                is_error: !matches!(exit.exit_code, Some(0)),
+            Ok(if matches!(exit.exit_code, Some(0)) {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
             })
         }
         "code_definition" => {
