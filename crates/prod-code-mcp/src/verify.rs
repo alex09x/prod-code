@@ -599,6 +599,141 @@ pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
+/// Parses XCTest (`swift test`) output on macOS and Linux: `Test Case '-[Suite test]' passed
+/// (0.001 seconds)` / `Test Case 'Suite.test' failed`, assertion lines `file:line: error:
+/// -[Suite test] : message`, plus swift-testing `✔ Test "name" passed` / `✘ Test "name" failed`.
+pub fn parse_xctest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut assertions: Vec<(String, String)> = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(rest) = line.strip_prefix("Test Case '") {
+            let Some((name, status)) = rest.split_once("' ") else {
+                continue;
+            };
+            let name = name
+                .trim_start_matches("-[")
+                .trim_end_matches(']')
+                .replace(' ', ".");
+            if status.starts_with("passed") {
+                passed += 1;
+            } else if status.starts_with("failed") {
+                failed += 1;
+                let output = assertions
+                    .iter()
+                    .filter(|(test, _)| *test == name)
+                    .map(|(_, msg)| msg.clone())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                failures.push(TestFailure { name, output });
+            }
+            continue;
+        }
+        if let Some(pos) = line.find(": error: -[") {
+            let location = &line[..pos];
+            let rest = &line[pos + ": error: -[".len()..];
+            if let Some((test, message)) = rest.split_once("] : ") {
+                assertions.push((
+                    test.replace(' ', "."),
+                    format!("{location}: {}", message.trim()),
+                ));
+            }
+            continue;
+        }
+        // swift-testing: `✔ Test "adds"() passed after 0.001 seconds.`
+        if let Some(rest) = line
+            .strip_prefix("✔ Test ")
+            .or_else(|| line.strip_prefix("✘ Test "))
+        {
+            if rest.starts_with("run ") {
+                continue;
+            }
+            let name = rest
+                .split(" passed")
+                .next()
+                .and_then(|n| n.split(" failed").next())
+                .unwrap_or(rest)
+                .trim_matches('"')
+                .to_string();
+            if line.starts_with('✔') {
+                passed += 1;
+            } else {
+                failed += 1;
+                failures.push(TestFailure {
+                    name,
+                    output: line.to_string(),
+                });
+            }
+        }
+    }
+    (passed, failed, failures)
+}
+
+/// Parses `ctest --output-on-failure` summaries: `1/3 Test #1: name ...... Passed` /
+/// `***Failed`, with the failing test's output captured until the next test line.
+pub fn parse_ctest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    let flush = |current: &mut Option<(String, Vec<String>)>, failures: &mut Vec<TestFailure>| {
+        if let Some((name, lines)) = current.take() {
+            failures.push(TestFailure {
+                name,
+                output: lines.join("\n"),
+            });
+        }
+    };
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        let is_test_line = trimmed
+            .split_once(' ')
+            .is_some_and(|(n, rest)| n.contains('/') && rest.starts_with("Test #"));
+        if is_test_line {
+            flush(&mut current, &mut failures);
+            let name = trimmed
+                .split_once(": ")
+                .map(|(_, r)| r.split(" .").next().unwrap_or(r).trim().to_string())
+                .unwrap_or_default();
+            if trimmed.ends_with("Passed") || trimmed.contains(" Passed ") {
+                passed += 1;
+            } else if trimmed.contains("Failed") || trimmed.contains("Timeout") {
+                failed += 1;
+                current = Some((name, Vec::new()));
+            }
+            continue;
+        }
+        if trimmed.starts_with("% tests passed") || trimmed.contains("% tests passed,") {
+            flush(&mut current, &mut failures);
+            continue;
+        }
+        if let Some((_, lines)) = current.as_mut() {
+            lines.push(line.to_string());
+        }
+    }
+    flush(&mut current, &mut failures);
+    (passed, failed, failures)
+}
+
+/// Rewrites diagnostic file paths that the tool printed as absolute server paths into
+/// checkout-relative ones.
+fn relativize_diagnostics(diagnostics: &mut [Diagnostic], server_root: &str) {
+    if server_root.is_empty() {
+        return;
+    }
+    let prefix = format!("{}/", server_root.trim_end_matches('/'));
+    for diagnostic in diagnostics {
+        if let Some(file) = diagnostic.file.as_mut()
+            && let Some(rel) = file.strip_prefix(&prefix)
+        {
+            *file = rel.to_string();
+        }
+    }
+}
+
 /// Runs the verification remotely and parses its output.
 pub async fn run_verify(
     remote: SocketAddr,
@@ -676,12 +811,37 @@ pub async fn run_verify(
             tests_failed = f;
             failures = fails;
         }
+        ("swift", VerifyKind::Test) => {
+            let combined = format!("{stdout}\n{stderr}");
+            diagnostics.extend(parse_colon_diagnostics(&stderr));
+            diagnostics.retain(|d| !d.message.starts_with("-["));
+            let (p, f, fails) = parse_xctest_text(&combined);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("cpp", VerifyKind::Test) => {
+            let (p, f, fails) = parse_ctest_text(&stdout);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
         _ => {
             diagnostics.extend(parse_colon_diagnostics(&stderr));
             diagnostics.extend(parse_colon_diagnostics(&stdout));
         }
     }
     diagnostics.dedup();
+    relativize_diagnostics(&mut diagnostics, &outcome.exit.server_workspace_root);
+    for failure in &mut failures {
+        let prefix = format!(
+            "{}/",
+            outcome.exit.server_workspace_root.trim_end_matches('/')
+        );
+        if prefix.len() > 1 {
+            failure.output = failure.output.replace(&prefix, "");
+        }
+    }
 
     Ok(VerifyReport {
         kind,
@@ -701,6 +861,55 @@ pub async fn run_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_xctest_output() {
+        let text = "Test Case '-[SignalTests.SignalTests testDoubles]' started.\n\
+/srv/ws/Tests/SignalTests/SignalTests.swift:6: error: -[SignalTests.SignalTests testDoubles] : XCTAssertEqual failed: (\"42\") is not equal to (\"43\")\n\
+Test Case '-[SignalTests.SignalTests testDoubles]' failed (0.411 seconds).\n\
+Test Case 'OtherTests.testOk' passed (0.001 seconds).\n\
+\t Executed 2 tests, with 1 failure (0 unexpected) in 0.4 (0.4) seconds\n\
+✔ Test run with 0 tests in 0 suites passed after 0.001 seconds.\n";
+        let (passed, failed, failures) = parse_xctest_text(text);
+        assert_eq!((passed, failed), (1, 1));
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].name, "SignalTests.SignalTests.testDoubles");
+        assert!(
+            failures[0]
+                .output
+                .contains("SignalTests.swift:6: XCTAssertEqual failed")
+        );
+    }
+
+    #[test]
+    fn parses_ctest_output() {
+        let text = "Test project /srv/ws/build\n\
+    Start 1: adds\n\
+1/2 Test #1: adds .............................   Passed    0.01 sec\n\
+    Start 2: fails\n\
+2/2 Test #2: fails ............................***Failed    0.02 sec\n\
+expected 42, got 43\n\
+\n\
+50% tests passed, 1 tests failed out of 2\n";
+        let (passed, failed, failures) = parse_ctest_text(text);
+        assert_eq!((passed, failed), (1, 1));
+        assert_eq!(failures[0].name, "fails");
+        assert!(failures[0].output.contains("expected 42, got 43"));
+    }
+
+    #[test]
+    fn relativizes_server_paths() {
+        let mut diagnostics = vec![Diagnostic {
+            level: "error".into(),
+            code: None,
+            message: "boom".into(),
+            file: Some("/srv/ws/src/a.cpp".into()),
+            line: Some(1),
+            column: None,
+        }];
+        relativize_diagnostics(&mut diagnostics, "/srv/ws");
+        assert_eq!(diagnostics[0].file.as_deref(), Some("src/a.cpp"));
+    }
 
     #[test]
     fn cargo_json_diagnostic() {
