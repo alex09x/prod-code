@@ -4,7 +4,7 @@ use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use std::path::Path;
 
-const MAX_FILE_SIZE: u64 = 20 * 1024 * 1024; // 20 MiB per file limit
+const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB per source file limit
 
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
 pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<FileDelta>> {
@@ -46,64 +46,102 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
     Ok(deltas)
 }
 
-fn walk_dir(current_dir: &Path, root: &Path, deltas: &mut Vec<FileDelta>) -> Result<()> {
-    let entries = match std::fs::read_dir(current_dir) {
-        Ok(e) => e,
-        Err(_) => return Ok(()),
-    };
+fn is_binary_or_media_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".zip")
+        || lower.ends_with(".tar")
+        || lower.ends_with(".gz")
+        || lower.ends_with(".bin")
+        || lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".pdf")
+        || lower.ends_with(".wasm")
+        || lower.ends_with(".so")
+        || lower.ends_with(".dylib")
+        || lower.ends_with(".a")
+        || lower.ends_with(".o")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".hprof")
+        || lower.ends_with(".mp4")
+        || lower.ends_with(".mov")
+        || lower.ends_with(".pyc")
+        || lower.ends_with(".db")
+        || lower.ends_with(".sqlite")
+}
 
-    for entry in entries.flatten() {
+fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta>) -> Result<()> {
+    let mut builder = ignore::WalkBuilder::new(target_dir);
+    builder
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .parents(true)
+        .max_filesize(Some(MAX_FILE_SIZE))
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            if name == ".git"
+                || name == "target"
+                || name == "node_modules"
+                || name == "vendor"
+                || name == "dist"
+                || name == "build"
+                || name == "results"
+                || name == "samples"
+                || name == "__pycache__"
+                || name == "artifacts"
+                || name == "dogfood-output"
+                || name == "questiontocase-search"
+                || name == "data"
+                || name == "state"
+                || name == ".DS_Store"
+            {
+                return false;
+            }
+            true
+        });
+
+    for result in builder.build() {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
         let path = entry.path();
-        let file_name = entry.file_name();
-        let name_str = file_name.to_string_lossy();
-
-        // Ignore VCS, build directories, and transient editor files
-        if name_str.starts_with('.') && name_str != ".gitignore" {
-            continue;
-        }
-        if name_str == "target"
-            || name_str == "node_modules"
-            || name_str == "vendor"
-            || name_str == "dist"
-            || name_str == "build"
-            || name_str == ".DS_Store"
-        {
+        if !path.is_file() {
             continue;
         }
 
-        if path.is_dir() {
-            walk_dir(&path, root, deltas)?;
-        } else if path.is_file() {
-            let metadata = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
+        let name_str = entry.file_name().to_string_lossy();
+        if is_binary_or_media_file(&name_str) {
+            continue;
+        }
+
+        let rel_path = path
+            .strip_prefix(canonical_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
+
+        if let Ok(content) = std::fs::read(path) {
+            #[cfg(unix)]
+            let is_executable = {
+                use std::os::unix::fs::PermissionsExt;
+                entry
+                    .metadata()
+                    .ok()
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
             };
+            #[cfg(not(unix))]
+            let is_executable = false;
 
-            if metadata.len() > MAX_FILE_SIZE {
-                continue;
-            }
-
-            let rel_path = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-
-            if let Ok(content) = std::fs::read(&path) {
-                #[cfg(unix)]
-                let is_executable = {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode() & 0o111 != 0
-                };
-                #[cfg(not(unix))]
-                let is_executable = false;
-
-                deltas.push(FileDelta {
-                    relative_path: rel_path,
-                    content: Some(content),
-                    is_executable,
-                });
-            }
+            deltas.push(FileDelta {
+                relative_path: rel_path,
+                content: Some(content),
+                is_executable,
+            });
         }
     }
 

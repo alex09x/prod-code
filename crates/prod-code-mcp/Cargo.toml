@@ -18,6 +18,7 @@ tracing = { workspace = true }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
 url = { workspace = true }
+ignore = "0.4.30"
 
 [dev-dependencies]
 tempfile = { workspace = true }
