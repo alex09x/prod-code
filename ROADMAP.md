@@ -217,7 +217,7 @@ This document outlines the architectural milestones and engineering phases for b
     - `refactor.change_signature(path, symbol, new_params, new_return_type)`:
       - Add, remove, reorder, and rename parameters; modify return type, visibility, and async/throws modifiers.
       - Automatically generates type-safe default arguments or expressions across all existing call sites in the monorepo.
-    - `refactor.safe_delete(path, symbol)`:
+    - [~] `refactor.safe_delete(path, symbol)` — shipped 2026-09-19 for Rust: `prod-code safe-delete <file> <line> <col>`, MCP `code_safe_delete`, gateway `prodCode/safeDelete`; whole-workspace usage check via rust-analyzer, refusal returns the usage dossier, deletion uses the item's structure range. Cascading parameter removal still open.
       - Whole-repository usage graph verification before deleting classes, structs, functions, fields, or parameters.
       - If active usages exist, returns a structured conflict dossier; supports safe cascading parameter removal across callers and override hierarchies.
     - `refactor.move(path, symbol, target_destination)`:

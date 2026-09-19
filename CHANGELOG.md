@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Safe delete (Phase 7.1.1): `prod-code safe-delete <file> <line> <col>` and MCP
+  `code_safe_delete` remove an item only when rust-analyzer finds no references to it in the
+  workspace; otherwise the usages that block the deletion are listed.
+
 - Load-aware placement (Phase 5.3 first step): gateways report host load and CPU count in
   their status; the first placement of a checkout picks the quietest alive node.
 
