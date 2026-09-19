@@ -86,15 +86,7 @@ impl ServerState {
             uptime_seconds: self.start_time.elapsed().as_secs(),
             active_sessions: self.active_sessions.load(Ordering::Relaxed),
             loaded_workspaces: self.workspace_manager.loaded_count().await,
-            detected_engines: vec![
-                "rust (ra_ap_ide)".to_string(),
-                "go (gopls)".to_string(),
-                "cpp (clangd)".to_string(),
-                "swift (sourcekit-lsp)".to_string(),
-                "python (basedpyright)".to_string(),
-                "typescript (typescript-language-server)".to_string(),
-                "generic-lsp".to_string(),
-            ],
+            detected_engines: available_engines(),
             memory_rss_bytes: memory::get_process_rss_bytes(),
             total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
             active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
@@ -1988,6 +1980,22 @@ async fn main() -> Result<()> {
 /// Puts the user's toolchain directories (`~/.cargo/bin`, `~/go/bin`) first on PATH so remote
 /// commands, rust-analyzer's `cargo metadata` and the gopls engine use the toolchains the
 /// workspaces were built with, not a distro/snap binary a systemd user session resolves first.
+/// The engines this host can actually serve: Rust is in-process, the others need their
+/// language server on PATH. Clients place a workspace only on a node that lists its engine.
+fn available_engines() -> Vec<String> {
+    let mut engines = vec!["rust (ra_ap_ide)".to_string()];
+    if prod_code_engine_generic::which_bin("gopls").is_ok() {
+        engines.push("go (gopls)".to_string());
+    }
+    for engine in ["cpp", "swift", "python", "typescript"] {
+        if let Some(server) = prod_code_engine_generic::GenericLspConfig::installed_server(engine) {
+            engines.push(format!("{engine} ({server})"));
+        }
+    }
+    engines.push("generic-lsp".to_string());
+    engines
+}
+
 fn prefer_rustup_toolchain() {
     let Some(home) = std::env::var_os("HOME") else {
         return;

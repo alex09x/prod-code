@@ -86,16 +86,33 @@ fn save_placement(path: &Path, placement: &Placement) {
     }
 }
 
+/// Whether a gateway lists `engine` (`rust`, `go`, `swift`, ...) among the engines it can
+/// serve; entries look like `swift (sourcekit-lsp)`.
+pub fn supports_engine(status: &StatusResponse, engine: &str) -> bool {
+    status.detected_engines.iter().any(|e| {
+        e == engine
+            || e.strip_prefix(engine)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
 /// Chooses the gateway for `workspace_name` among `nodes`: the remembered placement when it
-/// is still one of the nodes and alive, otherwise the first alive node in rendezvous order,
-/// which is then remembered. A single node is returned as is.
-pub async fn pick_node(nodes: &[SocketAddr], workspace_name: &str) -> Result<SocketAddr> {
-    pick_node_with(nodes, workspace_name, placement_path().as_deref()).await
+/// is still one of the nodes, alive and able to serve `engine`, otherwise the quietest alive
+/// node that can serve `engine`, in rendezvous order, which is then remembered. A single
+/// node is returned as is. `engine` is the engine the checkout needs (`swift` only runs on a
+/// macOS node, for example); `None` accepts any node.
+pub async fn pick_node(
+    nodes: &[SocketAddr],
+    workspace_name: &str,
+    engine: Option<&str>,
+) -> Result<SocketAddr> {
+    pick_node_with(nodes, workspace_name, engine, placement_path().as_deref()).await
 }
 
 pub async fn pick_node_with(
     nodes: &[SocketAddr],
     workspace_name: &str,
+    engine: Option<&str>,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
     let [only] = nodes else {
@@ -105,18 +122,34 @@ pub async fn pick_node_with(
         let mut placement = placement_file.map(load_placement).unwrap_or_default();
         if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
             && nodes.contains(&remembered)
-            && is_alive(remembered).await
         {
-            return Ok(remembered);
+            let still_fits = match engine {
+                None => is_alive(remembered).await,
+                Some(engine) => node_status(remembered)
+                    .await
+                    .map(|status| supports_engine(&status, engine))
+                    .unwrap_or(false),
+            };
+            if still_fits {
+                return Ok(remembered);
+            }
         }
         // First placement: prefer the quietest node (load per CPU) among the ones that
-        // answer, keeping rendezvous order as the tie-break and the fallback.
+        // answer and can serve the engine, keeping rendezvous order as the tie-break.
         let mut candidates = Vec::new();
+        let mut unsupported = Vec::new();
         for candidate in rendezvous_order(nodes, workspace_name) {
             match node_status(candidate).await {
-                Ok(status) => candidates.push((candidate, status.load_per_cpu())),
+                Ok(status) => match engine {
+                    Some(engine) if !supports_engine(&status, engine) => {
+                        unsupported.push(candidate);
+                    }
+                    _ => candidates.push((candidate, status.load_per_cpu())),
+                },
                 Err(_) => {
-                    if is_alive(candidate).await {
+                    // A node that accepts TCP but answers no status is only usable when
+                    // nothing specific is required of it.
+                    if engine.is_none() && is_alive(candidate).await {
                         candidates.push((candidate, None));
                     }
                 }
@@ -131,14 +164,20 @@ pub async fn pick_node_with(
             }
             return Ok(chosen);
         }
-        return Err(anyhow!(
-            "no gateway reachable among {}",
+        let listed = |nodes: &[SocketAddr]| {
             nodes
                 .iter()
                 .map(|n| n.to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ));
+        };
+        return Err(match engine {
+            Some(engine) if !unsupported.is_empty() => anyhow!(
+                "no reachable gateway serves {engine} (reachable without it: {}); add a node with the {engine} language server installed",
+                listed(&unsupported)
+            ),
+            _ => anyhow!("no gateway reachable among {}", listed(nodes)),
+        });
     };
     Ok(*only)
 }
@@ -227,6 +266,31 @@ mod tests {
         assert_eq!(choose_quietest(&[]), None);
     }
 
+    #[test]
+    fn engine_support_matches_labelled_entries() {
+        let status = StatusResponse {
+            server_pid: 1,
+            uptime_seconds: 0,
+            active_sessions: 0,
+            loaded_workspaces: 0,
+            detected_engines: vec![
+                "rust (ra_ap_ide)".to_string(),
+                "swift (sourcekit-lsp)".to_string(),
+                "generic-lsp".to_string(),
+            ],
+            memory_rss_bytes: None,
+            total_queries: 0,
+            active_queries: 0,
+            load_average_millis: None,
+            cpu_count: None,
+        };
+        assert!(supports_engine(&status, "rust"));
+        assert!(supports_engine(&status, "swift"));
+        assert!(supports_engine(&status, "generic-lsp"));
+        assert!(!supports_engine(&status, "go"));
+        assert!(!supports_engine(&status, "swif"));
+    }
+
     #[tokio::test]
     async fn picks_alive_node_and_remembers_it() {
         let temp = tempfile::tempdir().unwrap();
@@ -235,15 +299,18 @@ mod tests {
         let alive = listener.local_addr().unwrap();
         let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let nodes = vec![dead, alive];
-        let picked = pick_node_with(&nodes, "ws", Some(&placement))
+        let picked = pick_node_with(&nodes, "ws", None, Some(&placement))
             .await
             .unwrap();
         assert_eq!(picked, alive);
         let saved = load_placement(&placement);
         assert_eq!(saved.workspaces.get("ws"), Some(&alive));
         // A single node is used without probing.
-        assert_eq!(pick_node_with(&[dead], "ws", None).await.unwrap(), dead);
-        assert!(pick_node_with(&[dead], "", None).await.is_ok());
-        assert!(pick_node_with(&[], "ws", None).await.is_err());
+        assert_eq!(
+            pick_node_with(&[dead], "ws", None, None).await.unwrap(),
+            dead
+        );
+        assert!(pick_node_with(&[dead], "", None, None).await.is_ok());
+        assert!(pick_node_with(&[], "ws", None, None).await.is_err());
     }
 }

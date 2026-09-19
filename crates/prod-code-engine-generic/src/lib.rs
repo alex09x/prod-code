@@ -68,6 +68,41 @@ fn npm_global_root() -> Option<PathBuf> {
 }
 
 impl GenericLspConfig {
+    /// The language server this host would run for `engine` (`cpp`, `swift`, `python`,
+    /// `typescript`), as a short label for the gateway status, or `None` when none of the
+    /// candidates is installed.
+    pub fn installed_server(engine: &str) -> Option<String> {
+        let config = match engine {
+            "cpp" => Self::for_cpp(),
+            "swift" => Self::for_swift(),
+            "python" => Self::for_python(),
+            "typescript" => Self::for_typescript(),
+            _ => return None,
+        };
+        let command = Path::new(&config.command);
+        let installed = if command.is_absolute() {
+            command.is_file()
+        } else if config.command == "xcrun" {
+            std::process::Command::new("xcrun")
+                .args(["--find", "sourcekit-lsp"])
+                .output()
+                .map(|out| out.status.success())
+                .unwrap_or(false)
+        } else {
+            which_bin(&config.command).is_ok()
+        };
+        if !installed {
+            return None;
+        }
+        let label = match command.file_name().and_then(|n| n.to_str()) {
+            Some("tsc") | Some("tsgo") => "tsc --lsp".to_string(),
+            Some("xcrun") => "sourcekit-lsp".to_string(),
+            Some(name) => name.to_string(),
+            None => config.command.clone(),
+        };
+        Some(label)
+    }
+
     /// Create a standard configuration for Python language servers.
     pub fn for_python() -> Self {
         let (cmd, args) = if which_bin("basedpyright-langserver").is_ok() {

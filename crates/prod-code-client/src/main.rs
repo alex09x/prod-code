@@ -189,23 +189,27 @@ async fn main() -> Result<()> {
 
     let remotes = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
 
-    let cwd_workspace = env::current_dir()
+    let cwd_root = env::current_dir()
         .ok()
-        .map(|d| {
-            prod_code_mcp::sync::workspace_identity(&find_workspace_root(&d).unwrap_or(d)).name
-        })
+        .map(|d| find_workspace_root(&d).unwrap_or(d));
+    let cwd_workspace = cwd_root
+        .as_deref()
+        .map(|root| prod_code_mcp::sync::workspace_identity(root).name)
         .unwrap_or_default();
+    let cwd_engine = cwd_root
+        .as_deref()
+        .and_then(prod_code_mcp::sync::expected_engine);
 
     if matches!(cli.command, Some(Commands::Cluster)) {
-        return run_cluster(&remotes, &cwd_workspace).await;
+        return run_cluster(&remotes, &cwd_workspace, cwd_engine).await;
     }
 
-    let remote = prod_code_mcp::cluster::pick_node(&remotes, &cwd_workspace).await?;
+    let remote = prod_code_mcp::cluster::pick_node(&remotes, &cwd_workspace, cwd_engine).await?;
 
     match cli.command.unwrap_or(Commands::Lsp) {
         Commands::Lsp => run_lsp_bridge(remote).await,
         Commands::Status => run_status_probe(remote).await,
-        Commands::Cluster => run_cluster(&remotes, &cwd_workspace).await,
+        Commands::Cluster => run_cluster(&remotes, &cwd_workspace, cwd_engine).await,
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
         Commands::Def { file, line, col } => run_definition(remote, &file, line, col).await,
@@ -1208,7 +1212,11 @@ async fn run_rename(
 }
 
 /// Show every gateway node and the placement of the current checkout.
-async fn run_cluster(nodes: &[SocketAddr], workspace_name: &str) -> Result<()> {
+async fn run_cluster(
+    nodes: &[SocketAddr],
+    workspace_name: &str,
+    engine: Option<&str>,
+) -> Result<()> {
     println!("⚡ prod-code cluster ({} node(s))", nodes.len());
     println!("────────────────────────────────────────────────────");
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
@@ -1218,22 +1226,32 @@ async fn run_cluster(nodes: &[SocketAddr], workspace_name: &str) -> Result<()> {
     for node in nodes {
         let started = std::time::Instant::now();
         match prod_code_mcp::cluster::node_status(*node).await {
-            Ok(status) => println!(
-                "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
-                started.elapsed().as_secs_f64() * 1000.0,
-                status.load_per_cpu().unwrap_or(0.0),
-                status.cpu_count.unwrap_or(0),
-                status.uptime_seconds / 3600,
-                (status.uptime_seconds % 3600) / 60,
-                status.loaded_workspaces,
-                status.active_sessions,
-                status.memory_rss_mb().unwrap_or(0.0)
-            ),
+            Ok(status) => {
+                println!(
+                    "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
+                    started.elapsed().as_secs_f64() * 1000.0,
+                    status.load_per_cpu().unwrap_or(0.0),
+                    status.cpu_count.unwrap_or(0),
+                    status.uptime_seconds / 3600,
+                    (status.uptime_seconds % 3600) / 60,
+                    status.loaded_workspaces,
+                    status.active_sessions,
+                    status.memory_rss_mb().unwrap_or(0.0)
+                );
+                let engines: Vec<&str> = status
+                    .detected_engines
+                    .iter()
+                    .filter(|e| e.as_str() != "generic-lsp")
+                    .map(|e| e.split(' ').next().unwrap_or(e))
+                    .collect();
+                println!("{:<22} engines: {}", "", engines.join(", "));
+            }
             Err(e) => println!("{node:<22} DOWN  {e}"),
         }
     }
     println!("────────────────────────────────────────────────────");
     println!("Workspace:           {workspace_name}");
+    println!("Engine needed:       {}", engine.unwrap_or("(any)"));
     if let Some(home) = home {
         println!("Home node (hash):    {home}");
     }
