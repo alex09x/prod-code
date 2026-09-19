@@ -5,6 +5,7 @@ pub mod protocol;
 pub mod refactor;
 pub mod sync;
 pub mod tools;
+pub mod verify;
 pub mod watch;
 
 pub use protocol::{MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION};

@@ -39,6 +39,40 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_check".to_string(),
+            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                }
+            }),
+        },
+        McpTool {
+            name: "code_lint".to_string(),
+            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings / go vet) and return structured findings with file:line:col."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                }
+            }),
+        },
+        McpTool {
+            name: "code_test".to_string(),
+            description: "Run tests on the remote gateway (cargo test / go test -json), optionally filtered by test name, and return pass/fail counts plus the output of each failed test."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_rename".to_string(),
             description: "Semantic rename of the symbol at a 1-based line/column (type, function, field, variable, module) across the whole workspace, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
                 .to_string(),
@@ -202,6 +236,35 @@ pub async fn execute_tool(
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     match tool_name {
+        "code_check" | "code_lint" | "code_test" => {
+            let kind = match tool_name {
+                "code_check" => crate::verify::VerifyKind::Check,
+                "code_lint" => crate::verify::VerifyKind::Lint,
+                _ => crate::verify::VerifyKind::Test,
+            };
+            let filter = args
+                .get("filter")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let report = crate::verify::run_verify(
+                remote,
+                workspace_root,
+                kind,
+                filter.as_deref(),
+                timeout_secs,
+            )
+            .await?;
+            let text = report.render(40);
+            Ok(if report.ok() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_rename" => {
             let path_str = args
                 .get("path")

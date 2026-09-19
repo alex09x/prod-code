@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
+use prod_code_mcp::verify::VerifyKind;
 use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
 use std::env;
 use std::net::SocketAddr;
@@ -62,6 +63,23 @@ enum Commands {
         line: u32,
         col: u32,
         new_name: String,
+    },
+    /// Compile-check the workspace remotely (cargo check / go build) with structured diagnostics.
+    Check {
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+    },
+    /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
+    Lint {
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+    },
+    /// Run tests remotely (cargo test / go test -json), optionally filtered by name.
+    Test {
+        /// Test name filter (cargo test TESTNAME / go test -run).
+        filter: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
     },
     /// Run a build/test/lint command on the remote gateway inside this checkout's server copy:
     /// prod-code exec -- cargo test -p my-crate
@@ -144,6 +162,16 @@ async fn main() -> Result<()> {
             col,
             new_name,
         } => run_rename(cli.remote, &file, line, col, &new_name).await,
+        Commands::Check { timeout_secs } => {
+            run_verify(cli.remote, VerifyKind::Check, None, timeout_secs).await
+        }
+        Commands::Lint { timeout_secs } => {
+            run_verify(cli.remote, VerifyKind::Lint, None, timeout_secs).await
+        }
+        Commands::Test {
+            filter,
+            timeout_secs,
+        } => run_verify(cli.remote, VerifyKind::Test, filter, timeout_secs).await,
         Commands::Exec {
             timeout_secs,
             no_pull,
@@ -1012,6 +1040,22 @@ async fn run_rename(
         println!("  {path}");
     }
     Ok(())
+}
+
+/// Typed remote verification: check / lint / test with parsed diagnostics.
+async fn run_verify(
+    remote: SocketAddr,
+    kind: VerifyKind,
+    filter: Option<String>,
+    timeout_secs: u64,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or(cwd);
+    let report =
+        prod_code_mcp::verify::run_verify(remote, &root, kind, filter.as_deref(), timeout_secs)
+            .await?;
+    print!("{}", report.render(200));
+    std::process::exit(if report.ok() { 0 } else { 1 });
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
