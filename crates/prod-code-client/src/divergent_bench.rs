@@ -130,10 +130,11 @@ impl Language {
 /// How the four worktrees map onto server workspaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum WorkspaceMode {
-    /// All worktrees coalesce onto one shared server workspace (production behaviour).
-    #[default]
+    /// All worktrees coalesce onto one shared server workspace and one analysis database.
+    /// Diagnostic only: production gives every worktree its own workspace.
     Shared,
-    /// Each worktree gets a dedicated server workspace and engine instance.
+    /// Each worktree gets a dedicated server workspace and engine instance (production).
+    #[default]
     Isolated,
 }
 
@@ -245,7 +246,7 @@ impl Default for DivergentBenchConfig {
             workers: 12,
             queries_per_worker: 5,
             keep_workdir: false,
-            mode: WorkspaceMode::Shared,
+            mode: WorkspaceMode::Isolated,
         }
     }
 }
@@ -855,7 +856,6 @@ pub async fn initial_sync(
 ) -> Result<SyncSummary> {
     prod_code_mcp::sync::clear_sync_cache(root);
     let plan = prod_code_mcp::sync::prepare_workspace_sync(root, None)?;
-    prod_code_mcp::sync::clear_sync_cache(root);
     let files = plan.files.len();
     let start = Instant::now();
 
@@ -866,7 +866,7 @@ pub async fn initial_sync(
     framed
         .send(WireMessage::SyncRequest(SyncRequest {
             client_workspace_root: root.to_string_lossy().to_string(),
-            files: plan.files,
+            files: plan.files.clone(),
             clean_others: false,
             base_workspace_name: Some(workspace_name.to_string()),
         }))
@@ -883,6 +883,7 @@ pub async fn initial_sync(
             reason: "divergent-bench initial sync finished".to_string(),
         })
         .await;
+    prod_code_mcp::sync::commit_workspace_sync(root, &plan);
 
     Ok(SyncSummary {
         workspace_name: workspace_name.to_string(),
@@ -961,18 +962,18 @@ async fn query_once(
     // Transparent pre-flight sync of dirty/untracked files, exactly like a live editor session,
     // so a mutated-but-uncommitted file (worktree A) or an untracked scratch file (worktree C)
     // is visible to the remote engine before we query it.
-    if let Ok(dirty) = prod_code_mcp::sync::collect_dirty_files(&wt.root)
-        && !dirty.is_empty()
-    {
+    let plan = prod_code_mcp::sync::prepare_workspace_sync(&wt.root, None)?;
+    if !plan.files.is_empty() {
         framed
             .send(WireMessage::SyncRequest(SyncRequest {
                 client_workspace_root: ws_root_str.clone(),
-                files: dirty,
+                files: plan.files.clone(),
                 clean_others: false,
                 base_workspace_name: Some(wt.workspace_name.clone()),
             }))
             .await?;
         wait_for_sync_response(&mut framed, Duration::from_secs(30)).await?;
+        prod_code_mcp::sync::commit_workspace_sync(&wt.root, &plan);
     }
 
     let init_req = serde_json::json!({
@@ -1217,6 +1218,11 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         all_outcomes.extend(outcomes);
     }
     let elapsed = start.elapsed();
+
+    // The scratch worktrees are disposable; drop their persisted sync watermarks.
+    for wt in &worktrees {
+        prod_code_mcp::sync::clear_sync_cache(&wt.root);
+    }
 
     if config.keep_workdir {
         // Prevent the scratch TempDir from deleting itself on drop so it can be inspected.

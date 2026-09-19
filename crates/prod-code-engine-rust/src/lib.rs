@@ -13,7 +13,7 @@ use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
 use ra_ap_vfs::{Vfs, VfsPath};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -427,6 +427,46 @@ impl RustEngine {
         Ok(switched)
     }
 
+    /// Records new shared base text for `path` (a workspace sync landed on disk). It is applied
+    /// immediately unless some session's buffer currently occupies the path; that session keeps
+    /// its view and the new base becomes visible once its buffer is cleared.
+    pub fn update_base(&mut self, path: &Path, text: Option<String>) -> Result<()> {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        if self.overlays.base.contains_key(&norm) {
+            self.overlays.base.insert(norm.clone(), text.clone());
+        }
+        if self.overlays.owner.contains_key(&norm) {
+            return Ok(());
+        }
+        self.apply_text(&norm, text)
+    }
+
+    /// Drops every buffer of `session` whose path is not in `keep`: a sync that announces the
+    /// session's complete dirty set makes any other overlay of that session stale. Returns the
+    /// number of buffers dropped.
+    pub fn retain_session_overlays(&mut self, session: u64, keep: &[PathBuf]) -> Result<usize> {
+        let keep: HashSet<PathBuf> = keep
+            .iter()
+            .map(|path| normalize_vfs_path(path, &self.workspace_root))
+            .collect();
+        let stale: Vec<PathBuf> = self
+            .overlays
+            .sessions
+            .get(&session)
+            .map(|files| {
+                files
+                    .keys()
+                    .filter(|norm| !keep.contains(*norm))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        for norm in &stale {
+            self.clear_session_overlay(session, norm)?;
+        }
+        Ok(stale.len())
+    }
+
     /// Number of buffers `session` currently overlays.
     pub fn session_overlay_count(&self, session: u64) -> usize {
         self.overlays
@@ -794,6 +834,142 @@ impl PathTranslator {
         engine.activate_session(7).unwrap();
         let again = engine.document_symbols(&scratch).unwrap();
         assert!(again.iter().any(|s| s.name == "scratch_only"));
+    }
+
+    #[test]
+    fn test_update_base_respects_open_buffers() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let names = |engine: &RustEngine| -> Vec<String> {
+            engine
+                .document_symbols(&lib_path)
+                .unwrap()
+                .into_iter()
+                .map(|s| s.name)
+                .collect()
+        };
+
+        engine
+            .update_base(
+                &lib_path,
+                Some("pub const FROM_SYNC: u8 = 1;\n".to_string()),
+            )
+            .unwrap();
+        assert!(names(&engine).contains(&"FROM_SYNC".to_string()));
+
+        engine
+            .set_session_overlay(
+                9,
+                &lib_path,
+                Some("pub const FROM_BUFFER: u8 = 2;\n".to_string()),
+            )
+            .unwrap();
+        engine
+            .update_base(
+                &lib_path,
+                Some("pub const FROM_SYNC_V2: u8 = 3;\n".to_string()),
+            )
+            .unwrap();
+        engine.activate_session(9).unwrap();
+        let with_buffer = names(&engine);
+        assert!(
+            with_buffer.contains(&"FROM_BUFFER".to_string()),
+            "{with_buffer:?}"
+        );
+        assert!(
+            !with_buffer.contains(&"FROM_SYNC_V2".to_string()),
+            "{with_buffer:?}"
+        );
+
+        engine.clear_session(9).unwrap();
+        let after = names(&engine);
+        assert!(after.contains(&"FROM_SYNC_V2".to_string()), "{after:?}");
+    }
+
+    #[test]
+    fn test_retain_session_overlays_drops_stale_buffers() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let scratch = temp.path().join("src/scratch.rs");
+        engine
+            .set_session_overlay(5, &lib_path, Some("pub const STALE: u8 = 1;\n".to_string()))
+            .unwrap();
+        engine
+            .set_session_overlay(5, &scratch, Some("pub fn keep_me() {}\n".to_string()))
+            .unwrap();
+        assert_eq!(
+            engine
+                .retain_session_overlays(5, std::slice::from_ref(&scratch))
+                .unwrap(),
+            1
+        );
+        assert_eq!(engine.session_overlay_count(5), 1);
+        engine.activate_session(5).unwrap();
+        let names: Vec<String> = engine
+            .document_symbols(&lib_path)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        assert!(names.contains(&"DEFAULT_PORT".to_string()), "{names:?}");
+        assert!(!names.contains(&"STALE".to_string()), "{names:?}");
+    }
+
+    #[test]
+    fn test_session_overlay_new_module_survives_view_switches() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let scratch = temp.path().join("src/scratch.rs");
+        let base = std::fs::read_to_string(&lib_path).unwrap();
+        let owner = format!("{base}\n#[path = \"scratch.rs\"]\nmod scratch;\n");
+
+        engine
+            .set_session_overlay(1, &lib_path, Some(owner))
+            .unwrap();
+        engine
+            .set_session_overlay(
+                1,
+                &scratch,
+                Some("pub fn scratch_only() -> u8 {{ 7 }}\n".to_string()),
+            )
+            .unwrap();
+        engine.activate_session(1).unwrap();
+        let first = engine.hover(&scratch, 1, 8).unwrap();
+        assert!(
+            first.as_deref().is_some_and(|h| h.contains("scratch_only")),
+            "{first:?}"
+        );
+
+        // Another session looks at the base, then session 1 comes back.
+        engine.activate_session(2).unwrap();
+        assert!(engine.hover(&scratch, 1, 8).unwrap().is_none());
+        engine.activate_session(1).unwrap();
+        let again = engine.hover(&scratch, 1, 8).unwrap();
+        assert!(
+            again.as_deref().is_some_and(|h| h.contains("scratch_only")),
+            "{again:?}"
+        );
+
+        // Session 1 disconnects; a fresh session re-syncs the same files and must resolve too.
+        engine.clear_session(1).unwrap();
+        engine.activate_session(2).unwrap();
+        let owner = format!("{base}\n#[path = \"scratch.rs\"]\nmod scratch;\n");
+        engine
+            .set_session_overlay(3, &lib_path, Some(owner))
+            .unwrap();
+        engine
+            .set_session_overlay(
+                3,
+                &scratch,
+                Some("pub fn scratch_only() -> u8 {{ 7 }}\n".to_string()),
+            )
+            .unwrap();
+        engine.activate_session(3).unwrap();
+        let fresh = engine.hover(&scratch, 1, 8).unwrap();
+        assert!(
+            fresh.as_deref().is_some_and(|h| h.contains("scratch_only")),
+            "{fresh:?}"
+        );
     }
 
     #[test]

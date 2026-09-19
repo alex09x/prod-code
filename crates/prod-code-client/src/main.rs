@@ -96,7 +96,7 @@ enum Commands {
         keep_workdir: bool,
         /// Server workspace mapping: `shared` coalesces all worktrees onto one server
         /// workspace (production behaviour), `isolated` gives each worktree its own.
-        #[arg(long, value_enum, default_value_t = WorkspaceMode::Shared)]
+        #[arg(long, value_enum, default_value_t = WorkspaceMode::Isolated)]
         mode: WorkspaceMode,
     },
 }
@@ -144,35 +144,9 @@ async fn main() -> Result<()> {
 
 /// Dynamically detect the base repository name if current directory is a git worktree or repository.
 pub fn detect_workspace_name(dir: &Path) -> Option<String> {
-    let dot_git = dir.join(".git");
-    if dot_git.is_file() {
-        if let Ok(content) = std::fs::read_to_string(&dot_git) {
-            for line in content.lines() {
-                if let Some(gitdir) = line.trim().strip_prefix("gitdir:") {
-                    let gitdir_path = PathBuf::from(gitdir.trim());
-                    let mut cur = gitdir_path.as_path();
-                    while let Some(parent) = cur.parent() {
-                        if cur.file_name().is_some_and(|n| n == ".git") {
-                            return parent
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|s| s.to_string());
-                        }
-                        cur = parent;
-                    }
-                }
-            }
-        }
-    } else if dot_git.is_dir() {
-        return dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string());
-    }
-
-    dir.file_name()
-        .and_then(|n| n.to_str())
-        .map(|s| s.to_string())
+    // Every git worktree gets its own isolated server workspace; see
+    // `prod_code_mcp::sync::workspace_identity`.
+    Some(prod_code_mcp::sync::workspace_identity(dir).name)
 }
 
 /// Find the root of the workspace or git worktree containing the specified file.
@@ -286,18 +260,20 @@ async fn execute_lsp_query(
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
 
-    // 1b. Fast transparent pre-flight sync for dirty, modified, or untracked files
-    if let Ok(dirty_files) = prod_code_mcp::sync::collect_dirty_files(&ws_root)
-        && !dirty_files.is_empty()
-    {
+    // 1b. Transparent pre-flight sync: everything this worktree has that the gateway has not
+    // seen yet (commits since the last sync, dirty and untracked files, reverts), tracked by
+    // the persistent per-worktree watermark.
+    let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&ws_root, None).ok();
+    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
         let sync_req = SyncRequest {
             client_workspace_root: ws_root_str.clone(),
-            files: dirty_files,
+            files: plan.files.clone(),
             clean_others: false,
             base_workspace_name: base_ws_name.clone(),
         };
         framed.send(WireMessage::SyncRequest(sync_req)).await?;
         if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+            prod_code_mcp::sync::commit_workspace_sync(&ws_root, plan);
             // Dirty sync completed
         }
     }

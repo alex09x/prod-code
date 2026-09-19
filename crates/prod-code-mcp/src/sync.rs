@@ -3,7 +3,7 @@
 use anyhow::Result;
 use prod_code_protocol::FileDelta;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,59 @@ pub struct SyncCache {
     pub last_sync_timestamp_ms: u64,
     #[serde(default)]
     pub files: HashMap<String, SyncFileEntry>,
+    /// Paths that were dirty or untracked at the last full sync. A path that later drops out of
+    /// this set without a commit was reverted and must be sent again in its clean form.
+    #[serde(default)]
+    pub dirty_paths: BTreeSet<String>,
+}
+
+/// How a checkout identifies itself to the gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceIdentity {
+    /// Server workspace name. A git worktree gets its own name derived from its origin
+    /// repository plus a hash of its path, so every worktree owns an isolated server
+    /// workspace and analysis database instead of sharing the origin's.
+    pub name: String,
+    /// Name of the origin repository when `dir` is a linked worktree.
+    pub base: Option<String>,
+}
+
+/// Derives the server workspace identity of `dir`.
+pub fn workspace_identity(dir: &Path) -> WorkspaceIdentity {
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let own_name = canonical
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace")
+        .to_string();
+    let dot_git = canonical.join(".git");
+    if dot_git.is_file()
+        && let Ok(content) = std::fs::read_to_string(&dot_git)
+    {
+        for line in content.lines() {
+            let Some(gitdir) = line.trim().strip_prefix("gitdir:") else {
+                continue;
+            };
+            let gitdir_path = PathBuf::from(gitdir.trim());
+            let mut cur = gitdir_path.as_path();
+            while let Some(parent) = cur.parent() {
+                if cur.file_name().is_some_and(|n| n == ".git")
+                    && let Some(origin) = parent.file_name().and_then(|n| n.to_str())
+                {
+                    let hash = stable_hash(canonical.to_string_lossy().as_bytes()) as u32;
+                    return WorkspaceIdentity {
+                        name: format!("{origin}--wt-{hash:08x}"),
+                        base: Some(origin.to_string()),
+                    };
+                }
+                cur = parent;
+            }
+        }
+    }
+    WorkspaceIdentity {
+        name: own_name,
+        base: None,
+    }
 }
 
 fn cache_file_path(root: &Path) -> PathBuf {
@@ -81,7 +134,16 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut state = load_sync_cache(&canonical_root);
     let current_base = git_head(&canonical_root)?;
-    let changes = changed_paths(&canonical_root, state.base_commit_sha.as_deref())?;
+    let (mut changes, current_dirty) =
+        changed_paths(&canonical_root, state.base_commit_sha.as_deref())?;
+    // A file that was dirty last time and is clean now without a commit was reverted: the
+    // gateway still holds the dirty version, so send the clean one (or its deletion).
+    for reverted in state.dirty_paths.difference(&current_dirty) {
+        if !changes.contains_key(reverted) {
+            let exists = canonical_root.join(reverted).is_file();
+            changes.insert(reverted.clone(), !exists);
+        }
+    }
     let filter = SyncPathFilter::new(&canonical_root, subpath)?;
     let mut files = Vec::new();
 
@@ -137,6 +199,7 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
     // still need to be included by the next full sync.
     if subpath.is_none() {
         state.base_commit_sha = Some(current_base);
+        state.dirty_paths = current_dirty;
     }
     Ok(SyncPlan { files, state })
 }
@@ -180,7 +243,12 @@ fn git_head(root: &Path) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn changed_paths(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, bool>> {
+/// Paths changed since `base` (committed, dirty and untracked) mapped to "deleted", plus the
+/// set of paths that are currently dirty or untracked.
+fn changed_paths(
+    root: &Path,
+    base: Option<&str>,
+) -> Result<(BTreeMap<String, bool>, BTreeSet<String>)> {
     let mut paths = BTreeMap::new();
     // A recorded base can disappear after a rebase, amend or gc; fall back to the full tracked
     // tree instead of failing the sync, since the watermarks still filter unchanged files.
@@ -204,8 +272,11 @@ fn changed_paths(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, boo
     }
 
     let output = git_output(root, ["status", "--porcelain=v1", "-z", "-uall"])?;
-    parse_porcelain_status(&output, &mut paths);
-    Ok(paths)
+    let mut dirty = BTreeMap::new();
+    parse_porcelain_status(&output, &mut dirty);
+    let dirty_set: BTreeSet<String> = dirty.keys().cloned().collect();
+    paths.extend(dirty);
+    Ok((paths, dirty_set))
 }
 
 fn git_output<const N: usize>(root: &Path, args: [&str; N]) -> Result<Vec<u8>> {
@@ -470,17 +541,22 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
 /// When in a git repository or worktree, uses `git status --porcelain -uall` for sub-10ms discovery.
 /// Uses lightweight memoization cache so files that were already synced and unchanged are not re-read or re-sent.
 pub fn collect_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
+    // The complete dirty/untracked set, every time. A gateway session keeps these files as its
+    // private overlay, so each new session must announce all of them; a persistent
+    // "already sent" cache would silently drop them for the second connection onwards.
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-
-    // Try git status discovery first
-    if let Ok(deltas) = collect_git_dirty_files(&canonical_root) {
-        return Ok(deltas);
-    }
-
-    Ok(Vec::new())
+    Ok(collect_git_dirty_files(&canonical_root, false).unwrap_or_default())
 }
 
-fn collect_git_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
+/// Like [`collect_dirty_files`] but skips files whose mtime/size/hash watermark is already
+/// recorded in the persistent per-worktree sync state. Only correct against a server that keeps
+/// previously synced files, i.e. the disk-backed base workspace, not session overlays.
+pub fn collect_dirty_files_incremental(root: &Path) -> Result<Vec<FileDelta>> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    Ok(collect_git_dirty_files(&canonical_root, true).unwrap_or_default())
+}
+
+fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta>> {
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -495,7 +571,11 @@ fn collect_git_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut deltas = Vec::new();
-    let mut cache = load_sync_cache(root);
+    let mut cache = if use_cache {
+        load_sync_cache(root)
+    } else {
+        SyncCache::default()
+    };
     let mut cache_modified = false;
 
     for line in stdout.lines() {
@@ -580,7 +660,7 @@ fn collect_git_dirty_files(root: &Path) -> Result<Vec<FileDelta>> {
         }
     }
 
-    if cache_modified {
+    if use_cache && cache_modified {
         save_sync_cache(root, &cache);
     }
 
@@ -793,7 +873,7 @@ mod tests {
         std::fs::write(root.join("notes.md"), "# Research Notes").unwrap();
 
         // 5. First collection: code files collected, non-code files ignored
-        let deltas = collect_dirty_files(root).unwrap();
+        let deltas = collect_dirty_files_incremental(root).unwrap();
         let map: std::collections::HashMap<_, _> = deltas
             .into_iter()
             .map(|d| (d.relative_path, d.content))
@@ -816,7 +896,7 @@ mod tests {
         );
 
         // 6. Second consecutive collection without changes: cache hit, zero deltas!
-        let deltas_cached = collect_dirty_files(root).unwrap();
+        let deltas_cached = collect_dirty_files_incremental(root).unwrap();
         assert!(
             deltas_cached.is_empty(),
             "Expected 0 deltas on cache hit, got {}",
@@ -825,7 +905,7 @@ mod tests {
 
         // 7. Touch one file: only that file is collected again
         std::fs::write(root.join("src/lib.rs"), "pub fn modified_v2() {}").unwrap();
-        let deltas_recheck = collect_dirty_files(root).unwrap();
+        let deltas_recheck = collect_dirty_files_incremental(root).unwrap();
         assert_eq!(deltas_recheck.len(), 1);
         assert!(deltas_recheck[0].relative_path.contains("lib.rs"));
     }
@@ -954,6 +1034,129 @@ mod tests {
         assert_eq!(changed.files.len(), 1);
         assert_eq!(changed.files[0].relative_path, "src/lib.rs");
         clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_reverted_dirty_file_is_resent_clean() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 1 }").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "initial"][..]] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let initial = prepare_workspace_sync(root, None).unwrap();
+        commit_workspace_sync(root, &initial);
+
+        // Dirty edit is sent and remembered as dirty.
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 2 }").unwrap();
+        let dirty = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(dirty.files.len(), 1);
+        commit_workspace_sync(root, &dirty);
+        assert!(
+            load_sync_cache(&std::fs::canonicalize(root).unwrap())
+                .dirty_paths
+                .contains("src/lib.rs")
+        );
+
+        // Revert to HEAD: git reports nothing, yet the clean content must go out again.
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 1 }").unwrap();
+        let reverted = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(reverted.files.len(), 1);
+        assert_eq!(
+            reverted.files[0].content.as_deref(),
+            Some("pub fn version() -> u8 { 1 }".as_bytes())
+        );
+        commit_workspace_sync(root, &reverted);
+        assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_workspace_identity_isolates_worktrees() {
+        let temp = tempfile::tempdir().unwrap();
+        let origin = temp.path().join("my-repo");
+        std::fs::create_dir_all(&origin).unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&origin)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(["config", key, value])
+                    .current_dir(&origin)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        std::fs::write(origin.join("a.rs"), "pub fn a() {}").unwrap();
+        for args in [&["add", "a.rs"][..], &["commit", "-qm", "initial"][..]] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&origin)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let wt_a = temp.path().join("worktrees/task-1/attempt-0");
+        let wt_b = temp.path().join("worktrees/task-2/attempt-0");
+        for (wt, branch) in [(&wt_a, "wt-a"), (&wt_b, "wt-b")] {
+            std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+            assert!(
+                std::process::Command::new("git")
+                    .args(["worktree", "add", "-q", "-b", branch, wt.to_str().unwrap()])
+                    .current_dir(&origin)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+
+        let main = workspace_identity(&origin);
+        assert_eq!(main.name, "my-repo");
+        assert_eq!(main.base, None);
+
+        let a = workspace_identity(&wt_a);
+        let b = workspace_identity(&wt_b);
+        assert!(a.name.starts_with("my-repo--wt-"), "{}", a.name);
+        assert!(b.name.starts_with("my-repo--wt-"), "{}", b.name);
+        assert_ne!(a.name, b.name);
+        assert_eq!(a.base.as_deref(), Some("my-repo"));
+        assert_eq!(workspace_identity(&wt_a), a);
     }
 
     #[test]

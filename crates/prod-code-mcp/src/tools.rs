@@ -543,6 +543,7 @@ async fn execute_lsp_query(
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let root_str = workspace_root.to_string_lossy().to_string();
+    let workspace_name = crate::sync::workspace_identity(workspace_root).name;
     let file_uri = Url::from_file_path(file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
@@ -565,7 +566,7 @@ async fn execute_lsp_query(
             auth_token: None,
             client_workspace_root: root_str.clone(),
             preferred_engine: None,
-            base_workspace_name: None,
+            base_workspace_name: Some(workspace_name.clone()),
         }))
         .await?;
 
@@ -574,19 +575,19 @@ async fn execute_lsp_query(
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
 
-    // 1b. Fast transparent pre-flight sync for dirty, modified, or untracked files
-    if let Ok(dirty_files) = crate::sync::collect_dirty_files(workspace_root)
-        && !dirty_files.is_empty()
-    {
+    // 1b. Transparent pre-flight sync: commits since the last sync, dirty and untracked files
+    // and reverts, tracked by the persistent per-worktree watermark.
+    let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
+    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
         let sync_req = SyncRequest {
             client_workspace_root: root_str.clone(),
-            files: dirty_files,
+            files: plan.files.clone(),
             clean_others: false,
-            base_workspace_name: None,
+            base_workspace_name: Some(workspace_name.clone()),
         };
         framed.send(WireMessage::SyncRequest(sync_req)).await?;
         if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-            // Dirty sync completed
+            crate::sync::commit_workspace_sync(workspace_root, plan);
         }
     }
 

@@ -1078,26 +1078,6 @@ async fn run_session_loop(
 
                         for delta in &req.files {
                             let target_path = view.workspace.root.join(&delta.relative_path);
-                            if let Some(engine_lock) = &view.workspace.rust_engine {
-                                // A session's dirty/untracked files are that worktree's private
-                                // view: they go into the session overlay, never into the shared
-                                // base on disk that every other worktree session resolves against.
-                                let text = match &delta.content {
-                                    Some(bytes) => match std::str::from_utf8(bytes) {
-                                        Ok(text) => Some(text.to_string()),
-                                        Err(_) => continue,
-                                    },
-                                    None => None,
-                                };
-                                bytes_transferred += delta.content.as_ref().map(|c| c.len()).unwrap_or(0);
-                                let mut engine = engine_lock.lock().await;
-                                match engine.set_session_overlay(view.session_id, &target_path, text) {
-                                    Ok(()) if delta.content.is_some() => files_updated += 1,
-                                    Ok(()) => files_deleted += 1,
-                                    Err(e) => tracing::warn!(error = %e, file = %target_path.display(), "session overlay sync failed"),
-                                }
-                                continue;
-                            }
                             match &delta.content {
                                 Some(content_bytes) => {
                                     if let Some(parent) = target_path.parent() {
@@ -1107,6 +1087,17 @@ async fn run_session_loop(
                                     if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
                                         files_updated += 1;
                                     }
+                                    // The workspace is this worktree's own: synced files are its
+                                    // new base, visible to every session except one that still
+                                    // holds an unsaved buffer for the same path.
+                                    if let (Some(engine_lock), Ok(text)) =
+                                        (&view.workspace.rust_engine, std::str::from_utf8(content_bytes))
+                                    {
+                                        let mut engine = engine_lock.lock().await;
+                                        if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
+                                            tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                        }
+                                    }
                                 }
                                 None => {
                                     if target_path.exists()
@@ -1114,7 +1105,35 @@ async fn run_session_loop(
                                     {
                                         files_deleted += 1;
                                     }
+                                    if let Some(engine_lock) = &view.workspace.rust_engine {
+                                        let mut engine = engine_lock.lock().await;
+                                        if let Err(e) = engine.update_base(&target_path, None) {
+                                            tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                                        }
+                                    }
                                 }
+                            }
+                        }
+
+                        if req.clean_others
+                            && let Some(engine_lock) = &view.workspace.rust_engine
+                        {
+                            // The request is the session's complete dirty set: any other
+                            // overlay this session still holds is stale (reverted or committed).
+                            let keep: Vec<PathBuf> = req
+                                .files
+                                .iter()
+                                .map(|delta| view.workspace.root.join(&delta.relative_path))
+                                .collect();
+                            let mut engine = engine_lock.lock().await;
+                            match engine.retain_session_overlays(view.session_id, &keep) {
+                                Ok(dropped) if dropped > 0 => tracing::info!(
+                                    session = view.session_id,
+                                    dropped,
+                                    "🧹 [OVERLAY] dropped stale session buffers after full dirty sync"
+                                ),
+                                Ok(_) => {}
+                                Err(e) => tracing::warn!(error = %e, session = view.session_id, "failed to drop stale session buffers"),
                             }
                         }
 

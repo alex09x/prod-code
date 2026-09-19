@@ -318,6 +318,16 @@ impl WorkspaceManager {
 }
 
 /// Extract a clean, generic workspace identifier from any client workspace or worktree path.
+/// Short stable hash of a client root, used to give every worktree its own server workspace.
+pub fn worktree_suffix(client_root: &str) -> String {
+    let hash = client_root
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        }) as u32;
+    format!("--wt-{hash:08x}")
+}
+
 pub fn extract_workspace_identifier(client_root: &str) -> String {
     let path = Path::new(client_root);
 
@@ -338,7 +348,8 @@ pub fn extract_workspace_identifier(client_root: &str) -> String {
                 && (components[i + 2].starts_with("task-")
                     || components[i + 2].starts_with("attempt-"))
             {
-                return sanitize_identifier(next_seg);
+                // Each worktree owns an isolated workspace named after its origin repository.
+                return sanitize_identifier(next_seg) + &worktree_suffix(client_root);
             }
         }
     }
@@ -355,7 +366,7 @@ pub fn extract_workspace_identifier(client_root: &str) -> String {
                 && prev_seg != "home"
                 && prev_seg != "var"
             {
-                return sanitize_identifier(prev_seg);
+                return sanitize_identifier(prev_seg) + &worktree_suffix(client_root);
             }
         }
     }
@@ -483,13 +494,21 @@ mod tests {
         // 1. Nested runner worktree container: .../worktrees/<workspace_name>/task-123/attempt-0
         let wt1 = "/Volumes/worktrees/worktrees/repo-alpha/task-1531/attempt-0";
         let res1 = resolve_server_workspace(storage, wt1, None);
-        assert_eq!(res1, storage.join("repo-alpha"));
+        assert_eq!(
+            res1,
+            storage.join(format!("repo-alpha{}", worktree_suffix(wt1)))
+        );
         assert!(res1.is_dir(), "Workspace directory must be auto-created");
+        let wt1b = "/Volumes/worktrees/worktrees/repo-alpha/task-1532/attempt-0";
+        assert_ne!(resolve_server_workspace(storage, wt1b, None), res1);
 
         // 2. In-repo dot-worktrees pattern: .../project-beta/.worktrees/branch-1
         let wt2 = "/home/dev/projects/project-beta/.worktrees/branch-1";
         let res2 = resolve_server_workspace(storage, wt2, None);
-        assert_eq!(res2, storage.join("project-beta"));
+        assert_eq!(
+            res2,
+            storage.join(format!("project-beta{}", worktree_suffix(wt2)))
+        );
         assert!(res2.is_dir());
 
         // 3. Worktree with explicit base name provided by client
