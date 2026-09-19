@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
+};
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -162,7 +164,7 @@ async fn execute_lsp_query(
             client_name: "prod-code-cli".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
-            client_workspace_root: cwd_str,
+            client_workspace_root: cwd_str.clone(),
             preferred_engine: None,
             base_workspace_name: detect_workspace_name(&cwd),
         }))
@@ -172,6 +174,22 @@ async fn execute_lsp_query(
         Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
+
+    // 1b. Fast transparent pre-flight sync for dirty, modified, or untracked files
+    if let Ok(dirty_files) = prod_code_mcp::sync::collect_dirty_files(&cwd)
+        && !dirty_files.is_empty()
+    {
+        let sync_req = SyncRequest {
+            client_workspace_root: cwd_str,
+            files: dirty_files,
+            clean_others: false,
+            base_workspace_name: detect_workspace_name(&cwd),
+        };
+        framed.send(WireMessage::SyncRequest(sync_req)).await?;
+        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+            // Dirty sync completed
+        }
+    }
 
     // 2. LSP Initialize
     let folder_name = cwd
@@ -745,32 +763,16 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
                 continue;
             }
             if let Some(pos) = trimmed.find("pub const ") {
-                return Some((
-                    path.to_path_buf(),
-                    line_idx as u32,
-                    (pos + 12) as u32,
-                ));
+                return Some((path.to_path_buf(), line_idx as u32, (pos + 12) as u32));
             }
             if let Some(pos) = trimmed.find("pub struct ") {
-                return Some((
-                    path.to_path_buf(),
-                    line_idx as u32,
-                    (pos + 13) as u32,
-                ));
+                return Some((path.to_path_buf(), line_idx as u32, (pos + 13) as u32));
             }
             if let Some(pos) = trimmed.find("pub fn ") {
-                return Some((
-                    path.to_path_buf(),
-                    line_idx as u32,
-                    (pos + 9) as u32,
-                ));
+                return Some((path.to_path_buf(), line_idx as u32, (pos + 9) as u32));
             }
             if let Some(pos) = trimmed.find("func ") {
-                return Some((
-                    path.to_path_buf(),
-                    line_idx as u32,
-                    (pos + 6) as u32,
-                ));
+                return Some((path.to_path_buf(), line_idx as u32, (pos + 6) as u32));
             }
         }
     }

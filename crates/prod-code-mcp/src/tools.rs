@@ -574,6 +574,22 @@ async fn execute_lsp_query(
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
 
+    // 1b. Fast transparent pre-flight sync for dirty, modified, or untracked files
+    if let Ok(dirty_files) = crate::sync::collect_dirty_files(workspace_root)
+        && !dirty_files.is_empty()
+    {
+        let sync_req = SyncRequest {
+            client_workspace_root: root_str.clone(),
+            files: dirty_files,
+            clean_others: false,
+            base_workspace_name: None,
+        };
+        framed.send(WireMessage::SyncRequest(sync_req)).await?;
+        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+            // Dirty sync completed
+        }
+    }
+
     // 2. LSP Initialize
     let folder_name = workspace_root
         .file_name()

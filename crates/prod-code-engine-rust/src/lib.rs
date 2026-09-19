@@ -334,9 +334,20 @@ impl RustEngine {
 
     /// Single-owner fast path: Apply live buffer edits directly into Salsa DB in memory.
     pub fn apply_file_change(&mut self, path: &Path, new_text: String) -> Result<()> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
+        let file_id = if let Some(fid) = self.file_id_for_path(path) {
+            fid
+        } else {
+            let mut vfs = self
+                .vfs
+                .write()
+                .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
+            let _ = vfs.set_file_contents(vfs_path.clone(), Some(new_text.as_bytes().to_vec()));
+            vfs.file_id(&vfs_path)
+                .map(|(id, _)| id)
+                .with_context(|| format!("File not found in VFS even after set: {:?}", path))?
+        };
 
         let mut change = ChangeWithProcMacros::default();
         change.change_file(file_id, Some(new_text));
