@@ -158,6 +158,7 @@ mod tests {
             bytes_transferred: 12,
             duration_ms: 15,
             server_workspace_root: "/srv/prod-code/workspaces/repo".to_string(),
+            workspace_was_fresh: false,
         });
 
         codec.encode(resp.clone(), &mut buf).unwrap();

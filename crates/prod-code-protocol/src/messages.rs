@@ -277,6 +277,11 @@ pub struct SyncResponse {
     pub bytes_transferred: usize,
     pub duration_ms: u64,
     pub server_workspace_root: String,
+    /// The workspace directory had never been established (no handshake or manifest probe
+    /// touched it): the server side was reset while the client still holds a watermark, so
+    /// the client must forget it and resend the full manifest.
+    #[serde(default)]
+    pub workspace_was_fresh: bool,
 }
 
 /// FNV-1a hash of file content, shared by client manifests and gateway probes.

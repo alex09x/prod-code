@@ -184,7 +184,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
 
-- [~] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec` (2026-09-19).
+- [~] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). Remaining: `bench`, structured JSON output mode, CPU/RSS in the summary.
   - **Client CLI Commands**:
     - `prod-code check`: remote compilation check across any language with instant terminal diagnostics.
     - `prod-code test [FILTER]`: remote test runner with real-time test output streaming.

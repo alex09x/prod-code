@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Typed remote verification (Phase 6.4): `prod-code check`, `prod-code lint`,
+  `prod-code test [FILTER]` and MCP tools `code_check`, `code_lint`, `code_test`. The command
+  runs on the gateway and the client parses the output into structured diagnostics
+  (`error: [E0308] ... (src/lib.rs:12:5)`), pass/fail counts and per-failure output for Rust
+  (cargo JSON, rustc text, libtest) and Go (`go build`/`go vet` lines, `go test -json`).
+
 - Semantic rename (Phase 7.1.1): `prod-code rename <file> <line> <col> <new_name>`, MCP tool
   `code_rename`, and LSP `textDocument/rename` on the gateway. rust-analyzer computes the
   workspace-wide edit (including module file renames); the client applies it to the checkout

@@ -277,6 +277,16 @@ pub async fn push_workspace_sync(
         })
         .await
         .context("workspace sync was not acknowledged")?;
+        if resp.workspace_was_fresh && !plan.initial {
+            // The server directory was reset behind our watermark: forget it and start over
+            // with a manifest probe on the same connection.
+            tracing::warn!(
+                workspace = %identity.name,
+                "gateway workspace was reset; resyncing the full tree"
+            );
+            clear_sync_cache(root);
+            return Box::pin(push_workspace_sync(framed, root, identity, subpath)).await;
+        }
         outcome.files_updated = resp.files_updated;
         outcome.files_deleted += resp.files_deleted;
         outcome.bytes_transferred = resp.bytes_transferred;

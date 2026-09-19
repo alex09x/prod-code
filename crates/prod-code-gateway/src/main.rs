@@ -237,6 +237,7 @@ pub async fn apply_sync_probe(
         }
     }
     let _ = std::fs::create_dir_all(&target);
+    workspace::touch_last_used(&target);
 
     let root = target.clone();
     let stamps = req.files;
@@ -420,7 +421,6 @@ pub async fn run_exec(
             .await?;
         return Ok(());
     };
-    workspace::touch_last_used(&workspace);
     let before = if req.pull_changes {
         let root = workspace.clone();
         tokio::task::spawn_blocking(move || snapshot_tree(&root))
@@ -594,6 +594,12 @@ pub async fn apply_sync(
         &req.client_workspace_root,
         req.base_workspace_name.as_deref(),
     );
+    // A directory nobody handshook or probed into is either brand new or was reset behind the
+    // client's back; a delta landing there must not pass for a complete workspace.
+    let workspace_was_fresh = !server_workspace.join(workspace::LAST_USED_MARKER).exists();
+    if !workspace_was_fresh {
+        workspace::touch_last_used(&server_workspace);
+    }
     let folder_name = server_workspace
         .file_name()
         .and_then(|n| n.to_str())
@@ -649,6 +655,7 @@ pub async fn apply_sync(
         files_updated,
         files_deleted,
         bytes_transferred,
+        fresh = workspace_was_fresh,
         duration_ms = %format!("{duration_ms}ms"),
         "⚡ [SYNC] Workspace fast-sync applied"
     );
@@ -659,6 +666,7 @@ pub async fn apply_sync(
         bytes_transferred,
         duration_ms,
         server_workspace_root: server_workspace.to_string_lossy().to_string(),
+        workspace_was_fresh,
     }
 }
 
@@ -1744,6 +1752,7 @@ async fn run_session_loop(
                                 bytes_transferred,
                                 duration_ms,
                                 server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
+                                workspace_was_fresh: false,
                             }))
                             .await;
                     }
@@ -1931,6 +1940,48 @@ mod tests {
         assert_eq!(
             changed[0].content.as_deref(),
             Some(b"a formatted".as_slice())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delta_sync_reports_fresh_until_probed() {
+        let storage = tempfile::tempdir().unwrap();
+        let manager = WorkspaceManager::new();
+        let delta = || SyncRequest {
+            client_workspace_root: "/tmp/ws".to_string(),
+            files: vec![FileDelta {
+                relative_path: "src/lib.rs".to_string(),
+                content: Some(b"fn a() {}".to_vec()),
+                is_executable: false,
+            }],
+            clean_others: false,
+            base_workspace_name: Some("ws".to_string()),
+        };
+        let first = apply_sync(storage.path(), &manager, delta()).await;
+        assert!(
+            first.workspace_was_fresh,
+            "nobody established this workspace yet"
+        );
+        let probe = apply_sync_probe(
+            storage.path(),
+            &manager,
+            SyncProbeRequest {
+                client_workspace_root: "/tmp/ws".to_string(),
+                base_workspace_name: Some("ws".to_string()),
+                seed_from: None,
+                files: vec![FileStamp {
+                    relative_path: "src/lib.rs".to_string(),
+                    size: 9,
+                    hash: content_hash(b"fn a() {}"),
+                }],
+            },
+        )
+        .await;
+        assert!(probe.missing.is_empty());
+        let second = apply_sync(storage.path(), &manager, delta()).await;
+        assert!(
+            !second.workspace_was_fresh,
+            "probe established the workspace"
         );
     }
 

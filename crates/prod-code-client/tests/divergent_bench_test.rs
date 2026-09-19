@@ -80,6 +80,7 @@ async fn handle_connection(stream: TcpStream) {
                     bytes_transferred,
                     duration_ms: 0,
                     server_workspace_root: req.client_workspace_root.clone(),
+                    workspace_was_fresh: false,
                 });
                 if framed.send(resp).await.is_err() {
                     break;
