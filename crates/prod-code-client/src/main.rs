@@ -8,9 +8,11 @@ use prod_code_protocol::{
 };
 use std::env;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
+use url::Url;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -38,6 +40,28 @@ enum Commands {
     Status,
     /// Push current worktree delta to remote storage.
     Sync,
+    /// Jump to symbol definition: prod-code def <file> <line> <col>
+    Def {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+    },
+    /// Inspect symbol type & docs: prod-code hover <file> <line> <col>
+    Hover {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+    },
+    /// Find all references to symbol: prod-code refs <file> <line> <col>
+    Refs {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+    },
+    /// List document outline symbols: prod-code symbols <file>
+    Symbols {
+        file: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -49,7 +73,306 @@ async fn main() -> Result<()> {
         Commands::Status => run_status_probe(cli.remote).await,
         Commands::Mcp => run_mcp_stub(cli.remote).await,
         Commands::Sync => run_sync_stub(cli.remote).await,
+        Commands::Def { file, line, col } => run_definition(cli.remote, &file, line, col).await,
+        Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
+        Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
+        Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
     }
+}
+
+/// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
+async fn execute_lsp_query(
+    remote: SocketAddr,
+    file_path: &Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let cwd = env::current_dir().context("Failed to determine current working directory")?;
+    let cwd_str = cwd.to_string_lossy().to_string();
+
+    let abs_path = if file_path.is_absolute() {
+        file_path.to_path_buf()
+    } else {
+        cwd.join(file_path)
+    };
+
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", abs_path))?
+        .to_string();
+
+    let file_content = tokio::fs::read_to_string(&abs_path)
+        .await
+        .with_context(|| format!("Failed to read file {:?}", abs_path))?;
+
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    // 1. Handshake
+    framed
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            client_name: "prod-code-cli".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: cwd_str,
+        }))
+        .await?;
+
+    let _ = match framed.next().await {
+        Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+        other => anyhow::bail!("Unexpected handshake response: {:?}", other),
+    };
+
+    // 2. LSP Initialize
+    let init_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "processId": null,
+            "rootUri": format!("file://{}", cwd.to_string_lossy()),
+            "capabilities": {
+                "textDocument": {
+                    "hover": {
+                        "contentFormat": ["markdown", "plaintext"]
+                    },
+                    "definition": {
+                        "linkSupport": true
+                    },
+                    "documentSymbol": {
+                        "hierarchicalDocumentSymbolSupport": true
+                    },
+                    "references": {}
+                }
+            }
+        }
+    });
+    framed.send(WireMessage::LspPayload(init_req.to_string())).await?;
+
+    // Await init response (matching id: 1)
+    let init_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    while tokio::time::Instant::now() < init_deadline {
+        let remaining = init_deadline - tokio::time::Instant::now();
+        match tokio::time::timeout(remaining, framed.next()).await {
+            Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json) {
+                    if val.get("id").and_then(|id| id.as_i64()) == Some(1) {
+                        break;
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => anyhow::bail!("Frame decode error during initialize: {}", e),
+            Ok(None) => anyhow::bail!("Server closed connection during initialize"),
+            Err(_) => anyhow::bail!("Timeout waiting for initialize response"),
+        }
+    }
+
+    // 3. LSP Initialized notification
+    let initialized = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "initialized",
+        "params": {}
+    });
+    framed.send(WireMessage::LspPayload(initialized.to_string())).await?;
+
+    // 4. LSP didOpen notification
+    let did_open = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "textDocument/didOpen",
+        "params": {
+            "textDocument": {
+                "uri": file_uri,
+                "languageId": "rust",
+                "version": 1,
+                "text": file_content
+            }
+        }
+    });
+    framed.send(WireMessage::LspPayload(did_open.to_string())).await?;
+
+    // 5. Send targeted query with id = 2
+    let query_req = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": method,
+        "params": params
+    });
+    framed.send(WireMessage::LspPayload(query_req.to_string())).await?;
+
+    // 6. Read response matching id = 2
+    let query_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(25);
+    while tokio::time::Instant::now() < query_deadline {
+        let remaining = query_deadline - tokio::time::Instant::now();
+        match tokio::time::timeout(remaining, framed.next()).await {
+            Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json) {
+                    if val.get("id").and_then(|id| id.as_i64()) == Some(2) {
+                        let _ = framed
+                            .send(WireMessage::Disconnect {
+                                reason: "query finished".to_string(),
+                            })
+                            .await;
+                        return Ok(val.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                    }
+                }
+            }
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(e))) => anyhow::bail!("Frame decode error: {}", e),
+            Ok(None) => anyhow::bail!("Remote closed connection prematurely"),
+            Err(_) => anyhow::bail!("Timeout waiting for LSP response to {}", method),
+        }
+    }
+
+    anyhow::bail!("No response received for query {}", method)
+}
+
+async fn run_hover(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+
+    let lsp_line = line.saturating_sub(1);
+    let lsp_col = col.saturating_sub(1);
+
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": lsp_line, "character": lsp_col }
+    });
+
+    let result = execute_lsp_query(remote, file, "textDocument/hover", params).await?;
+
+    if let Some(contents) = result.get("contents") {
+        if let Some(value) = contents.get("value").and_then(|v| v.as_str()) {
+            println!("{value}");
+            return Ok(());
+        } else if let Some(arr) = contents.as_array() {
+            for item in arr {
+                if let Some(v) = item.get("value").and_then(|v| v.as_str()) {
+                    println!("{v}");
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    println!("{:#}", result);
+    Ok(())
+}
+
+async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+
+    let lsp_line = line.saturating_sub(1);
+    let lsp_col = col.saturating_sub(1);
+
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": lsp_line, "character": lsp_col }
+    });
+
+    let result = execute_lsp_query(remote, file, "textDocument/definition", params).await?;
+
+    if let Some(arr) = result.as_array() {
+        if arr.is_empty() {
+            println!("No definition found.");
+        } else {
+            for loc in arr {
+                let uri = loc.get("uri").or_else(|| loc.get("targetUri")).and_then(|u| u.as_str()).unwrap_or("");
+                let range = loc.get("range").or_else(|| loc.get("targetSelectionRange"));
+                let start_line = range.and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
+                let start_col = range.and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+                println!("📍 Definition: {uri}:{start_line}:{start_col}");
+            }
+        }
+    } else if let Some(obj) = result.as_object() {
+        let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start_line = obj.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
+        let start_col = obj.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+        println!("📍 Definition: {uri}:{start_line}:{start_col}");
+    } else {
+        println!("{:#}", result);
+    }
+
+    Ok(())
+}
+
+async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+
+    let lsp_line = line.saturating_sub(1);
+    let lsp_col = col.saturating_sub(1);
+
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": lsp_line, "character": lsp_col },
+        "context": { "includeDeclaration": false }
+    });
+
+    let result = execute_lsp_query(remote, file, "textDocument/references", params).await?;
+
+    if let Some(arr) = result.as_array() {
+        if arr.is_empty() {
+            println!("No references found.");
+        } else {
+            println!("Found {} reference(s):", arr.len());
+            for loc in arr {
+                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                let start_line = loc.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
+                let start_col = loc.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) + 1;
+                println!("  • {uri}:{start_line}:{start_col}");
+            }
+        }
+    } else {
+        println!("{:#}", result);
+    }
+
+    Ok(())
+}
+
+async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri }
+    });
+
+    let result = execute_lsp_query(remote, file, "textDocument/documentSymbol", params).await?;
+
+    if let Some(arr) = result.as_array() {
+        println!("Symbols in {:?}:", file);
+        for sym in arr {
+            let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
+            let kind_str = match kind {
+                5 => "Class/Struct",
+                6 => "Method",
+                11 => "Function",
+                12 => "Variable",
+                13 => "Constant",
+                23 => "Struct",
+                _ => "Symbol",
+            };
+            let start_line = sym.get("range").and_then(|r| r.get("start")).and_then(|s| s.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) + 1;
+            println!("  [{kind_str}] {name} (line {start_line})");
+        }
+    } else {
+        println!("{:#}", result);
+    }
+
+    Ok(())
 }
 
 /// Query remote gateway for health and status snapshot.

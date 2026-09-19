@@ -515,14 +515,15 @@ name = "prod-code-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bytes",
  "clap",
  "futures-util",
  "prod-code-protocol",
+ "serde_json",
  "tokio",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

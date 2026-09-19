@@ -18,19 +18,26 @@ pub struct SharedWorkspace {
     pub engine: String,
     pub active_sessions: AtomicUsize,
     pub direct_edit_eligible: AtomicBool,
+    pub backend: Option<Arc<crate::backend::BackendWorker>>,
 }
 
 impl SharedWorkspace {
-    pub fn new(root: PathBuf, engine: String) -> Self {
+    pub fn new(
+        root: PathBuf,
+        engine: String,
+        backend: Option<Arc<crate::backend::BackendWorker>>,
+    ) -> Self {
         Self {
             key: WorkspaceKey(root.clone()),
             root,
             engine,
             active_sessions: AtomicUsize::new(0),
             direct_edit_eligible: AtomicBool::new(true),
+            backend,
         }
     }
 }
+
 
 /// A session's private view over a shared workspace (e.g. an agent's Git worktree).
 pub struct SessionView {
@@ -136,9 +143,19 @@ impl WorkspaceManager {
 
         // Leader performs actual workspace load
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
+        let backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+            .await
+            .map_err(|e| {
+                tracing::warn!(error = %e, "Could not spawn background language server; falling back to stub");
+                e
+            })
+            .ok()
+            .map(Arc::new);
+
         let ws = Arc::new(SharedWorkspace::new(
             workspace_root.to_path_buf(),
             engine.to_string(),
+            backend,
         ));
         ws.active_sessions.fetch_add(1, Ordering::Relaxed);
 

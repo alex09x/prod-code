@@ -1,5 +1,6 @@
 //! prod-code gateway daemon: multi-tenant server for remote code intelligence over 10 GbE LAN.
 
+pub mod backend;
 pub mod workspace;
 
 use anyhow::Result;
@@ -105,10 +106,31 @@ pub async fn handle_client(
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("default");
-                let server_workspace = state.storage_root.join(folder_name);
+
+                // Discover server workspace:
+                // 1. Direct match in storage_root
+                // 2. Home directory ~/folder_name (e.g. /home/alex09x/prod-code)
+                // 3. ~/Projects/folder_name
+                // 4. Default to storage_root/folder_name
+                let mut server_workspace = state.storage_root.join(folder_name);
+                if !server_workspace.exists() {
+                    if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
+                        let home_candidate = home.join(folder_name);
+                        let projects_candidate = home.join("Projects").join(folder_name);
+                        if home_candidate.exists() {
+                            server_workspace = home_candidate;
+                        } else if projects_candidate.exists() {
+                            server_workspace = projects_candidate;
+                        } else {
+                            let _ = tokio::fs::create_dir_all(&server_workspace).await;
+                        }
+                    } else {
+                        let _ = tokio::fs::create_dir_all(&server_workspace).await;
+                    }
+                }
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
 
-                let engine = detect_engine(&client_root_path);
+                let engine = detect_engine(&server_workspace);
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
 
@@ -175,81 +197,117 @@ async fn run_session_loop(
     translator: &PathTranslator,
     view: &SessionView,
 ) -> Result<()> {
-    while let Some(msg_res) = framed.next().await {
-        let msg = msg_res?;
-        match msg {
-            WireMessage::Ping => {
-                framed.send(WireMessage::Pong).await?;
-            }
-            WireMessage::LspPayload(raw_client_lsp) => {
-                // Translate client paths to server paths
-                let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
-                tracing::debug!(
-                    payload_len = server_lsp.len(),
-                    single_owner = view.is_single_owner,
-                    "Processed incoming LSP message"
-                );
+    let mut backend_rx = view.workspace.backend.as_ref().map(|b| b.subscribe());
 
-                // Route message. If it's initialize, synthesize capability response
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
-                    if val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
-                        let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
-                        let init_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": {
-                                "capabilities": {
-                                    "textDocumentSync": 1,
-                                    "hoverProvider": true,
-                                    "definitionProvider": true,
-                                    "referencesProvider": true,
-                                    "documentSymbolProvider": true,
-                                    "workspaceSymbolProvider": true
-                                },
-                                "serverInfo": {
-                                    "name": "prod-code-rci",
-                                    "version": "0.1.0"
+    loop {
+        tokio::select! {
+            client_msg_res = framed.next() => {
+                match client_msg_res {
+                    Some(Ok(WireMessage::Ping)) => {
+                        framed.send(WireMessage::Pong).await?;
+                    }
+                    Some(Ok(WireMessage::LspPayload(raw_client_lsp))) => {
+                        let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
+                        tracing::debug!(
+                            payload_len = server_lsp.len(),
+                            single_owner = view.is_single_owner,
+                            "Processing incoming LSP message"
+                        );
+
+                        if let Some(ref backend) = view.workspace.backend {
+                            if let Err(e) = backend.send_lsp(&server_lsp).await {
+                                tracing::error!(error = %e, "Failed to forward LSP to backend worker");
+                            }
+                        } else {
+                            // Fallback route if no backend worker is configured
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
+                                if val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
+                                    let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
+                                    let init_resp = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": {
+                                            "capabilities": {
+                                                "textDocumentSync": 1,
+                                                "hoverProvider": true,
+                                                "definitionProvider": true,
+                                                "referencesProvider": true,
+                                                "documentSymbolProvider": true,
+                                                "workspaceSymbolProvider": true
+                                            },
+                                            "serverInfo": {
+                                                "name": "prod-code-rci",
+                                                "version": "0.1.0"
+                                            }
+                                        }
+                                    });
+                                    let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
+                                    framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                } else if val.get("method").and_then(|m| m.as_str()) == Some("shutdown") {
+                                    let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
+                                    let shutdown_resp = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "result": null
+                                    });
+                                    framed
+                                        .send(WireMessage::LspPayload(shutdown_resp.to_string()))
+                                        .await?;
                                 }
                             }
-                        });
-                        let resp_str = init_resp.to_string();
-                        let client_resp = translator.translate_lsp_to_client(&resp_str);
-                        framed.send(WireMessage::LspPayload(client_resp)).await?;
-                        continue;
-                    } else if val.get("method").and_then(|m| m.as_str()) == Some("shutdown") {
-                        let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
-                        let shutdown_resp = serde_json::json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": null
-                        });
+                        }
+                    }
+                    Some(Ok(WireMessage::Disconnect { reason })) => {
+                        tracing::info!(reason, "Client terminated session");
+                        break;
+                    }
+                    Some(Ok(WireMessage::StatusRequest)) => {
                         framed
-                            .send(WireMessage::LspPayload(shutdown_resp.to_string()))
+                            .send(WireMessage::StatusResponse(StatusResponse {
+                                server_pid: std::process::id(),
+                                uptime_seconds: 0,
+                                active_sessions: 1,
+                                loaded_workspaces: 1,
+                                detected_engines: vec![view.workspace.engine.clone()],
+                            }))
                             .await?;
-                        continue;
+                    }
+                    Some(Err(e)) => {
+                        tracing::error!(error = %e, "TCP frame decode error");
+                        break;
+                    }
+                    None => {
+                        tracing::info!("Client disconnected");
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            backend_msg = async {
+                if let Some(ref mut rx) = backend_rx {
+                    rx.recv().await
+                } else {
+                    futures_util::future::pending().await
+                }
+            } => {
+                match backend_msg {
+                    Ok(server_lsp) => {
+                        let client_lsp = translator.translate_lsp_to_client(&server_lsp);
+                        if let Err(e) = framed.send(WireMessage::LspPayload(client_lsp)).await {
+                            tracing::error!(error = %e, "Failed to send LSP message to client");
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(skipped, "Session backend receiver lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::warn!("Backend worker broadcast closed");
+                        break;
                     }
                 }
-
-                // Default echo/pass-through with path translation
-                let client_resp = translator.translate_lsp_to_client(&server_lsp);
-                framed.send(WireMessage::LspPayload(client_resp)).await?;
             }
-            WireMessage::Disconnect { reason } => {
-                tracing::info!(reason, "Client terminated session");
-                break;
-            }
-            WireMessage::StatusRequest => {
-                framed
-                    .send(WireMessage::StatusResponse(StatusResponse {
-                        server_pid: std::process::id(),
-                        uptime_seconds: 0,
-                        active_sessions: 1,
-                        loaded_workspaces: 1,
-                        detected_engines: vec![view.workspace.engine.clone()],
-                    }))
-                    .await?;
-            }
-            _ => {}
         }
     }
     Ok(())
