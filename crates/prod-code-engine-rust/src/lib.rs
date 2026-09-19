@@ -712,7 +712,9 @@ impl RustEngineSnapshot {
 
         let mut results = Vec::new();
         for node in nodes {
-            let (sym_line, _) = offset_to_line_col(&text, node.node_range.start());
+            // The navigation range is the item's name; the node range would start at its
+            // doc comments and attributes.
+            let (sym_line, _) = offset_to_line_col(&text, node.navigation_range.start());
             results.push(SymbolTarget {
                 name: node.label,
                 kind: match node.kind {

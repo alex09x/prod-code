@@ -734,6 +734,46 @@ fn relativize_diagnostics(diagnostics: &mut [Diagnostic], server_root: &str) {
     }
 }
 
+/// Whether `root` is an Xcode project or workspace rather than a SwiftPM package: then
+/// `xcodebuild` drives builds and tests (needed for app bundles, simulators and UI tests).
+pub fn has_xcode_project(root: &Path) -> bool {
+    if root.join("Package.swift").exists() {
+        return false;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".xcodeproj") || name.ends_with(".xcworkspace")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// `xcodebuild build` / `xcodebuild test` for an Xcode project: the scheme is `filter` when
+/// given, otherwise the first scheme `xcodebuild -list` reports; iOS targets run on the
+/// first available iPhone simulator, everything else on the Mac.
+pub fn plan_xcode_command(kind: VerifyKind, scheme: Option<&str>) -> Result<Vec<String>> {
+    let action = match kind {
+        VerifyKind::Check => "build",
+        VerifyKind::Test => "test",
+        VerifyKind::Lint => return Err(anyhow!("no lint command for Xcode projects")),
+    };
+    let scheme_expr = match scheme.filter(|s| !s.is_empty()) {
+        Some(s) => format!("'{}'", s.replace('\'', "'\\''")),
+        None => "\"$(xcodebuild -list -json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); d=d.get(\"project\") or d.get(\"workspace\"); print(d[\"schemes\"][0])')\"".to_string(),
+    };
+    let script = format!(
+        "scheme={scheme_expr}; \
+if xcodebuild -showBuildSettings -scheme \"$scheme\" 2>/dev/null | grep -q 'SDKROOT.*iPhoneOS'; then \
+  dest=\"platform=iOS Simulator,name=$(xcrun simctl list devices available | grep -m1 -o 'iPhone[^(]*' | sed 's/ *$//')\"; \
+else dest='platform=macOS'; fi; \
+xcodebuild {action} -scheme \"$scheme\" -destination \"$dest\" -quiet 2>&1"
+    );
+    Ok(vec!["sh".to_string(), "-c".to_string(), script])
+}
+
 /// Runs the verification remotely and parses its output.
 pub async fn run_verify(
     remote: SocketAddr,
@@ -744,7 +784,11 @@ pub async fn run_verify(
 ) -> Result<VerifyReport> {
     let language = expected_engine(root)
         .ok_or_else(|| anyhow!("no Cargo.toml or go.mod at {}", root.display()))?;
-    let command = plan_command(language, kind, filter)?;
+    let command = if language == "swift" && has_xcode_project(root) {
+        plan_xcode_command(kind, filter)?
+    } else {
+        plan_command(language, kind, filter)?
+    };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut tail = TailBuffer::new(8 * 1024);
@@ -861,6 +905,24 @@ pub async fn run_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plans_xcodebuild_commands() {
+        let cmd = plan_xcode_command(VerifyKind::Test, Some("Tako")).unwrap();
+        assert_eq!(&cmd[..2], &["sh".to_string(), "-c".to_string()]);
+        assert!(cmd[2].contains("scheme='Tako'"));
+        assert!(cmd[2].contains("xcodebuild test -scheme"));
+        let cmd = plan_xcode_command(VerifyKind::Check, None).unwrap();
+        assert!(cmd[2].contains("xcodebuild -list -json"));
+        assert!(cmd[2].contains("xcodebuild build -scheme"));
+        assert!(plan_xcode_command(VerifyKind::Lint, None).is_err());
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!has_xcode_project(temp.path()));
+        std::fs::create_dir_all(temp.path().join("App.xcodeproj")).unwrap();
+        assert!(has_xcode_project(temp.path()));
+        std::fs::write(temp.path().join("Package.swift"), "").unwrap();
+        assert!(!has_xcode_project(temp.path()));
+    }
 
     #[test]
     fn parses_xctest_output() {
