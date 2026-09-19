@@ -108,3 +108,50 @@ This document outlines the architectural milestones and engineering phases for b
     - 20+ concurrent workers across 500+ file codebases.
     - Continuous semantic queries mixed with uncommitted `didChange` edits.
     - Simulated worker SIGKILL churn waves to verify clean session retirement and zero daemon hangs.
+
+---
+
+## Phase 6: Remote Build & Test Execution (RTE / RBE)
+
+**Objective**: Offload heavy Rust (and polyglot) compilation, test execution, clippy verification, and benchmarks from local workstations to high-performance remote server nodes (32–128 cores) over the 10 GbE LAN, eliminating local CPU lockups, thermal throttling, and battery drain.
+
+### The Problem: Local Rust Compilation Bottleneck
+- Compiling and testing large Rust projects (`cargo check`, `cargo test`, `cargo clippy`, `cargo bench`) on developer workstations and laptops is notoriously slow: LLVM code generation, monomorphization, macro expansion, and final linking cause heavy CPU spikes, thermal throttling, noisy cooling fans, and severe battery drain.
+- For autonomous AI coding agents (Claude, Codex, Agy), 95% of compilation and test invocations are executed solely for **verification feedback** (confirming whether changes compile without errors, verifying that unit/integration test assertions pass, and checking clippy lints). The binary itself is rarely needed locally on macOS.
+- Running multi-agent fleets with concurrent local builds quickly freezes workstation UI, locks `target/` directories, and throttles agent iteration speed.
+
+### Engineering Milestones
+
+- [ ] **6.1. Remote Execution Wire Protocol (`crates/prod-code-protocol`)**
+  - Define `RemoteExecRequest`:
+    - `command`: `check`, `test`, `clippy`, `bench`, or arbitrary binary runner.
+    - `args`: Command arguments and test filters (e.g. `["--lib", "test_order_manager"]`).
+    - `env`: Explicit environment variables (e.g. `RUST_BACKTRACE=1`, feature flags).
+    - `format`: `raw` streaming or `json` (parsing Cargo's `--message-format=json` and libtest JSON output into structured events).
+  - Define `RemoteExecStream` and `RemoteExecResult`:
+    - Real-time streaming of stdout/stderr chunks over 10G TCP with sub-millisecond latency.
+    - Structured compiler diagnostic events (spans, error codes, suggestions) streamed directly to client/agent.
+    - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
+
+- [ ] **6.2. Server-Side Execution Engine & Warm Target Caches (`crates/prod-code-gateway`)**
+  - Dispatch execution to dedicated high-performance Linux worker nodes (`booster` with 32 cores, or `rama` with 128 Ampere cores / 250 GB RAM).
+  - Persistent server-side `target/` directories located on high-speed NVMe or RAM-disk (`/dev/shm`).
+  - Pre-warmed shared Cargo cache (`~/.cargo/registry`, `~/.cargo/git`) and toolchains (stable, beta, nightly).
+  - Because code deltas are synced incrementally via Phase 4.2 in < 2 ms, only modified crates recompile; dependencies stay permanently warm in server RAM.
+
+- [ ] **6.3. Concurrent Multi-Worktree Build Isolation**
+  - Isolated build artifacts per worktree session to eliminate `target/.cargo-lock` build contention across concurrent agents.
+  - Shared read-only dependency artifact cache (`sccache` integration on server or hardlinked shared target directories).
+  - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
+
+- [ ] **6.4. Client CLI & Native Agent MCP Integration**
+  - **Client CLI Commands**:
+    - `prod-code check`: remote `cargo check` with instant terminal diagnostics.
+    - `prod-code test [FILTER]`: remote `cargo test` with real-time test output streaming.
+    - `prod-code clippy`: remote `cargo clippy -- -D warnings`.
+    - `prod-code bench [BENCH_NAME]`: remote `cargo bench` running on quiet, isolated server cores without desktop thermal noise.
+  - **Agent MCP Tools (`crates/prod-code-mcp`)**:
+    - `code_check(path)`: returns structured compiler errors and warnings directly into agent context.
+    - `code_test(path, filter)`: runs targeted tests and returns failures with panic backtraces and diffs.
+    - Instant verification feedback in 1–3 seconds per edit without touching local machine CPU.
+
