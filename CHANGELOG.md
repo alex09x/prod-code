@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Code actions (Phase 7.1): `prod-code assists <file> <line> <col> [--to LINE:COL]` lists the
+  rust-analyzer assists at a position or selection, `prod-code assist … <id> [--subtype N]`
+  applies one; MCP tools `code_assists` / `code_assist`. Inline, extract function/variable/
+  constant, promote to const, add explicit type, generate and rewrite assists and quick fixes
+  all go through the same WorkspaceEdit path as rename.
+
 - Typed remote verification (Phase 6.4): `prod-code check`, `prod-code lint`,
   `prod-code test [FILTER]` and MCP tools `code_check`, `code_lint`, `code_test`. The command
   runs on the gateway and the client parses the output into structured diagnostics

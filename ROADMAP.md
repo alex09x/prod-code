@@ -229,6 +229,7 @@ This document outlines the architectural milestones and engineering phases for b
       - Inline Variable/Constant: inlines computed expressions into usage sites and eliminates redundant bindings.
       - Inline Parameter: eliminates parameter by inlining constant values across all callers.
 
+  - [~] Code actions: `prod-code assists <file> <line> <col> [--to LINE:COL]` lists what rust-analyzer offers at a position or selection and `prod-code assist … <id>` applies it (MCP `code_assists` / `code_assist`). This covers `inline_local_variable`, `inline_call`, `extract_function`, `extract_variable`, `extract_constant`, `extract_static`, `promote_local_to_const`, `add_explicit_type`, generate/rewrite assists and quick fixes in one mechanism (2026-09-19).
   - **7.1.2. The Extract & Introduce Family**:
     - `refactor.extract_function(path, range, fn_name)`:
       - Remote compiler analyzes variable captures, borrow checker constraints, and lifetimes, returning the extracted signature and replacement call site.
