@@ -1,7 +1,9 @@
 //! Remote command execution: sync the checkout, then run a command inside its server copy and
 //! stream the output back. Shared by the CLI (`prod-code exec`) and the MCP tool `code_exec`.
 
-use crate::sync::{WorkspaceIdentity, apply_pulled_files, push_workspace_sync, workspace_identity};
+use crate::sync::{
+    WorkspaceIdentity, apply_pulled_files_for, push_workspace_sync, workspace_identity,
+};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ExecExit, ExecRequest, ProdCodeCodec, WireMessage};
@@ -60,7 +62,11 @@ pub async fn run_remote(
                 }
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
-                pulled_files.extend(apply_pulled_files(root, &changes.files)?);
+                pulled_files.extend(apply_pulled_files_for(
+                    root,
+                    &remote.to_string(),
+                    &changes.files,
+                )?);
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {
                 let _ = framed

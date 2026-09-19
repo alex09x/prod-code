@@ -206,7 +206,10 @@ pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec
         touched.push(rel);
     }
 
+    // The gateway has not seen these edits (it only computed them), so they must not be
+    // recorded as synced: forget them everywhere and let the next sync upload them.
     apply_pulled_files(&root, &deltas)?;
+    crate::sync::forget_synced_files(&root, &touched);
     Ok(touched)
 }
 
@@ -260,9 +263,10 @@ mod tests {
             std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
             "mod new_name;\n"
         );
+        // Nothing the client rewrote counts as synced: every gateway still has the old text.
         let state = crate::sync::load_sync_cache(&root);
-        assert!(state.files.contains_key("src/lib.rs"));
-        assert!(state.files.contains_key("src/new_name.rs"));
+        assert!(!state.files.contains_key("src/lib.rs"));
+        assert!(!state.files.contains_key("src/new_name.rs"));
         assert!(!state.files.contains_key("src/old_name.rs"));
         // Anything outside the checkout is refused.
         let outside = serde_json::json!({ "changes": { "file:///etc/hosts": [] } });

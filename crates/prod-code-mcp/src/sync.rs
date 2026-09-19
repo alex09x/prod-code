@@ -140,19 +140,60 @@ pub fn workspace_identity(dir: &Path) -> WorkspaceIdentity {
     }
 }
 
-fn cache_file_path(root: &Path) -> PathBuf {
-    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let worktree_id = stable_hash(canonical_root.to_string_lossy().as_bytes());
+fn cache_dir() -> PathBuf {
     let cache_dir = std::env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join(".local/share/prod_code/sync"))
         .unwrap_or_else(|| std::env::temp_dir().join("prod_code_sync_cache"));
     let _ = std::fs::create_dir_all(&cache_dir);
-    cache_dir.join(format!("{worktree_id:016x}.json"))
+    cache_dir
+}
+
+fn worktree_cache_id(root: &Path) -> String {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    format!(
+        "{:016x}",
+        stable_hash(canonical_root.to_string_lossy().as_bytes())
+    )
+}
+
+/// The watermark file for `root` as seen by gateway `node` (`host:port`; empty for the
+/// node-less legacy watermark used by tests). Every gateway holds its own copy of the
+/// workspace, so what has been uploaded is a per-node fact.
+fn cache_file_path(root: &Path, node: &str) -> PathBuf {
+    let id = worktree_cache_id(root);
+    if node.is_empty() {
+        cache_dir().join(format!("{id}.json"))
+    } else {
+        cache_dir().join(format!("{id}-{:016x}.json", stable_hash(node.as_bytes())))
+    }
+}
+
+/// All watermark files recorded for `root`, one per gateway node (plus the legacy one).
+fn cache_file_paths(root: &Path) -> Vec<PathBuf> {
+    let id = worktree_cache_id(root);
+    let dir = cache_dir();
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.ends_with(".json")
+                && (name == format!("{id}.json") || name.starts_with(&format!("{id}-")))
+            {
+                paths.push(entry.path());
+            }
+        }
+    }
+    paths
 }
 
 pub fn load_sync_cache(root: &Path) -> SyncCache {
-    let path = cache_file_path(root);
+    load_sync_cache_for(root, "")
+}
+
+pub fn load_sync_cache_for(root: &Path, node: &str) -> SyncCache {
+    let path = cache_file_path(root, node);
     if let Ok(data) = std::fs::read(&path) {
         if let Ok(cache) = serde_json::from_slice::<SyncCache>(&data) {
             return cache;
@@ -162,7 +203,11 @@ pub fn load_sync_cache(root: &Path) -> SyncCache {
 }
 
 pub fn save_sync_cache(root: &Path, cache: &SyncCache) {
-    let path = cache_file_path(root);
+    save_sync_cache_for(root, "", cache)
+}
+
+pub fn save_sync_cache_for(root: &Path, node: &str, cache: &SyncCache) {
+    let path = cache_file_path(root, node);
     if let Ok(data) = serde_json::to_vec(cache) {
         let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
         if std::fs::write(&temporary, data).is_ok() {
@@ -171,9 +216,37 @@ pub fn save_sync_cache(root: &Path, cache: &SyncCache) {
     }
 }
 
+/// Forgets the watermarks of `root` for every node.
 pub fn clear_sync_cache(root: &Path) {
-    let path = cache_file_path(root);
-    let _ = std::fs::remove_file(path);
+    for path in cache_file_paths(root) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Forgets the watermark of `root` for one node only.
+pub fn clear_sync_cache_for(root: &Path, node: &str) {
+    let _ = std::fs::remove_file(cache_file_path(root, node));
+}
+
+/// Drops `rel_paths` from every node's watermark of `root`, so the next sync to any node
+/// uploads them again. Used after the client rewrote files itself (refactorings), which no
+/// gateway has seen.
+pub fn forget_synced_files(root: &Path, rel_paths: &[String]) {
+    for path in cache_file_paths(root) {
+        let Ok(data) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(mut cache) = serde_json::from_slice::<SyncCache>(&data) else {
+            continue;
+        };
+        let mut changed = false;
+        for rel in rel_paths {
+            changed |= cache.files.remove(rel).is_some();
+        }
+        if changed && let Ok(bytes) = serde_json::to_vec(&cache) {
+            let _ = std::fs::write(&path, bytes);
+        }
+    }
 }
 
 /// A prepared incremental sync. The state is committed only after the remote accepts the files.
@@ -181,6 +254,8 @@ pub fn clear_sync_cache(root: &Path) {
 pub struct SyncPlan {
     pub files: Vec<FileDelta>,
     state: SyncCache,
+    /// Gateway node the plan was prepared for (`host:port`), which owns the watermark.
+    node: String,
     /// True when this is the worktree's first contact (no recorded base): the plan carries the
     /// complete relevant tree and the gateway should be probed with a manifest first.
     pub initial: bool,
@@ -264,7 +339,12 @@ pub async fn push_workspace_sync(
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
 ) -> Result<SyncOutcome> {
-    let mut plan = prepare_workspace_sync(root, subpath)?;
+    let node = framed
+        .get_ref()
+        .peer_addr()
+        .map(|addr| addr.to_string())
+        .unwrap_or_default();
+    let mut plan = prepare_workspace_sync_for(root, &node, subpath)?;
     let root_str = root.to_string_lossy().to_string();
     let mut outcome = SyncOutcome {
         planned: plan.files.len(),
@@ -293,7 +373,10 @@ pub async fn push_workspace_sync(
         plan.retain_uploads(&keep);
     }
 
-    if !plan.files.is_empty() {
+    // An empty delta is still sent on later rounds: the gateway's answer tells whether its
+    // copy of the workspace still exists, so a pruned or never-seen node is caught here
+    // instead of failing the query or command that follows.
+    if !plan.files.is_empty() || !plan.initial {
         let files = std::mem::take(&mut plan.files);
         framed
             .send(WireMessage::SyncRequest(SyncRequest {
@@ -316,7 +399,7 @@ pub async fn push_workspace_sync(
                 workspace = %identity.name,
                 "gateway workspace was reset; resyncing the full tree"
             );
-            clear_sync_cache(root);
+            clear_sync_cache_for(root, &node);
             return Box::pin(push_workspace_sync(framed, root, identity, subpath)).await;
         }
         outcome.files_updated = resp.files_updated;
@@ -335,8 +418,17 @@ pub async fn push_workspace_sync(
 /// `git diff <base>` and `git status --porcelain -uall`, then verify candidates against the
 /// persisted mtime/size/hash watermark before reading them.
 pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<SyncPlan> {
+    prepare_workspace_sync_for(root, "", subpath)
+}
+
+/// [`prepare_workspace_sync`] against the watermark of gateway `node`.
+pub fn prepare_workspace_sync_for(
+    root: &Path,
+    node: &str,
+    subpath: Option<&Path>,
+) -> Result<SyncPlan> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut state = load_sync_cache(&canonical_root);
+    let mut state = load_sync_cache_for(&canonical_root, node);
     if state.filter_version != RELEVANCE_VERSION && subpath.is_none() {
         state.base_commit_sha = None;
         state.files.clear();
@@ -417,6 +509,7 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
     Ok(SyncPlan {
         files,
         state,
+        node: node.to_string(),
         initial,
     })
 }
@@ -425,8 +518,14 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
 /// so the next sync does not push them straight back. Returns the relative paths written or
 /// deleted.
 pub fn apply_pulled_files(root: &Path, files: &[FileDelta]) -> Result<Vec<String>> {
+    apply_pulled_files_for(root, "", files)
+}
+
+/// [`apply_pulled_files`] recording the files as synced with gateway `node`, the node that
+/// produced them.
+pub fn apply_pulled_files_for(root: &Path, node: &str, files: &[FileDelta]) -> Result<Vec<String>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut state = load_sync_cache(&canonical_root);
+    let mut state = load_sync_cache_for(&canonical_root, node);
     let mut touched = Vec::with_capacity(files.len());
     for delta in files {
         let rel = Path::new(&delta.relative_path);
@@ -467,7 +566,7 @@ pub fn apply_pulled_files(root: &Path, files: &[FileDelta]) -> Result<Vec<String
         touched.push(delta.relative_path.clone());
     }
     if !touched.is_empty() {
-        save_sync_cache(&canonical_root, &state);
+        save_sync_cache_for(&canonical_root, node, &state);
     }
     Ok(touched)
 }
@@ -479,7 +578,7 @@ pub fn commit_workspace_sync(root: &Path, plan: &SyncPlan) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    save_sync_cache(root, &state);
+    save_sync_cache_for(root, &plan.node, &state);
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
