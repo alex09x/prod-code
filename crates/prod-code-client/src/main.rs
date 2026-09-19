@@ -97,11 +97,16 @@ enum Commands {
     Check {
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
+        /// Print the full report as JSON instead of text.
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
     Lint {
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// Run tests remotely (cargo test / go test -json), optionally filtered by name.
     Test {
@@ -109,6 +114,8 @@ enum Commands {
         filter: Option<String>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
+        #[arg(long, default_value_t = false)]
+        json: bool,
     },
     /// Run a build/test/lint command on the remote gateway inside this checkout's server copy:
     /// prod-code exec -- cargo test -p my-crate
@@ -169,6 +176,10 @@ enum Commands {
         /// long-lived MCP agent. Default: fresh connection with pre-flight sync per query.
         #[arg(long, default_value_t = false)]
         persistent: bool,
+        /// Persistent mode: drop the connection without a goodbye after this percentage of
+        /// queries (simulated agent SIGKILL) and verify the gateway retires the sessions.
+        #[arg(long, default_value_t = 0)]
+        churn: u8,
     },
 }
 
@@ -222,16 +233,17 @@ async fn main() -> Result<()> {
             to,
             subtype,
         } => run_assist(remote, &file, line, col, to.as_deref(), Some(&id), subtype).await,
-        Commands::Check { timeout_secs } => {
-            run_verify(remote, VerifyKind::Check, None, timeout_secs).await
+        Commands::Check { timeout_secs, json } => {
+            run_verify(remote, VerifyKind::Check, None, timeout_secs, json).await
         }
-        Commands::Lint { timeout_secs } => {
-            run_verify(remote, VerifyKind::Lint, None, timeout_secs).await
+        Commands::Lint { timeout_secs, json } => {
+            run_verify(remote, VerifyKind::Lint, None, timeout_secs, json).await
         }
         Commands::Test {
             filter,
             timeout_secs,
-        } => run_verify(remote, VerifyKind::Test, filter, timeout_secs).await,
+            json,
+        } => run_verify(remote, VerifyKind::Test, filter, timeout_secs, json).await,
         Commands::Exec {
             timeout_secs,
             no_pull,
@@ -251,6 +263,7 @@ async fn main() -> Result<()> {
             keep_workdir,
             mode,
             persistent,
+            churn,
         } => {
             run_divergent_bench(DivergentBenchConfig {
                 remote,
@@ -261,6 +274,7 @@ async fn main() -> Result<()> {
                 keep_workdir,
                 mode,
                 persistent,
+                churn_percent: churn,
             })
             .await
         }
@@ -1250,13 +1264,18 @@ async fn run_verify(
     kind: VerifyKind,
     filter: Option<String>,
     timeout_secs: u64,
+    json: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or(cwd);
     let report =
         prod_code_mcp::verify::run_verify(remote, &root, kind, filter.as_deref(), timeout_secs)
             .await?;
-    print!("{}", report.render(200));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render(200));
+    }
     std::process::exit(if report.ok() { 0 } else { 1 });
 }
 

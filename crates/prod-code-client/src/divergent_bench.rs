@@ -237,6 +237,10 @@ pub struct DivergentBenchConfig {
     /// didOpen/hover/didClose per query), the way a long-lived MCP agent process behaves.
     /// Off: a fresh connection with pre-flight sync per query, the way the one-shot CLI does.
     pub persistent: bool,
+    /// Persistent mode only: percentage of queries after which the worker drops its TCP
+    /// connection without a goodbye (an agent killed mid-query) and reconnects. The run then
+    /// checks that the gateway stays healthy and retires every session.
+    pub churn_percent: u8,
 }
 
 impl Default for DivergentBenchConfig {
@@ -250,6 +254,7 @@ impl Default for DivergentBenchConfig {
             keep_workdir: false,
             mode: WorkspaceMode::Isolated,
             persistent: false,
+            churn_percent: 0,
         }
     }
 }
@@ -310,6 +315,11 @@ pub struct DivergentBenchReport {
     pub language: Language,
     pub mode: WorkspaceMode,
     pub persistent: bool,
+    pub churn_percent: u8,
+    /// Sessions the workers dropped without a goodbye (churn mode).
+    pub sessions_dropped: usize,
+    /// Gateway status after the run when churn was on: healthy, and active sessions.
+    pub gateway_after: Option<(bool, usize)>,
     pub workspace_name: String,
     pub target: DivergentTarget,
     pub initial_syncs: Vec<SyncSummary>,
@@ -356,6 +366,20 @@ impl DivergentBenchReport {
             );
         }
         println!("────────────────────────────────────────────────────────────────");
+        if self.churn_percent > 0 {
+            println!(
+                "Session Churn:       {}% ({} session(s) dropped mid-run)",
+                self.churn_percent, self.sessions_dropped
+            );
+            match self.gateway_after {
+                Some((healthy, sessions)) => println!(
+                    "Gateway After Run:   {}, active sessions {}",
+                    if healthy { "HEALTHY" } else { "UNHEALTHY" },
+                    sessions
+                ),
+                None => println!("Gateway After Run:   unreachable"),
+            }
+        }
         println!("Elapsed Time:        {:.2}s", self.elapsed.as_secs_f64());
         println!("Completed Queries:   {}", self.total_queries);
         println!("Errors:              {}", self.total_errors);
@@ -1183,6 +1207,7 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         let remote = config.remote;
         let queries = config.queries_per_worker;
         let persistent = config.persistent;
+        let churn_percent = config.churn_percent;
         handles.push(tokio::spawn(async move {
             let mut outcomes = Vec::with_capacity(queries);
             let record = |outcomes: &mut Vec<QueryOutcome>, t0: Instant, res: Result<String>| {
@@ -1203,23 +1228,34 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
                     },
                 });
             };
+            let mut dropped = 0usize;
             if persistent {
                 let client_name = format!("divergent-bench-worker-{worker_id}");
-                match open_session(remote, &wt, client_name).await {
-                    Ok(mut framed) => {
-                        for q in 0..queries {
-                            let t0 = Instant::now();
-                            let res =
-                                hover_in_session(&mut framed, &wt, language, 2 + q as i64).await;
+                let mut session = open_session(remote, &wt, client_name.clone()).await;
+                for q in 0..queries {
+                    let t0 = Instant::now();
+                    match session.as_mut() {
+                        Ok(framed) => {
+                            let res = hover_in_session(framed, &wt, language, 2 + q as i64).await;
                             record(&mut outcomes, t0, res);
+                            // Deterministic churn: kill this connection without a goodbye.
+                            let draw = prod_code_protocol::content_hash(
+                                format!("{worker_id}:{q}").as_bytes(),
+                            ) % 100;
+                            if churn_percent > 0 && (draw as u8) < churn_percent {
+                                drop(session);
+                                dropped += 1;
+                                session = open_session(remote, &wt, client_name.clone()).await;
+                            }
                         }
-                        close_session(framed).await;
-                    }
-                    Err(e) => {
-                        for _ in 0..queries {
-                            record(&mut outcomes, Instant::now(), Err(anyhow!("{e:#}")));
+                        Err(e) => {
+                            record(&mut outcomes, t0, Err(anyhow!("{e:#}")));
+                            session = open_session(remote, &wt, client_name.clone()).await;
                         }
                     }
+                }
+                if let Ok(framed) = session {
+                    close_session(framed).await;
                 }
             } else {
                 for q in 0..queries {
@@ -1229,18 +1265,40 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
                     record(&mut outcomes, t0, res);
                 }
             }
-            outcomes
+            (outcomes, dropped)
         }));
     }
 
     let mut all_outcomes = Vec::new();
+    let mut sessions_dropped = 0usize;
     for handle in handles {
-        let outcomes = handle
+        let (outcomes, dropped) = handle
             .await
             .context("divergent-bench worker task panicked")?;
         all_outcomes.extend(outcomes);
+        sessions_dropped += dropped;
     }
     let elapsed = start.elapsed();
+
+    // After churn the gateway must have retired every killed session on its own.
+    let gateway_after = if config.churn_percent > 0 {
+        let mut last = None;
+        for _ in 0..20 {
+            match prod_code_mcp::cluster::node_status(config.remote).await {
+                Ok(status) => {
+                    last = Some((true, status.active_sessions));
+                    if status.active_sessions == 0 {
+                        break;
+                    }
+                }
+                Err(_) => last = Some((false, usize::MAX)),
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        last
+    } else {
+        None
+    };
 
     // The scratch worktrees are disposable; drop their persisted sync watermarks.
     for wt in &worktrees {
@@ -1257,7 +1315,8 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     let verifications = verify(&all_outcomes, &expect);
     let total_errors = all_outcomes.iter().filter(|o| !o.ok).count();
     let all_verified = verifications.iter().all(|v| v.passed);
-    let all_passed = all_verified && total_errors == 0;
+    let churn_ok = config.churn_percent == 0 || matches!(gateway_after, Some((true, 0)));
+    let all_passed = all_verified && total_errors == 0 && churn_ok;
 
     let mut latencies_us: Vec<u64> = all_outcomes
         .iter()
@@ -1294,6 +1353,9 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         language,
         mode: config.mode,
         persistent: config.persistent,
+        churn_percent: config.churn_percent,
+        sessions_dropped,
+        gateway_after,
         workspace_name: setup.workspace_name,
         target: setup.target,
         initial_syncs,
