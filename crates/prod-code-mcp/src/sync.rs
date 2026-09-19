@@ -45,7 +45,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 2;
+pub const RELEVANCE_VERSION: u32 = 3;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -632,6 +632,35 @@ impl SyncPathFilter {
 /// Returns true if the relative path represents a code or configuration file relevant to language servers.
 pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     let path = Path::new(rel_path);
+    // Build and tool manifests whose extension alone would not qualify them.
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if matches!(
+        file_name,
+        "CMakeLists.txt"
+            | "CMakePresets.json"
+            | "compile_commands.json"
+            | "meson.build"
+            | "meson_options.txt"
+            | "requirements.txt"
+            | "requirements-dev.txt"
+            | "constraints.txt"
+            | "pytest.ini"
+            | "tox.ini"
+            | "setup.cfg"
+            | "mypy.ini"
+            | "project.pbxproj"
+            | "Podfile"
+            | "Package.resolved"
+            | ".clangd"
+            | ".clang-format"
+            | ".clang-tidy"
+            | "Pipfile"
+            | "BUILD"
+            | "WORKSPACE"
+    ) || (file_name.starts_with("requirements") && file_name.ends_with(".txt"))
+    {
+        return true;
+    }
 
     // 1. Check directory components for non-code / build / data trees
     let mut under_code_dir = false;
@@ -764,6 +793,12 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "Gemfile"
                 | "Rakefile"
                 | "Cargo.lock"
+                | ".clangd"
+                | ".clang-format"
+                | ".clang-tidy"
+                | "Pipfile"
+                | "BUILD"
+                | "WORKSPACE"
         )
     }
 }
@@ -1477,6 +1512,16 @@ mod tests {
     #[test]
     fn test_lockfiles_are_relevant() {
         assert!(is_relevant_code_or_manifest_file("Cargo.lock"));
+        assert!(is_relevant_code_or_manifest_file("CMakeLists.txt"));
+        assert!(is_relevant_code_or_manifest_file(
+            "build/compile_commands.json"
+        ));
+        assert!(is_relevant_code_or_manifest_file(".clangd"));
+        assert!(is_relevant_code_or_manifest_file("requirements.txt"));
+        assert!(is_relevant_code_or_manifest_file(
+            "App.xcodeproj/project.pbxproj"
+        ));
+        assert!(!is_relevant_code_or_manifest_file("notes.txt"));
         assert!(is_relevant_code_or_manifest_file("web/yarn.lock"));
         assert!(is_relevant_code_or_manifest_file("go.sum"));
     }

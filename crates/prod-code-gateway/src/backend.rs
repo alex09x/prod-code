@@ -26,7 +26,7 @@ impl BackendWorker {
         let binary = match engine {
             "rust" => "rust-analyzer",
             "go" => "gopls",
-            _ => "rust-analyzer",
+            other => anyhow::bail!("no managed backend language server for engine `{other}`"),
         };
 
         tracing::info!(

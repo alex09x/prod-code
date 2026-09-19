@@ -27,6 +27,18 @@ pub struct GenericLspConfig {
     pub working_dir: Option<PathBuf>,
     /// Idle timeout duration before shutting down an inactive server.
     pub idle_timeout: Option<Duration>,
+    /// `initializationOptions` sent with the LSP `initialize` request.
+    pub initialization_options: Option<serde_json::Value>,
+}
+
+/// Global npm module root (`npm root -g`), where `npm install -g` puts packages.
+fn npm_global_root() -> Option<PathBuf> {
+    let out = std::process::Command::new("npm")
+        .args(["root", "-g"])
+        .output()
+        .ok()?;
+    let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!root.is_empty()).then(|| PathBuf::from(root))
 }
 
 impl GenericLspConfig {
@@ -54,6 +66,7 @@ impl GenericLspConfig {
             env: HashMap::new(),
             working_dir: None,
             idle_timeout: Some(Duration::from_secs(600)),
+            initialization_options: None,
         }
     }
 
@@ -71,6 +84,7 @@ impl GenericLspConfig {
             env: HashMap::new(),
             working_dir: None,
             idle_timeout: Some(Duration::from_secs(600)),
+            initialization_options: None,
         }
     }
 
@@ -90,6 +104,7 @@ impl GenericLspConfig {
             env: HashMap::new(),
             working_dir: None,
             idle_timeout: Some(Duration::from_secs(600)),
+            initialization_options: None,
         }
     }
 
@@ -108,6 +123,17 @@ impl GenericLspConfig {
                 vec!["--stdio".to_string()],
             )
         };
+        // typescript-language-server does not bundle TypeScript: a workspace without
+        // node_modules/typescript needs the global install pointed at explicitly.
+        let initialization_options = npm_global_root()
+            .map(|root| root.join("typescript").join("lib"))
+            .filter(|lib| lib.join("tsserver.js").exists())
+            .map(|lib| {
+                serde_json::json!({
+                    "tsserver": { "path": lib.to_string_lossy() },
+                    "preferences": { "includeInlayParameterNameHints": "none" }
+                })
+            });
 
         Self {
             command: cmd,
@@ -115,6 +141,7 @@ impl GenericLspConfig {
             env: HashMap::new(),
             working_dir: None,
             idle_timeout: Some(Duration::from_secs(600)),
+            initialization_options,
         }
     }
 }
@@ -331,7 +358,7 @@ impl GenericLspEngine {
             .and_then(|n| n.to_str())
             .unwrap_or("generic-workspace");
 
-        let init_params = serde_json::json!({
+        let mut init_params = serde_json::json!({
             "processId": std::process::id(),
             "rootUri": format!("file://{}", ws_str),
             "workspaceFolders": [
@@ -360,6 +387,9 @@ impl GenericLspEngine {
             }
         });
 
+        if let Some(options) = &self.config.initialization_options {
+            init_params["initializationOptions"] = options.clone();
+        }
         let resp = self.send_request("initialize", init_params).await?;
 
         if let Some(caps) = resp.get("result").and_then(|r| r.get("capabilities")) {
