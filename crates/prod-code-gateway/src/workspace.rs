@@ -81,6 +81,15 @@ impl WorkspaceManager {
         }
     }
 
+    /// The already loaded workspace at `workspace_root`, if any.
+    pub async fn get_loaded(&self, workspace_root: &Path) -> Option<Arc<SharedWorkspace>> {
+        let guard = self.workspaces.read().await;
+        match guard.get(&WorkspaceKey(workspace_root.to_path_buf())) {
+            Some(LoadState::Ready(ws)) => Some(Arc::clone(ws)),
+            _ => None,
+        }
+    }
+
     /// Number of currently loaded workspaces.
     pub async fn loaded_count(&self) -> usize {
         let guard = self.workspaces.read().await;
@@ -106,6 +115,17 @@ impl WorkspaceManager {
             let guard = self.workspaces.read().await;
             if let Some(state) = guard.get(&key) {
                 match state {
+                    LoadState::Ready(ws) if ws.engine != engine => {
+                        // The directory was (re)populated since this workspace was loaded,
+                        // e.g. an empty worktree workspace detected as generic before its
+                        // first sync landed. Fall through and load it with the right engine.
+                        tracing::info!(
+                            workspace = ?workspace_root,
+                            previous = %ws.engine,
+                            engine,
+                            "Workspace engine kind changed; reloading"
+                        );
+                    }
                     LoadState::Ready(ws) => {
                         ws.active_sessions.fetch_add(1, Ordering::Relaxed);
                         return Ok(Arc::clone(ws));
@@ -130,6 +150,11 @@ impl WorkspaceManager {
         let (tx, _rx) = broadcast::channel(1);
         {
             let mut guard = self.workspaces.write().await;
+            let stale =
+                matches!(guard.get(&key), Some(LoadState::Ready(ws)) if ws.engine != engine);
+            if stale {
+                guard.remove(&key);
+            }
             // Double check
             if let Some(state) = guard.get(&key) {
                 match state {

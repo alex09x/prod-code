@@ -90,7 +90,11 @@ impl ServerState {
 }
 
 /// Apply batch file synchronization to server workspace storage.
-pub async fn apply_sync(storage_root: &std::path::Path, req: SyncRequest) -> SyncResponse {
+pub async fn apply_sync(
+    storage_root: &std::path::Path,
+    workspace_manager: &WorkspaceManager,
+    req: SyncRequest,
+) -> SyncResponse {
     let start = Instant::now();
     let server_workspace = workspace::resolve_server_workspace(
         storage_root,
@@ -101,6 +105,11 @@ pub async fn apply_sync(storage_root: &std::path::Path, req: SyncRequest) -> Syn
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("default");
+    // A workspace that is already warm in RAM must see the synced files as its new base.
+    let loaded_rust = workspace_manager
+        .get_loaded(&server_workspace)
+        .await
+        .and_then(|ws| ws.rust_engine.clone());
 
     let mut files_updated = 0;
     let mut files_deleted = 0;
@@ -117,10 +126,24 @@ pub async fn apply_sync(storage_root: &std::path::Path, req: SyncRequest) -> Syn
                 if tokio::fs::write(&target_path, &content_bytes).await.is_ok() {
                     files_updated += 1;
                 }
+                if let (Some(engine_lock), Ok(text)) =
+                    (&loaded_rust, std::str::from_utf8(&content_bytes))
+                {
+                    let mut engine = engine_lock.lock().await;
+                    if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
+                        tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                    }
+                }
             }
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
                     files_deleted += 1;
+                }
+                if let Some(engine_lock) = &loaded_rust {
+                    let mut engine = engine_lock.lock().await;
+                    if let Err(e) = engine.update_base(&target_path, None) {
+                        tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                    }
                 }
             }
         }
@@ -161,7 +184,7 @@ pub async fn handle_client(
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }
             WireMessage::SyncRequest(req) => {
-                let resp = apply_sync(&state.storage_root, req).await;
+                let resp = apply_sync(&state.storage_root, &state.workspace_manager, req).await;
                 framed.send(WireMessage::SyncResponse(resp)).await?;
             }
             WireMessage::Ping => {
@@ -1308,7 +1331,7 @@ mod tests {
             base_workspace_name: None,
         };
 
-        let resp = apply_sync(storage_temp.path(), req).await;
+        let resp = apply_sync(storage_temp.path(), &WorkspaceManager::new(), req).await;
         assert_eq!(resp.files_updated, 2);
         assert_eq!(resp.files_deleted, 0);
 
@@ -1330,7 +1353,7 @@ mod tests {
             base_workspace_name: None,
         };
 
-        let del_resp = apply_sync(storage_temp.path(), del_req).await;
+        let del_resp = apply_sync(storage_temp.path(), &WorkspaceManager::new(), del_req).await;
         assert_eq!(del_resp.files_updated, 0);
         assert_eq!(del_resp.files_deleted, 1);
         assert!(!app_dir.join("README.md").exists());

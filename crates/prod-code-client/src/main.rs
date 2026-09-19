@@ -243,6 +243,25 @@ async fn execute_lsp_query(
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     // 1. Handshake
+    // 1a. Transparent pre-flight sync before the handshake: everything this worktree has that
+    // the gateway has not seen yet (commits since the last sync, dirty and untracked files,
+    // reverts), tracked by the persistent per-worktree watermark. It runs before the handshake
+    // so a brand-new workspace directory is populated before the gateway detects its engine.
+    let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&ws_root, None).ok();
+    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
+        let sync_req = SyncRequest {
+            client_workspace_root: ws_root_str.clone(),
+            files: plan.files.clone(),
+            clean_others: false,
+            base_workspace_name: base_ws_name.clone(),
+        };
+        framed.send(WireMessage::SyncRequest(sync_req)).await?;
+        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+            prod_code_mcp::sync::commit_workspace_sync(&ws_root, plan);
+            // Dirty sync completed
+        }
+    }
+
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
@@ -259,24 +278,6 @@ async fn execute_lsp_query(
         Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
-
-    // 1b. Transparent pre-flight sync: everything this worktree has that the gateway has not
-    // seen yet (commits since the last sync, dirty and untracked files, reverts), tracked by
-    // the persistent per-worktree watermark.
-    let sync_plan = prod_code_mcp::sync::prepare_workspace_sync(&ws_root, None).ok();
-    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
-        let sync_req = SyncRequest {
-            client_workspace_root: ws_root_str.clone(),
-            files: plan.files.clone(),
-            clean_others: false,
-            base_workspace_name: base_ws_name.clone(),
-        };
-        framed.send(WireMessage::SyncRequest(sync_req)).await?;
-        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-            prod_code_mcp::sync::commit_workspace_sync(&ws_root, plan);
-            // Dirty sync completed
-        }
-    }
 
     // 2. LSP Initialize
     let folder_name = ws_root

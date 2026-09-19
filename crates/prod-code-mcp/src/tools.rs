@@ -557,6 +557,23 @@ async fn execute_lsp_query(
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
+    // 1a. Transparent pre-flight sync before the handshake: commits since the last sync, dirty
+    // and untracked files and reverts, tracked by the persistent per-worktree watermark. It
+    // runs first so a brand-new workspace directory is populated before engine detection.
+    let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
+    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
+        let sync_req = SyncRequest {
+            client_workspace_root: root_str.clone(),
+            files: plan.files.clone(),
+            clean_others: false,
+            base_workspace_name: Some(workspace_name.clone()),
+        };
+        framed.send(WireMessage::SyncRequest(sync_req)).await?;
+        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
+            crate::sync::commit_workspace_sync(workspace_root, plan);
+        }
+    }
+
     // 1. Handshake
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
@@ -574,22 +591,6 @@ async fn execute_lsp_query(
         Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
         other => anyhow::bail!("Unexpected handshake response: {:?}", other),
     };
-
-    // 1b. Transparent pre-flight sync: commits since the last sync, dirty and untracked files
-    // and reverts, tracked by the persistent per-worktree watermark.
-    let sync_plan = crate::sync::prepare_workspace_sync(workspace_root, None).ok();
-    if let Some(plan) = sync_plan.as_ref().filter(|plan| !plan.files.is_empty()) {
-        let sync_req = SyncRequest {
-            client_workspace_root: root_str.clone(),
-            files: plan.files.clone(),
-            clean_others: false,
-            base_workspace_name: Some(workspace_name.clone()),
-        };
-        framed.send(WireMessage::SyncRequest(sync_req)).await?;
-        if let Some(Ok(WireMessage::SyncResponse(_resp))) = framed.next().await {
-            crate::sync::commit_workspace_sync(workspace_root, plan);
-        }
-    }
 
     // 2. LSP Initialize
     let folder_name = workspace_root

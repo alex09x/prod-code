@@ -942,6 +942,23 @@ async fn query_once(
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
+    // Transparent pre-flight sync before the handshake, exactly like a live editor session: a
+    // mutated-but-uncommitted file (worktree A), an untracked scratch file (worktree C) or
+    // commits since the last sync reach the gateway before engine detection and the query.
+    let plan = prod_code_mcp::sync::prepare_workspace_sync(&wt.root, None)?;
+    if !plan.files.is_empty() {
+        framed
+            .send(WireMessage::SyncRequest(SyncRequest {
+                client_workspace_root: ws_root_str.clone(),
+                files: plan.files.clone(),
+                clean_others: false,
+                base_workspace_name: Some(wt.workspace_name.clone()),
+            }))
+            .await?;
+        wait_for_sync_response(&mut framed, Duration::from_secs(30)).await?;
+        prod_code_mcp::sync::commit_workspace_sync(&wt.root, &plan);
+    }
+
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
@@ -957,23 +974,6 @@ async fn query_once(
     match framed.next().await {
         Some(Ok(WireMessage::HandshakeResponse(_))) => {}
         other => bail!("unexpected handshake response: {other:?}"),
-    }
-
-    // Transparent pre-flight sync of dirty/untracked files, exactly like a live editor session,
-    // so a mutated-but-uncommitted file (worktree A) or an untracked scratch file (worktree C)
-    // is visible to the remote engine before we query it.
-    let plan = prod_code_mcp::sync::prepare_workspace_sync(&wt.root, None)?;
-    if !plan.files.is_empty() {
-        framed
-            .send(WireMessage::SyncRequest(SyncRequest {
-                client_workspace_root: ws_root_str.clone(),
-                files: plan.files.clone(),
-                clean_others: false,
-                base_workspace_name: Some(wt.workspace_name.clone()),
-            }))
-            .await?;
-        wait_for_sync_response(&mut framed, Duration::from_secs(30)).await?;
-        prod_code_mcp::sync::commit_workspace_sync(&wt.root, &plan);
     }
 
     let init_req = serde_json::json!({
