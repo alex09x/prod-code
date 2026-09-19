@@ -6,8 +6,11 @@ use ra_ap_ide::{
     GotoDefinitionConfig, HoverConfig, HoverDocFormat, RaFixtureConfig, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
-use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace_at};
-use ra_ap_project_model::CargoConfig;
+use ra_ap_load_cargo::{
+    LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
+};
+use ra_ap_paths::AbsPathBuf;
+use ra_ap_project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
 use ra_ap_vfs::{Vfs, VfsPath};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -247,6 +250,7 @@ pub struct RustEngine {
     pub workspace_root: PathBuf,
     host: AnalysisHost,
     vfs: Arc<std::sync::RwLock<Vfs>>,
+    source_root_config: Arc<SourceRootConfig>,
 }
 
 impl RustEngine {
@@ -278,6 +282,18 @@ impl RustEngine {
             load_workspace_at(workspace_root, &cargo_config, &load_config, &|_| {})
                 .map_err(|e| anyhow::anyhow!("Failed to load cargo workspace: {e}"))?;
 
+        let abs_root = if workspace_root.is_absolute() {
+            AbsPathBuf::assert_utf8(workspace_root.to_path_buf())
+        } else {
+            AbsPathBuf::assert_utf8(std::env::current_dir()?.join(workspace_root))
+        };
+        let manifest = ProjectManifest::discover_single(&abs_root)
+            .map_err(|e| anyhow::anyhow!("Manifest discovery failed: {e}"))?;
+        let ws = ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
+            .map_err(|e| anyhow::anyhow!("Project workspace load failed: {e}"))?;
+        let project_folders = ProjectFolders::new(std::slice::from_ref(&ws), &[], None);
+        let source_root_config = Arc::new(project_folders.source_root_config);
+
         let host = AnalysisHost::with_database(db);
         tracing::info!(?workspace_root, "Cargo workspace warm and ready in RAM");
 
@@ -285,6 +301,7 @@ impl RustEngine {
             workspace_root: workspace_root.to_path_buf(),
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
+            source_root_config,
         })
     }
 
@@ -336,20 +353,30 @@ impl RustEngine {
     pub fn apply_file_change(&mut self, path: &Path, new_text: String) -> Result<()> {
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
-        let file_id = if let Some(fid) = self.file_id_for_path(path) {
-            fid
+        let (file_id, is_new) = if let Some(fid) = self.file_id_for_path(path) {
+            (fid, false)
         } else {
             let mut vfs = self
                 .vfs
                 .write()
                 .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
             let _ = vfs.set_file_contents(vfs_path.clone(), Some(new_text.as_bytes().to_vec()));
-            vfs.file_id(&vfs_path)
+            let fid = vfs
+                .file_id(&vfs_path)
                 .map(|(id, _)| id)
-                .with_context(|| format!("File not found in VFS even after set: {:?}", path))?
+                .with_context(|| format!("File not found in VFS even after set: {:?}", path))?;
+            (fid, true)
         };
 
         let mut change = ChangeWithProcMacros::default();
+        if is_new {
+            let vfs_guard = self
+                .vfs
+                .read()
+                .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
+            let roots = self.source_root_config.partition(&vfs_guard);
+            change.source_change.set_roots(roots);
+        }
         change.change_file(file_id, Some(new_text));
         self.host.apply_change(change);
         Ok(())
@@ -512,6 +539,37 @@ impl PathTranslator {
             .expect("Must query hover on newly added in-memory symbol");
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("IN_MEMORY_SUPER_FAST"));
+    }
+
+    #[test]
+    fn test_rust_engine_add_new_untracked_file() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+
+        // Dynamically add a brand new untracked file that was never loaded initially
+        let new_file_path = temp.path().join("src/helper.rs");
+        let helper_code = "pub fn dynamic_helper() -> u32 { 1337 }\n".to_string();
+        engine
+            .apply_file_change(&new_file_path, helper_code)
+            .expect("Must apply change for brand new file without panic");
+
+        let syms = engine
+            .document_symbols(&new_file_path)
+            .expect("Must get document symbols for newly added file");
+        assert!(syms.iter().any(|s| s.name == "dynamic_helper"));
+
+        // Link helper module into lib.rs so Salsa builds the module tree and HIR
+        let mut lib_code = std::fs::read_to_string(&lib_path).unwrap();
+        lib_code.push_str("\npub mod helper;\n");
+        engine
+            .apply_file_change(&lib_path, lib_code)
+            .expect("Must update lib.rs");
+
+        let hover = engine
+            .hover(&new_file_path, 1, 10)
+            .expect("Must query hover on newly added file");
+        assert!(hover.is_some());
+        assert!(hover.unwrap().contains("fn dynamic_helper"));
     }
 
     #[test]
