@@ -11,7 +11,8 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse, WireMessage,
+    HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse,
+    SyncRequest, SyncResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -88,6 +89,76 @@ impl ServerState {
     }
 }
 
+/// Apply batch file synchronization to server workspace storage.
+pub async fn apply_sync(storage_root: &std::path::Path, req: SyncRequest) -> SyncResponse {
+    let start = Instant::now();
+    let client_root_path = PathBuf::from(&req.client_workspace_root);
+    let folder_name = client_root_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("default");
+
+    let mut server_workspace = storage_root.join(folder_name);
+    if !server_workspace.exists() {
+        if let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) {
+            let home_candidate = home.join(folder_name);
+            let projects_candidate = home.join("Projects").join(folder_name);
+            if home_candidate.exists() {
+                server_workspace = home_candidate;
+            } else if projects_candidate.exists() {
+                server_workspace = projects_candidate;
+            } else {
+                let _ = tokio::fs::create_dir_all(&server_workspace).await;
+            }
+        } else {
+            let _ = tokio::fs::create_dir_all(&server_workspace).await;
+        }
+    }
+
+    let mut files_updated = 0;
+    let mut files_deleted = 0;
+    let mut bytes_transferred = 0;
+
+    for delta in req.files {
+        let target_path = server_workspace.join(&delta.relative_path);
+        match delta.content {
+            Some(content_bytes) => {
+                if let Some(parent) = target_path.parent() {
+                    let _ = tokio::fs::create_dir_all(parent).await;
+                }
+                bytes_transferred += content_bytes.len();
+                if tokio::fs::write(&target_path, &content_bytes).await.is_ok() {
+                    files_updated += 1;
+                }
+            }
+            None => {
+                if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
+                    files_deleted += 1;
+                }
+            }
+        }
+    }
+
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        folder_name,
+        files_updated,
+        files_deleted,
+        bytes_transferred,
+        duration_ms = %format!("{duration_ms}ms"),
+        "⚡ [SYNC] Workspace fast-sync applied"
+    );
+
+    SyncResponse {
+        files_updated,
+        files_deleted,
+        bytes_transferred,
+        duration_ms,
+        server_workspace_root: server_workspace.to_string_lossy().to_string(),
+    }
+}
+
 pub async fn handle_client(
     socket: TcpStream,
     addr: SocketAddr,
@@ -101,6 +172,10 @@ pub async fn handle_client(
             WireMessage::StatusRequest => {
                 let status = state.status().await;
                 framed.send(WireMessage::StatusResponse(status)).await?;
+            }
+            WireMessage::SyncRequest(req) => {
+                let resp = apply_sync(&state.storage_root, req).await;
+                framed.send(WireMessage::SyncResponse(resp)).await?;
             }
             WireMessage::Ping => {
                 framed.send(WireMessage::Pong).await?;
@@ -918,6 +993,51 @@ async fn run_session_loop(
                             });
                         }
                     }
+                    Some(Ok(WireMessage::SyncRequest(req))) => {
+                        let start = Instant::now();
+                        let mut files_updated = 0;
+                        let mut files_deleted = 0;
+                        let mut bytes_transferred = 0;
+
+                        for delta in &req.files {
+                            let target_path = view.workspace.root.join(&delta.relative_path);
+                            match &delta.content {
+                                Some(content_bytes) => {
+                                    if let Some(parent) = target_path.parent() {
+                                        let _ = tokio::fs::create_dir_all(parent).await;
+                                    }
+                                    bytes_transferred += content_bytes.len();
+                                    if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
+                                        files_updated += 1;
+                                    }
+                                    if let (Some(engine_lock), Ok(text)) =
+                                        (&view.workspace.rust_engine, std::str::from_utf8(content_bytes))
+                                    {
+                                        let mut engine = engine_lock.lock().await;
+                                        let _ = engine.apply_file_change(&target_path, text.to_string());
+                                    }
+                                }
+                                None => {
+                                    if target_path.exists()
+                                        && tokio::fs::remove_file(&target_path).await.is_ok()
+                                    {
+                                        files_deleted += 1;
+                                    }
+                                }
+                            }
+                        }
+
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        framed
+                            .send(WireMessage::SyncResponse(SyncResponse {
+                                files_updated,
+                                files_deleted,
+                                bytes_transferred,
+                                duration_ms,
+                                server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
+                            }))
+                            .await?;
+                    }
                     Some(Ok(WireMessage::Disconnect { reason })) => {
                         tracing::info!(reason, "Client terminated session");
                         break;
@@ -1049,5 +1169,57 @@ mod tests {
         let ts_temp = tempfile::tempdir().unwrap();
         std::fs::write(ts_temp.path().join("package.json"), "").unwrap();
         assert_eq!(detect_engine(ts_temp.path()), EngineKind::TypeScript);
+    }
+
+    #[tokio::test]
+    async fn test_apply_sync_create_and_delete() {
+        use prod_code_protocol::FileDelta;
+
+        let storage_temp = tempfile::tempdir().unwrap();
+        let client_root = "/Users/testuser/Projects/my-app";
+
+        let req = SyncRequest {
+            client_workspace_root: client_root.to_string(),
+            files: vec![
+                FileDelta {
+                    relative_path: "src/lib.rs".to_string(),
+                    content: Some(b"pub fn add(a: i32, b: i32) -> i32 { a + b }".to_vec()),
+                    is_executable: false,
+                },
+                FileDelta {
+                    relative_path: "README.md".to_string(),
+                    content: Some(b"# My App".to_vec()),
+                    is_executable: false,
+                },
+            ],
+            clean_others: false,
+        };
+
+        let resp = apply_sync(storage_temp.path(), req).await;
+        assert_eq!(resp.files_updated, 2);
+        assert_eq!(resp.files_deleted, 0);
+
+        let app_dir = storage_temp.path().join("my-app");
+        assert!(app_dir.join("src/lib.rs").exists());
+        assert!(app_dir.join("README.md").exists());
+        let content = std::fs::read_to_string(app_dir.join("src/lib.rs")).unwrap();
+        assert!(content.contains("pub fn add"));
+
+        // Now test deleting README.md
+        let del_req = SyncRequest {
+            client_workspace_root: client_root.to_string(),
+            files: vec![FileDelta {
+                relative_path: "README.md".to_string(),
+                content: None,
+                is_executable: false,
+            }],
+            clean_others: false,
+        };
+
+        let del_resp = apply_sync(storage_temp.path(), del_req).await;
+        assert_eq!(del_resp.files_updated, 0);
+        assert_eq!(del_resp.files_deleted, 1);
+        assert!(!app_dir.join("README.md").exists());
+        assert!(app_dir.join("src/lib.rs").exists());
     }
 }

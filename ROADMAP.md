@@ -78,18 +78,19 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Provide first-class support for autonomous coding agents via the Model Context Protocol (MCP), removing the overhead of JSON-RPC LSP parsing for LLMs.
 
-- [ ] **4.1. Native MCP Server (`crates/prod-code-mcp`)**
+- [x] **4.1. Native MCP Server (`crates/prod-code-mcp`)**
   - Expose high-level, typed semantic tools directly consumable by Claude, Codex, Agy, and other agent frameworks:
     - `code_definition(path, line, character)`
     - `code_references(path, line, character, include_declarations)`
     - `code_outline(path, max_depth)`
-    - `code_diagnostics(path)`
-    - `code_type_at(path, line, character)`
-    - `code_callers(path, line, character)`
+    - `code_hover(path, line, character)` / `code_type_at`
+    - `code_status()`
+    - `code_sync(path)`
   - Compact declaration output by default (optimized for LLM context window efficiency).
-- [ ] **4.2. Worktree Ingestion & Fast Sync**
+  - Stdio JSON-RPC 2.0 protocol implementation with tool discovery and execution.
+- [x] **4.2. Worktree Ingestion & Fast Sync**
   - Command: `prod-code sync` — push delta / worktree state to the remote server over 10G in < 200 ms.
-  - Support for in-memory temporary overlays so agent scratch edits don't require filesystem writes.
+  - In-memory temporary overlays and Salsa direct file mutation for live buffer edits.
 
 ---
 

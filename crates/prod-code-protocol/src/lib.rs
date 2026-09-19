@@ -6,7 +6,8 @@ pub mod path;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, StatusResponse, WireMessage,
+    FileDelta, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, StatusResponse, SyncRequest,
+    SyncResponse, WireMessage,
 };
 pub use path::PathTranslator;
 

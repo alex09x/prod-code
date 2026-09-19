@@ -11,6 +11,8 @@ pub enum WireMessage {
     LspPayload(String),
     StatusRequest,
     StatusResponse(StatusResponse),
+    SyncRequest(SyncRequest),
+    SyncResponse(SyncResponse),
     Ping,
     Pong,
     Disconnect { reason: String },
@@ -101,4 +103,33 @@ impl StatusResponse {
         self.memory_rss_bytes
             .map(|b| (b as f64) / (1024.0 * 1024.0))
     }
+}
+
+/// Individual file delta for fast worktree synchronization over 10G LAN.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDelta {
+    pub relative_path: String,
+    /// UTF-8 or binary file content. If None, indicates file deletion.
+    pub content: Option<Vec<u8>>,
+    #[serde(default)]
+    pub is_executable: bool,
+}
+
+/// Request to sync local worktree files to remote gateway storage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncRequest {
+    pub client_workspace_root: String,
+    pub files: Vec<FileDelta>,
+    #[serde(default)]
+    pub clean_others: bool,
+}
+
+/// Response returned after remote gateway writes files to storage and updates in-memory engines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SyncResponse {
+    pub files_updated: usize,
+    pub files_deleted: usize,
+    pub bytes_transferred: usize,
+    pub duration_ms: u64,
+    pub server_workspace_root: String,
 }

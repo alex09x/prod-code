@@ -118,4 +118,51 @@ mod tests {
         assert_eq!(decoded, original);
         assert_eq!(buf.len(), 0);
     }
+
+    #[test]
+    fn test_sync_codec_roundtrip() {
+        use crate::messages::{FileDelta, SyncRequest, SyncResponse};
+
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+
+        let req = WireMessage::SyncRequest(SyncRequest {
+            client_workspace_root: "/Users/alex09x/repo".to_string(),
+            files: vec![
+                FileDelta {
+                    relative_path: "src/main.rs".to_string(),
+                    content: Some(b"fn main() {}".to_vec()),
+                    is_executable: false,
+                },
+                FileDelta {
+                    relative_path: "old_file.rs".to_string(),
+                    content: None,
+                    is_executable: false,
+                },
+            ],
+            clean_others: false,
+        });
+
+        codec.encode(req.clone(), &mut buf).unwrap();
+        let decoded = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode SyncRequest");
+        assert_eq!(decoded, req);
+
+        let resp = WireMessage::SyncResponse(SyncResponse {
+            files_updated: 1,
+            files_deleted: 1,
+            bytes_transferred: 12,
+            duration_ms: 15,
+            server_workspace_root: "/srv/prod-code/workspaces/repo".to_string(),
+        });
+
+        codec.encode(resp.clone(), &mut buf).unwrap();
+        let decoded_resp = codec
+            .decode(&mut buf)
+            .unwrap()
+            .expect("should decode SyncResponse");
+        assert_eq!(decoded_resp, resp);
+    }
 }

@@ -7,6 +7,7 @@ members = [
     "crates/prod-code-engine-rust",
     "crates/prod-code-engine-go",
     "crates/prod-code-engine-generic",
+    "crates/prod-code-mcp",
 ]
 
 [workspace.package]

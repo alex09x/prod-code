@@ -41,8 +41,11 @@ enum Commands {
     Mcp,
     /// Probe remote gateway status and latency.
     Status,
-    /// Push current worktree delta to remote storage.
-    Sync,
+    /// Push current worktree delta to remote storage over 10G LAN.
+    Sync {
+        /// Optional subpath to sync (defaults to entire workspace).
+        path: Option<PathBuf>,
+    },
     /// Jump to symbol definition: prod-code def <file> <line> <col>
     Def { file: PathBuf, line: u32, col: u32 },
     /// Inspect symbol type & docs: prod-code hover <file> <line> <col>
@@ -60,8 +63,8 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Commands::Lsp) {
         Commands::Lsp => run_lsp_bridge(cli.remote).await,
         Commands::Status => run_status_probe(cli.remote).await,
-        Commands::Mcp => run_mcp_stub(cli.remote).await,
-        Commands::Sync => run_sync_stub(cli.remote).await,
+        Commands::Mcp => run_mcp_server(cli.remote).await,
+        Commands::Sync { path } => run_sync(cli.remote, path).await,
         Commands::Def { file, line, col } => run_definition(cli.remote, &file, line, col).await,
         Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
         Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
@@ -607,19 +610,53 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
     Ok(())
 }
 
-async fn run_mcp_stub(remote: SocketAddr) -> Result<()> {
-    println!("⚡ prod-code Native MCP Server (Phase 4)");
-    println!("Target gateway: {remote}");
-    println!("Ready to connect to Claude / Codex / Agy");
-    Ok(())
+async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    prod_code_mcp::run_stdio_mcp_server(remote, cwd).await
 }
 
-async fn run_sync_stub(remote: SocketAddr) -> Result<()> {
-    let cwd = env::current_dir()?;
-    println!(
-        "Syncing workspace {:?} with remote gateway at {}",
-        cwd, remote
-    );
-    println!("Sync: OK (Phase 1)");
+async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let start = std::time::Instant::now();
+    let deltas = prod_code_mcp::scan_workspace_files(&cwd, subpath.as_deref())?;
+    let file_count = deltas.len();
+
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    let req = prod_code_protocol::SyncRequest {
+        client_workspace_root: cwd.to_string_lossy().to_string(),
+        files: deltas,
+        clean_others: false,
+    };
+
+    framed.send(WireMessage::SyncRequest(req)).await?;
+
+    if let Some(msg_res) = framed.next().await {
+        match msg_res? {
+            WireMessage::SyncResponse(resp) => {
+                let total_ms = start.elapsed().as_millis();
+                let kb = (resp.bytes_transferred as f64) / 1024.0;
+                println!(
+                    "⚡ prod-code Fast-Sync Completed in {}ms (server: {}ms)",
+                    total_ms, resp.duration_ms
+                );
+                println!("────────────────────────────────────────────────────");
+                println!("Local Workspace:   {}", cwd.display());
+                println!("Remote Workspace:  {}", resp.server_workspace_root);
+                println!("Files Scanned:     {}", file_count);
+                println!("Files Updated:     {}", resp.files_updated);
+                println!("Files Deleted:     {}", resp.files_deleted);
+                println!("Data Transferred:  {:.1} KB", kb);
+                println!("Status:            SYNCHRONIZED");
+            }
+            other => anyhow::bail!("Unexpected response from gateway: {:?}", other),
+        }
+    } else {
+        anyhow::bail!("Remote gateway closed connection prematurely without sync response");
+    }
+
     Ok(())
 }

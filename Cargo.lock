@@ -1029,6 +1029,7 @@ dependencies = [
  "anyhow",
  "clap",
  "futures-util",
+ "prod-code-mcp",
  "prod-code-protocol",
  "serde_json",
  "tokio",
@@ -1105,6 +1106,22 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "prod-code-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "prod-code-protocol",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]
