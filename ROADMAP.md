@@ -251,5 +251,51 @@ This document outlines the architectural milestones and engineering phases for b
   - Streamed syntax and type check verification during agent code generation.
   - Intercepts invalid method invocations, incorrect argument types, or borrow-checker errors before the agent even finishes generating its turn, providing immediate feedback and eliminating multi-turn debugging cycles.
 
+---
+
+## Phase 8: Autonomous Agent Fleet Superpowers & Workflow Acceleration
+
+**Objective**: Equip autonomous AI coding agents (Claude, Codex, Agy) with specialized semantic tools that eliminate trial-and-error reasoning loops, slash LLM token waste, and accelerate development velocity across multi-thousand file repositories.
+
+### The Problem: Agent Productivity Bottlenecks in Production
+- AI agents spend up to 70% of their execution time and context budget on repetitive diagnostic overhead: reading dozens of files trying to locate where a test panicked, running entire test suites after a 3-line edit, guessing function names with regex grep, writing hundreds of lines of boilerplate test mocks, and leaving zombie code behind after large refactors.
+
+### Engineering Milestones
+
+- [ ] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)**
+  - Compare working tree uncommitted edits against base commit via call graph and AST dependency trees.
+  - Calculate exact "blast radius": modified functions, impacted downstream callers, and test suites directly covering the modified paths.
+  - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).
+  - Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
+
+- [ ] **8.2. Automated Root-Cause Failure Dossier (`code_diagnose_failure`)**
+  - When test suites fail (assertions, panics, unhandled exceptions), the server parses stack traces and maps frame pointers back to AST source spans.
+  - Extracts runtime values and correlates failure expressions with recent diff lines into a structured JSON dossier:
+    `{ failing_test, panic_line, expression, runtime_values, suspect_recent_changes }`.
+  - Enables agents to diagnose and fix regressions in a single turn without reading extraneous files or burning reasoning tokens.
+
+- [ ] **8.3. External Dependency & Vendor Source Navigation (`code_definition_external`)**
+  - Transparent jump-to-definition into third-party libraries (`~/.cargo/registry`, `node_modules`, `GOPATH/pkg/mod`, Python virtualenv wheels, system C++ headers).
+  - Returns exact type signatures, trait definitions, and docstrings directly from the server's pre-warmed dependency cache into agent context.
+  - Prevents agents from hallucinating method names or argument orders of external crates and packages.
+
+- [ ] **8.4. Natural-Language Semantic Code Search (`code_search_semantic`)**
+  - Hybrid neural-lexical code search: dense embeddings (BGE) fused with typed AST symbol graphs on the server.
+  - Allows agents to locate code by intent and behavior (e.g. *"where do we handle websocket reconnection on drop"*) rather than guessing exact identifier names via brittle grep.
+  - Returns exact symbols, file locations, line numbers, and doc comments in < 10 ms.
+
+- [ ] **8.5. Instant Test Fixture & Mock Generator (`code_generate_fixture`)**
+  - Compiler-backed generation of test mocks, builders, and dummy fixtures for complex data structures with dozens of fields.
+  - Generates valid, type-safe, compile-ready code populated with default or randomized values in 1 step.
+  - Eliminates hundreds of lines of manual boilerplate authoring and associated compiler type-mismatch errors.
+
+- [ ] **8.6. Dead Code & Orphan Pruning (`code_prune_orphans`)**
+  - Whole-program graph reachability analysis traversing entry points (`main`, `lib`, public APIs, route handlers).
+  - Detects unreachable functions, dead types, and orphaned imports left behind by large refactors.
+  - Emits an atomic single-commit cleanup patch.
 
 
+- [ ] **8.7. Structural AST Codemod Engine (`code_codemod`)**
+  - Pattern-based structural code transformations (AST pattern matching).
+  - Matches syntax trees regardless of whitespace, formatting, or variable names.
+  - Executes large-scale library migrations and API upgrades across hundreds of files in sub-second time.
