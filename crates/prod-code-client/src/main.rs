@@ -126,6 +126,10 @@ async fn execute_lsp_query(
     };
 
     // 2. LSP Initialize
+    let folder_name = cwd
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("workspace");
     let init_req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -133,7 +137,17 @@ async fn execute_lsp_query(
         "params": {
             "processId": null,
             "rootUri": format!("file://{}", cwd.to_string_lossy()),
+            "workspaceFolders": [
+                {
+                    "name": folder_name,
+                    "uri": format!("file://{}", cwd.to_string_lossy())
+                }
+            ],
             "capabilities": {
+                "workspace": {
+                    "workspaceFolders": true,
+                    "configuration": true
+                },
                 "textDocument": {
                     "hover": {
                         "contentFormat": ["markdown", "plaintext"]
@@ -210,6 +224,16 @@ async fn execute_lsp_query(
             Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json) {
                     if val.get("id").and_then(|id| id.as_i64()) == Some(2) {
+                        let did_close = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/didClose",
+                            "params": {
+                                "textDocument": {
+                                    "uri": file_uri
+                                }
+                            }
+                        });
+                        let _ = framed.send(WireMessage::LspPayload(did_close.to_string())).await;
                         let _ = framed
                             .send(WireMessage::Disconnect {
                                 reason: "query finished".to_string(),

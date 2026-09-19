@@ -214,46 +214,116 @@ async fn run_session_loop(
                             "Processing incoming LSP message"
                         );
 
+                        // Inspect LSP message structure
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
+                            let method = val.get("method").and_then(|m| m.as_str());
+                            let id = val.get("id").cloned();
+
+                            // 1. Intercept "initialize": reply immediately with cached server capabilities
+                            if method == Some("initialize") {
+                                let req_id = id.unwrap_or(serde_json::json!(1));
+                                let caps = if let Some(ref backend) = view.workspace.backend {
+                                    backend.capabilities.read().await.clone()
+                                } else {
+                                    None
+                                };
+                                let init_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": {
+                                        "capabilities": caps.unwrap_or_else(|| serde_json::json!({
+                                            "textDocumentSync": 1,
+                                            "hoverProvider": true,
+                                            "definitionProvider": true,
+                                            "referencesProvider": true,
+                                            "documentSymbolProvider": true,
+                                            "workspaceSymbolProvider": true
+                                        })),
+                                        "serverInfo": {
+                                            "name": "prod-code-rci",
+                                            "version": "0.1.0"
+                                        }
+                                    }
+                                });
+                                let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
+                                framed.send(WireMessage::LspPayload(client_resp)).await?;
+                                continue;
+                            }
+
+                            // 2. Intercept "initialized": backend already initialized, consume without forwarding
+                            if method == Some("initialized") {
+                                continue;
+                            }
+
+                            // 3. Intercept "shutdown": reply cleanly
+                            if method == Some("shutdown") {
+                                let req_id = id.unwrap_or(serde_json::json!(1));
+                                let shutdown_resp = serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": req_id,
+                                    "result": null
+                                });
+                                framed.send(WireMessage::LspPayload(shutdown_resp.to_string())).await?;
+                                continue;
+                            }
+
+                            // 4. Handle "textDocument/didOpen" vs "textDocument/didChange"
+                            if method == Some("textDocument/didOpen") {
+                                if let Some(ref backend) = view.workspace.backend {
+                                    let uri = val.get("params")
+                                        .and_then(|p| p.get("textDocument"))
+                                        .and_then(|td| td.get("uri"))
+                                        .and_then(|u| u.as_str())
+                                        .unwrap_or("");
+                                    let is_open = backend.open_files.read().await.contains(uri);
+                                    if is_open {
+                                        let text = val.get("params")
+                                            .and_then(|p| p.get("textDocument"))
+                                            .and_then(|td| td.get("text"))
+                                            .and_then(|t| t.as_str())
+                                            .unwrap_or("");
+                                        let version = val.get("params")
+                                            .and_then(|p| p.get("textDocument"))
+                                            .and_then(|td| td.get("version"))
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or(2);
+                                        let did_change = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "textDocument/didChange",
+                                            "params": {
+                                                "textDocument": {
+                                                    "uri": uri,
+                                                    "version": version
+                                                },
+                                                "contentChanges": [
+                                                    { "text": text }
+                                                ]
+                                            }
+                                        });
+                                        let _ = backend.send_lsp(&did_change.to_string()).await;
+                                        continue;
+                                    } else {
+                                        backend.open_files.write().await.insert(uri.to_string());
+                                    }
+                                }
+                            }
+
+                            // 5. Handle "textDocument/didClose"
+                            if method == Some("textDocument/didClose") {
+                                if let Some(ref backend) = view.workspace.backend {
+                                    let uri = val.get("params")
+                                        .and_then(|p| p.get("textDocument"))
+                                        .and_then(|td| td.get("uri"))
+                                        .and_then(|u| u.as_str())
+                                        .unwrap_or("");
+                                    backend.open_files.write().await.remove(uri);
+                                }
+                            }
+                        }
+
                         if let Some(ref backend) = view.workspace.backend {
                             if let Err(e) = backend.send_lsp(&server_lsp).await {
                                 tracing::error!(error = %e, "Failed to forward LSP to backend worker");
-                            }
-                        } else {
-                            // Fallback route if no backend worker is configured
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
-                                if val.get("method").and_then(|m| m.as_str()) == Some("initialize") {
-                                    let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
-                                    let init_resp = serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "id": id,
-                                        "result": {
-                                            "capabilities": {
-                                                "textDocumentSync": 1,
-                                                "hoverProvider": true,
-                                                "definitionProvider": true,
-                                                "referencesProvider": true,
-                                                "documentSymbolProvider": true,
-                                                "workspaceSymbolProvider": true
-                                            },
-                                            "serverInfo": {
-                                                "name": "prod-code-rci",
-                                                "version": "0.1.0"
-                                            }
-                                        }
-                                    });
-                                    let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
-                                    framed.send(WireMessage::LspPayload(client_resp)).await?;
-                                } else if val.get("method").and_then(|m| m.as_str()) == Some("shutdown") {
-                                    let id = val.get("id").cloned().unwrap_or(serde_json::json!(1));
-                                    let shutdown_resp = serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "id": id,
-                                        "result": null
-                                    });
-                                    framed
-                                        .send(WireMessage::LspPayload(shutdown_resp.to_string()))
-                                        .await?;
-                                }
                             }
                         }
                     }
