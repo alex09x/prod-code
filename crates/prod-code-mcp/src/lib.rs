@@ -3,6 +3,7 @@
 pub mod protocol;
 pub mod sync;
 pub mod tools;
+pub mod watch;
 
 pub use protocol::{MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION};
 pub use sync::scan_workspace_files;

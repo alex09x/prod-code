@@ -96,6 +96,10 @@ enum Commands {
         /// workspace (production behaviour), `isolated` gives each worktree its own.
         #[arg(long, value_enum, default_value_t = WorkspaceMode::Isolated)]
         mode: WorkspaceMode,
+        /// One gateway session per worker (sync/handshake once, then only queries), like a
+        /// long-lived MCP agent. Default: fresh connection with pre-flight sync per query.
+        #[arg(long, default_value_t = false)]
+        persistent: bool,
     },
 }
 
@@ -125,16 +129,18 @@ async fn main() -> Result<()> {
             queries_per_worker,
             keep_workdir,
             mode,
+            persistent,
         } => {
-            run_divergent_bench(
-                cli.remote,
+            run_divergent_bench(DivergentBenchConfig {
+                remote: cli.remote,
                 base_repo,
                 workdir,
                 workers,
                 queries_per_worker,
                 keep_workdir,
                 mode,
-            )
+                persistent,
+            })
             .await
         }
     }
@@ -208,6 +214,49 @@ fn detect_language_id(path: &Path) -> &'static str {
 }
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
+/// Phase timings for one query, printed to stderr when `PROD_CODE_TIMING=1`.
+struct QueryTiming {
+    enabled: bool,
+    start: std::time::Instant,
+    last: std::time::Instant,
+    phases: Vec<(&'static str, f64)>,
+}
+
+impl QueryTiming {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            enabled: env::var_os("PROD_CODE_TIMING").is_some(),
+            start: now,
+            last: now,
+            phases: Vec::new(),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        if !self.enabled {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.phases
+            .push((phase, (now - self.last).as_secs_f64() * 1000.0));
+        self.last = now;
+    }
+
+    fn report(&self) {
+        if !self.enabled {
+            return;
+        }
+        let total = self.start.elapsed().as_secs_f64() * 1000.0;
+        let parts: Vec<String> = self
+            .phases
+            .iter()
+            .map(|(name, ms)| format!("{name}={ms:.1}ms"))
+            .collect();
+        eprintln!("[timing] total={total:.1}ms {}", parts.join(" "));
+    }
+}
+
 async fn execute_lsp_query(
     remote: SocketAddr,
     file_path: &Path,
@@ -235,6 +284,7 @@ async fn execute_lsp_query(
         .await
         .with_context(|| format!("Failed to read file {:?}", abs_path))?;
 
+    let mut timing = QueryTiming::new();
     let mut framed = {
         let mut attempt = 0;
         loop {
@@ -243,6 +293,7 @@ async fn execute_lsp_query(
                 .await
                 .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
+            timing.mark("connect");
 
             // 1. Handshake
             // 1a. Transparent pre-flight sync before the handshake: manifest probe on first
@@ -254,6 +305,7 @@ async fn execute_lsp_query(
             {
                 tracing::warn!(error = %e, "pre-flight workspace sync failed");
             }
+            timing.mark("preflight_sync");
 
             framed
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
@@ -288,6 +340,7 @@ async fn execute_lsp_query(
                     .await;
                 continue;
             }
+            timing.mark("handshake");
             break framed;
         }
     };
@@ -356,6 +409,7 @@ async fn execute_lsp_query(
     }
 
     // 3. LSP Initialized notification
+    timing.mark("initialize");
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "initialized",
@@ -382,6 +436,7 @@ async fn execute_lsp_query(
     framed
         .send(WireMessage::LspPayload(did_open.to_string()))
         .await?;
+    timing.mark("did_open_sent");
 
     // 5. Send targeted query with id = 2
     let query_req = serde_json::json!({
@@ -410,6 +465,8 @@ async fn execute_lsp_query(
                         }
                     })
                 {
+                    timing.mark("query_response");
+                    timing.report();
                     let did_close = serde_json::json!({
                         "jsonrpc": "2.0",
                         "method": "textDocument/didClose",
@@ -1122,40 +1179,31 @@ async fn run_benchmark(
 }
 
 /// Run the multi-worktree divergence and correctness benchmark against the remote gateway.
-async fn run_divergent_bench(
-    remote: SocketAddr,
-    base_repo: Option<PathBuf>,
-    workdir: Option<PathBuf>,
-    workers: usize,
-    queries_per_worker: usize,
-    keep_workdir: bool,
-    mode: WorkspaceMode,
-) -> Result<()> {
+async fn run_divergent_bench(config: DivergentBenchConfig) -> Result<()> {
     println!("⚡ prod-code Divergent Worktree Benchmark (Multi-Agent Fleet Simulation)");
     println!("────────────────────────────────────────────────────────────────");
-    println!("Target Remote:       {remote}");
+    println!("Target Remote:       {}", config.remote);
     println!(
         "Base Repo:           {}",
-        base_repo
+        config
+            .base_repo
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<scratch fixture repo>".to_string())
     );
-    println!("Workspace Mode:      {}", mode.label());
-    println!("Concurrent Workers:  {workers}");
-    println!("Queries Per Worker:  {queries_per_worker}");
+    println!("Workspace Mode:      {}", config.mode.label());
+    println!(
+        "Session Model:       {}",
+        if config.persistent {
+            "persistent"
+        } else {
+            "connect per query"
+        }
+    );
+    println!("Concurrent Workers:  {}", config.workers);
+    println!("Queries Per Worker:  {}", config.queries_per_worker);
     println!("────────────────────────────────────────────────────────────────");
     println!("Forking git worktrees, applying controlled mutations, syncing to gateway...");
-
-    let config = DivergentBenchConfig {
-        remote,
-        base_repo,
-        workdir,
-        workers,
-        queries_per_worker,
-        keep_workdir,
-        mode,
-    };
 
     let report = divergent_bench::run(config).await?;
     report.print();

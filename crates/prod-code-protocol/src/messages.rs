@@ -116,10 +116,138 @@ impl StatusResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileDelta {
     pub relative_path: String,
-    /// UTF-8 or binary file content. If None, indicates file deletion.
+    /// UTF-8 or binary file content. If None, indicates file deletion. Carried as base64 on
+    /// the wire: a JSON byte array inflates content four-fold and dominates sync time.
+    #[serde(default, with = "base64_bytes")]
     pub content: Option<Vec<u8>>,
     #[serde(default)]
     pub is_executable: bool,
+}
+
+/// Standard base64 (with padding) for `Option<Vec<u8>>` fields.
+pub mod base64_bytes {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    pub fn encode(bytes: &[u8]) -> String {
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let b0 = chunk[0] as u32;
+            let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+            let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+            let n = (b0 << 16) | (b1 << 8) | b2;
+            out.push(TABLE[(n >> 18) as usize & 63] as char);
+            out.push(TABLE[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                TABLE[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                TABLE[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    fn value(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a') as u32 + 26),
+            b'0'..=b'9' => Some((c - b'0') as u32 + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    pub fn decode(text: &str) -> Result<Vec<u8>, String> {
+        let bytes = text.as_bytes();
+        if !bytes.len().is_multiple_of(4) {
+            return Err("base64 length is not a multiple of 4".to_string());
+        }
+        let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+        for chunk in bytes.chunks(4) {
+            let pad = chunk.iter().rev().take_while(|c| **c == b'=').count();
+            if pad > 2 || (pad > 0 && chunk[..4 - pad].contains(&b'=')) {
+                return Err("invalid base64 padding".to_string());
+            }
+            let mut n = 0u32;
+            for (i, c) in chunk.iter().enumerate() {
+                let v = if i >= 4 - pad {
+                    0
+                } else {
+                    value(*c).ok_or_else(|| format!("invalid base64 character {c:?}"))?
+                };
+                n = (n << 6) | v;
+            }
+            out.push((n >> 16) as u8);
+            if pad < 2 {
+                out.push((n >> 8) as u8);
+            }
+            if pad < 1 {
+                out.push(n as u8);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn serialize<S: Serializer>(value: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(bytes) => s.serialize_some(&encode(bytes)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        let text: Option<String> = Option::deserialize(d)?;
+        match text {
+            Some(text) => decode(&text).map(Some).map_err(D::Error::custom),
+            None => Ok(None),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn round_trips_every_padding_case() {
+            for len in 0..40usize {
+                let bytes: Vec<u8> = (0..len as u32).map(|i| (i * 37 + 11) as u8).collect();
+                let text = encode(&bytes);
+                assert_eq!(text.len() % 4, 0);
+                assert_eq!(decode(&text).unwrap(), bytes, "len {len}");
+            }
+            assert_eq!(encode(b"Man"), "TWFu");
+            assert_eq!(encode(b"Ma"), "TWE=");
+            assert_eq!(encode(b"M"), "TQ==");
+            assert!(decode("TQ=").is_err());
+            assert!(decode("T*==").is_err());
+        }
+
+        #[test]
+        fn file_delta_uses_base64_on_the_wire() {
+            let delta = crate::FileDelta {
+                relative_path: "src/lib.rs".to_string(),
+                content: Some(b"pub fn a() {}\n".to_vec()),
+                is_executable: false,
+            };
+            let json = serde_json::to_string(&delta).unwrap();
+            assert!(
+                json.contains("\"content\":\"cHViIGZuIGEoKSB7fQo=\""),
+                "{json}"
+            );
+            let back: crate::FileDelta = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, delta);
+            let deleted: crate::FileDelta =
+                serde_json::from_str(r#"{"relative_path":"x","content":null}"#).unwrap();
+            assert_eq!(deleted.content, None);
+        }
+    }
 }
 
 /// Request to sync local worktree files to remote gateway storage.

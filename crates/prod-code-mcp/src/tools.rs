@@ -563,11 +563,16 @@ async fn execute_lsp_query(
 
             // 1a. Transparent pre-flight sync before the handshake: manifest probe on first contact
             // (seeded from the origin repository's copy), watermark delta afterwards.
+            // Skipped entirely while the watched tree has not changed since the last sync.
             let identity = crate::sync::workspace_identity(workspace_root);
-            if let Err(e) =
-                crate::sync::push_workspace_sync(&mut framed, workspace_root, &identity, None).await
-            {
-                tracing::warn!(error = %e, "pre-flight workspace sync failed");
+            let generation = crate::watch::current_generation(workspace_root);
+            if crate::watch::sync_due(workspace_root, generation) {
+                match crate::sync::push_workspace_sync(&mut framed, workspace_root, &identity, None)
+                    .await
+                {
+                    Ok(_) => crate::watch::mark_synced(workspace_root, generation),
+                    Err(e) => tracing::warn!(error = %e, "pre-flight workspace sync failed"),
+                }
             }
 
             // 1. Handshake

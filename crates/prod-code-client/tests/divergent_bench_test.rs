@@ -176,6 +176,7 @@ async fn run_end_to_end(mode: WorkspaceMode) {
         queries_per_worker,
         keep_workdir: false,
         mode,
+        persistent: false,
     };
 
     let report = divergent_bench::run(config)

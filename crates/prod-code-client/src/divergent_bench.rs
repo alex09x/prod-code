@@ -233,6 +233,10 @@ pub struct DivergentBenchConfig {
     pub keep_workdir: bool,
     /// Shared or isolated server workspaces.
     pub mode: WorkspaceMode,
+    /// One gateway session per worker (sync + handshake + initialize once, then only
+    /// didOpen/hover/didClose per query), the way a long-lived MCP agent process behaves.
+    /// Off: a fresh connection with pre-flight sync per query, the way the one-shot CLI does.
+    pub persistent: bool,
 }
 
 impl Default for DivergentBenchConfig {
@@ -245,6 +249,7 @@ impl Default for DivergentBenchConfig {
             queries_per_worker: 5,
             keep_workdir: false,
             mode: WorkspaceMode::Isolated,
+            persistent: false,
         }
     }
 }
@@ -304,6 +309,7 @@ pub struct SyncSummary {
 pub struct DivergentBenchReport {
     pub language: Language,
     pub mode: WorkspaceMode,
+    pub persistent: bool,
     pub workspace_name: String,
     pub target: DivergentTarget,
     pub initial_syncs: Vec<SyncSummary>,
@@ -325,6 +331,14 @@ impl DivergentBenchReport {
         println!("────────────────────────────────────────────────────────────────");
         println!("Language:            {}", self.language.label());
         println!("Workspace Mode:      {}", self.mode.label());
+        println!(
+            "Session Model:       {}",
+            if self.persistent {
+                "persistent (one session per worker)"
+            } else {
+                "connect per query"
+            }
+        );
         println!("Server Workspace:    {}", self.workspace_name);
         println!(
             "Target Symbol:       {} ({}:{})",
@@ -890,26 +904,13 @@ pub async fn initial_sync(
     })
 }
 
-/// Connects to `remote`, performs the full handshake/sync/initialize/hover/close cycle against
-/// `wt.query_file` within `wt.root`, and returns the hover text the gateway reports for
-/// `wt.symbol`.
-async fn query_once(
+/// Opens a gateway session for `wt`: connect, pre-flight sync, handshake, initialize.
+async fn open_session(
     remote: SocketAddr,
     wt: &DivergentWorktree,
-    language: Language,
     client_name: String,
-) -> Result<String> {
-    let file_path = &wt.query_file;
-    let content = tokio::fs::read_to_string(file_path)
-        .await
-        .with_context(|| format!("failed to read {file_path:?}"))?;
-    let (line, col) = locate_symbol(&content, &wt.symbol)?;
-
-    let file_uri = Url::from_file_path(file_path)
-        .map_err(|_| anyhow!("invalid file path for URI: {:?}", file_path))?
-        .to_string();
+) -> Result<Framed<TcpStream, ProdCodeCodec>> {
     let ws_root_str = wt.root.to_string_lossy().to_string();
-
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
@@ -964,6 +965,24 @@ async fn query_once(
     framed
         .send(WireMessage::LspPayload(initialized.to_string()))
         .await?;
+    Ok(framed)
+}
+
+/// One didOpen/hover/didClose round on an open session; returns the hover text for `wt.symbol`.
+async fn hover_in_session(
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    wt: &DivergentWorktree,
+    language: Language,
+    request_id: i64,
+) -> Result<String> {
+    let file_path = &wt.query_file;
+    let content = tokio::fs::read_to_string(file_path)
+        .await
+        .with_context(|| format!("failed to read {file_path:?}"))?;
+    let (line, col) = locate_symbol(&content, &wt.symbol)?;
+    let file_uri = Url::from_file_path(file_path)
+        .map_err(|_| anyhow!("invalid file path for URI: {:?}", file_path))?
+        .to_string();
 
     let did_open = serde_json::json!({
         "jsonrpc": "2.0",
@@ -983,7 +1002,7 @@ async fn query_once(
 
     let hover_req = serde_json::json!({
         "jsonrpc": "2.0",
-        "id": 2,
+        "id": request_id,
         "method": "textDocument/hover",
         "params": {
             "textDocument": { "uri": file_uri },
@@ -993,7 +1012,7 @@ async fn query_once(
     framed
         .send(WireMessage::LspPayload(hover_req.to_string()))
         .await?;
-    let response = read_response_matching_id(&mut framed, 2, Duration::from_secs(30)).await?;
+    let response = read_response_matching_id(framed, request_id, Duration::from_secs(30)).await?;
     let result = response.get("result").unwrap_or(&serde_json::Value::Null);
     if result.is_null() {
         bail!(
@@ -1012,13 +1031,28 @@ async fn query_once(
     let _ = framed
         .send(WireMessage::LspPayload(did_close.to_string()))
         .await;
+    Ok(hover_text)
+}
+
+async fn close_session(mut framed: Framed<TcpStream, ProdCodeCodec>) {
     let _ = framed
         .send(WireMessage::Disconnect {
-            reason: "divergent-bench query finished".to_string(),
+            reason: "divergent-bench session finished".to_string(),
         })
         .await;
+}
 
-    Ok(hover_text)
+/// Connect-per-query round: open a session, hover once, close it.
+async fn query_once(
+    remote: SocketAddr,
+    wt: &DivergentWorktree,
+    language: Language,
+    client_name: String,
+) -> Result<String> {
+    let mut framed = open_session(remote, wt, client_name).await?;
+    let text = hover_in_session(&mut framed, wt, language, 2).await;
+    close_session(framed).await;
+    text
 }
 
 type HoverPredicate<'a> = Box<dyn Fn(&str) -> bool + 'a>;
@@ -1148,12 +1182,11 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         let wt = worktrees[worker_id % worktrees.len()].clone();
         let remote = config.remote;
         let queries = config.queries_per_worker;
+        let persistent = config.persistent;
         handles.push(tokio::spawn(async move {
             let mut outcomes = Vec::with_capacity(queries);
-            for q in 0..queries {
-                let client_name = format!("divergent-bench-worker-{worker_id}-{q}");
-                let t0 = Instant::now();
-                let outcome = match query_once(remote, &wt, language, client_name).await {
+            let record = |outcomes: &mut Vec<QueryOutcome>, t0: Instant, res: Result<String>| {
+                outcomes.push(match res {
                     Ok(detail) => QueryOutcome {
                         worker_id,
                         kind: wt.kind,
@@ -1168,8 +1201,33 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
                         ok: false,
                         detail: e.to_string(),
                     },
-                };
-                outcomes.push(outcome);
+                });
+            };
+            if persistent {
+                let client_name = format!("divergent-bench-worker-{worker_id}");
+                match open_session(remote, &wt, client_name).await {
+                    Ok(mut framed) => {
+                        for q in 0..queries {
+                            let t0 = Instant::now();
+                            let res =
+                                hover_in_session(&mut framed, &wt, language, 2 + q as i64).await;
+                            record(&mut outcomes, t0, res);
+                        }
+                        close_session(framed).await;
+                    }
+                    Err(e) => {
+                        for _ in 0..queries {
+                            record(&mut outcomes, Instant::now(), Err(anyhow!("{e:#}")));
+                        }
+                    }
+                }
+            } else {
+                for q in 0..queries {
+                    let client_name = format!("divergent-bench-worker-{worker_id}-{q}");
+                    let t0 = Instant::now();
+                    let res = query_once(remote, &wt, language, client_name).await;
+                    record(&mut outcomes, t0, res);
+                }
             }
             outcomes
         }));
@@ -1235,6 +1293,7 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     Ok(DivergentBenchReport {
         language,
         mode: config.mode,
+        persistent: config.persistent,
         workspace_name: setup.workspace_name,
         target: setup.target,
         initial_syncs,

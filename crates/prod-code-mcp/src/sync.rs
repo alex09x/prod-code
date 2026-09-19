@@ -288,8 +288,11 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
     let mut state = load_sync_cache(&canonical_root);
     let initial = state.base_commit_sha.is_none() && subpath.is_none();
     let current_base = git_head(&canonical_root)?;
-    let (mut changes, current_dirty) =
-        changed_paths(&canonical_root, state.base_commit_sha.as_deref())?;
+    let (mut changes, current_dirty) = changed_paths(
+        &canonical_root,
+        state.base_commit_sha.as_deref(),
+        &current_base,
+    )?;
     // A file that was dirty last time and is clean now without a commit was reverted: the
     // gateway still holds the dirty version, so send the clean one (or its deletion).
     for reverted in state.dirty_paths.difference(&current_dirty) {
@@ -406,11 +409,15 @@ fn git_head(root: &Path) -> Result<String> {
 fn changed_paths(
     root: &Path,
     base: Option<&str>,
+    head: &str,
 ) -> Result<(BTreeMap<String, bool>, BTreeSet<String>)> {
     let mut paths = BTreeMap::new();
     // A recorded base can disappear after a rebase, amend or gc; fall back to the full tracked
     // tree instead of failing the sync, since the watermarks still filter unchanged files.
+    // When HEAD has not moved since the recorded base there are no committed changes to
+    // list, so the diff (the most expensive git call of the round) is skipped entirely.
     let diff_from_base = match base {
+        Some(base) if base == head => Some(Vec::new()),
         Some(base) if !base.is_empty() => {
             git_output(root, ["diff", "--name-status", "-z", base]).ok()
         }
