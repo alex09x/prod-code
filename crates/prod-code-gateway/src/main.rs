@@ -713,6 +713,15 @@ pub async fn apply_sync(
                 bytes_transferred += content_bytes.len();
                 if tokio::fs::write(&target_path, &content_bytes).await.is_ok() {
                     files_updated += 1;
+                    #[cfg(unix)]
+                    if delta.is_executable {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = tokio::fs::set_permissions(
+                            &target_path,
+                            std::fs::Permissions::from_mode(0o755),
+                        )
+                        .await;
+                    }
                 }
                 if let (Some(engine_lock), Ok(text)) =
                     (&loaded_rust, std::str::from_utf8(&content_bytes))
@@ -1957,6 +1966,11 @@ async fn run_session_loop(
                                     bytes_transferred += content_bytes.len();
                                     if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
                                         files_updated += 1;
+                                        #[cfg(unix)]
+                                        if delta.is_executable {
+                                            use std::os::unix::fs::PermissionsExt;
+                                            let _ = tokio::fs::set_permissions(&target_path, std::fs::Permissions::from_mode(0o755)).await;
+                                        }
                                     }
                                     // The workspace is this worktree's own: synced files are its
                                     // new base, visible to every session except one that still
