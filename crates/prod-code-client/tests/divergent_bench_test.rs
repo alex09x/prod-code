@@ -5,7 +5,7 @@
 //! real prod-code-gateway or language server.
 
 use futures_util::{SinkExt, StreamExt};
-use prod_code_client::divergent_bench::{self, DivergentBenchConfig, MIN_WORKERS};
+use prod_code_client::divergent_bench::{self, DivergentBenchConfig, MIN_WORKERS, WorkspaceMode};
 use prod_code_protocol::{HandshakeResponse, ProdCodeCodec, SyncResponse, WireMessage};
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -148,8 +148,7 @@ async fn handle_connection(stream: TcpStream) {
     }
 }
 
-#[tokio::test]
-async fn divergent_bench_end_to_end_zero_bleed() {
+async fn run_end_to_end(mode: WorkspaceMode) {
     let remote = spawn_mock_gateway().await;
     let workdir = tempfile::tempdir().expect("failed to create test workdir");
 
@@ -162,6 +161,7 @@ async fn divergent_bench_end_to_end_zero_bleed() {
         workers,
         queries_per_worker,
         keep_workdir: false,
+        mode,
     };
 
     let report = divergent_bench::run(config)
@@ -187,6 +187,27 @@ async fn divergent_bench_end_to_end_zero_bleed() {
         );
     }
     assert!(report.all_passed, "overall report should report PASS");
+    let expected_syncs = match mode {
+        WorkspaceMode::Shared => 1,
+        WorkspaceMode::Isolated => 4,
+    };
+    assert_eq!(report.initial_syncs.len(), expected_syncs);
+    assert!(
+        report
+            .initial_syncs
+            .iter()
+            .all(|s| s.files > 0 && s.bytes > 0)
+    );
+}
+
+#[tokio::test]
+async fn divergent_bench_end_to_end_zero_bleed_shared() {
+    run_end_to_end(WorkspaceMode::Shared).await;
+}
+
+#[tokio::test]
+async fn divergent_bench_end_to_end_zero_bleed_isolated() {
+    run_end_to_end(WorkspaceMode::Isolated).await;
 }
 
 #[tokio::test]

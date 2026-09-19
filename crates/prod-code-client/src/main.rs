@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_client::divergent_bench::{self, DivergentBenchConfig};
+use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
 use prod_code_protocol::{
     HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
 };
@@ -94,6 +94,10 @@ enum Commands {
         /// Keep the generated scratch worktrees on disk after the run for inspection.
         #[arg(long, default_value_t = false)]
         keep_workdir: bool,
+        /// Server workspace mapping: `shared` coalesces all worktrees onto one server
+        /// workspace (production behaviour), `isolated` gives each worktree its own.
+        #[arg(long, value_enum, default_value_t = WorkspaceMode::Shared)]
+        mode: WorkspaceMode,
     },
 }
 
@@ -122,6 +126,7 @@ async fn main() -> Result<()> {
             workers,
             queries_per_worker,
             keep_workdir,
+            mode,
         } => {
             run_divergent_bench(
                 cli.remote,
@@ -130,6 +135,7 @@ async fn main() -> Result<()> {
                 workers,
                 queries_per_worker,
                 keep_workdir,
+                mode,
             )
             .await
         }
@@ -1134,6 +1140,7 @@ async fn run_divergent_bench(
     workers: usize,
     queries_per_worker: usize,
     keep_workdir: bool,
+    mode: WorkspaceMode,
 ) -> Result<()> {
     println!("⚡ prod-code Divergent Worktree Benchmark (Multi-Agent Fleet Simulation)");
     println!("────────────────────────────────────────────────────────────────");
@@ -1145,10 +1152,11 @@ async fn run_divergent_bench(
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<scratch fixture repo>".to_string())
     );
+    println!("Workspace Mode:      {}", mode.label());
     println!("Concurrent Workers:  {workers}");
     println!("Queries Per Worker:  {queries_per_worker}");
     println!("────────────────────────────────────────────────────────────────");
-    println!("Forking isolated git worktrees and applying controlled mutations...");
+    println!("Forking git worktrees, applying controlled mutations, syncing to gateway...");
 
     let config = DivergentBenchConfig {
         remote,
@@ -1157,6 +1165,7 @@ async fn run_divergent_bench(
         workers,
         queries_per_worker,
         keep_workdir,
+        mode,
     };
 
     let report = divergent_bench::run(config).await?;

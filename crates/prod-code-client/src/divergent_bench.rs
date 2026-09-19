@@ -4,15 +4,32 @@
 //! several `git worktree`s that have diverged from one another:
 //!
 //! - **Master**: untouched base checkout.
-//! - **Worktree A**: a function signature change (agent mid-refactor).
-//! - **Worktree B**: a dependency manifest change in `Cargo.toml` (agent bumping a crate).
+//! - **Worktree A**: a function signature change on a real symbol (agent mid-refactor).
+//! - **Worktree B**: a dependency manifest change in `Cargo.toml` / `go.mod` (agent bumping deps).
 //! - **Worktree C**: a brand-new untracked file introducing a symbol (agent scratch file).
 //!
-//! It then fires LSP queries at the remote gateway from 10+ concurrent simulated workers,
-//! round-robining across the four worktrees, and asserts that every response reflects the
-//! querying worktree's own state with zero cross-worktree bleed (each worktree gets its own
-//! `client_workspace_root`, so a leak means the gateway routed a response from the wrong
-//! session/workspace). Latency percentiles, throughput, and verification pass/fail are
+//! The target symbol is discovered from the base repository itself (first single-line
+//! `pub fn` / `func` in a tracked, non-test source file), so the benchmark exercises the real
+//! crate/package graph the gateway indexes rather than a synthetic side crate that no engine
+//! would load. When no base repository is given, a disposable scratch crate is created with a
+//! root `Cargo.toml` so the same discovery path applies.
+//!
+//! Before any query, each server workspace receives one full sync (tracked source + manifests,
+//! exactly what `prod-code sync` sends on first contact). Every query then performs the
+//! transparent dirty/untracked pre-flight sync a live editor session does, so worktree A's
+//! modified file and worktree C's untracked file are visible to the remote engine.
+//!
+//! Two workspace modes are supported:
+//!
+//! - [`WorkspaceMode::Shared`]: all four worktrees hand the gateway the same base workspace
+//!   name, so they coalesce onto one shared server workspace / one in-memory Salsa DB. This is
+//!   what production worktrees do (`detect_workspace_name` resolves a worktree to its origin
+//!   repository), and is the mode that can surface cross-worktree bleed.
+//! - [`WorkspaceMode::Isolated`]: each worktree gets its own server workspace and engine.
+//!
+//! The benchmark fires queries from 10+ concurrent simulated workers, round-robining across
+//! the four worktrees, and asserts that every hover response reflects the querying worktree's
+//! own state. Latency percentiles, throughput, sync volume and verification pass/fail are
 //! reported at the end.
 
 use crate::LatencyStats;
@@ -21,6 +38,7 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, SyncRequest, WireMessage,
 };
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,20 +51,103 @@ use url::Url;
 /// Minimum number of concurrent simulated workers required by the benchmark contract.
 pub const MIN_WORKERS: usize = 10;
 
-const FIXTURE_CRATE_DIR: &str = "fixture_crate";
-const FIXTURE_FILE_REL: &str = "src/lib.rs";
-const UNTRACKED_FILE_REL: &str = "src/untracked_marker.rs";
-const FIXTURE_SYMBOL: &str = "compute_signal";
-const UNTRACKED_SYMBOL: &str = "untracked_marker_symbol";
+/// Suffix appended to the base repository name to form the origin clone / server workspace
+/// name, keeping benchmark traffic away from the real shared workspace of the same repository.
+pub const BENCH_WORKSPACE_SUFFIX: &str = "-divergent-bench";
 
-const BASE_SIGNATURE: &str = "pub fn compute_signal(input: i64) -> i64";
-const MUTATED_SIGNATURE: &str = "pub fn compute_signal(input: i64, scale: i64) -> i64";
-
+const FIXTURE_REPO_NAME: &str = "fixture";
 const FIXTURE_CARGO_TOML: &str = "[package]\nname = \"divergent-bench-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
 const FIXTURE_LIB_RS: &str = "pub fn compute_signal(input: i64) -> i64 {\n    input * 2\n}\n";
 
+/// Language of the base repository, which decides manifest, mutation and symbol conventions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    Go,
+}
+
+impl Language {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+            Language::Go => "go",
+        }
+    }
+
+    fn manifest(&self) -> &'static str {
+        match self {
+            Language::Rust => "Cargo.toml",
+            Language::Go => "go.mod",
+        }
+    }
+
+    fn extension(&self) -> &'static str {
+        match self {
+            Language::Rust => "rs",
+            Language::Go => "go",
+        }
+    }
+
+    /// Extra parameter appended to the target signature in worktree A.
+    fn marker_param(&self) -> &'static str {
+        match self {
+            Language::Rust => "divergent_marker: i64",
+            Language::Go => "divergentMarker int",
+        }
+    }
+
+    /// Identifier that must appear in worktree A's hover and nowhere else.
+    pub fn marker(&self) -> &'static str {
+        match self {
+            Language::Rust => "divergent_marker",
+            Language::Go => "divergentMarker",
+        }
+    }
+
+    /// Symbol introduced by worktree C's untracked file.
+    pub fn untracked_symbol(&self) -> &'static str {
+        match self {
+            Language::Rust => "divergent_untracked_symbol",
+            Language::Go => "DivergentUntrackedSymbol",
+        }
+    }
+
+    fn untracked_file_name(&self) -> &'static str {
+        match self {
+            Language::Rust => "divergent_untracked.rs",
+            Language::Go => "divergent_untracked.go",
+        }
+    }
+
+    fn manifest_touch_line(&self) -> &'static str {
+        match self {
+            Language::Rust => "\n# divergent-bench: dependency manifest touched by worktree B\n",
+            Language::Go => "\n// divergent-bench: dependency manifest touched by worktree B\n",
+        }
+    }
+}
+
+/// How the four worktrees map onto server workspaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum WorkspaceMode {
+    /// All worktrees coalesce onto one shared server workspace (production behaviour).
+    #[default]
+    Shared,
+    /// Each worktree gets a dedicated server workspace and engine instance.
+    Isolated,
+}
+
+impl WorkspaceMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            WorkspaceMode::Shared => "shared",
+            WorkspaceMode::Isolated => "isolated",
+        }
+    }
+}
+
 /// Which of the four diverged workspaces a worktree/query/result belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum WorktreeKind {
     Master,
     SignatureChange,
@@ -83,6 +184,17 @@ impl WorktreeKind {
     }
 }
 
+/// The real symbol discovered in the base repository that every worktree is queried against.
+#[derive(Debug, Clone)]
+pub struct DivergentTarget {
+    pub language: Language,
+    /// Path of the file relative to the repository root.
+    pub file_rel: PathBuf,
+    pub symbol: String,
+    /// Zero-based line of the signature.
+    pub line: usize,
+}
+
 /// One isolated `git worktree`, mutated according to its [`WorktreeKind`], along with the
 /// specific file/symbol the benchmark will query against it.
 #[derive(Debug, Clone)]
@@ -90,12 +202,16 @@ pub struct DivergentWorktree {
     pub kind: WorktreeKind,
     pub root: PathBuf,
     pub query_file: PathBuf,
-    pub symbol: &'static str,
+    pub symbol: String,
+    /// Base workspace name handed to the gateway on handshake and sync.
+    pub workspace_name: String,
 }
 
 /// The prepared origin repository plus its four diverged worktrees.
 pub struct DivergenceSetup {
     pub origin: PathBuf,
+    pub workspace_name: String,
+    pub target: DivergentTarget,
     pub worktrees: Vec<DivergentWorktree>,
 }
 
@@ -104,7 +220,7 @@ pub struct DivergenceSetup {
 pub struct DivergentBenchConfig {
     /// Address of the prod-code remote gateway to hammer with LSP queries.
     pub remote: SocketAddr,
-    /// Base git repository to fork worktrees from (e.g. a BTCR or govcon-intel checkout).
+    /// Base git repository to fork worktrees from (e.g. a BTCR or CodeHaus checkout).
     /// When `None`, a disposable scratch repository is created instead.
     pub base_repo: Option<PathBuf>,
     /// Scratch directory to materialize the origin clone and worktrees in.
@@ -116,6 +232,8 @@ pub struct DivergentBenchConfig {
     pub queries_per_worker: usize,
     /// Keep the generated scratch worktrees on disk after the run for inspection.
     pub keep_workdir: bool,
+    /// Shared or isolated server workspaces.
+    pub mode: WorkspaceMode,
 }
 
 impl Default for DivergentBenchConfig {
@@ -127,6 +245,7 @@ impl Default for DivergentBenchConfig {
             workers: 12,
             queries_per_worker: 5,
             keep_workdir: false,
+            mode: WorkspaceMode::Shared,
         }
     }
 }
@@ -142,22 +261,61 @@ pub struct QueryOutcome {
     pub detail: String,
 }
 
+/// What each worktree's hover text must (not) contain.
+#[derive(Debug, Clone)]
+pub struct Expectations {
+    pub symbol: String,
+    pub marker: String,
+    pub untracked_symbol: String,
+}
+
+impl Expectations {
+    pub fn for_target(target: &DivergentTarget) -> Self {
+        Self {
+            symbol: target.symbol.clone(),
+            marker: target.language.marker().to_string(),
+            untracked_symbol: target.language.untracked_symbol().to_string(),
+        }
+    }
+}
+
 /// Correctness verdict for one worktree kind, aggregated across all its query outcomes.
 #[derive(Debug, Clone)]
 pub struct VerificationResult {
     pub kind: WorktreeKind,
     pub passed: bool,
     pub message: String,
+    /// Number of successful responses that violated the invariant.
+    pub violations: usize,
+    /// A violating (or, when none, representative) hover excerpt for diagnosis.
+    pub sample: String,
+}
+
+/// Volume of the initial full workspace sync sent to the gateway.
+#[derive(Debug, Clone)]
+pub struct SyncSummary {
+    pub workspace_name: String,
+    pub files: usize,
+    pub bytes: u64,
+    pub duration: Duration,
 }
 
 /// Full benchmark report: latency percentiles, throughput, and correctness verification.
 #[derive(Debug, Clone)]
 pub struct DivergentBenchReport {
+    pub language: Language,
+    pub mode: WorkspaceMode,
+    pub workspace_name: String,
+    pub target: DivergentTarget,
+    pub initial_syncs: Vec<SyncSummary>,
     pub total_queries: usize,
     pub total_errors: usize,
     pub elapsed: Duration,
     pub qps: f64,
     pub latency: LatencyStats,
+    pub latency_by_kind: BTreeMap<WorktreeKind, LatencyStats>,
+    /// Failed query count and first error message per worktree kind.
+    pub errors_by_kind: BTreeMap<WorktreeKind, (usize, String)>,
     pub verifications: Vec<VerificationResult>,
     pub all_passed: bool,
 }
@@ -165,6 +323,25 @@ pub struct DivergentBenchReport {
 impl DivergentBenchReport {
     pub fn print(&self) {
         println!("\n📊 Divergent Worktree Benchmark Results:");
+        println!("────────────────────────────────────────────────────────────────");
+        println!("Language:            {}", self.language.label());
+        println!("Workspace Mode:      {}", self.mode.label());
+        println!("Server Workspace:    {}", self.workspace_name);
+        println!(
+            "Target Symbol:       {} ({}:{})",
+            self.target.symbol,
+            self.target.file_rel.display(),
+            self.target.line + 1
+        );
+        for sync in &self.initial_syncs {
+            println!(
+                "Initial Sync:        {} files, {:.1} KB in {:.0} ms -> {}",
+                sync.files,
+                sync.bytes as f64 / 1024.0,
+                sync.duration.as_secs_f64() * 1000.0,
+                sync.workspace_name
+            );
+        }
         println!("────────────────────────────────────────────────────────────────");
         println!("Elapsed Time:        {:.2}s", self.elapsed.as_secs_f64());
         println!("Completed Queries:   {}", self.total_queries);
@@ -175,17 +352,52 @@ impl DivergentBenchReport {
         println!("Latency (p95):       {:.2} ms", self.latency.p95_ms);
         println!("Latency (p99):       {:.2} ms", self.latency.p99_ms);
         println!("Latency (max):       {:.2} ms", self.latency.max_ms);
+        for (kind, stats) in &self.latency_by_kind {
+            println!(
+                "  {:<22} n={:<4} p50={:.2} ms  p95={:.2} ms  p99={:.2} ms",
+                kind.label(),
+                stats.count,
+                stats.p50_ms,
+                stats.p95_ms,
+                stats.p99_ms
+            );
+        }
+        for (kind, (count, first)) in &self.errors_by_kind {
+            println!(
+                "  {:<22} errors={:<3} first: {}",
+                kind.label(),
+                count,
+                excerpt(first)
+            );
+        }
         println!("────────────────────────────────────────────────────────────────");
         println!("Correctness Verification (zero cross-worktree bleed):");
         for v in &self.verifications {
             let mark = if v.passed { "✅ PASS" } else { "❌ FAIL" };
             println!("  {mark}  [{}] {}", v.kind.label(), v.message);
+            if !v.passed {
+                println!(
+                    "          violations={} sample: {}",
+                    v.violations,
+                    excerpt(&v.sample)
+                );
+            }
         }
         println!("────────────────────────────────────────────────────────────────");
         println!(
             "Overall Status:      {}",
             if self.all_passed { "PASS" } else { "FAIL" }
         );
+    }
+}
+
+fn excerpt(text: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() > 160 {
+        let cut: String = flat.chars().take(160).collect();
+        format!("{cut}…")
+    } else {
+        flat
     }
 }
 
@@ -207,19 +419,29 @@ fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn write_fixture_crate(root: &Path) -> Result<()> {
-    let crate_dir = root.join(FIXTURE_CRATE_DIR);
-    std::fs::create_dir_all(crate_dir.join("src"))?;
-    std::fs::write(crate_dir.join("Cargo.toml"), FIXTURE_CARGO_TOML)?;
-    std::fs::write(crate_dir.join(FIXTURE_FILE_REL), FIXTURE_LIB_RS)?;
+    std::fs::create_dir_all(root.join("src"))?;
+    std::fs::write(root.join("Cargo.toml"), FIXTURE_CARGO_TOML)?;
+    std::fs::write(root.join("src/lib.rs"), FIXTURE_LIB_RS)?;
     Ok(())
 }
 
+/// Name of the origin clone and of the shared server workspace for `base_repo`.
+pub fn bench_workspace_name(base_repo: Option<&Path>) -> String {
+    let repo_name = base_repo
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or(FIXTURE_REPO_NAME);
+    format!("{repo_name}{BENCH_WORKSPACE_SUFFIX}")
+}
+
 /// Prepares the origin repository: clones `base_repo` locally (leaving the original untouched)
-/// or initializes a disposable scratch repo, then commits a deterministic fixture crate so the
-/// benchmark has a known symbol/signature to mutate and verify regardless of what the base repo
-/// actually contains.
-fn prepare_origin(base_repo: Option<&Path>, workdir: &Path) -> Result<PathBuf> {
-    let origin = workdir.join("origin");
+/// or initializes a disposable scratch repo with a root fixture crate. The clone directory is
+/// named after the benchmark workspace so worktrees created from it resolve to that name.
+fn prepare_origin(base_repo: Option<&Path>, workdir: &Path, name: &str) -> Result<PathBuf> {
+    let origin = workdir.join(name);
+    if origin.exists() {
+        bail!("origin path {origin:?} already exists; use a fresh workdir");
+    }
     match base_repo {
         Some(src) => {
             let src_str = src
@@ -243,31 +465,200 @@ fn prepare_origin(base_repo: Option<&Path>, workdir: &Path) -> Result<PathBuf> {
         None => {
             std::fs::create_dir_all(&origin)?;
             run_git(&origin, &["init", "--quiet", "--initial-branch=main"])?;
+            run_git(
+                &origin,
+                &["config", "user.email", "divergent-bench@prod.codes"],
+            )?;
+            run_git(
+                &origin,
+                &["config", "user.name", "prod-code divergent-bench"],
+            )?;
+            write_fixture_crate(&origin)?;
+            run_git(&origin, &["add", "-A"])?;
+            run_git(
+                &origin,
+                &[
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "divergent-bench: seed fixture crate",
+                ],
+            )?;
         }
     }
-
-    // Ensure a commit identity exists even in minimal/CI environments without global git config.
-    run_git(
-        &origin,
-        &["config", "user.email", "divergent-bench@prod.codes"],
-    )?;
-    run_git(
-        &origin,
-        &["config", "user.name", "prod-code divergent-bench"],
-    )?;
-
-    write_fixture_crate(&origin)?;
-    run_git(&origin, &["add", "-A"])?;
-    run_git(
-        &origin,
-        &[
-            "commit",
-            "--quiet",
-            "-m",
-            "divergent-bench: seed fixture crate",
-        ],
-    )?;
     Ok(origin)
+}
+
+/// Detects the base repository language from its root manifest.
+pub fn detect_language(root: &Path) -> Result<Language> {
+    if root.join(Language::Rust.manifest()).exists() {
+        Ok(Language::Rust)
+    } else if root.join(Language::Go.manifest()).exists() {
+        Ok(Language::Go)
+    } else {
+        bail!(
+            "no Cargo.toml or go.mod at {root:?}; the divergent benchmark needs a Rust or Go repository root"
+        )
+    }
+}
+
+fn is_candidate_source(rel: &str, language: Language) -> bool {
+    let ext_ok = Path::new(rel)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e == language.extension());
+    if !ext_ok {
+        return false;
+    }
+    let lower = rel.to_ascii_lowercase();
+    let excluded_dirs = [
+        "test",
+        "bench",
+        "example",
+        "vendor",
+        "target",
+        "node_modules",
+        "third_party",
+        "proto",
+        "generated",
+        ".bak",
+    ];
+    if lower
+        .split('/')
+        .any(|seg| excluded_dirs.iter().any(|ex| seg.contains(ex)))
+    {
+        return false;
+    }
+    match language {
+        Language::Rust => !lower.ends_with("build.rs"),
+        Language::Go => !lower.ends_with("_test.go") && !lower.ends_with(".pb.go"),
+    }
+}
+
+/// Finds a single-line function signature on `line` and returns `(symbol, name_col)`.
+fn parse_signature_line(line: &str, language: Language) -> Option<(String, usize)> {
+    let trimmed = line.trim_start();
+    let indent = line.len() - trimmed.len();
+    let after_keyword = match language {
+        Language::Rust => trimmed.strip_prefix("pub fn ")?,
+        Language::Go => {
+            let rest = trimmed.strip_prefix("func ")?;
+            if rest.starts_with('(') {
+                return None; // method receiver; keep to plain functions
+            }
+            rest
+        }
+    };
+    let name_end = after_keyword.find(['(', '<'])?;
+    let name = &after_keyword[..name_end];
+    if name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || name.starts_with(|c: char| c.is_ascii_digit())
+    {
+        return None;
+    }
+    if !trimmed.contains('(') || !trimmed.trim_end().ends_with('{') {
+        return None;
+    }
+    let open = trimmed.find('(')?;
+    let close = matching_paren(trimmed, open)?;
+    if trimmed[open..=close].contains("...") {
+        return None;
+    }
+    let name_col = indent + (trimmed.len() - after_keyword.len());
+    let _ = close;
+    Some((name.to_string(), name_col))
+}
+
+fn matching_paren(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices().skip(open) {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Discovers the first single-line top-level function in a tracked, non-test source file.
+pub fn discover_target(root: &Path, language: Language) -> Result<DivergentTarget> {
+    let listing = run_git(root, &["ls-files", "-z"])?;
+    let mut candidates: Vec<&str> = listing
+        .split('\0')
+        .filter(|rel| !rel.is_empty() && is_candidate_source(rel, language))
+        .collect();
+    // Prefer conventional source roots so the symbol sits inside the indexed crate/package tree.
+    candidates.sort_by_key(|rel| {
+        let depth = rel.matches('/').count();
+        let in_src = rel.starts_with("src/") || rel.contains("/src/");
+        (if in_src { 0 } else { 1 }, depth, rel.to_string())
+    });
+
+    for rel in candidates {
+        let Ok(content) = std::fs::read_to_string(root.join(rel)) else {
+            continue;
+        };
+        for (idx, line) in content.lines().enumerate() {
+            if language == Language::Rust && line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            if let Some((symbol, _)) = parse_signature_line(line, language) {
+                return Ok(DivergentTarget {
+                    language,
+                    file_rel: PathBuf::from(rel),
+                    symbol,
+                    line: idx,
+                });
+            }
+        }
+    }
+    bail!(
+        "no single-line `{}` signature found in tracked {} sources under {root:?}",
+        match language {
+            Language::Rust => "pub fn",
+            Language::Go => "func",
+        },
+        language.label()
+    )
+}
+
+/// Rewrites `line` so the parameter list ends with the language's marker parameter.
+pub fn mutate_signature(line: &str, language: Language) -> Result<String> {
+    let open = line
+        .find('(')
+        .ok_or_else(|| anyhow!("signature has no parameter list: {line}"))?;
+    let close =
+        matching_paren(line, open).ok_or_else(|| anyhow!("unbalanced parameter list: {line}"))?;
+    let params = line[open + 1..close].trim();
+    let marker = language.marker_param();
+    let new_params = if params.is_empty() {
+        marker.to_string()
+    } else if params.ends_with(',') {
+        format!("{params} {marker}")
+    } else {
+        format!("{params}, {marker}")
+    };
+    Ok(format!(
+        "{}({}){}",
+        &line[..open],
+        new_params,
+        &line[close + 1..]
+    ))
+}
+
+fn go_package_name(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("package ")
+            .map(|p| p.split_whitespace().next().unwrap_or("").to_string())
+    })
 }
 
 fn create_worktree(origin: &Path, workdir: &Path, kind: WorktreeKind) -> Result<PathBuf> {
@@ -286,64 +677,109 @@ fn create_worktree(origin: &Path, workdir: &Path, kind: WorktreeKind) -> Result<
 }
 
 /// Applies the controlled mutation for `kind` inside `root`, returning the file the benchmark
-/// should query against this worktree.
-fn apply_mutation(root: &Path, kind: WorktreeKind) -> Result<PathBuf> {
-    let crate_dir = root.join(FIXTURE_CRATE_DIR);
-    let lib_rs = crate_dir.join(FIXTURE_FILE_REL);
+/// should query against this worktree and the symbol to hover.
+fn apply_mutation(
+    root: &Path,
+    kind: WorktreeKind,
+    target: &DivergentTarget,
+) -> Result<(PathBuf, String)> {
+    let target_file = root.join(&target.file_rel);
+    let language = target.language;
 
     match kind {
-        WorktreeKind::Master => Ok(lib_rs),
+        WorktreeKind::Master => Ok((target_file, target.symbol.clone())),
         WorktreeKind::SignatureChange => {
-            std::fs::write(
-                &lib_rs,
-                format!("{MUTATED_SIGNATURE} {{\n    input * scale\n}}\n"),
-            )?;
-            Ok(lib_rs)
+            let content = std::fs::read_to_string(&target_file)?;
+            let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+            let line = lines
+                .get_mut(target.line)
+                .ok_or_else(|| anyhow!("target line {} out of range", target.line))?;
+            *line = mutate_signature(line, language)?;
+            let mut rewritten = lines.join("\n");
+            if content.ends_with('\n') {
+                rewritten.push('\n');
+            }
+            std::fs::write(&target_file, rewritten)?;
+            Ok((target_file, target.symbol.clone()))
         }
         WorktreeKind::DependencyChange => {
-            let cargo_toml = crate_dir.join("Cargo.toml");
-            let mut content = std::fs::read_to_string(&cargo_toml)?;
-            content.push_str("serde = { version = \"1.0\", features = [\"derive\"] }\n");
-            std::fs::write(&cargo_toml, content)?;
-            Ok(lib_rs)
+            let manifest = root.join(language.manifest());
+            let mut content = std::fs::read_to_string(&manifest)?;
+            content.push_str(language.manifest_touch_line());
+            std::fs::write(&manifest, content)?;
+            Ok((target_file, target.symbol.clone()))
         }
         WorktreeKind::UntrackedFile => {
-            let untracked = crate_dir.join(UNTRACKED_FILE_REL);
-            std::fs::write(
-                &untracked,
-                format!(
-                    "pub fn {UNTRACKED_SYMBOL}() -> &'static str {{\n    \"divergent-bench-marker\"\n}}\n"
-                ),
-            )?;
-            Ok(untracked)
+            let dir = target_file
+                .parent()
+                .ok_or_else(|| anyhow!("target file has no parent: {target_file:?}"))?;
+            let untracked = dir.join(language.untracked_file_name());
+            let symbol = language.untracked_symbol();
+            let body = match language {
+                Language::Rust => {
+                    // A new Rust file is only analyzable once the crate declares it as a module,
+                    // which is what an agent does right after creating a scratch file.
+                    let mut owner = std::fs::read_to_string(&target_file)?;
+                    if !owner.ends_with('\n') {
+                        owner.push('\n');
+                    }
+                    owner.push_str(
+                        "\n#[path = \"divergent_untracked.rs\"]\nmod divergent_untracked;\n",
+                    );
+                    std::fs::write(&target_file, owner)?;
+                    format!(
+                        "pub fn {symbol}() -> &'static str {{\n    \"divergent-bench-marker\"\n}}\n"
+                    )
+                }
+                Language::Go => {
+                    let package = go_package_name(&std::fs::read_to_string(&target_file)?)
+                        .ok_or_else(|| anyhow!("no package clause in {target_file:?}"))?;
+                    format!(
+                        "package {package}\n\n// {symbol} is introduced by the divergent benchmark.\nfunc {symbol}() string {{\n\treturn \"divergent-bench-marker\"\n}}\n"
+                    )
+                }
+            };
+            std::fs::write(&untracked, body)?;
+            Ok((untracked, symbol.to_string()))
         }
     }
 }
 
-fn symbol_for(kind: WorktreeKind) -> &'static str {
-    match kind {
-        WorktreeKind::UntrackedFile => UNTRACKED_SYMBOL,
-        _ => FIXTURE_SYMBOL,
-    }
-}
-
-/// Creates the origin repository and its four diverged, mutated worktrees.
-pub fn setup(base_repo: Option<&Path>, workdir: &Path) -> Result<DivergenceSetup> {
-    let origin = prepare_origin(base_repo, workdir)?;
+/// Creates the origin repository, discovers the target symbol, and materializes the four
+/// diverged, mutated worktrees.
+pub fn setup(
+    base_repo: Option<&Path>,
+    workdir: &Path,
+    mode: WorkspaceMode,
+) -> Result<DivergenceSetup> {
+    let workspace_name = bench_workspace_name(base_repo);
+    let origin = prepare_origin(base_repo, workdir, &workspace_name)?;
+    let language = detect_language(&origin)?;
+    let target = discover_target(&origin, language)?;
 
     let mut worktrees = Vec::with_capacity(4);
     for kind in WorktreeKind::all() {
         let root = create_worktree(&origin, workdir, kind)?;
-        let query_file = apply_mutation(&root, kind)?;
+        let (query_file, symbol) = apply_mutation(&root, kind, &target)?;
+        let wt_workspace_name = match mode {
+            WorkspaceMode::Shared => workspace_name.clone(),
+            WorkspaceMode::Isolated => format!("{workspace_name}-{}", kind.dir_name()),
+        };
         worktrees.push(DivergentWorktree {
             kind,
             root,
             query_file,
-            symbol: symbol_for(kind),
+            symbol,
+            workspace_name: wt_workspace_name,
         });
     }
 
-    Ok(DivergenceSetup { origin, worktrees })
+    Ok(DivergenceSetup {
+        origin,
+        workspace_name,
+        target,
+        worktrees,
+    })
 }
 
 fn locate_symbol(content: &str, symbol: &str) -> Result<(u32, u32)> {
@@ -363,7 +799,11 @@ fn extract_hover_text(result: &serde_json::Value) -> String {
         if let Some(arr) = contents.as_array() {
             return arr
                 .iter()
-                .filter_map(|item| item.get("value").and_then(|v| v.as_str()))
+                .filter_map(|item| {
+                    item.get("value")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.as_str())
+                })
                 .collect::<Vec<_>>()
                 .join("\n");
         }
@@ -401,24 +841,72 @@ async fn read_response_matching_id(
     }
 }
 
+/// Sends one full workspace sync (tracked sources and manifests plus current dirty/untracked
+/// files) for `root` to the gateway under `workspace_name`, the way `prod-code sync` does on
+/// first contact. The persisted watermark is cleared afterwards so no state outlives the run.
+pub async fn initial_sync(
+    remote: SocketAddr,
+    root: &Path,
+    workspace_name: &str,
+) -> Result<SyncSummary> {
+    prod_code_mcp::sync::clear_sync_cache(root);
+    let plan = prod_code_mcp::sync::prepare_workspace_sync(root, None)?;
+    prod_code_mcp::sync::clear_sync_cache(root);
+    let files = plan.files.len();
+    let start = Instant::now();
+
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::SyncRequest(SyncRequest {
+            client_workspace_root: root.to_string_lossy().to_string(),
+            files: plan.files,
+            clean_others: false,
+            base_workspace_name: Some(workspace_name.to_string()),
+        }))
+        .await?;
+    let bytes = match timeout(Duration::from_secs(120), framed.next()).await {
+        Ok(Some(Ok(WireMessage::SyncResponse(resp)))) => resp.bytes_transferred as u64,
+        Ok(Some(Ok(other))) => bail!("unexpected sync response: {other:?}"),
+        Ok(Some(Err(e))) => bail!("frame decode error during sync: {e}"),
+        Ok(None) => bail!("remote gateway closed connection during sync"),
+        Err(_) => bail!("timed out waiting for initial sync of {workspace_name}"),
+    };
+    let _ = framed
+        .send(WireMessage::Disconnect {
+            reason: "divergent-bench initial sync finished".to_string(),
+        })
+        .await;
+
+    Ok(SyncSummary {
+        workspace_name: workspace_name.to_string(),
+        files,
+        bytes,
+        duration: start.elapsed(),
+    })
+}
+
 /// Connects to `remote`, performs the full handshake/sync/initialize/hover/close cycle against
-/// `file_path` within `ws_root`, and returns the hover text the gateway reports for `symbol`.
+/// `wt.query_file` within `wt.root`, and returns the hover text the gateway reports for
+/// `wt.symbol`.
 async fn query_once(
     remote: SocketAddr,
-    ws_root: &Path,
-    file_path: &Path,
-    symbol: &str,
+    wt: &DivergentWorktree,
+    language: Language,
     client_name: String,
 ) -> Result<String> {
+    let file_path = &wt.query_file;
     let content = tokio::fs::read_to_string(file_path)
         .await
         .with_context(|| format!("failed to read {file_path:?}"))?;
-    let (line, col) = locate_symbol(&content, symbol)?;
+    let (line, col) = locate_symbol(&content, &wt.symbol)?;
 
     let file_uri = Url::from_file_path(file_path)
         .map_err(|_| anyhow!("invalid file path for URI: {:?}", file_path))?
         .to_string();
-    let ws_root_str = ws_root.to_string_lossy().to_string();
+    let ws_root_str = wt.root.to_string_lossy().to_string();
 
     let stream = TcpStream::connect(remote)
         .await
@@ -433,10 +921,7 @@ async fn query_once(
             auth_token: None,
             client_workspace_root: ws_root_str.clone(),
             preferred_engine: None,
-            base_workspace_name: ws_root
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string()),
+            base_workspace_name: Some(wt.workspace_name.clone()),
         }))
         .await?;
 
@@ -448,7 +933,7 @@ async fn query_once(
     // Transparent pre-flight sync of dirty/untracked files, exactly like a live editor session,
     // so a mutated-but-uncommitted file (worktree A) or an untracked scratch file (worktree C)
     // is visible to the remote engine before we query it.
-    if let Ok(dirty) = prod_code_mcp::sync::collect_dirty_files(ws_root)
+    if let Ok(dirty) = prod_code_mcp::sync::collect_dirty_files(&wt.root)
         && !dirty.is_empty()
     {
         framed
@@ -456,10 +941,16 @@ async fn query_once(
                 client_workspace_root: ws_root_str.clone(),
                 files: dirty,
                 clean_others: false,
-                base_workspace_name: None,
+                base_workspace_name: Some(wt.workspace_name.clone()),
             }))
             .await?;
-        let _ = framed.next().await;
+        match timeout(Duration::from_secs(30), framed.next()).await {
+            Ok(Some(Ok(WireMessage::SyncResponse(_)))) => {}
+            Ok(Some(Ok(other))) => bail!("unexpected pre-flight sync response: {other:?}"),
+            Ok(Some(Err(e))) => bail!("frame decode error during pre-flight sync: {e}"),
+            Ok(None) => bail!("remote gateway closed connection during pre-flight sync"),
+            Err(_) => bail!("timed out waiting for pre-flight sync response"),
+        }
     }
 
     let init_req = serde_json::json!({
@@ -492,7 +983,7 @@ async fn query_once(
         "params": {
             "textDocument": {
                 "uri": file_uri,
-                "languageId": "rust",
+                "languageId": language.label(),
                 "version": 1,
                 "text": content
             }
@@ -515,7 +1006,15 @@ async fn query_once(
         .send(WireMessage::LspPayload(hover_req.to_string()))
         .await?;
     let response = read_response_matching_id(&mut framed, 2, Duration::from_secs(30)).await?;
-    let hover_text = extract_hover_text(response.get("result").unwrap_or(&serde_json::Value::Null));
+    let result = response.get("result").unwrap_or(&serde_json::Value::Null);
+    if result.is_null() {
+        bail!(
+            "hover returned null for {} in {}",
+            wt.symbol,
+            file_path.display()
+        );
+    }
+    let hover_text = extract_hover_text(result);
 
     let did_close = serde_json::json!({
         "jsonrpc": "2.0",
@@ -534,13 +1033,15 @@ async fn query_once(
     Ok(hover_text)
 }
 
-fn check_all(outcomes: &[&QueryOutcome], pred: impl Fn(&str) -> bool) -> bool {
-    outcomes.iter().all(|o| pred(&o.detail))
-}
+type HoverPredicate<'a> = Box<dyn Fn(&str) -> bool + 'a>;
 
 /// Groups query outcomes by worktree kind and asserts each kind's expected correctness
 /// invariant, catching any cross-worktree bleed.
-pub fn verify(outcomes: &[QueryOutcome]) -> Vec<VerificationResult> {
+pub fn verify(outcomes: &[QueryOutcome], expect: &Expectations) -> Vec<VerificationResult> {
+    let symbol = expect.symbol.as_str();
+    let marker = expect.marker.as_str();
+    let untracked = expect.untracked_symbol.as_str();
+
     WorktreeKind::all()
         .into_iter()
         .map(|kind| {
@@ -548,50 +1049,61 @@ pub fn verify(outcomes: &[QueryOutcome]) -> Vec<VerificationResult> {
                 outcomes.iter().filter(|o| o.kind == kind && o.ok).collect();
 
             if relevant.is_empty() {
+                let sample = outcomes
+                    .iter()
+                    .find(|o| o.kind == kind)
+                    .map(|o| o.detail.clone())
+                    .unwrap_or_default();
                 return VerificationResult {
                     kind,
                     passed: false,
                     message: format!("no successful responses for {}", kind.label()),
+                    violations: 0,
+                    sample,
                 };
             }
 
-            let (passed, message): (bool, &str) = match kind {
+            let (predicate, message): (HoverPredicate, &str) = match kind {
                 WorktreeKind::Master => (
-                    check_all(&relevant, |d| {
-                        d.contains(BASE_SIGNATURE) && !d.contains(MUTATED_SIGNATURE)
-                    }),
-                    "master must show the unmutated base signature with no bleed from worktree A",
+                    Box::new(|d: &str| d.contains(symbol) && !d.contains(marker)),
+                    "master must show the unmutated base signature with no marker bleed from worktree A",
                 ),
                 WorktreeKind::SignatureChange => (
-                    check_all(&relevant, |d| {
-                        d.contains(MUTATED_SIGNATURE) && !d.contains(BASE_SIGNATURE)
-                    }),
-                    "worktree A must show only the mutated signature",
+                    Box::new(|d: &str| d.contains(symbol) && d.contains(marker)),
+                    "worktree A must show the mutated signature carrying the marker parameter",
                 ),
                 WorktreeKind::DependencyChange => (
-                    check_all(&relevant, |d| {
-                        d.contains(BASE_SIGNATURE) && !d.contains(MUTATED_SIGNATURE)
-                    }),
-                    "worktree B only changes Cargo.toml; the function signature must stay base form",
+                    Box::new(|d: &str| d.contains(symbol) && !d.contains(marker)),
+                    "worktree B only touches the manifest; the signature must stay in base form",
                 ),
                 WorktreeKind::UntrackedFile => (
-                    check_all(&relevant, |d| d.contains(UNTRACKED_SYMBOL)),
-                    "worktree C must resolve the untracked symbol",
+                    Box::new(|d: &str| d.contains(untracked)),
+                    "worktree C must resolve the symbol from its untracked file",
                 ),
             };
 
+            let violating: Vec<&&QueryOutcome> =
+                relevant.iter().filter(|o| !predicate(&o.detail)).collect();
+            let sample = violating
+                .first()
+                .or(relevant.first().as_ref().map(|o| *o).as_ref())
+                .map(|o| o.detail.clone())
+                .unwrap_or_default();
+
             VerificationResult {
                 kind,
-                passed,
+                passed: violating.is_empty(),
                 message: message.to_string(),
+                violations: violating.len(),
+                sample,
             }
         })
         .collect()
 }
 
-/// Runs the full divergent-worktree benchmark: sets up worktrees, fires concurrent workers'
-/// queries at `config.remote`, and verifies correctness. Requires at least [`MIN_WORKERS`]
-/// concurrent workers to faithfully simulate a real agent fleet.
+/// Runs the full divergent-worktree benchmark: sets up worktrees, syncs them to `config.remote`,
+/// fires concurrent workers' queries, and verifies correctness. Requires at least
+/// [`MIN_WORKERS`] concurrent workers to faithfully simulate a real agent fleet.
 pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     if config.workers < MIN_WORKERS {
         bail!(
@@ -618,8 +1130,29 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         }
     };
 
-    let setup = setup(config.base_repo.as_deref(), &workdir)?;
+    let setup = setup(config.base_repo.as_deref(), &workdir, config.mode)?;
+    let language = setup.target.language;
+    let expect = Expectations::for_target(&setup.target);
     let worktrees = setup.worktrees;
+
+    // One full sync per server workspace before the fleet starts querying.
+    let mut initial_syncs = Vec::new();
+    match config.mode {
+        WorkspaceMode::Shared => {
+            let master = worktrees
+                .iter()
+                .find(|w| w.kind == WorktreeKind::Master)
+                .ok_or_else(|| anyhow!("master worktree missing"))?;
+            initial_syncs
+                .push(initial_sync(config.remote, &master.root, &master.workspace_name).await?);
+        }
+        WorkspaceMode::Isolated => {
+            for wt in &worktrees {
+                initial_syncs
+                    .push(initial_sync(config.remote, &wt.root, &wt.workspace_name).await?);
+            }
+        }
+    }
 
     let start = Instant::now();
     let mut handles = Vec::with_capacity(config.workers);
@@ -632,15 +1165,7 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
             for q in 0..queries {
                 let client_name = format!("divergent-bench-worker-{worker_id}-{q}");
                 let t0 = Instant::now();
-                let outcome = match query_once(
-                    remote,
-                    &wt.root,
-                    &wt.query_file,
-                    wt.symbol,
-                    client_name,
-                )
-                .await
-                {
+                let outcome = match query_once(remote, &wt, language, client_name).await {
                     Ok(detail) => QueryOutcome {
                         worker_id,
                         kind: wt.kind,
@@ -678,7 +1203,7 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         }
     }
 
-    let verifications = verify(&all_outcomes);
+    let verifications = verify(&all_outcomes, &expect);
     let total_errors = all_outcomes.iter().filter(|o| !o.ok).count();
     let all_verified = verifications.iter().all(|v| v.passed);
     let all_passed = all_verified && total_errors == 0;
@@ -690,6 +1215,24 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         .collect();
     let latency = LatencyStats::from_micros(&mut latencies_us);
 
+    let mut latency_by_kind = BTreeMap::new();
+    for kind in WorktreeKind::all() {
+        let mut samples: Vec<u64> = all_outcomes
+            .iter()
+            .filter(|o| o.ok && o.kind == kind)
+            .map(|o| o.latency.as_micros() as u64)
+            .collect();
+        latency_by_kind.insert(kind, LatencyStats::from_micros(&mut samples));
+    }
+
+    let mut errors_by_kind = BTreeMap::new();
+    for outcome in all_outcomes.iter().filter(|o| !o.ok) {
+        let entry = errors_by_kind
+            .entry(outcome.kind)
+            .or_insert_with(|| (0usize, outcome.detail.clone()));
+        entry.0 += 1;
+    }
+
     let qps = if elapsed.as_secs_f64() > 0.0 {
         all_outcomes.len() as f64 / elapsed.as_secs_f64()
     } else {
@@ -697,11 +1240,18 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     };
 
     Ok(DivergentBenchReport {
+        language,
+        mode: config.mode,
+        workspace_name: setup.workspace_name,
+        target: setup.target,
+        initial_syncs,
         total_queries: all_outcomes.len(),
         total_errors,
         elapsed,
         qps,
         latency,
+        latency_by_kind,
+        errors_by_kind,
         verifications,
         all_passed,
     })
@@ -710,6 +1260,18 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BASE_SIGNATURE: &str = "pub fn compute_signal(input: i64) -> i64";
+    const MUTATED_SIGNATURE: &str =
+        "pub fn compute_signal(input: i64, divergent_marker: i64) -> i64";
+
+    fn expectations() -> Expectations {
+        Expectations {
+            symbol: "compute_signal".to_string(),
+            marker: Language::Rust.marker().to_string(),
+            untracked_symbol: Language::Rust.untracked_symbol().to_string(),
+        }
+    }
 
     fn synthetic(kind: WorktreeKind, ok: bool, detail: &str) -> QueryOutcome {
         QueryOutcome {
@@ -721,52 +1283,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn verify_passes_with_clean_divergence() {
-        let outcomes = vec![
+    fn clean_outcomes() -> Vec<QueryOutcome> {
+        vec![
             synthetic(WorktreeKind::Master, true, BASE_SIGNATURE),
             synthetic(WorktreeKind::SignatureChange, true, MUTATED_SIGNATURE),
             synthetic(WorktreeKind::DependencyChange, true, BASE_SIGNATURE),
             synthetic(
                 WorktreeKind::UntrackedFile,
                 true,
-                &format!("pub fn {UNTRACKED_SYMBOL}() -> &'static str"),
+                "pub fn divergent_untracked_symbol() -> &'static str",
             ),
-        ];
-        let results = verify(&outcomes);
+        ]
+    }
+
+    #[test]
+    fn verify_passes_with_clean_divergence() {
+        let results = verify(&clean_outcomes(), &expectations());
         assert!(results.iter().all(|r| r.passed), "{results:?}");
     }
 
     #[test]
     fn verify_catches_cross_worktree_bleed_into_master() {
-        // Master's response contains worktree A's mutated signature: a routing/bleed bug.
-        let outcomes = vec![
-            synthetic(WorktreeKind::Master, true, MUTATED_SIGNATURE),
-            synthetic(WorktreeKind::SignatureChange, true, MUTATED_SIGNATURE),
-            synthetic(WorktreeKind::DependencyChange, true, BASE_SIGNATURE),
-            synthetic(
-                WorktreeKind::UntrackedFile,
-                true,
-                &format!("pub fn {UNTRACKED_SYMBOL}() -> &'static str"),
-            ),
-        ];
-        let results = verify(&outcomes);
+        // Master's response contains worktree A's marker: a routing/bleed bug.
+        let mut outcomes = clean_outcomes();
+        outcomes[0] = synthetic(WorktreeKind::Master, true, MUTATED_SIGNATURE);
+        let results = verify(&outcomes, &expectations());
         let master = results
             .iter()
             .find(|r| r.kind == WorktreeKind::Master)
             .unwrap();
         assert!(!master.passed);
+        assert_eq!(master.violations, 1);
+        assert!(master.sample.contains("divergent_marker"));
+    }
+
+    #[test]
+    fn verify_catches_bleed_from_master_into_worktree_a() {
+        let mut outcomes = clean_outcomes();
+        outcomes[1] = synthetic(WorktreeKind::SignatureChange, true, BASE_SIGNATURE);
+        let results = verify(&outcomes, &expectations());
+        let a = results
+            .iter()
+            .find(|r| r.kind == WorktreeKind::SignatureChange)
+            .unwrap();
+        assert!(!a.passed);
     }
 
     #[test]
     fn verify_catches_untracked_symbol_not_resolved() {
-        let outcomes = vec![
-            synthetic(WorktreeKind::Master, true, BASE_SIGNATURE),
-            synthetic(WorktreeKind::SignatureChange, true, MUTATED_SIGNATURE),
-            synthetic(WorktreeKind::DependencyChange, true, BASE_SIGNATURE),
-            synthetic(WorktreeKind::UntrackedFile, true, "no symbol here"),
-        ];
-        let results = verify(&outcomes);
+        let mut outcomes = clean_outcomes();
+        outcomes[3] = synthetic(WorktreeKind::UntrackedFile, true, "no symbol here");
+        let results = verify(&outcomes, &expectations());
         let untracked = results
             .iter()
             .find(|r| r.kind == WorktreeKind::UntrackedFile)
@@ -777,17 +1344,18 @@ mod tests {
     #[test]
     fn verify_fails_when_no_successful_responses() {
         let outcomes = vec![synthetic(WorktreeKind::Master, false, "connection refused")];
-        let results = verify(&outcomes);
+        let results = verify(&outcomes, &expectations());
         for kind in WorktreeKind::all() {
             let r = results.iter().find(|r| r.kind == kind).unwrap();
             assert!(!r.passed);
         }
+        assert!(results[0].sample.contains("connection refused"));
     }
 
     #[test]
     fn locate_symbol_finds_line_and_column() {
         let content = "line one\npub fn compute_signal(input: i64) -> i64 {\n";
-        let (line, col) = locate_symbol(content, FIXTURE_SYMBOL).unwrap();
+        let (line, col) = locate_symbol(content, "compute_signal").unwrap();
         assert_eq!(line, 1);
         assert_eq!(
             col,
@@ -802,7 +1370,7 @@ mod tests {
 
     #[test]
     fn locate_symbol_missing_errors() {
-        assert!(locate_symbol("nothing to see here", FIXTURE_SYMBOL).is_err());
+        assert!(locate_symbol("nothing to see here", "compute_signal").is_err());
     }
 
     #[test]
@@ -813,48 +1381,133 @@ mod tests {
 
     #[test]
     fn extract_hover_text_from_array() {
-        let result = serde_json::json!({ "contents": [ { "value": "a" }, { "value": "b" } ] });
+        let result = serde_json::json!({ "contents": [ { "value": "a" }, "b" ] });
         assert_eq!(extract_hover_text(&result), "a\nb");
+    }
+
+    #[test]
+    fn parse_signature_line_rust_and_go() {
+        assert_eq!(
+            parse_signature_line("pub fn compute_signal(input: i64) -> i64 {", Language::Rust),
+            Some(("compute_signal".to_string(), 7))
+        );
+        assert_eq!(
+            parse_signature_line("    pub fn new<T: Clone>(x: T) -> Self {", Language::Rust),
+            Some(("new".to_string(), 11))
+        );
+        assert_eq!(
+            parse_signature_line("pub fn trait_item(x: i64) -> i64;", Language::Rust),
+            None
+        );
+        assert_eq!(
+            parse_signature_line("pub fn multi_line(", Language::Rust),
+            None
+        );
+        assert_eq!(
+            parse_signature_line("func Compute(a int, b string) error {", Language::Go),
+            Some(("Compute".to_string(), 5))
+        );
+        assert_eq!(
+            parse_signature_line("func (s *Server) Method() error {", Language::Go),
+            None
+        );
+    }
+
+    #[test]
+    fn mutate_signature_appends_marker_parameter() {
+        assert_eq!(
+            mutate_signature("pub fn compute_signal(input: i64) -> i64 {", Language::Rust).unwrap(),
+            MUTATED_SIGNATURE.to_string() + " {"
+        );
+        assert_eq!(
+            mutate_signature("pub fn empty() {", Language::Rust).unwrap(),
+            "pub fn empty(divergent_marker: i64) {"
+        );
+        assert_eq!(
+            mutate_signature("pub fn nested(f: fn(i64) -> i64) -> i64 {", Language::Rust).unwrap(),
+            "pub fn nested(f: fn(i64) -> i64, divergent_marker: i64) -> i64 {"
+        );
+        assert_eq!(
+            mutate_signature("func Compute(a int) error {", Language::Go).unwrap(),
+            "func Compute(a int, divergentMarker int) error {"
+        );
+    }
+
+    #[test]
+    fn candidate_source_filter_skips_tests_and_generated() {
+        assert!(is_candidate_source("src/lib.rs", Language::Rust));
+        assert!(!is_candidate_source("tests/it.rs", Language::Rust));
+        assert!(!is_candidate_source("benches/b.rs", Language::Rust));
+        assert!(!is_candidate_source("build.rs", Language::Rust));
+        assert!(!is_candidate_source("src/lib.go", Language::Rust));
+        assert!(is_candidate_source("cmd/server/main.go", Language::Go));
+        assert!(!is_candidate_source(
+            "cmd/server/main_test.go",
+            Language::Go
+        ));
+        assert!(!is_candidate_source("api/v1/types.pb.go", Language::Go));
+        assert!(!is_candidate_source("vendor/x/y.go", Language::Go));
     }
 
     #[test]
     fn setup_creates_four_worktrees_with_expected_mutations() {
         let tmp = tempfile::tempdir().unwrap();
-        let setup = setup(None, tmp.path()).expect("setup should succeed");
+        let setup = setup(None, tmp.path(), WorkspaceMode::Shared).expect("setup should succeed");
         assert_eq!(setup.worktrees.len(), 4);
+        assert_eq!(setup.workspace_name, "fixture-divergent-bench");
+        assert_eq!(setup.target.symbol, "compute_signal");
+        assert_eq!(setup.target.file_rel, PathBuf::from("src/lib.rs"));
+        assert!(setup.origin.join("Cargo.toml").exists());
 
         for wt in &setup.worktrees {
             assert!(wt.root.exists(), "{:?} should exist", wt.root);
+            assert_eq!(wt.workspace_name, "fixture-divergent-bench");
             let content = std::fs::read_to_string(&wt.query_file).unwrap();
             match wt.kind {
                 WorktreeKind::Master => assert!(content.contains(BASE_SIGNATURE)),
                 WorktreeKind::SignatureChange => assert!(content.contains(MUTATED_SIGNATURE)),
                 WorktreeKind::DependencyChange => assert!(content.contains(BASE_SIGNATURE)),
-                WorktreeKind::UntrackedFile => assert!(content.contains(UNTRACKED_SYMBOL)),
+                WorktreeKind::UntrackedFile => {
+                    assert!(content.contains("divergent_untracked_symbol"));
+                    assert!(wt.query_file.ends_with("src/divergent_untracked.rs"));
+                    let owner = std::fs::read_to_string(wt.root.join("src/lib.rs")).unwrap();
+                    assert!(owner.contains("mod divergent_untracked;"));
+                    assert!(owner.contains(BASE_SIGNATURE));
+                }
             }
         }
 
-        let dep_cargo_toml = setup
-            .worktrees
-            .iter()
-            .find(|w| w.kind == WorktreeKind::DependencyChange)
-            .unwrap()
-            .root
-            .join(FIXTURE_CRATE_DIR)
-            .join("Cargo.toml");
-        let manifest = std::fs::read_to_string(dep_cargo_toml).unwrap();
-        assert!(manifest.contains("serde"));
+        let manifest_of = |kind: WorktreeKind| {
+            let root = &setup
+                .worktrees
+                .iter()
+                .find(|w| w.kind == kind)
+                .unwrap()
+                .root;
+            std::fs::read_to_string(root.join("Cargo.toml")).unwrap()
+        };
+        assert!(manifest_of(WorktreeKind::DependencyChange).contains("manifest touched"));
+        assert!(!manifest_of(WorktreeKind::Master).contains("manifest touched"));
+    }
 
-        let master_cargo_toml = setup
+    #[test]
+    fn setup_isolated_mode_names_each_worktree_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let setup = setup(None, tmp.path(), WorkspaceMode::Isolated).unwrap();
+        let names: Vec<&str> = setup
             .worktrees
             .iter()
-            .find(|w| w.kind == WorktreeKind::Master)
-            .unwrap()
-            .root
-            .join(FIXTURE_CRATE_DIR)
-            .join("Cargo.toml");
-        let master_manifest = std::fs::read_to_string(master_cargo_toml).unwrap();
-        assert!(!master_manifest.contains("serde"));
+            .map(|w| w.workspace_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "fixture-divergent-bench-wt-master",
+                "fixture-divergent-bench-wt-signature",
+                "fixture-divergent-bench-wt-dependency",
+                "fixture-divergent-bench-wt-untracked",
+            ]
+        );
     }
 
     #[tokio::test]
