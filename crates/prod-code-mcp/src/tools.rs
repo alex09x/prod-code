@@ -15,6 +15,30 @@ use url::Url;
 pub fn list_tools() -> Vec<McpTool> {
     vec![
         McpTool {
+            name: "code_exec".to_string(),
+            description: "Run a build, test or lint command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first. Returns the exit code and the tail of the combined output."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "argv": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Command and arguments, e.g. [\"cargo\", \"test\", \"-p\", \"my-crate\"]"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Kill the command after this many seconds (default 3600)"
+                    },
+                    "tail_bytes": {
+                        "type": "integer",
+                        "description": "How much of the output tail to return (default 16384)"
+                    }
+                },
+                "required": ["argv"]
+            }),
+        },
+        McpTool {
             name: "code_definition".to_string(),
             description: "Find symbol definition (function, struct, type, variable, module) at specified file and 1-based line/column position."
                 .to_string(),
@@ -163,6 +187,59 @@ pub async fn execute_tool(
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     match tool_name {
+        "code_exec" => {
+            let argv: Vec<String> = args
+                .get("argv")
+                .and_then(|v| v.as_array())
+                .context("Missing 'argv' argument")?
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let tail_bytes = args
+                .get("tail_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16 * 1024) as usize;
+            let mut tail = crate::exec::TailBuffer::new(tail_bytes);
+            let exit = crate::exec::run_remote(
+                remote,
+                workspace_root,
+                argv.clone(),
+                vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+                timeout_secs,
+                |_, data| tail.push(data),
+            )
+            .await?;
+            let status = match (&exit.error, exit.timed_out, exit.exit_code) {
+                (Some(err), _, _) => format!("failed to start: {err}"),
+                (None, true, _) => "timed out".to_string(),
+                (None, false, Some(code)) => format!("exit code {code}"),
+                (None, false, None) => "killed by signal".to_string(),
+            };
+            let mut text = format!(
+                "$ {}\n[{status} in {:.1}s on {}; {} bytes of output{}]\n",
+                argv.join(" "),
+                exit.duration_ms as f64 / 1000.0,
+                exit.server_workspace_root,
+                tail.total,
+                if tail.total > tail_bytes {
+                    ", tail shown"
+                } else {
+                    ""
+                }
+            );
+            text.push_str(&tail.text());
+            Ok(McpToolCallResult {
+                content: vec![McpContentItem {
+                    content_type: "text".to_string(),
+                    text,
+                }],
+                is_error: !matches!(exit.exit_code, Some(0)),
+            })
+        }
         "code_definition" => {
             let path_str = args
                 .get("path")

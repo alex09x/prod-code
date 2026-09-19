@@ -577,6 +577,17 @@ impl RustEngine {
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
         let (file_id, is_new) = if let Some(fid) = self.file_id_for_path(path) {
+            // Identical text (the common didOpen of an unmodified file) must not bump the
+            // Salsa revision: that would invalidate every derived query for nothing and turn a
+            // cached 1 ms hover into a 10-40 ms recomputation.
+            if self
+                .host
+                .analysis()
+                .file_text(fid)
+                .is_ok_and(|current| *current == *new_text)
+            {
+                return Ok(());
+            }
             (fid, false)
         } else {
             let mut vfs = self
@@ -834,6 +845,29 @@ impl PathTranslator {
         engine.activate_session(7).unwrap();
         let again = engine.document_symbols(&scratch).unwrap();
         assert!(again.iter().any(|s| s.name == "scratch_only"));
+    }
+
+    #[test]
+    fn test_identical_text_does_not_change_revision() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let text = std::fs::read_to_string(&lib_path).unwrap();
+        engine.apply_file_change(&lib_path, text.clone()).unwrap();
+        // A snapshot taken now survives a no-op re-open; a real revision would cancel it.
+        let snapshot = engine.snapshot();
+        engine.apply_file_change(&lib_path, text.clone()).unwrap();
+        assert!(snapshot.hover(&lib_path, 1, 15).unwrap().is_some());
+        // A genuine change still lands.
+        engine
+            .apply_file_change(&lib_path, format!("{text}pub const CHANGED: u8 = 1;\n"))
+            .unwrap();
+        assert!(
+            engine
+                .document_symbols(&lib_path)
+                .unwrap()
+                .iter()
+                .any(|s| s.name == "CHANGED")
+        );
     }
 
     #[test]

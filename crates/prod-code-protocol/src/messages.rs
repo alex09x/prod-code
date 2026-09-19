@@ -21,6 +21,12 @@ pub enum WireMessage {
     /// Client manifest of its complete relevant file set; answered by `SyncProbeResponse`.
     SyncProbeRequest(SyncProbeRequest),
     SyncProbeResponse(SyncProbeResponse),
+    /// Run a command inside the client's server workspace copy (remote build/test execution).
+    ExecRequest(ExecRequest),
+    /// A chunk of the running command's stdout or stderr.
+    ExecChunk(ExecChunk),
+    /// The command finished (or could not be started).
+    ExecExit(ExecExit),
 }
 
 /// Supported code intelligence engine kinds.
@@ -308,4 +314,41 @@ pub struct SyncProbeResponse {
     pub seeded: bool,
     pub files_deleted: usize,
     pub missing: Vec<String>,
+}
+
+/// Run `command` (argv, no shell) in the server workspace that mirrors the client's checkout.
+/// Build artifacts (`target/`, `node_modules/`) stay on the server between runs, so every
+/// worktree keeps its own warm cache.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecRequest {
+    pub client_workspace_root: String,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
+    pub command: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// Kill the command after this many seconds; 0 means the server default.
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecChunk {
+    pub stderr: bool,
+    /// Raw bytes, base64 (output may be partial UTF-8 or contain terminal escapes).
+    #[serde(with = "base64_bytes")]
+    pub data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecExit {
+    /// Process exit code; None when killed by a signal or by the timeout.
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub server_workspace_root: String,
+    #[serde(default)]
+    pub timed_out: bool,
+    /// Set when the command could not be started at all.
+    #[serde(default)]
+    pub error: Option<String>,
 }

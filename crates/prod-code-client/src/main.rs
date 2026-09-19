@@ -55,6 +55,16 @@ enum Commands {
     Refs { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// Run a build/test/lint command on the remote gateway inside this checkout's server copy:
+    /// prod-code exec -- cargo test -p my-crate
+    Exec {
+        /// Kill the command after this many seconds (0 = server default, 1 hour).
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+        /// Command and arguments (put `--` before them).
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Benchmark throughput and concurrency across workspaces and worktrees.
     Bench {
         /// Target workspace directories (or worktrees). If omitted, uses current working directory.
@@ -116,6 +126,10 @@ async fn main() -> Result<()> {
         Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
         Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
         Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
+        Commands::Exec {
+            timeout_secs,
+            command,
+        } => run_exec(cli.remote, command, timeout_secs).await,
         Commands::Bench {
             workspaces,
             concurrency,
@@ -936,6 +950,52 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
         }
     }
     None
+}
+
+/// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_exec(remote: SocketAddr, command: Vec<String>, timeout_secs: u64) -> Result<()> {
+    use std::io::Write;
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or(cwd);
+    let mut env_pairs = Vec::new();
+    if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        env_pairs.push(("CARGO_TERM_COLOR".to_string(), "always".to_string()));
+    }
+    let started = std::time::Instant::now();
+    let exit = prod_code_mcp::exec::run_remote(
+        remote,
+        &root,
+        command.clone(),
+        env_pairs,
+        timeout_secs,
+        |is_stderr, data| {
+            if is_stderr {
+                let mut e = std::io::stderr().lock();
+                let _ = e.write_all(data);
+                let _ = e.flush();
+            } else {
+                let mut o = std::io::stdout().lock();
+                let _ = o.write_all(data);
+                let _ = o.flush();
+            }
+        },
+    )
+    .await?;
+    if let Some(err) = &exit.error {
+        anyhow::bail!("remote exec failed: {err}");
+    }
+    eprintln!(
+        "[prod-code exec] {} in {:.1}s (server {:.1}s) on {}",
+        match (exit.timed_out, exit.exit_code) {
+            (true, _) => "timed out".to_string(),
+            (false, Some(code)) => format!("exit {code}"),
+            (false, None) => "killed".to_string(),
+        },
+        started.elapsed().as_secs_f64(),
+        exit.duration_ms as f64 / 1000.0,
+        exit.server_workspace_root
+    );
+    std::process::exit(exit.exit_code.unwrap_or(1));
 }
 
 /// Run concurrent pipelined benchmark against remote gateway across workspaces and worktrees.

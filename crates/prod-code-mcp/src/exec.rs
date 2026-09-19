@@ -1,0 +1,108 @@
+//! Remote command execution: sync the checkout, then run a command inside its server copy and
+//! stream the output back. Shared by the CLI (`prod-code exec`) and the MCP tool `code_exec`.
+
+use crate::sync::{WorkspaceIdentity, push_workspace_sync, workspace_identity};
+use anyhow::{Context, Result};
+use futures_util::{SinkExt, StreamExt};
+use prod_code_protocol::{ExecExit, ExecRequest, ProdCodeCodec, WireMessage};
+use std::net::SocketAddr;
+use std::path::Path;
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
+
+/// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
+/// every chunk as it arrives. Returns the exit record once the command finishes.
+pub async fn run_remote(
+    remote: SocketAddr,
+    root: &Path,
+    command: Vec<String>,
+    env: Vec<(String, String)>,
+    timeout_secs: u64,
+    mut on_output: impl FnMut(bool, &[u8]),
+) -> Result<ExecExit> {
+    anyhow::ensure!(!command.is_empty(), "empty command");
+    let identity: WorkspaceIdentity = workspace_identity(root);
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    push_workspace_sync(&mut framed, root, &identity, None)
+        .await
+        .context("pre-flight workspace sync failed")?;
+
+    framed
+        .send(WireMessage::ExecRequest(ExecRequest {
+            client_workspace_root: root.to_string_lossy().to_string(),
+            base_workspace_name: Some(identity.name.clone()),
+            command,
+            env,
+            timeout_secs,
+        }))
+        .await?;
+
+    loop {
+        match framed.next().await {
+            Some(Ok(WireMessage::ExecChunk(chunk))) => {
+                if let Some(data) = chunk.data.as_deref() {
+                    on_output(chunk.stderr, data);
+                }
+            }
+            Some(Ok(WireMessage::ExecExit(exit))) => {
+                let _ = framed
+                    .send(WireMessage::Disconnect {
+                        reason: "exec finished".to_string(),
+                    })
+                    .await;
+                return Ok(exit);
+            }
+            Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
+            Some(Ok(other)) => anyhow::bail!("unexpected message during exec: {other:?}"),
+            Some(Err(e)) => anyhow::bail!("frame decode error during exec: {e}"),
+            None => anyhow::bail!("gateway closed the connection during exec"),
+        }
+    }
+}
+
+/// Keeps the last `limit` bytes of combined output for a compact tool result.
+pub struct TailBuffer {
+    limit: usize,
+    buf: Vec<u8>,
+    pub total: usize,
+}
+
+impl TailBuffer {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            buf: Vec::new(),
+            total: 0,
+        }
+    }
+
+    pub fn push(&mut self, data: &[u8]) {
+        self.total += data.len();
+        self.buf.extend_from_slice(data);
+        if self.buf.len() > self.limit {
+            let cut = self.buf.len() - self.limit;
+            self.buf.drain(..cut);
+        }
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf).into_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tail_buffer_keeps_only_the_end() {
+        let mut tail = TailBuffer::new(8);
+        tail.push(b"0123456789");
+        tail.push(b"ab");
+        assert_eq!(tail.text(), "456789ab");
+        assert_eq!(tail.total, 12);
+    }
+}

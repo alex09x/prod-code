@@ -11,8 +11,9 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    FileStamp, HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse,
-    SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
+    ExecChunk, ExecExit, ExecRequest, FileStamp, HandshakeResponse, PROTOCOL_VERSION,
+    PathTranslator, ProdCodeCodec, StatusResponse, SyncProbeRequest, SyncProbeResponse,
+    SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -275,6 +276,181 @@ pub async fn apply_sync_probe(
     }
 }
 
+/// Default wall-clock limit for a remote command when the client does not set one.
+const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
+
+/// Runs `req.command` inside the client's server workspace, streaming stdout/stderr chunks to
+/// the client and finishing with an `ExecExit`. The child is killed if the client goes away
+/// or the timeout elapses.
+pub async fn run_exec(
+    storage_root: &std::path::Path,
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    req: ExecRequest,
+) -> Result<()> {
+    use tokio::io::AsyncReadExt;
+
+    let start = Instant::now();
+    let workspace = workspace::server_workspace_path(
+        storage_root,
+        &req.client_workspace_root,
+        req.base_workspace_name.as_deref(),
+    );
+    let workspace_str = workspace.to_string_lossy().to_string();
+    let fail = |error: String| ExecExit {
+        exit_code: None,
+        duration_ms: 0,
+        server_workspace_root: workspace_str.clone(),
+        timed_out: false,
+        error: Some(error),
+    };
+    if !workspace.is_dir() {
+        framed
+            .send(WireMessage::ExecExit(fail(format!(
+                "workspace {workspace_str} is not synced to this gateway"
+            ))))
+            .await?;
+        return Ok(());
+    }
+    let Some((program, args)) = req.command.split_first() else {
+        framed
+            .send(WireMessage::ExecExit(fail("empty command".to_string())))
+            .await?;
+        return Ok(());
+    };
+    workspace::touch_last_used(&workspace);
+
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
+        .current_dir(&workspace)
+        .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            framed
+                .send(WireMessage::ExecExit(fail(format!(
+                    "failed to start {program}: {e}"
+                ))))
+                .await?;
+            return Ok(());
+        }
+    };
+    tracing::info!(
+        workspace = %workspace_str,
+        command = %req.command.join(" "),
+        "🛠️ [EXEC] started"
+    );
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecChunk>(256);
+    let mut readers = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        let tx = tx.clone();
+        readers.push(tokio::spawn(async move {
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = out.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if tx
+                    .send(ExecChunk {
+                        stderr: false,
+                        data: Some(buf[..n].to_vec()),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    if let Some(mut err) = child.stderr.take() {
+        let tx = tx.clone();
+        readers.push(tokio::spawn(async move {
+            let mut buf = vec![0u8; 16 * 1024];
+            while let Ok(n) = err.read(&mut buf).await {
+                if n == 0 {
+                    break;
+                }
+                if tx
+                    .send(ExecChunk {
+                        stderr: true,
+                        data: Some(buf[..n].to_vec()),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+    drop(tx);
+
+    let timeout = std::time::Duration::from_secs(if req.timeout_secs == 0 {
+        EXEC_DEFAULT_TIMEOUT_SECS
+    } else {
+        req.timeout_secs
+    });
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut timed_out = false;
+    let mut status = None;
+    let mut chunks_open = true;
+    loop {
+        tokio::select! {
+            chunk = rx.recv(), if chunks_open => match chunk {
+                Some(chunk) => framed.send(WireMessage::ExecChunk(chunk)).await?,
+                None => chunks_open = false,
+            },
+            exit = child.wait(), if status.is_none() => {
+                status = Some(exit);
+            }
+            _ = tokio::time::sleep_until(deadline), if !timed_out => {
+                timed_out = true;
+                let _ = child.start_kill();
+            }
+            incoming = framed.next(), if status.is_none() => match incoming {
+                Some(Ok(WireMessage::Ping)) => framed.send(WireMessage::Pong).await?,
+                Some(Ok(WireMessage::Disconnect { .. })) | None => {
+                    let _ = child.start_kill();
+                    tracing::info!(workspace = %workspace_str, "🛠️ [EXEC] client left; command killed");
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        if !chunks_open && status.is_some() {
+            break;
+        }
+    }
+    for reader in readers {
+        let _ = reader.await;
+    }
+    let exit_code = status.and_then(|s| s.ok()).and_then(|s| s.code());
+    let duration_ms = start.elapsed().as_millis() as u64;
+    tracing::info!(
+        workspace = %workspace_str,
+        command = %req.command.join(" "),
+        exit_code = ?exit_code,
+        timed_out,
+        duration_ms,
+        "🛠️ [EXEC] finished"
+    );
+    framed
+        .send(WireMessage::ExecExit(ExecExit {
+            exit_code,
+            duration_ms,
+            server_workspace_root: workspace_str,
+            timed_out,
+            error: None,
+        }))
+        .await?;
+    Ok(())
+}
+
 /// Apply batch file synchronization to server workspace storage.
 pub async fn apply_sync(
     storage_root: &std::path::Path,
@@ -377,6 +553,9 @@ pub async fn handle_client(
                 let resp =
                     apply_sync_probe(&state.storage_root, &state.workspace_manager, req).await;
                 framed.send(WireMessage::SyncProbeResponse(resp)).await?;
+            }
+            WireMessage::ExecRequest(req) => {
+                run_exec(&state.storage_root, &mut framed, req).await?;
             }
             WireMessage::Ping => {
                 framed.send(WireMessage::Pong).await?;
