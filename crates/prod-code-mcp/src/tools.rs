@@ -107,6 +107,48 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_callers".to_string(),
+            description: "Incoming call hierarchy: every function/method in the workspace that calls the function at a 1-based line/column, with the call sites. Semantic (resolved through the analyzer), not a text search."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "character": { "type": "integer", "description": "1-based column/character number" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
+            name: "code_callees".to_string(),
+            description: "Outgoing call hierarchy: every function/method the function at a 1-based line/column calls, with the call sites."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "character": { "type": "integer", "description": "1-based column/character number" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
+            name: "code_implementations".to_string(),
+            description: "All implementations of the trait/interface/abstract class at a 1-based line/column (or the impl blocks of a type), as locations."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "character": { "type": "integer", "description": "1-based column/character number" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
             name: "code_safe_delete".to_string(),
             description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. The edit is written into the checkout."
                 .to_string(),
@@ -643,6 +685,162 @@ pub async fn execute_tool(
             Ok(McpToolCallResult::text(out))
         }
 
+        "code_callers" | "code_callees" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument")? as u32;
+            let character = args
+                .get("character")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'character' argument")? as u32;
+            let incoming = tool_name == "code_callers";
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let file_uri = Url::from_file_path(&file_path)
+                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+                .to_string();
+            let params = serde_json::json!({
+                "textDocument": { "uri": file_uri },
+                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+            });
+            let items = execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "textDocument/prepareCallHierarchy",
+                params,
+            )
+            .await?;
+            let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
+                return Ok(McpToolCallResult::text(format!(
+                    "No function at {path_str}:{line}:{character}."
+                )));
+            };
+            let fn_name = item
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let method = if incoming {
+                "callHierarchy/incomingCalls"
+            } else {
+                "callHierarchy/outgoingCalls"
+            };
+            let res = execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                method,
+                serde_json::json!({ "item": item }),
+            )
+            .await?;
+            let edges = res.as_array().cloned().unwrap_or_default();
+            let side = if incoming { "from" } else { "to" };
+            let mut out = format!(
+                "`{fn_name}`: {} {}\n",
+                edges.len(),
+                if incoming { "caller(s)" } else { "callee(s)" }
+            );
+            for edge in &edges {
+                let other = edge.get(side).cloned().unwrap_or_default();
+                let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+                let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                let start = other.get("selectionRange").and_then(|r| r.get("start"));
+                let dl = start
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let dc = start
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let sites: Vec<String> = edge
+                    .get("fromRanges")
+                    .and_then(|r| r.as_array())
+                    .map(|ranges| {
+                        ranges
+                            .iter()
+                            .filter_map(|r| r.get("start"))
+                            .map(|s| {
+                                format!(
+                                    "{}:{}",
+                                    s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
+                                    s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]\n",
+                    sites.join(", ")
+                ));
+            }
+            Ok(McpToolCallResult::text(out.trim_end().to_string()))
+        }
+        "code_implementations" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument")? as u32;
+            let character = args
+                .get("character")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'character' argument")? as u32;
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let file_uri = Url::from_file_path(&file_path)
+                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+                .to_string();
+            let params = serde_json::json!({
+                "textDocument": { "uri": file_uri },
+                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+            });
+            let res = execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "textDocument/implementation",
+                params,
+            )
+            .await?;
+            let arr = match &res {
+                serde_json::Value::Array(a) => a.clone(),
+                serde_json::Value::Object(_) => vec![res.clone()],
+                _ => Vec::new(),
+            };
+            if arr.is_empty() {
+                return Ok(McpToolCallResult::text(
+                    "No implementations found.".to_string(),
+                ));
+            }
+            let mut out = format!("Found {} implementation(s):\n", arr.len());
+            for loc in &arr {
+                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                let start = loc.get("range").and_then(|r| r.get("start"));
+                let l = start
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let c = start
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                out.push_str(&format!("  • {uri}:{l}:{c}\n"));
+            }
+            Ok(McpToolCallResult::text(out.trim_end().to_string()))
+        }
         "code_references" => {
             let path_str = args
                 .get("path")

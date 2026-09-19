@@ -58,6 +58,12 @@ enum Commands {
     Hover { file: PathBuf, line: u32, col: u32 },
     /// Find all references to symbol: prod-code refs <file> <line> <col>
     Refs { file: PathBuf, line: u32, col: u32 },
+    /// Who calls the function at a position: prod-code callers <file> <line> <col>
+    Callers { file: PathBuf, line: u32, col: u32 },
+    /// What the function at a position calls: prod-code callees <file> <line> <col>
+    Callees { file: PathBuf, line: u32, col: u32 },
+    /// Implementations of the trait / interface at a position: prod-code impls <file> <line> <col>
+    Impls { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
     /// List code actions (inline, extract, generate, rewrite, quick fixes) at a 1-based
@@ -215,6 +221,13 @@ async fn main() -> Result<()> {
         Commands::Def { file, line, col } => run_definition(remote, &file, line, col).await,
         Commands::Hover { file, line, col } => run_hover(remote, &file, line, col).await,
         Commands::Refs { file, line, col } => run_references(remote, &file, line, col).await,
+        Commands::Callers { file, line, col } => {
+            run_call_hierarchy(remote, &file, line, col, true).await
+        }
+        Commands::Callees { file, line, col } => {
+            run_call_hierarchy(remote, &file, line, col, false).await
+        }
+        Commands::Impls { file, line, col } => run_implementations(remote, &file, line, col).await,
         Commands::Symbols { file } => run_symbols(remote, &file).await,
         Commands::Rename {
             file,
@@ -723,6 +736,134 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
         println!("{:#}", result);
     }
 
+    Ok(())
+}
+
+/// Prints `uri:line:col` for every LSP `Location` in `arr`.
+fn print_locations(arr: &[serde_json::Value]) {
+    for loc in arr {
+        let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start = loc.get("range").and_then(|r| r.get("start"));
+        let line = start
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let col = start
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
+        println!("  • {uri}:{line}:{col}");
+    }
+}
+
+/// Callers (`incoming`) or callees of the function at a 1-based position: the call-hierarchy
+/// item is prepared first, then its incoming or outgoing calls are listed with call sites.
+async fn run_call_hierarchy(
+    remote: SocketAddr,
+    file: &Path,
+    line: u32,
+    col: u32,
+    incoming: bool,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+    });
+    let items =
+        execute_lsp_query(remote, file, "textDocument/prepareCallHierarchy", params).await?;
+    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
+        println!("No function at {}:{line}:{col}.", file.display());
+        return Ok(());
+    };
+    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+    let method = if incoming {
+        "callHierarchy/incomingCalls"
+    } else {
+        "callHierarchy/outgoingCalls"
+    };
+    let result =
+        execute_lsp_query(remote, file, method, serde_json::json!({ "item": item })).await?;
+    let edges = result.as_array().cloned().unwrap_or_default();
+    let side = if incoming { "from" } else { "to" };
+    if edges.is_empty() {
+        println!(
+            "`{name}`: no {} found.",
+            if incoming { "callers" } else { "callees" }
+        );
+        return Ok(());
+    }
+    println!(
+        "`{name}`: {} {}",
+        edges.len(),
+        if incoming { "caller(s)" } else { "callee(s)" }
+    );
+    for edge in &edges {
+        let other = edge.get(side).cloned().unwrap_or_default();
+        let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start = other.get("selectionRange").and_then(|r| r.get("start"));
+        let dl = start
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let dc = start
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let sites: Vec<String> = edge
+            .get("fromRanges")
+            .and_then(|r| r.as_array())
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .filter_map(|r| r.get("start"))
+                    .map(|s| {
+                        format!(
+                            "{}:{}",
+                            s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
+                            s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        println!(
+            "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]",
+            sites.join(", ")
+        );
+    }
+    Ok(())
+}
+
+async fn run_implementations(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+    });
+    let result = execute_lsp_query(remote, file, "textDocument/implementation", params).await?;
+    let arr = match &result {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::Object(_) => vec![result.clone()],
+        _ => Vec::new(),
+    };
+    if arr.is_empty() {
+        println!("No implementations found.");
+    } else {
+        println!("Found {} implementation(s):", arr.len());
+        print_locations(&arr);
+    }
     Ok(())
 }
 

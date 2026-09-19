@@ -2,9 +2,10 @@
 
 use anyhow::{Context, Result};
 use ra_ap_ide::{
-    AnalysisHost, AssistConfig, AssistResolveStrategy, DiagnosticsConfig, FileId, FilePosition,
-    FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig, HoverConfig,
-    HoverDocFormat, RaFixtureConfig, RenameConfig, SingleResolve, TextRange, TextSize,
+    AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig, DiagnosticsConfig,
+    FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
+    GotoImplementationConfig, HoverConfig, HoverDocFormat, NavigationTarget, RaFixtureConfig,
+    RenameConfig, SingleResolve, StructureNodeKind, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -35,6 +36,27 @@ pub struct DefinitionTarget {
     pub line: u32,
     pub col: u32,
     pub name: String,
+}
+
+/// A function, method or other item in the call hierarchy: where it is declared (`line`/`col`
+/// point at its name, `end_line`/`end_col` close the whole item) and what kind of item it is.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HierarchyItem {
+    pub name: String,
+    pub kind: String,
+    pub path: PathBuf,
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+}
+
+/// One edge of the call graph: the caller or callee item and the 1-based positions of the
+/// call sites (in the caller's file for incoming calls, in this item's file for outgoing).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CallEdge {
+    pub item: HierarchyItem,
+    pub call_sites: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -507,6 +529,132 @@ impl RustEngineSnapshot {
     }
 
     /// Find all references to symbol at (line, col) across entire workspace.
+    fn file_position(&self, path: &Path, line: u32, col: u32) -> Result<FilePosition> {
+        let file_id = self
+            .file_id_for_path(path)
+            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let text = self.analysis.file_text(file_id)?;
+        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        Ok(FilePosition { file_id, offset })
+    }
+
+    fn hierarchy_item(&self, target: &NavigationTarget) -> Option<HierarchyItem> {
+        let path = self.path_for_file_id(target.file_id)?;
+        let text = self.analysis.file_text(target.file_id).ok()?;
+        let focus = target.focus_range.unwrap_or(target.full_range);
+        let (line, col) = offset_to_line_col(&text, focus.start());
+        let (end_line, end_col) = offset_to_line_col(&text, target.full_range.end());
+        Some(HierarchyItem {
+            name: target.name.to_string(),
+            kind: target
+                .kind
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|| "Function".to_string()),
+            path,
+            line,
+            col,
+            end_line,
+            end_col,
+        })
+    }
+
+    /// The call-hierarchy item(s) at (line, col): the enclosing or referenced function.
+    pub fn prepare_call_hierarchy(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<Vec<HierarchyItem>> {
+        let pos = self.file_position(path, line, col)?;
+        let config = CallHierarchyConfig {
+            exclude_tests: false,
+            ra_fixture: RaFixtureConfig::default(),
+        };
+        let targets = match self.analysis.call_hierarchy(pos, &config)? {
+            Some(info) => info.info,
+            None => return Ok(vec![]),
+        };
+        Ok(targets
+            .iter()
+            .filter_map(|t| self.hierarchy_item(t))
+            .collect())
+    }
+
+    /// Everything that calls the function whose name is at (line, col).
+    pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        let pos = self.file_position(path, line, col)?;
+        let config = CallHierarchyConfig {
+            exclude_tests: false,
+            ra_fixture: RaFixtureConfig::default(),
+        };
+        let calls = self
+            .analysis
+            .incoming_calls(&config, pos)?
+            .unwrap_or_default();
+        Ok(self.call_edges(calls))
+    }
+
+    /// Everything the function whose name is at (line, col) calls.
+    pub fn outgoing_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        let pos = self.file_position(path, line, col)?;
+        let config = CallHierarchyConfig {
+            exclude_tests: false,
+            ra_fixture: RaFixtureConfig::default(),
+        };
+        let calls = self
+            .analysis
+            .outgoing_calls(&config, pos)?
+            .unwrap_or_default();
+        Ok(self.call_edges(calls))
+    }
+
+    fn call_edges(&self, calls: Vec<ra_ap_ide::CallItem>) -> Vec<CallEdge> {
+        calls
+            .iter()
+            .filter_map(|call| {
+                let item = self.hierarchy_item(&call.target)?;
+                let call_sites = call
+                    .ranges
+                    .iter()
+                    .filter_map(|range| {
+                        let text = self.analysis.file_text(range.file_id).ok()?;
+                        Some(offset_to_line_col(&text, range.range.start()))
+                    })
+                    .collect();
+                Some(CallEdge { item, call_sites })
+            })
+            .collect()
+    }
+
+    /// All implementations of the trait, or the impl blocks of the type, at (line, col).
+    pub fn goto_implementation(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<Vec<DefinitionTarget>> {
+        let pos = self.file_position(path, line, col)?;
+        let config = GotoImplementationConfig {
+            filter_adjacent_derive_implementations: false,
+        };
+        let targets = match self.analysis.goto_implementation(&config, pos)? {
+            Some(info) => info.info,
+            None => return Ok(vec![]),
+        };
+        Ok(targets
+            .iter()
+            .filter_map(|t| {
+                let item = self.hierarchy_item(t)?;
+                Some(DefinitionTarget {
+                    path: item.path,
+                    line: item.line,
+                    col: item.col,
+                    name: item.name,
+                })
+            })
+            .collect())
+    }
+
     pub fn find_all_refs(&self, path: &Path, line: u32, col: u32) -> Result<Vec<ReferenceTarget>> {
         let file_id = self
             .file_id_for_path(path)
@@ -567,7 +715,10 @@ impl RustEngineSnapshot {
             let (sym_line, _) = offset_to_line_col(&text, node.node_range.start());
             results.push(SymbolTarget {
                 name: node.label,
-                kind: format!("{:?}", node.kind),
+                kind: match node.kind {
+                    StructureNodeKind::SymbolKind(kind) => format!("{kind:?}"),
+                    other => format!("{other:?}"),
+                },
                 line: sym_line,
                 detail: node.detail,
             });
@@ -896,6 +1047,32 @@ impl RustEngine {
     /// Find all references to symbol at (line, col) across entire workspace.
     pub fn find_all_refs(&self, path: &Path, line: u32, col: u32) -> Result<Vec<ReferenceTarget>> {
         self.snapshot().find_all_refs(path, line, col)
+    }
+
+    pub fn prepare_call_hierarchy(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<Vec<HierarchyItem>> {
+        self.snapshot().prepare_call_hierarchy(path, line, col)
+    }
+
+    pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        self.snapshot().incoming_calls(path, line, col)
+    }
+
+    pub fn outgoing_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        self.snapshot().outgoing_calls(path, line, col)
+    }
+
+    pub fn goto_implementation(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+    ) -> Result<Vec<DefinitionTarget>> {
+        self.snapshot().goto_implementation(path, line, col)
     }
 
     /// Code actions at a position; see [`RustEngineSnapshot::list_assists`].

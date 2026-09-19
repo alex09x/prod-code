@@ -278,6 +278,97 @@ pub async fn apply_sync_probe(
 /// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: every
 /// rewritten file becomes one whole-file text edit, file moves become rename operations and
 /// new files become create operations followed by their content.
+/// LSP `SymbolKind` number for a rust-analyzer symbol kind name.
+fn lsp_symbol_kind(kind: &str) -> u64 {
+    match kind {
+        "Module" | "CrateRoot" => 2,
+        "TypeAlias" | "Impl" | "SelfType" => 5,
+        "Method" => 6,
+        "Field" => 8,
+        "Enum" => 10,
+        "Trait" => 11,
+        "Function" | "Fn" | "Macro" | "ProcMacro" => 12,
+        "Const" | "Constant" => 14,
+        "Struct" | "Union" => 23,
+        "Variant" => 22,
+        "TypeParam" | "ConstParam" | "LifetimeParam" => 26,
+        _ => 13,
+    }
+}
+
+fn lsp_range(line: u32, col: u32, end_line: u32, end_col: u32) -> serde_json::Value {
+    serde_json::json!({
+        "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        "end": { "line": end_line.saturating_sub(1), "character": end_col.saturating_sub(1) }
+    })
+}
+
+fn hierarchy_item_json(item: &prod_code_engine_rust::HierarchyItem) -> serde_json::Value {
+    serde_json::json!({
+        "name": item.name,
+        "kind": lsp_symbol_kind(&item.kind),
+        "uri": format!("file://{}", item.path.display()),
+        "range": lsp_range(item.line, item.col, item.end_line, item.end_col),
+        "selectionRange": lsp_range(item.line, item.col, item.line, item.col + item.name.chars().count() as u32),
+    })
+}
+
+/// Call hierarchy and implementation queries on the in-memory Rust engine, in LSP shape.
+fn hierarchy_query(
+    engine: &prod_code_engine_rust::RustEngine,
+    method: &str,
+    path: &std::path::Path,
+    line: u32,
+    col: u32,
+) -> anyhow::Result<serde_json::Value> {
+    Ok(match method {
+        "textDocument/prepareCallHierarchy" => serde_json::Value::Array(
+            engine
+                .prepare_call_hierarchy(path, line, col)?
+                .iter()
+                .map(hierarchy_item_json)
+                .collect(),
+        ),
+        "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" => {
+            let incoming = method == "callHierarchy/incomingCalls";
+            let edges = if incoming {
+                engine.incoming_calls(path, line, col)?
+            } else {
+                engine.outgoing_calls(path, line, col)?
+            };
+            serde_json::Value::Array(
+                edges
+                    .iter()
+                    .map(|edge| {
+                        let ranges: Vec<_> = edge
+                            .call_sites
+                            .iter()
+                            .map(|(l, c)| lsp_range(*l, *c, *l, *c))
+                            .collect();
+                        serde_json::json!({
+                            if incoming { "from" } else { "to" }: hierarchy_item_json(&edge.item),
+                            "fromRanges": ranges,
+                        })
+                    })
+                    .collect(),
+            )
+        }
+        "textDocument/implementation" => serde_json::Value::Array(
+            engine
+                .goto_implementation(path, line, col)?
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "uri": format!("file://{}", t.path.display()),
+                        "range": lsp_range(t.line, t.col, t.line, t.col),
+                    })
+                })
+                .collect(),
+        ),
+        other => anyhow::bail!("unsupported hierarchy method {other}"),
+    })
+}
+
 fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
     let mut changes = Vec::new();
     for mv in &outcome.moves {
@@ -1251,15 +1342,7 @@ async fn run_session_loop(
                                                  }
 
                                                  let sym_list: Vec<_> = syms.into_iter().map(|s| {
-                                                     let kind_num = match s.kind.as_str() {
-                                                         "Fn" | "Function" => 12,
-                                                         "Struct" => 23,
-                                                         "Enum" => 10,
-                                                         "Const" | "Constant" => 14,
-                                                         "Trait" => 11,
-                                                         "Module" => 2,
-                                                         _ => 13,
-                                                     };
+                                                     let kind_num = lsp_symbol_kind(&s.kind);
                                                      serde_json::json!({
                                                          "name": s.name,
                                                          "kind": kind_num,
@@ -1399,6 +1482,68 @@ async fn run_session_loop(
                                                         serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
                                                     }
                                                     Err(e) => serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } }),
+                                                };
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            });
+                                            continue;
+                                        }
+                                    }
+                                    Some(hm @ ("textDocument/prepareCallHierarchy" | "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" | "textDocument/implementation")) => {
+                                        if let Some(params) = val.get("params") {
+                                            // Call-hierarchy follow-ups carry the item; the others a text document position.
+                                            let (uri, position) = match params.get("item") {
+                                                Some(item) => (
+                                                    item.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
+                                                    item.get("selectionRange").and_then(|r| r.get("start")),
+                                                ),
+                                                None => (
+                                                    params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or(""),
+                                                    params.get("position"),
+                                                ),
+                                            };
+                                            let line = position.and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = position.and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                            let method_name = hm.to_string();
+
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+                                            tracing::info!(req = req_num, session = view.session_id, method = %method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
+
+                                            let engine_arc = Arc::clone(engine_lock);
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
+
+                                            tokio::task::spawn(async move {
+                                                let outcome = {
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    let m = method_name.clone();
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        hierarchy_query(&engine, &m, &fp_clone, line + 1, col + 1)
+                                                    })
+                                                    .await
+                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("query task failed: {e}")))
+                                                };
+                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let resp = match outcome {
+                                                    Ok(result) => {
+                                                        tracing::info!(req = req_num, session = session_id, method = %method_name, duration_ms = format!("{:.2}ms", ms), items = result.as_array().map(|a| a.len()).unwrap_or(0), in_flight = remaining, "✅ [LSP DONE]");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(req = req_num, session = session_id, method = %method_name, error = %e, "query failed");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                                                    }
                                                 };
                                                 let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
                                                 let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
