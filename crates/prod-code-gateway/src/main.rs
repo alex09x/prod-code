@@ -11,9 +11,9 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ExecChunk, ExecExit, ExecRequest, FileStamp, HandshakeResponse, PROTOCOL_VERSION,
-    PathTranslator, ProdCodeCodec, StatusResponse, SyncProbeRequest, SyncProbeResponse,
-    SyncRequest, SyncResponse, WireMessage, content_hash,
+    ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp, HandshakeResponse,
+    PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse, SyncProbeRequest,
+    SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -279,6 +279,63 @@ pub async fn apply_sync_probe(
 /// Default wall-clock limit for a remote command when the client does not set one.
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
+/// Size and content hash of every file under `root` the sync layer cares about (build output
+/// and VCS internals excluded), for detecting what a remote command changed.
+fn snapshot_tree(root: &std::path::Path) -> std::collections::HashMap<String, (u64, u64)> {
+    let mut present = Vec::new();
+    walk_files(root, root, &mut present);
+    present
+        .into_iter()
+        .filter_map(|(rel, path)| {
+            let bytes = std::fs::read(&path).ok()?;
+            Some((rel, (bytes.len() as u64, content_hash(&bytes))))
+        })
+        .collect()
+}
+
+/// Files that differ between `before` and the tree now: new/changed ones with content,
+/// removed ones as deletions. Files above 5 MiB are ignored.
+fn changed_since(
+    root: &std::path::Path,
+    before: &std::collections::HashMap<String, (u64, u64)>,
+) -> Vec<FileDelta> {
+    const MAX_PULL_FILE: u64 = 5 * 1024 * 1024;
+    let after = snapshot_tree(root);
+    let mut out = Vec::new();
+    for (rel, stamp) in &after {
+        if before.get(rel) == Some(stamp) || stamp.0 > MAX_PULL_FILE {
+            continue;
+        }
+        if let Ok(content) = std::fs::read(root.join(rel)) {
+            #[cfg(unix)]
+            let is_executable = {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::metadata(root.join(rel))
+                    .map(|m| m.permissions().mode() & 0o111 != 0)
+                    .unwrap_or(false)
+            };
+            #[cfg(not(unix))]
+            let is_executable = false;
+            out.push(FileDelta {
+                relative_path: rel.clone(),
+                content: Some(content),
+                is_executable,
+            });
+        }
+    }
+    for rel in before.keys() {
+        if !after.contains_key(rel) {
+            out.push(FileDelta {
+                relative_path: rel.clone(),
+                content: None,
+                is_executable: false,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    out
+}
+
 /// Kills the command and everything it spawned (its process group), then the child itself.
 fn kill_exec_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
@@ -329,6 +386,14 @@ pub async fn run_exec(
         return Ok(());
     };
     workspace::touch_last_used(&workspace);
+    let before = if req.pull_changes {
+        let root = workspace.clone();
+        tokio::task::spawn_blocking(move || snapshot_tree(&root))
+            .await
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
 
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
@@ -454,6 +519,22 @@ pub async fn run_exec(
         duration_ms,
         "🛠️ [EXEC] finished"
     );
+    if req.pull_changes {
+        let root = workspace.clone();
+        let files = tokio::task::spawn_blocking(move || changed_since(&root, &before))
+            .await
+            .unwrap_or_default();
+        if !files.is_empty() {
+            tracing::info!(
+                workspace = %workspace_str,
+                files = files.len(),
+                "🛠️ [EXEC] sending back files the command changed"
+            );
+            framed
+                .send(WireMessage::ExecChanges(ExecChanges { files }))
+                .await?;
+        }
+    }
     framed
         .send(WireMessage::ExecExit(ExecExit {
             exit_code,
@@ -1708,6 +1789,41 @@ async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_d
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_changed_since_reports_new_changed_and_deleted() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("target/debug")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "a").unwrap();
+        std::fs::write(root.join("src/gone.rs"), "g").unwrap();
+        std::fs::write(root.join("Cargo.lock"), "l1").unwrap();
+        let before = snapshot_tree(root);
+
+        std::fs::write(root.join("src/a.rs"), "a formatted").unwrap();
+        std::fs::write(root.join("src/new.rs"), "n").unwrap();
+        std::fs::remove_file(root.join("src/gone.rs")).unwrap();
+        std::fs::write(root.join("target/debug/junk.o"), "x").unwrap();
+
+        let changed = changed_since(root, &before);
+        let names: Vec<(&str, bool)> = changed
+            .iter()
+            .map(|f| (f.relative_path.as_str(), f.content.is_some()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("src/a.rs", true),
+                ("src/gone.rs", false),
+                ("src/new.rs", true)
+            ]
+        );
+        assert_eq!(
+            changed[0].content.as_deref(),
+            Some(b"a formatted".as_slice())
+        );
+    }
 
     #[tokio::test]
     async fn test_sync_probe_seeds_and_reconciles() {

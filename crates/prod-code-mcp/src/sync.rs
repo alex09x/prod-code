@@ -379,6 +379,57 @@ pub fn prepare_workspace_sync(root: &Path, subpath: Option<&Path>) -> Result<Syn
     })
 }
 
+/// Writes files a remote command changed into the checkout and records them in the watermark,
+/// so the next sync does not push them straight back. Returns the relative paths written or
+/// deleted.
+pub fn apply_pulled_files(root: &Path, files: &[FileDelta]) -> Result<Vec<String>> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut state = load_sync_cache(&canonical_root);
+    let mut touched = Vec::with_capacity(files.len());
+    for delta in files {
+        let rel = Path::new(&delta.relative_path);
+        if rel.is_absolute()
+            || rel
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue; // never let the server write outside the checkout
+        }
+        let target = canonical_root.join(rel);
+        match &delta.content {
+            Some(content) => {
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&target, content)?;
+                #[cfg(unix)]
+                if delta.is_executable {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755));
+                }
+                if let Ok(metadata) = target.metadata() {
+                    state.files.insert(
+                        delta.relative_path.clone(),
+                        sync_file_entry(&metadata, content),
+                    );
+                }
+            }
+            None => {
+                if target.exists() {
+                    std::fs::remove_file(&target)?;
+                }
+                state.files.remove(&delta.relative_path);
+            }
+        }
+        touched.push(delta.relative_path.clone());
+    }
+    if !touched.is_empty() {
+        save_sync_cache(&canonical_root, &state);
+    }
+    Ok(touched)
+}
+
 /// Persist the watermarks for a sync plan after its files have been accepted by the gateway.
 pub fn commit_workspace_sync(root: &Path, plan: &SyncPlan) {
     let mut state = plan.state.clone();
@@ -1335,6 +1386,49 @@ mod tests {
             RELEVANCE_VERSION
         );
         assert!(!prepare_workspace_sync(root, None).unwrap().initial);
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_apply_pulled_files_writes_and_records_watermark() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/old.rs"), "x").unwrap();
+        let files = vec![
+            FileDelta {
+                relative_path: "src/fmt.rs".to_string(),
+                content: Some(b"fn f() {}\n".to_vec()),
+                is_executable: false,
+            },
+            FileDelta {
+                relative_path: "src/old.rs".to_string(),
+                content: None,
+                is_executable: false,
+            },
+            FileDelta {
+                relative_path: "../escape.rs".to_string(),
+                content: Some(b"no".to_vec()),
+                is_executable: false,
+            },
+        ];
+        let touched = apply_pulled_files(root, &files).unwrap();
+        assert_eq!(
+            touched,
+            vec!["src/fmt.rs".to_string(), "src/old.rs".to_string()]
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/fmt.rs")).unwrap(),
+            "fn f() {}\n"
+        );
+        assert!(!root.join("src/old.rs").exists());
+        assert!(!root.join("../escape.rs").exists());
+        let state = load_sync_cache(&std::fs::canonicalize(root).unwrap());
+        assert_eq!(
+            state.files.get("src/fmt.rs").map(|e| e.hash),
+            Some(content_hash(b"fn f() {}\n"))
+        );
         clear_sync_cache(root);
     }
 

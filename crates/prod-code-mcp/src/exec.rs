@@ -1,7 +1,7 @@
 //! Remote command execution: sync the checkout, then run a command inside its server copy and
 //! stream the output back. Shared by the CLI (`prod-code exec`) and the MCP tool `code_exec`.
 
-use crate::sync::{WorkspaceIdentity, push_workspace_sync, workspace_identity};
+use crate::sync::{WorkspaceIdentity, apply_pulled_files, push_workspace_sync, workspace_identity};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ExecExit, ExecRequest, ProdCodeCodec, WireMessage};
@@ -10,16 +10,26 @@ use std::path::Path;
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
+/// Result of a remote command: its exit record plus the checkout files the command changed on
+/// the server and that were written back locally.
+#[derive(Debug, Clone)]
+pub struct RemoteOutcome {
+    pub exit: ExecExit,
+    pub pulled_files: Vec<String>,
+}
+
 /// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
-/// every chunk as it arrives. Returns the exit record once the command finishes.
+/// every chunk as it arrives. With `pull_changes`, files the command created, changed or
+/// deleted on the server are written back into the checkout and recorded in the watermark.
 pub async fn run_remote(
     remote: SocketAddr,
     root: &Path,
     command: Vec<String>,
     env: Vec<(String, String)>,
     timeout_secs: u64,
+    pull_changes: bool,
     mut on_output: impl FnMut(bool, &[u8]),
-) -> Result<ExecExit> {
+) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
     let stream = TcpStream::connect(remote)
@@ -37,9 +47,11 @@ pub async fn run_remote(
             command,
             env,
             timeout_secs,
+            pull_changes,
         }))
         .await?;
 
+    let mut pulled_files = Vec::new();
     loop {
         match framed.next().await {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -47,13 +59,16 @@ pub async fn run_remote(
                     on_output(chunk.stderr, data);
                 }
             }
+            Some(Ok(WireMessage::ExecChanges(changes))) => {
+                pulled_files.extend(apply_pulled_files(root, &changes.files)?);
+            }
             Some(Ok(WireMessage::ExecExit(exit))) => {
                 let _ = framed
                     .send(WireMessage::Disconnect {
                         reason: "exec finished".to_string(),
                     })
                     .await;
-                return Ok(exit);
+                return Ok(RemoteOutcome { exit, pulled_files });
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
             Some(Ok(other)) => anyhow::bail!("unexpected message during exec: {other:?}"),

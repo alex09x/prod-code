@@ -16,7 +16,7 @@ pub fn list_tools() -> Vec<McpTool> {
     vec![
         McpTool {
             name: "code_exec".to_string(),
-            description: "Run a build, test or lint command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first. Returns the exit code and the tail of the combined output."
+            description: "Run a build, test, lint or format command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first; files the command changes (formatters, generators, lockfiles) are written back. Returns the exit code and the tail of the combined output."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -204,15 +204,17 @@ pub async fn execute_tool(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(16 * 1024) as usize;
             let mut tail = crate::exec::TailBuffer::new(tail_bytes);
-            let exit = crate::exec::run_remote(
+            let outcome = crate::exec::run_remote(
                 remote,
                 workspace_root,
                 argv.clone(),
                 vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
                 timeout_secs,
+                true,
                 |_, data| tail.push(data),
             )
             .await?;
+            let exit = outcome.exit;
             let status = match (&exit.error, exit.timed_out, exit.exit_code) {
                 (Some(err), _, _) => format!("failed to start: {err}"),
                 (None, true, _) => "timed out".to_string(),
@@ -231,6 +233,13 @@ pub async fn execute_tool(
                     ""
                 }
             );
+            if !outcome.pulled_files.is_empty() {
+                text.push_str(&format!(
+                    "[{} file(s) changed by the command were written back: {}]\n",
+                    outcome.pulled_files.len(),
+                    outcome.pulled_files.join(", ")
+                ));
+            }
             text.push_str(&tail.text());
             Ok(if matches!(exit.exit_code, Some(0)) {
                 McpToolCallResult::text(text)

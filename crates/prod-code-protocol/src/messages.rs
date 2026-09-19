@@ -27,6 +27,8 @@ pub enum WireMessage {
     ExecChunk(ExecChunk),
     /// The command finished (or could not be started).
     ExecExit(ExecExit),
+    /// Files the command changed on the server (only with `pull_changes`).
+    ExecChanges(ExecChanges),
 }
 
 /// Supported code intelligence engine kinds.
@@ -330,6 +332,17 @@ pub struct ExecRequest {
     /// Kill the command after this many seconds; 0 means the server default.
     #[serde(default)]
     pub timeout_secs: u64,
+    /// After the command, send back files it created, changed or deleted (`ExecChanges`), so
+    /// formatters, code generators and lockfile updates land in the client's checkout.
+    #[serde(default)]
+    pub pull_changes: bool,
+}
+
+/// Files the command changed in the server workspace, sent before `ExecExit` when
+/// `ExecRequest::pull_changes` was set. Deletions carry `content: None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecChanges {
+    pub files: Vec<FileDelta>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

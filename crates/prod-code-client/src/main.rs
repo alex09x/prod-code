@@ -61,6 +61,10 @@ enum Commands {
         /// Kill the command after this many seconds (0 = server default, 1 hour).
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
+        /// Do not copy back files the command changed on the server (formatters, generators,
+        /// lockfiles are pulled back by default).
+        #[arg(long, default_value_t = false)]
+        no_pull: bool,
         /// Command and arguments (put `--` before them).
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -128,8 +132,9 @@ async fn main() -> Result<()> {
         Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
         Commands::Exec {
             timeout_secs,
+            no_pull,
             command,
-        } => run_exec(cli.remote, command, timeout_secs).await,
+        } => run_exec(cli.remote, command, timeout_secs, !no_pull).await,
         Commands::Bench {
             workspaces,
             concurrency,
@@ -953,7 +958,12 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
-async fn run_exec(remote: SocketAddr, command: Vec<String>, timeout_secs: u64) -> Result<()> {
+async fn run_exec(
+    remote: SocketAddr,
+    command: Vec<String>,
+    timeout_secs: u64,
+    pull_changes: bool,
+) -> Result<()> {
     use std::io::Write;
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or(cwd);
@@ -962,12 +972,13 @@ async fn run_exec(remote: SocketAddr, command: Vec<String>, timeout_secs: u64) -
         env_pairs.push(("CARGO_TERM_COLOR".to_string(), "always".to_string()));
     }
     let started = std::time::Instant::now();
-    let exit = prod_code_mcp::exec::run_remote(
+    let outcome = prod_code_mcp::exec::run_remote(
         remote,
         &root,
         command.clone(),
         env_pairs,
         timeout_secs,
+        pull_changes,
         |is_stderr, data| {
             if is_stderr {
                 let mut e = std::io::stderr().lock();
@@ -981,8 +992,16 @@ async fn run_exec(remote: SocketAddr, command: Vec<String>, timeout_secs: u64) -
         },
     )
     .await?;
+    let exit = outcome.exit;
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
+    }
+    if !outcome.pulled_files.is_empty() {
+        eprintln!(
+            "[prod-code exec] {} file(s) changed by the command written back: {}",
+            outcome.pulled_files.len(),
+            outcome.pulled_files.join(", ")
+        );
     }
     eprintln!(
         "[prod-code exec] {} in {:.1}s (server {:.1}s) on {}",
