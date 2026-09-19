@@ -45,7 +45,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 3;
+pub const RELEVANCE_VERSION: u32 = 4;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,7 +756,11 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             | "Pipfile"
             | "BUILD"
             | "WORKSPACE"
+            | "rustc-wrapper"
+            | "rustc_wrapper"
+            | "cargo-wrapper"
     ) || (file_name.starts_with("requirements") && file_name.ends_with(".txt"))
+        || file_name.ends_with(".sh")
     {
         return true;
     }
@@ -1623,6 +1627,10 @@ mod tests {
         assert!(!is_relevant_code_or_manifest_file("notes.txt"));
         assert!(is_relevant_code_or_manifest_file("web/yarn.lock"));
         assert!(is_relevant_code_or_manifest_file("go.sum"));
+        assert!(is_relevant_code_or_manifest_file("scripts/rustc-wrapper"));
+        assert!(is_relevant_code_or_manifest_file(
+            "scripts/collect-report.sh"
+        ));
     }
 
     #[test]
