@@ -22,14 +22,16 @@ use url::Url;
     about = "Remote Code Intelligence Client"
 )]
 struct Cli {
-    /// Remote gateway address (host:port). Defaults to PROD_CODE_REMOTE env var or 127.0.0.1:9400.
+    /// Remote gateway address(es): `host:port[,host:port...]`. With several nodes the
+    /// workspace is placed on one of them (rendezvous hashing, remembered locally, failover
+    /// to the next alive node). Defaults to PROD_CODE_REMOTE or 127.0.0.1:9400.
     #[arg(
         short,
         long,
         env = "PROD_CODE_REMOTE",
         default_value = "127.0.0.1:9400"
     )]
-    remote: SocketAddr,
+    remote: String,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -43,6 +45,8 @@ enum Commands {
     Mcp,
     /// Probe remote gateway status and latency.
     Status,
+    /// Show every configured gateway node, its status, and where this checkout is placed.
+    Cluster,
     /// Push current worktree delta to remote storage over 10G LAN.
     Sync {
         /// Optional subpath to sync (defaults to entire workspace).
@@ -169,27 +173,43 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let remotes = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
+
+    let cwd_workspace = env::current_dir()
+        .ok()
+        .map(|d| {
+            prod_code_mcp::sync::workspace_identity(&find_workspace_root(&d).unwrap_or(d)).name
+        })
+        .unwrap_or_default();
+
+    if matches!(cli.command, Some(Commands::Cluster)) {
+        return run_cluster(&remotes, &cwd_workspace).await;
+    }
+
+    let remote = prod_code_mcp::cluster::pick_node(&remotes, &cwd_workspace).await?;
+
     match cli.command.unwrap_or(Commands::Lsp) {
-        Commands::Lsp => run_lsp_bridge(cli.remote).await,
-        Commands::Status => run_status_probe(cli.remote).await,
-        Commands::Mcp => run_mcp_server(cli.remote).await,
-        Commands::Sync { path } => run_sync(cli.remote, path).await,
-        Commands::Def { file, line, col } => run_definition(cli.remote, &file, line, col).await,
-        Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
-        Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
-        Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
+        Commands::Lsp => run_lsp_bridge(remote).await,
+        Commands::Status => run_status_probe(remote).await,
+        Commands::Cluster => run_cluster(&remotes, &cwd_workspace).await,
+        Commands::Mcp => run_mcp_server(remote).await,
+        Commands::Sync { path } => run_sync(remote, path).await,
+        Commands::Def { file, line, col } => run_definition(remote, &file, line, col).await,
+        Commands::Hover { file, line, col } => run_hover(remote, &file, line, col).await,
+        Commands::Refs { file, line, col } => run_references(remote, &file, line, col).await,
+        Commands::Symbols { file } => run_symbols(remote, &file).await,
         Commands::Rename {
             file,
             line,
             col,
             new_name,
-        } => run_rename(cli.remote, &file, line, col, &new_name).await,
+        } => run_rename(remote, &file, line, col, &new_name).await,
         Commands::Assists {
             file,
             line,
             col,
             to,
-        } => run_assist(cli.remote, &file, line, col, to.as_deref(), None, None).await,
+        } => run_assist(remote, &file, line, col, to.as_deref(), None, None).await,
         Commands::Assist {
             file,
             line,
@@ -197,39 +217,28 @@ async fn main() -> Result<()> {
             id,
             to,
             subtype,
-        } => {
-            run_assist(
-                cli.remote,
-                &file,
-                line,
-                col,
-                to.as_deref(),
-                Some(&id),
-                subtype,
-            )
-            .await
-        }
+        } => run_assist(remote, &file, line, col, to.as_deref(), Some(&id), subtype).await,
         Commands::Check { timeout_secs } => {
-            run_verify(cli.remote, VerifyKind::Check, None, timeout_secs).await
+            run_verify(remote, VerifyKind::Check, None, timeout_secs).await
         }
         Commands::Lint { timeout_secs } => {
-            run_verify(cli.remote, VerifyKind::Lint, None, timeout_secs).await
+            run_verify(remote, VerifyKind::Lint, None, timeout_secs).await
         }
         Commands::Test {
             filter,
             timeout_secs,
-        } => run_verify(cli.remote, VerifyKind::Test, filter, timeout_secs).await,
+        } => run_verify(remote, VerifyKind::Test, filter, timeout_secs).await,
         Commands::Exec {
             timeout_secs,
             no_pull,
             command,
-        } => run_exec(cli.remote, command, timeout_secs, !no_pull).await,
+        } => run_exec(remote, command, timeout_secs, !no_pull).await,
         Commands::Bench {
             workspaces,
             concurrency,
             depth,
             duration_secs,
-        } => run_benchmark(cli.remote, workspaces, concurrency, depth, duration_secs).await,
+        } => run_benchmark(remote, workspaces, concurrency, depth, duration_secs).await,
         Commands::DivergentBench {
             base_repo,
             workdir,
@@ -240,7 +249,7 @@ async fn main() -> Result<()> {
             persistent,
         } => {
             run_divergent_bench(DivergentBenchConfig {
-                remote: cli.remote,
+                remote,
                 base_repo,
                 workdir,
                 workers,
@@ -1161,6 +1170,41 @@ async fn run_rename(
     );
     for path in touched {
         println!("  {path}");
+    }
+    Ok(())
+}
+
+/// Show every gateway node and the placement of the current checkout.
+async fn run_cluster(nodes: &[SocketAddr], workspace_name: &str) -> Result<()> {
+    println!("⚡ prod-code cluster ({} node(s))", nodes.len());
+    println!("────────────────────────────────────────────────────");
+    let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
+        .first()
+        .copied();
+    let remembered = prod_code_mcp::cluster::remembered_node(workspace_name);
+    for node in nodes {
+        let started = std::time::Instant::now();
+        match prod_code_mcp::cluster::node_status(*node).await {
+            Ok(status) => println!(
+                "{node:<22} UP    {:>6.2} ms  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
+                started.elapsed().as_secs_f64() * 1000.0,
+                status.uptime_seconds / 3600,
+                (status.uptime_seconds % 3600) / 60,
+                status.loaded_workspaces,
+                status.active_sessions,
+                status.memory_rss_mb().unwrap_or(0.0)
+            ),
+            Err(e) => println!("{node:<22} DOWN  {e}"),
+        }
+    }
+    println!("────────────────────────────────────────────────────");
+    println!("Workspace:           {workspace_name}");
+    if let Some(home) = home {
+        println!("Home node (hash):    {home}");
+    }
+    match remembered {
+        Some(node) => println!("Placed on:           {node}"),
+        None => println!("Placed on:           (not yet)"),
     }
     Ok(())
 }
