@@ -182,12 +182,17 @@ fn git_head(root: &Path) -> Result<String> {
 
 fn changed_paths(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, bool>> {
     let mut paths = BTreeMap::new();
-    match base {
+    // A recorded base can disappear after a rebase, amend or gc; fall back to the full tracked
+    // tree instead of failing the sync, since the watermarks still filter unchanged files.
+    let diff_from_base = match base {
         Some(base) if !base.is_empty() => {
-            let output = git_output(root, ["diff", "--name-status", "-z", base])?;
-            parse_name_status(&output, &mut paths);
+            git_output(root, ["diff", "--name-status", "-z", base]).ok()
         }
-        _ => {
+        _ => None,
+    };
+    match diff_from_base {
+        Some(output) => parse_name_status(&output, &mut paths),
+        None => {
             let output = git_output(root, ["ls-files", "-z"])?;
             for path in output
                 .split(|byte| *byte == 0)
@@ -891,6 +896,60 @@ mod tests {
             assert!(status.success());
         }
 
+        let changed = prepare_workspace_sync(root, None).unwrap();
+        assert_eq!(changed.files.len(), 1);
+        assert_eq!(changed.files[0].relative_path, "src/lib.rs");
+        clear_sync_cache(root);
+    }
+
+    #[test]
+    fn test_unreachable_base_commit_falls_back_to_full_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+
+        let init = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap();
+        if !init.success() {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            let configured = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(configured.success());
+        }
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 1 }").unwrap();
+        for args in [&["add", "src"][..], &["commit", "-qm", "initial"][..]] {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        let initial = prepare_workspace_sync(root, None).unwrap();
+        commit_workspace_sync(root, &initial);
+
+        // Simulate history rewritten underneath the persisted watermark.
+        let canonical = std::fs::canonicalize(root).unwrap();
+        let mut state = load_sync_cache(&canonical);
+        state.base_commit_sha = Some("0123456789abcdef0123456789abcdef01234567".to_string());
+        save_sync_cache(&canonical, &state);
+
+        // Unchanged file: fallback scans the full tree but the watermark still filters it.
+        let unchanged = prepare_workspace_sync(root, None).unwrap();
+        assert!(unchanged.files.is_empty());
+
+        // Changed file: fallback still finds it.
+        std::fs::write(root.join("src/lib.rs"), "pub fn version() -> u8 { 3 }").unwrap();
         let changed = prepare_workspace_sync(root, None).unwrap();
         assert_eq!(changed.files.len(), 1);
         assert_eq!(changed.files[0].relative_path, "src/lib.rs");
