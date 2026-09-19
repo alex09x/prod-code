@@ -109,6 +109,9 @@ This document outlines the architectural milestones and engineering phases for b
 - [x] **4.2. Worktree Ingestion & Fast Sync**
   - Command: `prod-code sync` — push delta / worktree state to the remote server over 10G in < 200 ms.
   - In-memory temporary overlays and Salsa direct file mutation for live buffer edits.
+  - [x] Isolated server workspace and analysis database per git worktree (`<repo>--wt-<hash>`); first contact sends a size/hash manifest probe, the gateway seeds the copy from the origin repository and asks only for missing files (2026-09-19).
+  - [ ] Binary-safe file transfer: `FileDelta.content` is a JSON byte array today (4x inflation, ~5-8 s for 10 MB); switch to base64 or a binary frame to meet the < 200 ms target.
+  - [ ] Persistent MCP session: reuse one gateway session per agent process instead of connect + git status + handshake per query.
 
 ---
 
@@ -127,7 +130,7 @@ This document outlines the architectural milestones and engineering phases for b
 - [ ] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing**
   - Background gossip heartbeat between daemon nodes reporting CPU load, available RAM, active engine count, and in-flight builds.
   - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. 128-core `rama` with 250 GB RAM).
-  - Idle LRU eviction: workspaces untouched for > 30 minutes are gracefully serialized/quiesced to free RAM for active agent fleets.
+  - [x] Idle LRU eviction: workspaces untouched for > 30 minutes are unloaded (`--idle-evict-secs`) and stale `<repo>--wt-*` copies pruned after 7 days (`--prune-worktree-days`); done 2026-09-19.
 - [ ] **5.4. Isolated Proc-Macro Worker Farm**
   - Offload compilation and execution of heavy Rust procedural macros into a sandboxed worker pool.
 - [ ] **5.5. Agent Fleet Stress Verification**
@@ -191,5 +194,62 @@ This document outlines the architectural milestones and engineering phases for b
     - `code_check(path)`: returns structured compiler errors and warnings directly into agent context.
     - `code_test(path, filter)`: runs targeted tests and returns failures with panic backtraces and assertion diffs.
     - Instant verification feedback in 1–3 seconds per edit without touching local machine CPU or battery.
+
+---
+
+## Phase 7: Distributed Semantic Refactoring & Agent Intelligence Engine
+
+**Objective**: Elevate `prod-code` from a code-reading intelligence layer into an active, AST-driven semantic transformation and refactoring engine, combining local file ownership with remote 128-core AST graph reasoning.
+
+### The Problem: AI Code Editing Hallucinations & Inefficiencies
+- Current AI coding agents rely on brittle string replacement (`regex`, `replace_file_content`) or rewriting whole files from memory. This routinely introduces syntax errors, renames unintended identifiers in comments/strings, breaks trait contracts, misses cross-file references in large mono-repos, and wastes hundreds of thousands of LLM tokens on trial-and-error edits.
+- Standard RAG approaches feed entire multi-thousand-line files into model context windows, drowning the LLM in boilerplate and causing "lost in the middle" attention degradation.
+
+### Engineering Milestones
+
+- [ ] **7.1. AST-Level Atomic Refactoring Protocol (`WorkspaceEdit`)**
+  - Remote language servers (`rust-analyzer`, `clangd`, `gopls`, `vtsls`, `basedpyright`) compute mathematically sound, type-safe code transformations and return structured `WorkspaceEdit` payloads:
+    - `refactor.rename(path, line, col, new_name)`: Exact semantic symbol renaming across hundreds of files in < 20 ms without regex hallucinations.
+    - `refactor.extract_function(path, range, fn_name)`: Remote compiler analyzes variable captures, borrow checker constraints, and lifetimes, returning the extracted function signature and replacement call site.
+    - `refactor.change_signature(path, symbol, new_params)`: Automatic type-safe propagation of parameter additions, reorderings, or default values across all call sites in the repository.
+    - `refactor.organize_imports(path)`: Server-driven deterministic import sorting, alias resolution, and dead import removal.
+  - **Client-Side Atomic Transactional Applicator**:
+    - Applies `TextEdit` batches directly to local files with microsecond latency.
+    - Automatic snapshot & atomic rollback if any disk write fails.
+
+- [ ] **7.2. Automated Compiler "Fix-It" & CodeAction Engine (Zero-Prompt Repair)**
+  - Compilers and linters (`rustc`, `clippy`, `clang-tidy`, `gopls`, `ruff`) natively produce machine-applicable `CodeAction` / `Fix-It` recommendations.
+  - Wire protocol endpoint: `code_quickfix(file, diagnostic_id)` returning pre-computed compiler diffs.
+  - AI agents can inspect and apply exact compiler-suggested fixes in one step (e.g. missing trait imports, mutable borrow corrections, lifetime annotations) with zero LLM token consumption or hallucination loops.
+
+- [ ] **7.3. Program Slicing & Context Tree-Shaking (10x Token Reduction)**
+  - Program Dependency Graph (PDG) and data-flow analysis on remote server:
+    - Given a target function or bug location, slice away all unreferenced structs, unrelated methods, and irrelevant imports.
+    - `code_slice(path, symbol)`: extracts a minimal, self-contained semantic slice (e.g. 60 lines instead of 4,000 lines) representing 100% of data and control flow.
+    - Reduces LLM context consumption by 85–95%, drastically lowering inference costs and model reasoning errors.
+
+- [ ] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)**
+  - When an AI agent explores multiple competing architectural solutions or bug-fix hypotheses:
+    - Server creates lightweight in-memory VFS overlays (`shadow-branch-1`, `shadow-branch-2`, `shadow-branch-3`) in RAM (`/dev/shm`).
+    - Remote execution engine (Phase 6) runs full test suites against all hypotheses simultaneously across 128 server cores.
+    - The server returns only the winning hypothesis's unified diff back to the client.
+    - Local Mac disk and Git history remain clean of failed experimental churn.
+
+- [ ] **7.5. Call Graph & Type Hierarchy Navigation**
+  - Graph-level codebase exploration endpoints:
+    - `code_callers(path, line, col)`: incoming call hierarchy across the entire workspace/monorepo in < 5 ms.
+    - `code_callees(path, line, col)`: outgoing call graph tree.
+    - `code_implementations(path, line, col)`: all structs/classes implementing a trait, interface, or abstract class.
+    - `code_dead_code()`: whole-program graph reachability analysis identifying unused functions and types post-refactoring.
+
+- [ ] **7.6. Cross-Language Full-Stack Schema Refactoring**
+  - Unified multi-language schema evolution across polyglot repositories:
+    - Changing a backend schema (Protobuf, OpenAPI, SQL, or Rust/Go data models) automatically coordinates with frontend TypeScript interfaces, API clients, and UI components.
+    - Emits an atomic multi-repository `WorkspaceEdit` synchronizing backend and frontend simultaneously.
+
+- [ ] **7.7. Pre-Validation On-the-Fly (Instant Hallucination Interception)**
+  - Streamed syntax and type check verification during agent code generation.
+  - Intercepts invalid method invocations, incorrect argument types, or borrow-checker errors before the agent even finishes generating its turn, providing immediate feedback and eliminating multi-turn debugging cycles.
+
 
 
