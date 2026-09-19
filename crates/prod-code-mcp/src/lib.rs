@@ -2,6 +2,7 @@
 
 pub mod exec;
 pub mod protocol;
+pub mod refactor;
 pub mod sync;
 pub mod tools;
 pub mod watch;

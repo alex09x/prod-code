@@ -276,6 +276,41 @@ pub async fn apply_sync_probe(
     }
 }
 
+/// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: every
+/// rewritten file becomes one whole-file text edit, file moves become rename operations and
+/// new files become create operations followed by their content.
+fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
+    let mut changes = Vec::new();
+    for mv in &outcome.moves {
+        changes.push(serde_json::json!({
+            "kind": "rename",
+            "oldUri": format!("file://{}", mv.from.display()),
+            "newUri": format!("file://{}", mv.to.display()),
+            "options": { "overwrite": false }
+        }));
+    }
+    for created in &outcome.created {
+        let uri = format!("file://{}", created.path.display());
+        changes.push(
+            serde_json::json!({ "kind": "create", "uri": uri, "options": { "overwrite": false } }),
+        );
+        changes.push(serde_json::json!({
+            "textDocument": { "uri": uri, "version": null },
+            "edits": [ { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "newText": created.new_text } ]
+        }));
+    }
+    for file in &outcome.files {
+        changes.push(serde_json::json!({
+            "textDocument": { "uri": format!("file://{}", file.path.display()), "version": null },
+            "edits": [ {
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": file.old_line_count, "character": 0 } },
+                "newText": file.new_text
+            } ]
+        }));
+    }
+    serde_json::json!({ "documentChanges": changes })
+}
+
 /// Default wall-clock limit for a remote command when the client does not set one.
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
@@ -1243,6 +1278,80 @@ async fn run_session_loop(
                                              });
                                              continue;
                                          }
+                                    }
+                                    Some("textDocument/rename") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let new_name = params.get("newName").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "textDocument/rename",
+                                                file = %file_path.display(),
+                                                pos = format!("{}:{}", line + 1, col + 1),
+                                                new_name = %new_name,
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            let engine_arc = Arc::clone(engine_lock);
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
+
+                                            tokio::task::spawn(async move {
+                                                let outcome = {
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.rename(&fp_clone, line + 1, col + 1, &new_name)
+                                                    })
+                                                    .await
+                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("rename task failed: {e}")))
+                                                };
+                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let resp = match outcome {
+                                                    Ok(Ok(outcome)) => {
+                                                        tracing::info!(
+                                                            req = req_num,
+                                                            session = session_id,
+                                                            method = "textDocument/rename",
+                                                            duration_ms = format!("{:.2}ms", ms),
+                                                            files = outcome.files.len(),
+                                                            edits = outcome.total_edits(),
+                                                            moves = outcome.moves.len(),
+                                                            in_flight = remaining,
+                                                            "✅ [LSP DONE]"
+                                                        );
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
+                                                    }
+                                                    Ok(Err(refused)) => {
+                                                        tracing::info!(req = req_num, session = session_id, method = "textDocument/rename", reason = %refused, "🚫 [LSP REFUSED]");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(req = req_num, session = session_id, error = %e, "rename failed");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                                                    }
+                                                };
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            });
+                                            continue;
+                                        }
                                     }
                                     Some("textDocument/didOpen") => {
                                         if let Some(params) = val.get("params") {

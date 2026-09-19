@@ -39,6 +39,21 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_rename".to_string(),
+            description: "Semantic rename of the symbol at a 1-based line/column (type, function, field, variable, module) across the whole workspace, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "character": { "type": "integer", "description": "1-based column/character number" },
+                    "new_name": { "type": "string", "description": "New identifier" }
+                },
+                "required": ["path", "line", "character", "new_name"]
+            }),
+        },
+        McpTool {
             name: "code_definition".to_string(),
             description: "Find symbol definition (function, struct, type, variable, module) at specified file and 1-based line/column position."
                 .to_string(),
@@ -187,6 +202,57 @@ pub async fn execute_tool(
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     match tool_name {
+        "code_rename" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument")? as u32;
+            let character = args
+                .get("character")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'character' argument")? as u32;
+            let new_name = args
+                .get("new_name")
+                .and_then(|v| v.as_str())
+                .context("Missing 'new_name' argument")?
+                .to_string();
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let file_uri = Url::from_file_path(&file_path)
+                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+                .to_string();
+            let params = serde_json::json!({
+                "textDocument": { "uri": file_uri },
+                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+                "newName": new_name
+            });
+            let edit = match execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "textDocument/rename",
+                params,
+            )
+            .await
+            {
+                Ok(edit) => edit,
+                Err(e) => return Ok(McpToolCallResult::error(format!("rename refused: {e:#}"))),
+            };
+            if edit.is_null() {
+                return Ok(McpToolCallResult::error(
+                    "rename produced no edits".to_string(),
+                ));
+            }
+            let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+            Ok(McpToolCallResult::text(format!(
+                "renamed to `{new_name}`; {} path(s) updated in the checkout:\n{}",
+                touched.len(),
+                touched.join("\n")
+            )))
+        }
         "code_exec" => {
             let argv: Vec<String> = args
                 .get("argv")
@@ -831,6 +897,13 @@ async fn execute_lsp_query(
                             reason: "query finished".to_string(),
                         })
                         .await;
+                    if let Some(err) = val.get("error") {
+                        let message = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown error");
+                        anyhow::bail!("{method} failed: {message}");
+                    }
                     return Ok(val
                         .get("result")
                         .cloned()

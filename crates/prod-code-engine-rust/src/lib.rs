@@ -3,14 +3,17 @@
 use anyhow::{Context, Result};
 use ra_ap_ide::{
     AnalysisHost, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
-    GotoDefinitionConfig, HoverConfig, HoverDocFormat, RaFixtureConfig, TextRange, TextSize,
+    GotoDefinitionConfig, HoverConfig, HoverDocFormat, RaFixtureConfig, RenameConfig, TextRange,
+    TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
+use ra_ap_ide_db::source_change::FileSystemEdit;
 use ra_ap_load_cargo::{
     LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
 };
 use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
+use ra_ap_vfs::AnchoredPathBuf;
 use ra_ap_vfs::{Vfs, VfsPath};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -45,6 +48,38 @@ pub struct SymbolTarget {
     pub kind: String,
     pub line: u32,
     pub detail: Option<String>,
+}
+
+/// A file rewritten by a refactoring: its full new content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RewrittenFile {
+    pub path: PathBuf,
+    pub new_text: String,
+    /// Number of individual text edits folded into `new_text`.
+    pub edits: usize,
+    /// Line count of the previous content (for whole-file replacement ranges).
+    pub old_line_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileMove {
+    pub from: PathBuf,
+    pub to: PathBuf,
+}
+
+/// Everything a refactoring changes: rewritten files, new files, and moves/renames of files
+/// or directories (a module rename renames its file).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RefactorOutcome {
+    pub files: Vec<RewrittenFile>,
+    pub created: Vec<RewrittenFile>,
+    pub moves: Vec<FileMove>,
+}
+
+impl RefactorOutcome {
+    pub fn total_edits(&self) -> usize {
+        self.files.iter().map(|f| f.edits).sum()
+    }
 }
 
 /// Canonical path normalizer for VFS keys: removes `.` and `..` lexically, resolves absolute path.
@@ -131,6 +166,88 @@ impl RustEngineSnapshot {
 
         let res = self.analysis.hover(&config, file_range)?;
         Ok(res.map(|h| h.info.markup.to_string()))
+    }
+
+    /// Renames the symbol at 1-based (line, col) to `new_name` across the workspace.
+    /// `Ok(Err(reason))` means rust-analyzer refused (no symbol there, invalid name, conflict).
+    pub fn rename(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        new_name: &str,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        let file_id = self
+            .file_id_for_path(path)
+            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let text = self.analysis.file_text(file_id)?;
+        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let position = FilePosition { file_id, offset };
+        let config = RenameConfig {
+            show_conflicts: true,
+            prefer_no_std: false,
+            prefer_prelude: true,
+            prefer_absolute: false,
+        };
+        let change = match self.analysis.rename(position, new_name, &config)? {
+            Ok(change) => change,
+            Err(refused) => return Ok(Err(refused.to_string())),
+        };
+
+        let mut outcome = RefactorOutcome::default();
+        for (edited_id, (edit, _snippet)) in change.source_file_edits.iter() {
+            let Some(edited_path) = self.path_for_file_id(*edited_id) else {
+                continue;
+            };
+            let old = self.analysis.file_text(*edited_id)?;
+            let mut new_text = old.to_string();
+            let edits = edit.iter().count();
+            edit.apply(&mut new_text);
+            outcome.files.push(RewrittenFile {
+                path: edited_path,
+                new_text,
+                edits,
+                old_line_count: old.lines().count() as u32,
+            });
+        }
+        for fs_edit in &change.file_system_edits {
+            match fs_edit {
+                FileSystemEdit::MoveFile { src, dst } => {
+                    if let (Some(from), Some(to)) =
+                        (self.path_for_file_id(*src), self.anchored_path(dst))
+                    {
+                        outcome.moves.push(FileMove { from, to });
+                    }
+                }
+                FileSystemEdit::MoveDir { src, dst, .. } => {
+                    if let (Some(from), Some(to)) =
+                        (self.anchored_path(src), self.anchored_path(dst))
+                    {
+                        outcome.moves.push(FileMove { from, to });
+                    }
+                }
+                FileSystemEdit::CreateFile {
+                    dst,
+                    initial_contents,
+                } => {
+                    if let Some(path) = self.anchored_path(dst) {
+                        outcome.created.push(RewrittenFile {
+                            path,
+                            new_text: initial_contents.clone(),
+                            edits: 1,
+                            old_line_count: 0,
+                        });
+                    }
+                }
+            }
+        }
+        outcome.files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(Ok(outcome))
+    }
+
+    fn anchored_path(&self, anchored: &AnchoredPathBuf) -> Option<PathBuf> {
+        let anchor = self.path_for_file_id(anchored.anchor)?;
+        Some(anchor.parent()?.join(&anchored.path))
     }
 
     /// Jump to symbol definition from (line, col).
@@ -567,6 +684,17 @@ impl RustEngine {
         self.snapshot().find_all_refs(path, line, col)
     }
 
+    /// Rename the symbol at (line, col); see [`RustEngineSnapshot::rename`].
+    pub fn rename(
+        &self,
+        path: &Path,
+        line: u32,
+        col: u32,
+        new_name: &str,
+    ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        self.snapshot().rename(path, line, col, new_name)
+    }
+
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
         self.snapshot().document_symbols(path)
@@ -845,6 +973,37 @@ impl PathTranslator {
         engine.activate_session(7).unwrap();
         let again = engine.document_symbols(&scratch).unwrap();
         assert!(again.iter().any(|s| s.name == "scratch_only"));
+    }
+
+    #[test]
+    fn test_rename_rewrites_definition_and_uses() {
+        let (temp, lib_path) = create_test_fixture();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        // `pub struct PathTranslator {` is line 3; the name starts at column 12.
+        let outcome = engine
+            .rename(&lib_path, 3, 12, "PathMapper")
+            .expect("rename query")
+            .expect("rename accepted");
+        assert_eq!(outcome.files.len(), 1);
+        let file = &outcome.files[0];
+        assert!(
+            file.new_text.contains("pub struct PathMapper {"),
+            "{}",
+            file.new_text
+        );
+        assert!(
+            file.new_text.contains("impl PathMapper {"),
+            "{}",
+            file.new_text
+        );
+        assert!(!file.new_text.contains("PathTranslator"));
+        assert_eq!(file.edits, 2);
+        assert!(file.old_line_count >= 10);
+        assert!(outcome.moves.is_empty());
+
+        // Not a symbol: rust-analyzer refuses instead of the engine erroring.
+        let refused = engine.rename(&lib_path, 1, 1, "x").expect("rename query");
+        assert!(refused.is_err());
     }
 
     #[test]

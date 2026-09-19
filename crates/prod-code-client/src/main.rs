@@ -55,6 +55,14 @@ enum Commands {
     Refs { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// Rename the symbol at 1-based <line> <col> across the workspace and apply the edits
+    /// locally: prod-code rename <file> <line> <col> <new_name>
+    Rename {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+        new_name: String,
+    },
     /// Run a build/test/lint command on the remote gateway inside this checkout's server copy:
     /// prod-code exec -- cargo test -p my-crate
     Exec {
@@ -130,6 +138,12 @@ async fn main() -> Result<()> {
         Commands::Hover { file, line, col } => run_hover(cli.remote, &file, line, col).await,
         Commands::Refs { file, line, col } => run_references(cli.remote, &file, line, col).await,
         Commands::Symbols { file } => run_symbols(cli.remote, &file).await,
+        Commands::Rename {
+            file,
+            line,
+            col,
+            new_name,
+        } => run_rename(cli.remote, &file, line, col, &new_name).await,
         Commands::Exec {
             timeout_secs,
             no_pull,
@@ -503,6 +517,13 @@ async fn execute_lsp_query(
                             reason: "query finished".to_string(),
                         })
                         .await;
+                    if let Some(err) = val.get("error") {
+                        let message = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown error");
+                        anyhow::bail!("{method} failed: {message}");
+                    }
                     return Ok(val
                         .get("result")
                         .cloned()
@@ -955,6 +976,42 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
         }
     }
     None
+}
+
+/// Rename a symbol through the remote analyzer and apply the resulting edits to the checkout.
+async fn run_rename(
+    remote: SocketAddr,
+    file: &Path,
+    line: u32,
+    col: u32,
+    new_name: &str,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        "newName": new_name
+    });
+    let started = std::time::Instant::now();
+    let edit = execute_lsp_query(remote, file, "textDocument/rename", params).await?;
+    if edit.is_null() {
+        anyhow::bail!("rename produced no edits");
+    }
+    let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
+    println!(
+        "renamed to `{new_name}` in {:.2}s; {} path(s) updated:",
+        started.elapsed().as_secs_f64(),
+        touched.len()
+    );
+    for path in touched {
+        println!("  {path}");
+    }
+    Ok(())
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
