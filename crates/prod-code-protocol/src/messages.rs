@@ -39,6 +39,8 @@ pub enum EngineKind {
     Go,
     Python,
     TypeScript,
+    Cpp,
+    Swift,
     Generic,
 }
 
@@ -49,6 +51,8 @@ impl EngineKind {
             EngineKind::Go => "go",
             EngineKind::Python => "python",
             EngineKind::TypeScript => "typescript",
+            EngineKind::Cpp => "cpp",
+            EngineKind::Swift => "swift",
             EngineKind::Generic => "generic",
         }
     }
@@ -68,6 +72,8 @@ impl std::str::FromStr for EngineKind {
             "go" | "golang" => EngineKind::Go,
             "python" | "py" => EngineKind::Python,
             "typescript" | "ts" | "javascript" | "js" => EngineKind::TypeScript,
+            "cpp" | "c++" | "c" | "cxx" | "clangd" => EngineKind::Cpp,
+            "swift" => EngineKind::Swift,
             _ => EngineKind::Generic,
         })
     }

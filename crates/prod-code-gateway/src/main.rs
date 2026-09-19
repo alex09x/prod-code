@@ -89,6 +89,10 @@ impl ServerState {
             detected_engines: vec![
                 "rust (ra_ap_ide)".to_string(),
                 "go (gopls)".to_string(),
+                "cpp (clangd)".to_string(),
+                "swift (sourcekit-lsp)".to_string(),
+                "python (basedpyright)".to_string(),
+                "typescript (typescript-language-server)".to_string(),
                 "generic-lsp".to_string(),
             ],
             memory_rss_bytes: memory::get_process_rss_bytes(),
@@ -1989,7 +1993,7 @@ fn prefer_rustup_toolchain() {
         return;
     };
     let home = PathBuf::from(home);
-    let preferred: Vec<PathBuf> = [".cargo/bin", "go/bin"]
+    let preferred: Vec<PathBuf> = [".cargo/bin", "go/bin", ".local/bin", ".npm-global/bin"]
         .iter()
         .map(|rel| home.join(rel))
         .filter(|dir| dir.is_dir())

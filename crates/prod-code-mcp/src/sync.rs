@@ -61,10 +61,42 @@ pub struct WorkspaceIdentity {
 /// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
 /// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
 pub fn expected_engine(root: &Path) -> Option<&'static str> {
-    if root.join("Cargo.toml").exists() {
+    let has = |name: &str| root.join(name).exists();
+    let has_xcode = std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let n = e.file_name();
+                let n = n.to_string_lossy();
+                n.ends_with(".xcodeproj") || n.ends_with(".xcworkspace")
+            })
+        })
+        .unwrap_or(false);
+    if has("Cargo.toml") {
         Some("rust")
-    } else if root.join("go.mod").exists() || root.join("go.work").exists() {
+    } else if has("go.mod") || has("go.work") {
         Some("go")
+    } else if has("Package.swift") || has_xcode {
+        Some("swift")
+    } else if has("compile_commands.json")
+        || has("CMakeLists.txt")
+        || has("meson.build")
+        || has(".clangd")
+    {
+        Some("cpp")
+    } else if has("pyproject.toml")
+        || has("requirements.txt")
+        || has("setup.py")
+        || has("setup.cfg")
+        || has("Pipfile")
+    {
+        Some("python")
+    } else if has("tsconfig.json")
+        || has("package.json")
+        || has("jsconfig.json")
+        || has("deno.json")
+        || has("deno.jsonc")
+    {
+        Some("typescript")
     } else {
         None
     }
@@ -1578,6 +1610,14 @@ mod tests {
     fn test_expected_engine_follows_manifest() {
         let temp = tempfile::tempdir().unwrap();
         assert_eq!(expected_engine(temp.path()), None);
+        std::fs::write(temp.path().join("tsconfig.json"), "{}").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("typescript"));
+        std::fs::write(temp.path().join("requirements.txt"), "").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("python"));
+        std::fs::write(temp.path().join("CMakeLists.txt"), "").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("cpp"));
+        std::fs::write(temp.path().join("Package.swift"), "").unwrap();
+        assert_eq!(expected_engine(temp.path()), Some("swift"));
         std::fs::write(temp.path().join("go.mod"), "module x\n").unwrap();
         assert_eq!(expected_engine(temp.path()), Some("go"));
         std::fs::write(temp.path().join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();

@@ -32,7 +32,12 @@ pub struct GenericLspConfig {
 impl GenericLspConfig {
     /// Create a standard configuration for Python language servers.
     pub fn for_python() -> Self {
-        let (cmd, args) = if which_bin("pyright-langserver").is_ok() {
+        let (cmd, args) = if which_bin("basedpyright-langserver").is_ok() {
+            (
+                "basedpyright-langserver".to_string(),
+                vec!["--stdio".to_string()],
+            )
+        } else if which_bin("pyright-langserver").is_ok() {
             (
                 "pyright-langserver".to_string(),
                 vec!["--stdio".to_string()],
@@ -43,6 +48,42 @@ impl GenericLspConfig {
             ("pylsp".to_string(), vec![])
         };
 
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            idle_timeout: Some(Duration::from_secs(600)),
+        }
+    }
+
+    /// Create a configuration for C/C++ (clangd). A `compile_commands.json` at the workspace
+    /// root or under `build/` gives clangd the real flags.
+    pub fn for_cpp() -> Self {
+        Self {
+            command: "clangd".to_string(),
+            args: vec![
+                "--background-index".to_string(),
+                "--header-insertion=never".to_string(),
+                "--log=error".to_string(),
+                "--compile-commands-dir=build".to_string(),
+            ],
+            env: HashMap::new(),
+            working_dir: None,
+            idle_timeout: Some(Duration::from_secs(600)),
+        }
+    }
+
+    /// Create a configuration for Swift (sourcekit-lsp). On macOS the toolchain's server is
+    /// reached through `xcrun` when it is not on PATH.
+    pub fn for_swift() -> Self {
+        let (cmd, args) = if which_bin("sourcekit-lsp").is_ok() {
+            ("sourcekit-lsp".to_string(), vec![])
+        } else if cfg!(target_os = "macos") {
+            ("xcrun".to_string(), vec!["sourcekit-lsp".to_string()])
+        } else {
+            ("sourcekit-lsp".to_string(), vec![])
+        };
         Self {
             command: cmd,
             args,

@@ -312,6 +312,46 @@ impl WorkspaceManager {
                     }
                 }
             }
+            "cpp" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_cpp(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (C/C++ clangd) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn clangd; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "swift" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_swift(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Swift sourcekit-lsp) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn sourcekit-lsp; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
             "typescript" => {
                 match prod_code_engine_generic::GenericLspEngine::spawn(
                     workspace_root,

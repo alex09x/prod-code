@@ -17,6 +17,13 @@ const PYTHON_MARKERS: &[&str] = &[
     "setup.cfg",
     "Pipfile",
 ];
+const CPP_MARKERS: &[&str] = &[
+    "compile_commands.json",
+    "CMakeLists.txt",
+    "meson.build",
+    ".clangd",
+];
+const SWIFT_MARKERS: &[&str] = &["Package.swift"];
 const TYPESCRIPT_MARKERS: &[&str] = &[
     "tsconfig.json",
     "package.json",
@@ -24,6 +31,22 @@ const TYPESCRIPT_MARKERS: &[&str] = &[
     "deno.json",
     "deno.jsonc",
 ];
+
+/// A Swift package manifest or an Xcode project/workspace bundle at the root.
+pub fn has_swift_project(root: &Path) -> bool {
+    if SWIFT_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".xcodeproj") || name.ends_with(".xcworkspace")
+            })
+        })
+        .unwrap_or(false)
+}
 
 /// Detect the primary engine kind for the specified workspace path.
 ///
@@ -42,6 +65,14 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     for marker in GO_MARKERS {
         if root.join(marker).exists() {
             return EngineKind::Go;
+        }
+    }
+    if has_swift_project(root) {
+        return EngineKind::Swift;
+    }
+    for marker in CPP_MARKERS {
+        if root.join(marker).exists() {
+            return EngineKind::Cpp;
         }
     }
     for marker in PYTHON_MARKERS {
@@ -73,6 +104,12 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     if TYPESCRIPT_MARKERS.iter().any(|m| root.join(m).exists()) {
         engines.push(EngineKind::TypeScript);
     }
+    if CPP_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Cpp);
+    }
+    if has_swift_project(root) {
+        engines.push(EngineKind::Swift);
+    }
 
     if engines.is_empty() {
         engines.push(EngineKind::Generic);
@@ -93,6 +130,33 @@ pub fn resolve_engine(root: &Path, preferred: Option<&str>) -> EngineKind {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn test_detect_cpp_and_swift_workspaces() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("CMakeLists.txt"), "project(x)").unwrap();
+        assert_eq!(detect_engine(dir.path()), EngineKind::Cpp);
+        std::fs::write(
+            dir.path().join("Package.swift"),
+            "// swift-tools-version:5.9",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_engine(dir.path()),
+            EngineKind::Swift,
+            "Swift outranks C++"
+        );
+        let xc = tempdir().unwrap();
+        std::fs::create_dir_all(xc.path().join("App.xcodeproj")).unwrap();
+        assert_eq!(detect_engine(xc.path()), EngineKind::Swift);
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+        assert_eq!(
+            detect_engine(dir.path()),
+            EngineKind::Rust,
+            "Rust outranks Swift"
+        );
+        assert!(detect_all_engines(dir.path()).contains(&EngineKind::Cpp));
+    }
 
     #[test]
     fn test_detect_rust_workspace() {

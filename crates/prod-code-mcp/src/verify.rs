@@ -194,6 +194,16 @@ pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> R
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
         ("go", VerifyKind::Lint) => vec!["go", "vet", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
+        ("typescript", VerifyKind::Check) => vec!["npx", "tsc", "--noEmit", "--pretty", "false"],
+        ("typescript", VerifyKind::Lint) => vec!["npx", "eslint", ".", "-f", "unix"],
+        ("typescript", VerifyKind::Test) => vec!["npm", "test", "--silent", "--"],
+        ("python", VerifyKind::Check) => vec!["basedpyright", "--outputjson"],
+        ("python", VerifyKind::Lint) => vec!["ruff", "check", ".", "--output-format", "concise"],
+        ("python", VerifyKind::Test) => vec!["python3", "-m", "pytest", "-q", "-rf"],
+        ("cpp", VerifyKind::Check) => vec!["cmake", "--build", "build"],
+        ("cpp", VerifyKind::Test) => vec!["ctest", "--test-dir", "build", "--output-on-failure"],
+        ("swift", VerifyKind::Check) => vec!["swift", "build"],
+        ("swift", VerifyKind::Test) => vec!["swift", "test"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -209,6 +219,18 @@ pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> R
             ("rust", VerifyKind::Test) => cmd.push(filter.to_string()),
             ("go", VerifyKind::Test) => {
                 cmd.push("-run".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("python", VerifyKind::Test) => {
+                cmd.push("-k".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("cpp", VerifyKind::Test) => {
+                cmd.push("-R".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("swift", VerifyKind::Test) => {
+                cmd.push("--filter".to_string());
                 cmd.push(filter.to_string());
             }
             _ => {}
@@ -370,6 +392,139 @@ pub fn parse_cargo_test_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
+/// Parses `path:line:col: (error|warning|note): message` lines as emitted by clang, gcc,
+/// cmake builds, ruff (`--output-format concise`) and eslint (`-f unix`).
+pub fn parse_colon_diagnostics(text: &str) -> Vec<Diagnostic> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let mut parts = line.splitn(4, ':');
+            let file = parts.next()?.trim();
+            let ln = parts.next()?.trim().parse::<u64>().ok()?;
+            let col_part = parts.next()?.trim();
+            let rest = parts.next()?.trim();
+            if file.is_empty() || file.contains(' ') {
+                return None;
+            }
+            let (col, message) = match col_part.parse::<u64>() {
+                Ok(col) => (Some(col), rest.to_string()),
+                Err(_) => (None, format!("{col_part}: {rest}")),
+            };
+            let (level, message) = if let Some(m) = message.strip_prefix("error:") {
+                ("error", m.trim().to_string())
+            } else if let Some(m) = message.strip_prefix("warning:") {
+                ("warning", m.trim().to_string())
+            } else if let Some(m) = message.strip_prefix("fatal error:") {
+                ("error", m.trim().to_string())
+            } else if message.starts_with("note:") {
+                return None;
+            } else {
+                ("error", message)
+            };
+            Some(Diagnostic {
+                level: level.to_string(),
+                code: None,
+                message,
+                file: Some(file.to_string()),
+                line: Some(ln),
+                column: col,
+            })
+        })
+        .collect()
+}
+
+/// Parses `tsc --pretty false` lines: `src/a.ts(12,5): error TS2322: message`.
+pub fn parse_tsc_text(text: &str) -> Vec<Diagnostic> {
+    text.lines()
+        .filter_map(|line| {
+            let (loc, rest) = line.split_once("): ")?;
+            let (file, pos) = loc.rsplit_once('(')?;
+            let (ln, col) = pos.split_once(',')?;
+            let (level, rest) = rest.split_once(' ')?;
+            let (code, message) = rest.split_once(": ")?;
+            Some(Diagnostic {
+                level: level.to_string(),
+                code: Some(code.to_string()),
+                message: message.to_string(),
+                file: Some(file.trim().to_string()),
+                line: ln.parse().ok(),
+                column: col.parse().ok(),
+            })
+        })
+        .collect()
+}
+
+/// Parses `basedpyright --outputjson`: `generalDiagnostics[]` with file, range and severity.
+pub fn parse_pyright_json(text: &str) -> Vec<Diagnostic> {
+    let Some(start) = text.find('{') else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text[start..]) else {
+        return Vec::new();
+    };
+    value
+        .get("generalDiagnostics")
+        .and_then(|d| d.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|d| {
+                    let level = d.get("severity")?.as_str()?;
+                    if level != "error" && level != "warning" {
+                        return None;
+                    }
+                    Some(Diagnostic {
+                        level: level.to_string(),
+                        code: d.get("rule").and_then(|r| r.as_str()).map(str::to_string),
+                        message: d.get("message")?.as_str()?.to_string(),
+                        file: d.get("file").and_then(|f| f.as_str()).map(str::to_string),
+                        line: d
+                            .pointer("/range/start/line")
+                            .and_then(|l| l.as_u64())
+                            .map(|l| l + 1),
+                        column: d
+                            .pointer("/range/start/character")
+                            .and_then(|c| c.as_u64())
+                            .map(|c| c + 1),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parses pytest `-q -rf` output: the `FAILED path::test - message` summary lines and the
+/// final `N passed, M failed` line.
+pub fn parse_pytest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("FAILED ") {
+            let (name, msg) = rest.split_once(" - ").unwrap_or((rest, ""));
+            failures.push(TestFailure {
+                name: name.trim().to_string(),
+                output: msg.trim().to_string(),
+            });
+        }
+        if line.contains(" passed") || line.contains(" failed") {
+            for part in line.trim_matches(|c| c == '=' || c == ' ').split(", ") {
+                let mut it = part.split_whitespace();
+                if let (Some(n), Some(what)) = (it.next(), it.next())
+                    && let Ok(n) = n.parse::<u64>()
+                {
+                    match what.trim_end_matches(|c: char| !c.is_alphabetic()) {
+                        "passed" => passed = n,
+                        "failed" => failed = n,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    (passed, failed, failures)
+}
+
 /// Parses `go build` / `go vet` output lines of the form `path/file.go:12:34: message`.
 pub fn parse_go_text(text: &str) -> Vec<Diagnostic> {
     text.lines()
@@ -500,9 +655,26 @@ pub async fn run_verify(
             tests_failed = f;
             failures = fails;
         }
-        _ => {
+        ("go", _) => {
             diagnostics.extend(parse_go_text(&stderr));
             diagnostics.extend(parse_go_text(&stdout));
+        }
+        ("typescript", VerifyKind::Check) => {
+            diagnostics.extend(parse_tsc_text(&stdout));
+            diagnostics.extend(parse_tsc_text(&stderr));
+        }
+        ("python", VerifyKind::Check) => {
+            diagnostics.extend(parse_pyright_json(&stdout));
+        }
+        ("python", VerifyKind::Test) => {
+            let (p, f, fails) = parse_pytest_text(&stdout);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        _ => {
+            diagnostics.extend(parse_colon_diagnostics(&stderr));
+            diagnostics.extend(parse_colon_diagnostics(&stdout));
         }
     }
     diagnostics.dedup();
@@ -578,6 +750,42 @@ mod tests {
     }
 
     #[test]
+    fn colon_tsc_pyright_pytest_parsers() {
+        let d = parse_colon_diagnostics(
+            "src/a.cpp:12:5: error: no member named 'x'\nsrc/b.cpp:3:1: warning: unused\nnote: ignored\n",
+        );
+        assert_eq!(d.len(), 2);
+        assert_eq!(d[0].render(), "error: no member named 'x' (src/a.cpp:12:5)");
+        assert_eq!(d[1].level, "warning");
+        let t = parse_tsc_text(
+            "src/index.ts(7,3): error TS2322: Type 'string' is not assignable to type 'number'.\n",
+        );
+        assert_eq!(t.len(), 1);
+        assert_eq!(
+            t[0].render(),
+            "error: [TS2322] Type 'string' is not assignable to type 'number'. (src/index.ts:7:3)"
+        );
+        let py = parse_pyright_json(
+            r#"{"generalDiagnostics":[{"file":"/w/a.py","severity":"error","message":"boom","range":{"start":{"line":4,"character":2}},"rule":"reportGeneralTypeIssues"}],"summary":{}}"#,
+        );
+        assert_eq!(
+            py[0].render(),
+            "error: [reportGeneralTypeIssues] boom (/w/a.py:5:3)"
+        );
+        let (p, f, fails) = parse_pytest_text(
+            "FAILED tests/test_a.py::test_x - AssertionError: nope\n===== 1 failed, 3 passed in 0.10s =====\n",
+        );
+        assert_eq!((p, f), (3, 1));
+        assert_eq!(fails[0].name, "tests/test_a.py::test_x");
+        assert!(
+            plan_command("swift", VerifyKind::Test, Some("Foo"))
+                .unwrap()
+                .ends_with(&["--filter".to_string(), "Foo".to_string()])
+        );
+        assert!(plan_command("cpp", VerifyKind::Lint, None).is_err());
+    }
+
+    #[test]
     fn plans_and_summary() {
         assert_eq!(
             plan_command("rust", VerifyKind::Test, Some("sync::"))
@@ -590,7 +798,7 @@ mod tests {
             plan_command("go", VerifyKind::Test, Some("TestA")).unwrap()[3..],
             ["./...", "-run", "TestA"]
         );
-        assert!(plan_command("python", VerifyKind::Check, None).is_err());
+        assert!(plan_command("ruby", VerifyKind::Check, None).is_err());
         let report = VerifyReport {
             kind: VerifyKind::Test,
             language: "rust".into(),
