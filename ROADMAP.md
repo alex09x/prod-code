@@ -53,16 +53,18 @@ This document outlines the architectural milestones and engineering phases for b
 
 ---
 
-## Phase 3: Polyglot Hub & Managed Go Engine
+## Phase 3: Polyglot Hub & First-Class Multi-Language Engines
 
-**Objective**: Expand the daemon into a unified multi-language hub by adding supervised Go language analysis and pluggable LSP adapters.
+**Objective**: Expand the daemon into a unified multi-language hub by adding supervised language analysis engines for Go, C/C++, TypeScript/JavaScript, Python, and Swift, sharing server-side warm AST caches across agent worktrees.
 
 - [x] **3.1. Automatic Workspace Detection**
   - Inspect project roots for language manifests:
-    - `Cargo.toml` -> Rust Engine
-    - `go.mod` / `go.work` -> Go Engine
-    - `pyproject.toml` / `requirements.txt` / `setup.py` / `Pipfile` -> Python Engine
-    - `package.json` / `tsconfig.json` -> TypeScript / JavaScript Engine
+    - `Cargo.toml` -> Rust Engine (`ra_ap_*`)
+    - `go.mod` / `go.work` -> Go Engine (`gopls`)
+    - `compile_commands.json` / `CMakeLists.txt` / `Makefile` -> C/C++ Engine (`clangd`)
+    - `package.json` / `tsconfig.json` -> TypeScript / JavaScript Engine (`vtsls`)
+    - `pyproject.toml` / `requirements.txt` / `setup.py` / `Pipfile` -> Python Engine (`basedpyright`)
+    - `Package.swift` / `*.xcodeproj` / `project.yml` -> Swift Engine (`sourcekit-lsp`)
   - Typed `EngineKind` enum, preference resolution, and monorepo detection.
 - [x] **3.2. Managed Go Engine (`crates/prod-code-engine-go`)**
   - Supervised `gopls` worker pool running in daemon mode.
@@ -71,6 +73,22 @@ This document outlines the architectural milestones and engineering phases for b
 - [x] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
+- [ ] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)**
+  - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
+  - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
+  - Offloads multi-gigabyte AST indexing for massive C++ codebases (e.g. Chromium, ClickHouse, trading engines) from local laptops to 32–128 core servers.
+- [ ] **3.5. TypeScript & JavaScript Engine (`crates/prod-code-engine-ts` / `vtsls`)**
+  - Supervised `vtsls` worker pool running on server Bun/Node runtime.
+  - Shared global `@types/*` and `node_modules` cache volume to eliminate duplicate multi-gigabyte `node_modules` across concurrent agent worktrees.
+  - Instant type inference and signature resolution for React, Vue, Svelte, Next.js, and large monorepos (5–15 ms latency).
+- [ ] **3.6. Python Semantic Engine (`crates/prod-code-engine-python` / `basedpyright`)**
+  - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
+  - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
+  - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
+- [ ] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)**
+  - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
+  - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
+
 
 ---
 
