@@ -5,14 +5,14 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/alex09x/prod-code?color=blue&style=flat-square)](https://github.com/alex09x/prod-code/releases)
 [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
-[![Network: 10GbE](https://img.shields.io/badge/network-10_GbE_Optimized-success?style=flat-square)]()
+[![Fleet Scale](https://img.shields.io/badge/fleet--scale-AI_Agent_Optimized-success?style=flat-square)]()
 [![Rust](https://img.shields.io/badge/rust-2024_edition-dea584?style=flat-square&logo=rust)]()
 [![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go)]()
 [![Protocol](https://img.shields.io/badge/protocol-LSP_%2B_Native_MCP-purple?style=flat-square)]()
 
 <p align="center">
-  <b>Decouple your code from your laptop.</b><br>
-  Offload 50–100+ GB language server memory footprints and heavy compiler analysis to high-core homelab or cloud servers over ultra-fast 10G LAN with sub-millisecond round-trip latency.
+  <b>Decouple semantic code intelligence from local developer machines.</b><br>
+  Purpose-built for autonomous AI coding agent fleets, multi-worktree parallelism, and high-throughput polyglot development with native Model Context Protocol (MCP) and drop-in LSP.
 </p>
 
 </div>
@@ -163,6 +163,12 @@ See [**`ROADMAP.md`**](ROADMAP.md) for the active engineering plan:
 
 ---
 
+## 👤 Author
+
+**Alex** ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
+
+---
+
 ## 📄 License
 
 Dual-licensed under either of:
@@ -170,3 +176,4 @@ Dual-licensed under either of:
 * MIT license ([`LICENSE-MIT`](LICENSE-MIT))
 
 at your option.
+
