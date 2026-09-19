@@ -56,6 +56,28 @@ enum Commands {
     Refs { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// List code actions (inline, extract, generate, rewrite, quick fixes) at a 1-based
+    /// position or selection: prod-code assists <file> <line> <col> [--to LINE:COL]
+    Assists {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+        /// End of a selection as LINE:COL (1-based).
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Apply one code action by id at a position or selection and write the edits locally:
+    /// prod-code assist <file> <line> <col> <id> [--to LINE:COL] [--subtype N]
+    Assist {
+        file: PathBuf,
+        line: u32,
+        col: u32,
+        id: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        subtype: Option<u64>,
+    },
     /// Rename the symbol at 1-based <line> <col> across the workspace and apply the edits
     /// locally: prod-code rename <file> <line> <col> <new_name>
     Rename {
@@ -162,6 +184,31 @@ async fn main() -> Result<()> {
             col,
             new_name,
         } => run_rename(cli.remote, &file, line, col, &new_name).await,
+        Commands::Assists {
+            file,
+            line,
+            col,
+            to,
+        } => run_assist(cli.remote, &file, line, col, to.as_deref(), None, None).await,
+        Commands::Assist {
+            file,
+            line,
+            col,
+            id,
+            to,
+            subtype,
+        } => {
+            run_assist(
+                cli.remote,
+                &file,
+                line,
+                col,
+                to.as_deref(),
+                Some(&id),
+                subtype,
+            )
+            .await
+        }
         Commands::Check { timeout_secs } => {
             run_verify(cli.remote, VerifyKind::Check, None, timeout_secs).await
         }
@@ -1004,6 +1051,82 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
         }
     }
     None
+}
+
+fn parse_line_col(spec: &str) -> Result<(u32, u32)> {
+    let (l, c) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("expected LINE:COL, got {spec}"))?;
+    Ok((l.trim().parse()?, c.trim().parse()?))
+}
+
+/// List code actions at a position (no `id`) or apply one (`id`) and write its edits locally.
+async fn run_assist(
+    remote: SocketAddr,
+    file: &Path,
+    line: u32,
+    col: u32,
+    to: Option<&str>,
+    id: Option<&str>,
+    subtype: Option<u64>,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let file_uri = Url::from_file_path(&abs_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
+        .to_string();
+    let end = match to {
+        Some(spec) => parse_line_col(spec)?,
+        None => (line, col),
+    };
+    let mut params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "range": {
+            "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+            "end": { "line": end.0.saturating_sub(1), "character": end.1.saturating_sub(1) }
+        }
+    });
+    match id {
+        None => {
+            let list = execute_lsp_query(remote, file, "prodCode/assists", params).await?;
+            let items = list.as_array().cloned().unwrap_or_default();
+            if items.is_empty() {
+                println!("no code actions at {}:{line}:{col}", file.display());
+            }
+            for item in items {
+                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                match item.get("subtype").and_then(|v| v.as_u64()) {
+                    Some(st) => println!("{id} --subtype {st}  [{kind}]  {label}"),
+                    None => println!("{id}  [{kind}]  {label}"),
+                }
+            }
+            Ok(())
+        }
+        Some(id) => {
+            params["id"] = serde_json::json!(id);
+            if let Some(st) = subtype {
+                params["subtype"] = serde_json::json!(st);
+            }
+            let started = std::time::Instant::now();
+            let edit = execute_lsp_query(remote, file, "prodCode/applyAssist", params).await?;
+            if edit.is_null() {
+                anyhow::bail!("assist produced no edits");
+            }
+            let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
+            println!(
+                "applied `{id}` in {:.2}s; {} path(s) updated:",
+                started.elapsed().as_secs_f64(),
+                touched.len()
+            );
+            for path in touched {
+                println!("  {path}");
+            }
+            Ok(())
+        }
+    }
 }
 
 /// Rename a symbol through the remote analyzer and apply the resulting edits to the checkout.
