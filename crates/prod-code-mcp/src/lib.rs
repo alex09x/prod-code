@@ -2,6 +2,7 @@
 
 pub mod cluster;
 pub mod exec;
+pub mod impact;
 pub mod lang;
 pub mod protocol;
 pub mod refactor;

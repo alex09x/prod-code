@@ -235,6 +235,18 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_impact".to_string(),
+            description: "Blast radius of the uncommitted changes (or of the commits since a base ref): the functions the diff touches, every function that calls them (transitively, through the analyzer's call hierarchy) and the tests among those callers, plus the exact test command that runs only the affected tests."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "base": { "type": "string", "description": "Git ref to diff against (default: the working tree against HEAD)" },
+                    "depth": { "type": "integer", "description": "How many caller levels to follow (default 4)" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_source".to_string(),
             description: "Read a source file that exists only on the gateway host: standard library sources, dependency registries (cargo, go mod cache, node_modules, site-packages) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
                 .to_string(),
@@ -892,6 +904,12 @@ pub async fn execute_tool(
             }
             Ok(McpToolCallResult::text(out.trim_end().to_string()))
         }
+        "code_impact" => {
+            let base = args.get("base").and_then(|v| v.as_str());
+            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
+            let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
+            Ok(McpToolCallResult::text(report.render()))
+        }
         "code_source" => {
             let path = args
                 .get("path")
@@ -1202,7 +1220,7 @@ fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::path::PathBu
 }
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
-async fn execute_lsp_query(
+pub async fn execute_lsp_query(
     remote: SocketAddr,
     workspace_root: &Path,
     file_path: &Path,

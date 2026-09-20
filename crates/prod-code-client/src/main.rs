@@ -66,6 +66,20 @@ enum Commands {
     Impls { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// Blast radius of the uncommitted changes: changed functions, their callers and the affected tests
+    Impact {
+        /// Git ref to diff against (default: working tree vs HEAD)
+        #[arg(long)]
+        base: Option<String>,
+        /// Caller levels to follow
+        #[arg(long, default_value_t = 4)]
+        depth: usize,
+        /// Run the affected tests afterwards
+        #[arg(long)]
+        run: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a source file that lives on the gateway (std, registry, SDK): prod-code source <path> [--line N] [--context K]
     Source {
         path: String,
@@ -252,6 +266,12 @@ async fn main() -> Result<()> {
             line,
             context,
         } => run_source(remote, &path, line, context).await,
+        Commands::Impact {
+            base,
+            depth,
+            run,
+            json,
+        } => run_impact(remote, base.as_deref(), depth, run, json).await,
         Commands::Rename {
             file,
             line,
@@ -779,6 +799,57 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
         println!("{:#}", result);
     }
 
+    Ok(())
+}
+
+/// Impact analysis of the working tree (or of the commits since `base`), optionally running
+/// the affected tests on the gateway.
+async fn run_impact(
+    remote: SocketAddr,
+    base: Option<&str>,
+    depth: usize,
+    run: bool,
+    json: bool,
+) -> Result<()> {
+    use std::io::Write;
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let started = std::time::Instant::now();
+    let report = prod_code_mcp::impact::analyze(remote, &root, base, depth).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+        eprintln!(
+            "[prod-code impact] analysed in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    if run {
+        let Some(command) = report.test_command.clone() else {
+            println!("nothing to run");
+            return Ok(());
+        };
+        println!("$ {}", command.join(" "));
+        let outcome = prod_code_mcp::exec::run_remote(
+            remote,
+            &root,
+            None,
+            command,
+            vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+            0,
+            false,
+            |is_stderr, data| {
+                if is_stderr {
+                    let _ = std::io::stderr().write_all(data);
+                } else {
+                    let _ = std::io::stdout().write_all(data);
+                }
+            },
+        )
+        .await?;
+        std::process::exit(outcome.exit.exit_code.unwrap_or(1));
+    }
     Ok(())
 }
 
