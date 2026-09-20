@@ -322,6 +322,7 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             ".local/lib",
             ".npm-global/lib",
             ".bun/install",
+            ".local/share/uv",
             "Library/Developer",
             "prod-code-storage",
         ];
@@ -332,7 +333,8 @@ fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Pat
             return true;
         }
     }
-    const SYSTEM_ROOTS: [&str; 9] = [
+    const SYSTEM_ROOTS: [&str; 10] = [
+        "/snap",
         "/usr/include",
         "/usr/local/include",
         "/usr/lib",
