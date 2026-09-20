@@ -136,6 +136,14 @@ fn extensions(language: &str) -> &'static [&'static str] {
     }
 }
 
+/// Whether a symbol's container is a trait implementation block (`impl Shape for Circle`):
+/// its methods are reached through the trait, which reference search does not follow.
+fn in_trait_impl(container: &str) -> bool {
+    container
+        .split(" > ")
+        .any(|c| c.starts_with("impl ") && c.contains(" for "))
+}
+
 fn collect(symbols: &[serde_json::Value], out: &mut Vec<(String, String, u32, u32)>) {
     for sym in symbols {
         // Items inside a test module are tests, whatever they are called.
@@ -144,10 +152,11 @@ fn collect(symbols: &[serde_json::Value], out: &mut Vec<(String, String, u32, u3
             .and_then(|c| c.as_str())
             .unwrap_or("")
             .to_ascii_lowercase();
-        if container
-            .split(" > ")
-            .any(|c| c == "mod tests" || c == "mod test" || c.ends_with("_tests"))
-        {
+        // rust-analyzer labels modules by name ("tests"), other servers by kind and name.
+        if container.split(" > ").any(|c| {
+            let c = c.trim_start_matches("mod ");
+            c == "tests" || c == "test" || c.ends_with("tests")
+        }) {
             continue;
         }
         let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
@@ -166,6 +175,11 @@ fn collect(symbols: &[serde_json::Value], out: &mut Vec<(String, String, u32, u3
         {
             let line = start.get("line").and_then(|l| l.as_u64()).unwrap_or(0) as u32 + 1;
             let col = start.get("character").and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1;
+            let kind_name = if kind_name == "method" && in_trait_impl(&container) {
+                "trait-method"
+            } else {
+                kind_name
+            };
             out.push((name, kind_name.to_string(), line, col));
         }
         if let Some(children) = sym.get("children").and_then(|c| c.as_array()) {
@@ -267,7 +281,9 @@ pub async fn find_dead_code(
                     col,
                     exported,
                 };
-                if kind == "method" {
+                // Rust inherent methods are checked like functions; trait-impl methods and
+                // methods in languages with interfaces/protocols go to the "maybe" bucket.
+                if kind == "trait-method" || (kind == "method" && language != "rust") {
                     report.methods_unreferenced.push(item);
                 } else if exported && !include_exported {
                     report.exported_unreferenced += 1;
@@ -294,6 +310,8 @@ mod tests {
         assert!(is_exported("typescript", "f", "export function f() {}"));
         assert!(is_exported("swift", "f", "public func f() {}"));
         assert!(is_test_path("go", "pkg/a_test.go"));
+        assert!(in_trait_impl("impl Shape for Circle"));
+        assert!(!in_trait_impl("impl Circle"));
         assert!(!is_test_path("rust", "src/lib.rs"));
     }
 }
