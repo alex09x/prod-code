@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Code actions for every language (Phase 7.2): `prod-code assists | assist` and MCP
+  `code_assists` / `code_assist` on Go, C/C++, TypeScript, Python and Swift through LSP code
+  actions, including quick fixes driven by the server's diagnostics and command-backed
+  refactorings (clangd extract-to-variable).
+- Monorepos (Phase 3.1): a nested project of another language gets its own engine, its own
+  placement (Swift package in a Rust repo lands on a macOS node) and its own `check` / `test`
+  / `exec` working directory; `prod-code exec` runs where it was typed.
+
 - Project tooling is detected per checkout for `check | lint | test`: TypeScript uses the
   package manager of the lock file (bun, pnpm, yarn, npm) and the configured test runner
   (vitest, jest, bun test, mocha, or the `test` script) with parsed results; Python runs

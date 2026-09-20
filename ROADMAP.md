@@ -66,6 +66,7 @@ This document outlines the architectural milestones and engineering phases for b
     - `pyproject.toml` / `requirements.txt` / `setup.py` / `Pipfile` -> Python Engine (`basedpyright`)
     - `Package.swift` / `*.xcodeproj` / `project.yml` -> Swift Engine (`sourcekit-lsp`)
   - Typed `EngineKind` enum, preference resolution, and monorepo detection.
+  - Monorepo (2026-09-20): a nested project of another language (a SwiftPM package or Xcode project inside a Rust or Go repository) gets its own engine rooted at that directory; the client names it in the handshake (`engine_subpath`), placement follows that project's engine (Swift → macOS node), and `exec` / `check` / `test` run in the nested directory with its tooling. Nested crates of one Cargo workspace stay with the workspace. Verified on tako (Rust root, `swift/` package).
 - [x] **3.2. Managed Go Engine (`crates/prod-code-engine-go`)**
   - Supervised `gopls` worker pool running in daemon mode.
   - Shared `GOCACHE` and `GOPATH/pkg/mod` volume on fast NVMe for instant warm symbol resolution across all worktrees.
@@ -289,7 +290,7 @@ This document outlines the architectural milestones and engineering phases for b
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
     - **Zero-Prompt Agent Automation**: AI coding agents can execute complex multi-file architectural refactors with single RPC calls without hallucinating intermediate edits.
 
-- [ ] **7.2. Automated Compiler "Fix-It" & CodeAction Engine (Zero-Prompt Repair)**
+- [~] **7.2. Automated Compiler "Fix-It" & CodeAction Engine (Zero-Prompt Repair)** — code actions on every engine 2026-09-20: `prod-code assists | assist` and MCP `code_assists` / `code_assist` map to LSP `textDocument/codeAction` for gopls, clangd, the native TypeScript server, basedpyright and sourcekit-lsp (rust-analyzer stays in-process). Quick fixes get the server's diagnostics as context (push model cached, pull model queried), lazy edits are resolved, and command-only actions run through `workspace/executeCommand` with the `workspace/applyEdit` captured. Verified: TypeScript add-import, pyright ignore-comment, clangd extract-variable, gopls source actions, sourcekit convert-to-async. Auto-applying fix-its from a failing `check` without a prompt is still open.
   - Compilers and linters (`rustc`, `clippy`, `clang-tidy`, `gopls`, `ruff`) natively produce machine-applicable `CodeAction` / `Fix-It` recommendations.
   - Wire protocol endpoint: `code_quickfix(file, diagnostic_id)` returning pre-computed compiler diffs.
   - AI agents can inspect and apply exact compiler-suggested fixes in one step (e.g. missing trait imports, mutable borrow corrections, lifetime annotations) with zero LLM token consumption or hallucination loops.
