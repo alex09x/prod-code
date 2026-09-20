@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests (hermetic crates)
+        # Engines that drive external language servers (gopls, clangd, ...) are exercised on
+        # the cluster nodes; CI runs the crates that need only cargo and git.
+        run: >-
+          cargo test
+          -p prod-code-protocol
+          -p prod-code-mcp
+          -p prod-code-engine-rust
+          -p prod-code-gateway
+          -p prod-code-client
