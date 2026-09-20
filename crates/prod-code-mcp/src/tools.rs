@@ -247,6 +247,31 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_diagnostics".to_string(),
+            description: "Analyzer diagnostics for one file, computed in memory without a build: syntax errors, unresolved names, type mismatches, unused items. Milliseconds, not a cargo/tsc run."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" }
+                },
+                "required": ["path"]
+            }),
+        },
+        McpTool {
+            name: "code_validate_edit".to_string(),
+            description: "Check a proposed new content for a file BEFORE writing it: the analyzer sees the proposed text as the document and reports errors and warnings. Nothing is written anywhere. Use it to catch hallucinated APIs, type errors and unresolved imports before touching the checkout."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
+                    "new_text": { "type": "string", "description": "The complete proposed content of the file" }
+                },
+                "required": ["path", "new_text"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -921,6 +946,31 @@ pub async fn execute_tool(
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
             let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
             Ok(McpToolCallResult::text(report.render()))
+        }
+        "code_diagnostics" | "code_validate_edit" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let report = match args.get("new_text").and_then(|v| v.as_str()) {
+                Some(text) if tool_name == "code_validate_edit" => {
+                    crate::diagnostics::validate_text(remote, workspace_root, &file_path, text)
+                        .await?
+                }
+                _ if tool_name == "code_validate_edit" => {
+                    return Ok(McpToolCallResult::error(
+                        "Missing 'new_text' argument".to_string(),
+                    ));
+                }
+                _ => crate::diagnostics::diagnostics(remote, workspace_root, &file_path).await?,
+            };
+            let text = report.render();
+            Ok(if report.ok() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
         }
         "code_dead_code" => {
             let include_exported = args

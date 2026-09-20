@@ -823,6 +823,23 @@ fn hierarchy_query(
                     .collect(),
             )
         }
+        "textDocument/diagnostic" => {
+            let items: Vec<serde_json::Value> = engine
+                .diagnostics(path)?
+                .iter()
+                .map(|d| {
+                    serde_json::json!({
+                        "range": lsp_range(d.line, d.col, d.end_line, d.end_col),
+                        "severity": match d.severity.as_str() { "error" => 1, "warning" => 2, "weak" => 4, _ => 3 },
+                        "code": d.code,
+                        "source": "rust-analyzer",
+                        "message": d.message,
+                        "tags": if d.unused { vec![1] } else { Vec::<u32>::new() },
+                    })
+                })
+                .collect();
+            serde_json::json!({ "kind": "full", "items": items })
+        }
         "textDocument/implementation" => serde_json::Value::Array(
             engine
                 .goto_implementation(path, line, col)?
@@ -2018,7 +2035,7 @@ async fn run_session_loop(
                                             continue;
                                         }
                                     }
-                                    Some(hm @ ("textDocument/prepareCallHierarchy" | "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" | "textDocument/implementation")) => {
+                                    Some(hm @ ("textDocument/prepareCallHierarchy" | "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" | "textDocument/implementation" | "textDocument/diagnostic")) => {
                                         if let Some(params) = val.get("params") {
                                             // Call-hierarchy follow-ups carry the item; the others a text document position.
                                             let (uri, position) = match params.get("item") {
@@ -2422,6 +2439,34 @@ async fn run_session_loop(
                                                 resp
                                             }
                                             Err(err) => serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } }),
+                                        };
+                                        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                    });
+                                    continue;
+                                }
+                                if let (Some("textDocument/diagnostic"), Some(req_id)) = (method, &id) {
+                                    // Servers without pull diagnostics answer from what they
+                                    // published for the document.
+                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                    let engine = Arc::clone(generic_eng);
+                                    let out_tx_task = out_tx.clone();
+                                    let translator_task = translator.clone();
+                                    let r_id = req_id.clone();
+                                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                    tokio::task::spawn(async move {
+                                        let resp = if engine.has_pull_diagnostics().await {
+                                            match engine.send_request("textDocument/diagnostic", params).await {
+                                                Ok(mut resp) => {
+                                                    resp["id"] = r_id;
+                                                    resp
+                                                }
+                                                Err(err) => serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } }),
+                                            }
+                                        } else {
+                                            let uri = params.get("textDocument").and_then(|t| t.get("uri")).and_then(|u| u.as_str()).unwrap_or("").to_string();
+                                            let items = ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
+                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
                                         };
                                         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
                                         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;

@@ -180,6 +180,49 @@ impl LspSession {
         self.request(method, params).await
     }
 
+    /// Runs `method` on `file` with `text` as its content instead of what is on disk: the
+    /// document is opened (or changed) with the proposed text, so the server analyses the
+    /// edit without anything being written.
+    pub async fn query_with_text(
+        &mut self,
+        file: &Path,
+        text: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            self.root.join(file)
+        };
+        let uri = Url::from_file_path(&abs)
+            .map_err(|_| anyhow!("invalid file path {}", abs.display()))?
+            .to_string();
+        if self.opened.contains(&uri) {
+            self.notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": uri, "version": self.next_id },
+                    "contentChanges": [ { "text": text } ]
+                }),
+            )
+            .await?;
+        } else {
+            self.notify(
+                "textDocument/didOpen",
+                serde_json::json!({ "textDocument": {
+                    "uri": uri,
+                    "languageId": crate::lang::language_id_for_path(&abs),
+                    "version": 1,
+                    "text": text,
+                }}),
+            )
+            .await?;
+            self.opened.insert(uri.clone());
+        }
+        self.request(method, params).await
+    }
+
     /// The `file://` URI the session uses for `file`.
     pub fn uri_for(&self, file: &Path) -> Result<String> {
         let abs = if file.is_absolute() {

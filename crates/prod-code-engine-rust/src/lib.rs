@@ -173,6 +173,20 @@ pub struct CallEdge {
     pub is_test: bool,
 }
 
+/// One rust-analyzer diagnostic for a file, computed in memory (no cargo check).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDiagnostic {
+    pub code: String,
+    pub message: String,
+    /// `error`, `warning`, `weak` (hint) or `allow`.
+    pub severity: String,
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    pub end_col: u32,
+    pub unused: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReferenceTarget {
     pub path: PathBuf,
@@ -680,6 +694,42 @@ impl RustEngineSnapshot {
             end_line,
             end_col,
         })
+    }
+
+    /// All diagnostics rust-analyzer computes for `path` from the in-memory database: syntax
+    /// errors, unresolved names, type mismatches, unused items and the like. This is what a
+    /// proposed edit can be validated against before it touches disk.
+    pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
+        let file_id = self
+            .file_id_for_path(path)
+            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let text = self.analysis.file_text(file_id)?;
+        let config = DiagnosticsConfig::test_sample();
+        let diagnostics =
+            self.analysis
+                .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
+        Ok(diagnostics
+            .into_iter()
+            .filter(|d| d.range.file_id == file_id)
+            .map(|d| {
+                let (line, col) = offset_to_line_col(&text, d.range.range.start());
+                let (end_line, end_col) = offset_to_line_col(&text, d.range.range.end());
+                let severity = format!("{:?}", d.severity).to_ascii_lowercase();
+                FileDiagnostic {
+                    code: d.code.as_str().to_string(),
+                    message: d.message,
+                    severity: match severity.as_str() {
+                        "weakwarning" => "weak".to_string(),
+                        other => other.to_string(),
+                    },
+                    line,
+                    col,
+                    end_line,
+                    end_col,
+                    unused: d.unused,
+                }
+            })
+            .collect())
     }
 
     /// The call-hierarchy item(s) at (line, col): the enclosing or referenced function.
@@ -1225,6 +1275,10 @@ impl RustEngine {
         col: u32,
     ) -> Result<Vec<HierarchyItem>> {
         self.snapshot().prepare_call_hierarchy(path, line, col)
+    }
+
+    pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
+        self.snapshot().diagnostics(path)
     }
 
     pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {

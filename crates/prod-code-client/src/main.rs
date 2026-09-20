@@ -80,6 +80,21 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Analyzer diagnostics for a file, in memory (no build): prod-code diagnostics <file>
+    Diagnostics {
+        file: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check a proposed replacement for a file without writing it: prod-code validate <file> --from NEW (or stdin)
+    Validate {
+        file: PathBuf,
+        /// Path of the proposed content; stdin when omitted
+        #[arg(long)]
+        from: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Unreferenced functions, methods and types across the checkout
     DeadCode {
         /// Also list exported / public symbols nothing in the checkout uses
@@ -288,6 +303,19 @@ async fn main() -> Result<()> {
             max_files,
             json,
         } => run_dead_code(remote, include_exported, max_files, json).await,
+        Commands::Diagnostics { file, json } => run_diagnostics(remote, &file, None, json).await,
+        Commands::Validate { file, from, json } => {
+            let text = match from {
+                Some(path) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?,
+                None => {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                    buf
+                }
+            };
+            run_diagnostics(remote, &file, Some(text), json).await
+        }
         Commands::Rename {
             file,
             line,
@@ -865,6 +893,39 @@ async fn run_impact(
         )
         .await?;
         std::process::exit(outcome.exit.exit_code.unwrap_or(1));
+    }
+    Ok(())
+}
+
+/// Diagnostics of a file as it is, or as it would be with `proposed` content (nothing is
+/// written). Exits 1 when there are errors.
+async fn run_diagnostics(
+    remote: SocketAddr,
+    file: &Path,
+    proposed: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let started = std::time::Instant::now();
+    let report = match proposed {
+        Some(text) => {
+            prod_code_mcp::diagnostics::validate_text(remote, &root, &abs_path, &text).await?
+        }
+        None => prod_code_mcp::diagnostics::diagnostics(remote, &root, &abs_path).await?,
+    };
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+        eprintln!(
+            "[prod-code] analysed in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
+    }
+    if !report.ok() {
+        std::process::exit(1);
     }
     Ok(())
 }
