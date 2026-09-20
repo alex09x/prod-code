@@ -24,6 +24,9 @@ pub struct DeadCodeReport {
     pub files_scanned: usize,
     pub symbols_checked: usize,
     pub dead: Vec<DeadItem>,
+    /// Methods without direct references: they may still be reached through a trait,
+    /// interface or protocol, which reference search does not follow.
+    pub methods_unreferenced: Vec<DeadItem>,
     /// Exported symbols without references that were not listed (`include_exported` off).
     pub exported_unreferenced: usize,
     pub truncated: bool,
@@ -48,6 +51,22 @@ impl DeadCodeReport {
                 item.line,
                 item.col
             ));
+        }
+        if !self.methods_unreferenced.is_empty() {
+            out.push_str(&format!(
+                "methods without direct references ({}; may be reached through a trait / interface):\n",
+                self.methods_unreferenced.len()
+            ));
+            for item in &self.methods_unreferenced {
+                out.push_str(&format!(
+                    "  • {}{}  {}:{}:{}\n",
+                    item.name,
+                    if item.exported { " (exported)" } else { "" },
+                    item.file,
+                    item.line,
+                    item.col
+                ));
+            }
         }
         if self.exported_unreferenced > 0 {
             out.push_str(&format!(
@@ -119,6 +138,18 @@ fn extensions(language: &str) -> &'static [&'static str] {
 
 fn collect(symbols: &[serde_json::Value], out: &mut Vec<(String, String, u32, u32)>) {
     for sym in symbols {
+        // Items inside a test module are tests, whatever they are called.
+        let container = sym
+            .get("containerName")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if container
+            .split(" > ")
+            .any(|c| c == "mod tests" || c == "mod test" || c.ends_with("_tests"))
+        {
+            continue;
+        }
         let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
         let name = sym
             .get("name")
@@ -175,6 +206,7 @@ pub async fn find_dead_code(
         files_scanned: 0,
         symbols_checked: 0,
         dead: Vec::new(),
+        methods_unreferenced: Vec::new(),
         exported_unreferenced: 0,
         truncated,
     };
@@ -227,17 +259,20 @@ pub async fn find_dead_code(
                 .unwrap_or(serde_json::Value::Null);
             let count = refs.as_array().map(|a| a.len()).unwrap_or(0);
             if count == 0 {
-                if exported && !include_exported {
+                let item = DeadItem {
+                    name,
+                    kind: kind.clone(),
+                    file: rel.clone(),
+                    line,
+                    col,
+                    exported,
+                };
+                if kind == "method" {
+                    report.methods_unreferenced.push(item);
+                } else if exported && !include_exported {
                     report.exported_unreferenced += 1;
                 } else {
-                    report.dead.push(DeadItem {
-                        name,
-                        kind,
-                        file: rel.clone(),
-                        line,
-                        col,
-                        exported,
-                    });
+                    report.dead.push(item);
                 }
             }
         }

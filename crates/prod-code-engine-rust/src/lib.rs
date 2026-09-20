@@ -193,6 +193,9 @@ pub struct SymbolTarget {
     #[serde(default)]
     pub end_line: u32,
     pub detail: Option<String>,
+    /// Labels of the enclosing items, outermost first (`mod tests`, `impl Shape for Circle`).
+    #[serde(default)]
+    pub containers: Vec<String>,
 }
 
 /// A file rewritten by a refactoring: its full new content.
@@ -854,8 +857,22 @@ impl RustEngineSnapshot {
         };
         let nodes = self.analysis.file_structure(&config, file_id)?;
 
+        let labels: Vec<String> = nodes.iter().map(|n| n.label.clone()).collect();
+        let parents: Vec<Option<usize>> = nodes.iter().map(|n| n.parent).collect();
         let mut results = Vec::new();
         for node in nodes {
+            let mut containers = Vec::new();
+            let mut parent = node.parent;
+            while let Some(index) = parent {
+                if let Some(label) = labels.get(index) {
+                    containers.push(label.clone());
+                }
+                parent = parents.get(index).copied().flatten();
+                if containers.len() > 16 {
+                    break;
+                }
+            }
+            containers.reverse();
             // The navigation range is the item's name; the node range would start at its
             // doc comments and attributes.
             let (sym_line, sym_col) = offset_to_line_col(&text, node.navigation_range.start());
@@ -870,6 +887,7 @@ impl RustEngineSnapshot {
                 col: sym_col,
                 end_line: end_line.max(sym_line),
                 detail: node.detail,
+                containers,
             });
         }
 

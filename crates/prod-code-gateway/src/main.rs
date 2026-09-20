@@ -1882,7 +1882,7 @@ async fn run_session_loop(
                                                                  "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
                                                              }
                                                          },
-                                                         "containerName": s.detail
+                                                         "containerName": if s.containers.is_empty() { s.detail.clone() } else { Some(s.containers.join(" > ")) }
                                                      })
                                                  }).collect();
 
