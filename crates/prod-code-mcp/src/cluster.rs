@@ -5,7 +5,10 @@
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{ProdCodeCodec, StatusResponse, WireMessage, content_hash};
+use prod_code_protocol::{
+    ClusterResponse, PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, WireMessage,
+    content_hash,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -134,8 +137,32 @@ pub async fn pick_node_with(
                 return Ok(remembered);
             }
         }
-        // First placement: prefer the quietest node (load per CPU) among the ones that
-        // answer and can serve the engine, keeping rendezvous order as the tie-break.
+        // Ask the cluster first: any live node knows (by gossip) who already holds the
+        // workspace and who is quietest, and it can move an idle workspace off an
+        // overloaded node.
+        for seed in rendezvous_order(nodes, workspace_name) {
+            let Ok(answer) = ask_placement(seed, workspace_name, engine).await else {
+                continue;
+            };
+            if let Some(chosen) = answer
+                .node
+                .as_deref()
+                .and_then(|a| a.parse::<SocketAddr>().ok())
+                && is_alive(chosen).await
+            {
+                tracing::debug!(%chosen, reason = %answer.reason, "cluster placement");
+                if let Some(path) = placement_file {
+                    placement
+                        .workspaces
+                        .insert(workspace_name.to_string(), chosen);
+                    save_placement(path, &placement);
+                }
+                return Ok(chosen);
+            }
+            break;
+        }
+        // Fallback without a cluster view: prefer the quietest node (load per CPU) among
+        // the ones that answer and can serve the engine, rendezvous order as tie-break.
         let mut candidates = Vec::new();
         let mut unsupported = Vec::new();
         for candidate in rendezvous_order(nodes, workspace_name) {
@@ -202,6 +229,103 @@ pub fn remembered_node(workspace_name: &str) -> Option<SocketAddr> {
         .workspaces
         .get(workspace_name)
         .copied()
+}
+
+/// Asks one node for the cluster as it sees it (gossip view).
+pub async fn cluster_view(addr: SocketAddr) -> Result<ClusterResponse> {
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow!("connect timed out"))??;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed.send(WireMessage::ClusterRequest).await?;
+    match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
+        Ok(Some(Ok(WireMessage::ClusterResponse(view)))) => Ok(view),
+        Ok(Some(Ok(other))) => Err(anyhow!("unexpected reply: {other:?}")),
+        Ok(Some(Err(e))) => Err(anyhow!("decode error: {e}")),
+        Ok(None) => Err(anyhow!("connection closed")),
+        Err(_) => Err(anyhow!("cluster view timed out")),
+    }
+}
+
+/// Asks one node where `workspace_name` (needing `engine`) should be placed.
+pub async fn ask_placement(
+    addr: SocketAddr,
+    workspace_name: &str,
+    engine: Option<&str>,
+) -> Result<PlaceResponse> {
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow!("connect timed out"))??;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::PlaceRequest(PlaceRequest {
+            workspace_name: workspace_name.to_string(),
+            engine: engine.map(String::from),
+        }))
+        .await?;
+    match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
+        Ok(Some(Ok(WireMessage::PlaceResponse(resp)))) => Ok(resp),
+        Ok(Some(Ok(other))) => Err(anyhow!("unexpected reply: {other:?}")),
+        Ok(Some(Err(e))) => Err(anyhow!("decode error: {e}")),
+        Ok(None) => Err(anyhow!("connection closed")),
+        Err(_) => Err(anyhow!("placement timed out")),
+    }
+}
+
+fn cluster_cache_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    Some(PathBuf::from(home).join(".local/share/prod_code/cluster.json"))
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ClusterCache {
+    #[serde(default)]
+    nodes: Vec<String>,
+}
+
+/// The nodes of the cluster starting from the configured seeds: the first seed that
+/// answers is asked for its gossip view and every live member is added; the result is
+/// cached so a cluster whose seeds are down is still known. One seed address is enough.
+pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
+    let mut nodes: Vec<SocketAddr> = seeds.to_vec();
+    let mut learned = false;
+    for seed in seeds {
+        if let Ok(view) = cluster_view(*seed).await {
+            for n in view.nodes.iter().filter(|n| n.alive) {
+                if let Ok(addr) = n.addr.parse::<SocketAddr>()
+                    && !nodes.contains(&addr)
+                {
+                    nodes.push(addr);
+                }
+            }
+            learned = true;
+            break;
+        }
+    }
+    if let Some(path) = cluster_cache_path() {
+        if learned {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let cache = ClusterCache {
+                nodes: nodes.iter().map(|n| n.to_string()).collect(),
+            };
+            if let Ok(bytes) = serde_json::to_vec_pretty(&cache) {
+                let _ = std::fs::write(&path, bytes);
+            }
+        } else if let Ok(bytes) = std::fs::read(&path)
+            && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+        {
+            for n in cache.nodes {
+                if let Ok(addr) = n.parse::<SocketAddr>()
+                    && !nodes.contains(&addr)
+                {
+                    nodes.push(addr);
+                }
+            }
+        }
+    }
+    nodes
 }
 
 /// Asks one node for its status.

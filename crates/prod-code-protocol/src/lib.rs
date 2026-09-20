@@ -6,8 +6,9 @@ pub mod path;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp, HandshakeRequest,
-    HandshakeResponse, PROTOCOL_VERSION, ReadFileRequest, ReadFileResponse, StatusResponse,
+    ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
+    HandshakeRequest, HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION,
+    PeerInfo, PlaceRequest, PlaceResponse, ReadFileRequest, ReadFileResponse, StatusResponse,
     SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 pub use path::PathTranslator;

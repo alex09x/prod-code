@@ -53,6 +53,10 @@ pub struct RustAnalysisOptions {
     pub no_default_features: bool,
     pub all_targets: bool,
     pub sysroot: bool,
+    /// Run build scripts (`cargo check` on load, warm on the gateway) so `OUT_DIR` code and
+    /// proc-macro crates exist, and expand proc macros through rust-analyzer's out-of-process
+    /// proc-macro server. Without it derives and attribute macros resolve to nothing.
+    pub build_scripts: bool,
 }
 
 impl Default for RustAnalysisOptions {
@@ -62,6 +66,7 @@ impl Default for RustAnalysisOptions {
             no_default_features: false,
             all_targets: true,
             sysroot: true,
+            build_scripts: true,
         }
     }
 }
@@ -1185,12 +1190,17 @@ impl RustEngine {
         let config = ProdCodeConfig::load(workspace_root);
         tracing::info!(?workspace_root, rust = ?config.rust, "analysis options");
         let cargo_config = config.cargo_config();
+        let build_scripts = config.rust.build_scripts;
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(8);
         let load_config = LoadCargoConfig {
-            load_out_dirs_from_check: false,
-            with_proc_macro_server: ProcMacroServerChoice::Sysroot,
+            load_out_dirs_from_check: build_scripts,
+            with_proc_macro_server: if build_scripts {
+                ProcMacroServerChoice::Sysroot
+            } else {
+                ProcMacroServerChoice::None
+            },
             prefill_caches: false,
             num_worker_threads: num_threads,
             proc_macro_processes: num_threads.min(8),

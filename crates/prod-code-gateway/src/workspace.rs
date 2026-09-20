@@ -163,6 +163,25 @@ impl WorkspaceManager {
         }
     }
 
+    /// The loaded workspaces: name (directory name), engine and active sessions.
+    pub async fn loaded_summary(&self) -> Vec<(String, String, usize)> {
+        let guard = self.workspaces.read().await;
+        guard
+            .values()
+            .filter_map(|state| match state {
+                LoadState::Ready(ws) => Some((
+                    ws.root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    ws.engine.clone(),
+                    ws.active_sessions.load(Ordering::Relaxed),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Number of currently loaded workspaces.
     pub async fn loaded_count(&self) -> usize {
         let guard = self.workspaces.read().await;

@@ -250,7 +250,9 @@ enum Commands {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let remotes = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
+    let seeds = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
+    // One seed is enough: the rest of the cluster comes from that node's gossip view.
+    let remotes = prod_code_mcp::cluster::discover_nodes(&seeds).await;
 
     let cwd_root = env::current_dir()
         .ok()
@@ -1633,6 +1635,33 @@ async fn run_cluster(
 ) -> Result<()> {
     println!("⚡ prod-code cluster ({} node(s))", nodes.len());
     println!("────────────────────────────────────────────────────");
+    // The gossip view of the first node that answers: what every node holds.
+    for node in nodes {
+        if let Ok(view) = prod_code_mcp::cluster::cluster_view(*node).await {
+            println!("gossip view from {}:", view.this_node);
+            for peer in &view.nodes {
+                let ws: Vec<String> = peer
+                    .workspaces
+                    .iter()
+                    .map(|w| format!("{}[{}:{}]", w.name, w.engine, w.sessions))
+                    .collect();
+                println!(
+                    "  {:<22} {:<5} load {:>5.2}/cpu  seen {:>3}s ago  {}",
+                    peer.addr,
+                    if peer.alive { "UP" } else { "STALE" },
+                    peer.status.load_per_cpu().unwrap_or(0.0),
+                    peer.last_seen_secs,
+                    if ws.is_empty() {
+                        "-".to_string()
+                    } else {
+                        ws.join(" ")
+                    }
+                );
+            }
+            println!("────────────────────────────────────────────────────");
+            break;
+        }
+    }
     let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
         .first()
         .copied();

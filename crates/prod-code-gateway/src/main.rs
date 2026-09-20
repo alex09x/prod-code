@@ -11,8 +11,9 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp, HandshakeResponse,
-    PROTOCOL_VERSION, PathTranslator, ProdCodeCodec, StatusResponse, SyncProbeRequest,
+    ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
+    HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION, PathTranslator, PeerInfo,
+    PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 use std::net::SocketAddr;
@@ -57,6 +58,16 @@ pub struct ServerCli {
     /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
     pub prune_worktree_days: u64,
+
+    /// Other gateways of the cluster (`host:port,host:port`); membership then spreads by
+    /// gossip, so listing one live peer is enough.
+    #[arg(long, env = "PROD_CODE_PEERS", default_value = "")]
+    pub peers: String,
+
+    /// The address peers and clients reach this gateway at (`host:port`); detected from the
+    /// primary interface when absent.
+    #[arg(long, env = "PROD_CODE_ADVERTISE")]
+    pub advertise: Option<String>,
 }
 
 pub struct ServerState {
@@ -66,7 +77,24 @@ pub struct ServerState {
     pub active_sessions: AtomicUsize,
     pub storage_root: PathBuf,
     pub workspace_manager: Arc<WorkspaceManager>,
+    /// This gateway's address as peers and clients reach it.
+    pub advertise: tokio::sync::RwLock<String>,
+    /// Peers to gossip with: configured ones plus those learned from gossip.
+    pub peers: tokio::sync::RwLock<std::collections::BTreeSet<String>>,
+    /// Latest heartbeat from every peer and when it arrived.
+    pub cluster: tokio::sync::RwLock<std::collections::HashMap<String, PeerEntry>>,
 }
+
+/// A peer's latest heartbeat.
+pub struct PeerEntry {
+    pub gossip: NodeGossip,
+    pub last_seen: Instant,
+}
+
+/// How long a silent peer still counts as alive.
+const PEER_ALIVE: std::time::Duration = std::time::Duration::from_secs(30);
+/// Heartbeat period.
+const GOSSIP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl ServerState {
     pub fn new(storage_root: PathBuf) -> Self {
@@ -77,6 +105,156 @@ impl ServerState {
             active_sessions: AtomicUsize::new(0),
             storage_root,
             workspace_manager: Arc::new(WorkspaceManager::new()),
+            advertise: tokio::sync::RwLock::new(String::new()),
+            peers: tokio::sync::RwLock::new(std::collections::BTreeSet::new()),
+            cluster: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// This node's heartbeat.
+    pub async fn own_gossip(&self) -> NodeGossip {
+        let status = self.status().await;
+        let workspaces = self
+            .workspace_manager
+            .loaded_summary()
+            .await
+            .into_iter()
+            .map(|(name, engine, sessions)| LoadedWorkspaceInfo {
+                name,
+                engine,
+                sessions,
+            })
+            .collect();
+        let peers = self.peers.read().await.iter().cloned().collect();
+        NodeGossip {
+            addr: self.advertise.read().await.clone(),
+            status,
+            workspaces,
+            peers,
+            sent_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+
+    /// Records a peer's heartbeat and learns the peers it knows.
+    pub async fn absorb_gossip(&self, gossip: NodeGossip) {
+        let me = self.advertise.read().await.clone();
+        if gossip.addr.is_empty() || gossip.addr == me {
+            return;
+        }
+        {
+            let mut peers = self.peers.write().await;
+            peers.insert(gossip.addr.clone());
+            for p in &gossip.peers {
+                if *p != me && peers.len() < 64 {
+                    peers.insert(p.clone());
+                }
+            }
+        }
+        self.cluster.write().await.insert(
+            gossip.addr.clone(),
+            PeerEntry {
+                gossip,
+                last_seen: Instant::now(),
+            },
+        );
+    }
+
+    /// The cluster as this node sees it, itself first.
+    pub async fn cluster_view(&self) -> ClusterResponse {
+        let own = self.own_gossip().await;
+        let mut nodes = vec![PeerInfo {
+            addr: own.addr.clone(),
+            status: own.status,
+            workspaces: own.workspaces,
+            last_seen_secs: 0,
+            alive: true,
+        }];
+        let cluster = self.cluster.read().await;
+        for entry in cluster.values() {
+            let age = entry.last_seen.elapsed();
+            nodes.push(PeerInfo {
+                addr: entry.gossip.addr.clone(),
+                status: entry.gossip.status.clone(),
+                workspaces: entry.gossip.workspaces.clone(),
+                last_seen_secs: age.as_secs(),
+                alive: age < PEER_ALIVE,
+            });
+        }
+        nodes[1..].sort_by(|a, b| a.addr.cmp(&b.addr));
+        ClusterResponse {
+            this_node: own.addr,
+            nodes,
+        }
+    }
+
+    /// Where `workspace_name` should live: the node that already holds it (this one first),
+    /// otherwise the quietest live node that serves `engine`; a node loaded but idle on an
+    /// overloaded gateway moves to a much quieter one.
+    pub async fn place(&self, req: &PlaceRequest) -> PlaceResponse {
+        let view = self.cluster_view().await;
+        let engine = req.engine.as_deref();
+        let capable = |n: &PeerInfo| match engine {
+            Some(e) => cluster_supports_engine(&n.status, e),
+            None => true,
+        };
+        let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
+        let quietest = view
+            .nodes
+            .iter()
+            .filter(|n| n.alive && capable(n))
+            .min_by(|a, b| {
+                load(a)
+                    .partial_cmp(&load(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        let holder = view.nodes.iter().find(|n| {
+            n.alive && capable(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
+        });
+        if let Some(h) = holder {
+            let idle = h
+                .workspaces
+                .iter()
+                .find(|w| w.name == req.workspace_name)
+                .map(|w| w.sessions == 0)
+                .unwrap_or(true);
+            if let Some(q) = quietest
+                && idle
+                && q.addr != h.addr
+                && load(h) > 1.0
+                && load(q) < load(h) * 0.5
+            {
+                return PlaceResponse {
+                    node: Some(q.addr.clone()),
+                    reason: format!(
+                        "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
+                        h.addr,
+                        load(h),
+                        q.addr,
+                        load(q)
+                    ),
+                };
+            }
+            return PlaceResponse {
+                node: Some(h.addr.clone()),
+                reason: format!("already loaded on {}", h.addr),
+            };
+        }
+        match quietest {
+            Some(q) => PlaceResponse {
+                node: Some(q.addr.clone()),
+                reason: format!(
+                    "quietest node serving {} ({:.2}/cpu)",
+                    engine.unwrap_or("any engine"),
+                    load(q)
+                ),
+            },
+            None => PlaceResponse {
+                node: None,
+                reason: format!("no live node serves {}", engine.unwrap_or("this workspace")),
+            },
         }
     }
 
@@ -1295,6 +1473,19 @@ pub async fn handle_client(
             WireMessage::StatusRequest => {
                 let status = state.status().await;
                 framed.send(WireMessage::StatusResponse(status)).await?;
+            }
+            WireMessage::Gossip(gossip) => {
+                state.absorb_gossip(gossip).await;
+                let own = state.own_gossip().await;
+                framed.send(WireMessage::Gossip(own)).await?;
+            }
+            WireMessage::ClusterRequest => {
+                let view = state.cluster_view().await;
+                framed.send(WireMessage::ClusterResponse(view)).await?;
+            }
+            WireMessage::PlaceRequest(req) => {
+                let resp = state.place(&req).await;
+                framed.send(WireMessage::PlaceResponse(resp)).await?;
             }
             WireMessage::SyncRequest(req) => {
                 let resp = apply_sync(&state.storage_root, &state.workspace_manager, req).await;
@@ -2749,6 +2940,29 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(cli.bind).await?;
     tracing::info!("prod-code gateway listening on {}", cli.bind);
 
+    let peers: Vec<String> = cli
+        .peers
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect();
+    let advertise = cli
+        .advertise
+        .clone()
+        .unwrap_or_else(|| detect_advertise_addr(cli.bind, peers.first().map(String::as_str)));
+    *state.advertise.write().await = advertise.clone();
+    {
+        let mut set = state.peers.write().await;
+        for p in &peers {
+            if *p != advertise {
+                set.insert(p.clone());
+            }
+        }
+    }
+    tracing::info!(advertise, peers = ?peers, "cluster identity");
+    tokio::spawn(gossip_loop(Arc::clone(&state)));
+
     tokio::spawn(janitor(
         Arc::clone(&state),
         cli.idle_evict_secs,
@@ -2820,6 +3034,67 @@ fn prefer_rustup_toolchain() {
 }
 
 /// Periodically unloads idle engines and prunes stale worktree workspace directories.
+/// The address this gateway advertises: the bind address when it names a host, otherwise
+/// the IPv4 of the interface that routes to the first peer (or to a public address) plus
+/// the bind port.
+fn detect_advertise_addr(bind: SocketAddr, first_peer: Option<&str>) -> String {
+    if !bind.ip().is_unspecified() {
+        return bind.to_string();
+    }
+    let probe = first_peer
+        .and_then(|p| p.parse::<SocketAddr>().ok())
+        .unwrap_or_else(|| "8.8.8.8:80".parse().unwrap());
+    let local_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect(probe).and_then(|_| s.local_addr()))
+        .map(|a| a.ip())
+        .unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+    format!("{local_ip}:{}", bind.port())
+}
+
+/// Whether a status lists `engine` among its engines (entries look like `swift (sourcekit-lsp)`).
+fn cluster_supports_engine(status: &StatusResponse, engine: &str) -> bool {
+    status.detected_engines.iter().any(|e| {
+        e == engine
+            || e.strip_prefix(engine)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
+}
+
+/// Sends this node's heartbeat to every known peer every [`GOSSIP_PERIOD`] and absorbs the
+/// heartbeats they answer with, so every node ends up with the same picture of the cluster.
+async fn gossip_loop(state: Arc<ServerState>) {
+    loop {
+        tokio::time::sleep(GOSSIP_PERIOD).await;
+        let peers: Vec<String> = state.peers.read().await.iter().cloned().collect();
+        if peers.is_empty() {
+            continue;
+        }
+        let own = state.own_gossip().await;
+        for peer in peers {
+            let own = own.clone();
+            let state = Arc::clone(&state);
+            tokio::spawn(async move {
+                let reply = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                    let addr: SocketAddr = peer.parse().ok()?;
+                    let stream = TcpStream::connect(addr).await.ok()?;
+                    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+                    framed.send(WireMessage::Gossip(own)).await.ok()?;
+                    match framed.next().await {
+                        Some(Ok(WireMessage::Gossip(g))) => Some(g),
+                        _ => None,
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some(gossip) = reply {
+                    state.absorb_gossip(gossip).await;
+                }
+            });
+        }
+    }
+}
+
 async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_days: u64) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
     ticker.tick().await;

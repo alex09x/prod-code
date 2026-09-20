@@ -33,6 +33,15 @@ pub enum WireMessage {
     /// registries, SDK headers): what a definition outside the checkout points at.
     ReadFileRequest(ReadFileRequest),
     ReadFileResponse(ReadFileResponse),
+    /// Node-to-node heartbeat: a gateway's status, loaded workspaces and known peers. The
+    /// receiving node answers with its own `Gossip`.
+    Gossip(NodeGossip),
+    /// A client asks any node for the whole cluster as that node sees it.
+    ClusterRequest,
+    ClusterResponse(ClusterResponse),
+    /// A client asks any node where a workspace should live.
+    PlaceRequest(PlaceRequest),
+    PlaceResponse(PlaceResponse),
 }
 
 /// Supported code intelligence engine kinds.
@@ -425,4 +434,60 @@ pub struct ReadFileResponse {
     pub truncated: bool,
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// A workspace a gateway currently holds in memory.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadedWorkspaceInfo {
+    pub name: String,
+    pub engine: String,
+    pub sessions: usize,
+}
+
+/// One gateway's heartbeat.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeGossip {
+    /// The address other nodes and clients reach this gateway at (`host:port`).
+    pub addr: String,
+    pub status: StatusResponse,
+    #[serde(default)]
+    pub workspaces: Vec<LoadedWorkspaceInfo>,
+    /// Every peer address this node knows, so membership spreads transitively.
+    #[serde(default)]
+    pub peers: Vec<String>,
+    #[serde(default)]
+    pub sent_at_ms: u64,
+}
+
+/// A peer as seen by the answering node.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerInfo {
+    pub addr: String,
+    pub status: StatusResponse,
+    #[serde(default)]
+    pub workspaces: Vec<LoadedWorkspaceInfo>,
+    /// Seconds since this node last heard from the peer (0 for the answering node itself).
+    pub last_seen_secs: u64,
+    pub alive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClusterResponse {
+    /// The answering node's own address.
+    pub this_node: String,
+    pub nodes: Vec<PeerInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlaceRequest {
+    pub workspace_name: String,
+    #[serde(default)]
+    pub engine: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlaceResponse {
+    /// The node to use, or None when no node in the cluster can serve the engine.
+    pub node: Option<String>,
+    pub reason: String,
 }
