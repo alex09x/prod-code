@@ -51,6 +51,16 @@ A checkout is placed by the cluster on the node that already holds it, otherwise
 quietest node that serves its language (Swift lands on a macOS node); the placement is
 remembered per checkout and an idle workspace drifts off an overloaded node.
 
+### macOS nodes: signing
+
+macOS treats every ad-hoc-signed build as a new program (the linker identifier carries a
+hash), so a gateway that gossips to LAN peers triggers the Local Network / privacy prompt
+after each redeploy. `scripts/deploy-mac-node.sh <host> <advertise> <peers> [release|dev]`
+builds on the node, signs the binary through the Mac Studio keychain
+(`PROD_CODE_SIGN_IDENTITY`, default the Apple Development identity) with the stable
+identifier `com.prod-code.gateway`, installs it atomically and restarts the launchd agent.
+The grant is remembered per identifier + team, so the prompt appears once.
+
 ## Usage metrics
 
 Each gateway records every query, command and sync round as one JSON line under
