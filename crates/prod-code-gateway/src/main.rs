@@ -781,10 +781,14 @@ fn hierarchy_query(
                             .iter()
                             .map(|(l, c)| lsp_range(*l, *c, *l, *c))
                             .collect();
-                        serde_json::json!({
+                        let mut value = serde_json::json!({
                             if incoming { "from" } else { "to" }: hierarchy_item_json(&edge.item),
                             "fromRanges": ranges,
-                        })
+                        });
+                        if incoming {
+                            value["isTest"] = serde_json::Value::Bool(edge.is_test);
+                        }
+                        value
                     })
                     .collect(),
             )

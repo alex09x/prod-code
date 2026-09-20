@@ -152,6 +152,10 @@ pub struct HierarchyItem {
 pub struct CallEdge {
     pub item: HierarchyItem,
     pub call_sites: Vec<(u32, u32)>,
+    /// The caller is a test (`#[test]` or inside a `cfg(test)` module), as rust-analyzer
+    /// classifies it.
+    #[serde(default)]
+    pub is_test: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -693,7 +697,26 @@ impl RustEngineSnapshot {
             .analysis
             .incoming_calls(&config, pos)?
             .unwrap_or_default();
-        Ok(self.call_edges(calls))
+        let mut edges = self.call_edges(calls);
+        // Callers that disappear when tests are excluded are the tests.
+        let without_tests = CallHierarchyConfig {
+            exclude_tests: true,
+            ra_fixture: RaFixtureConfig::default(),
+        };
+        let non_test: std::collections::HashSet<(PathBuf, u32, u32)> = self
+            .call_edges(
+                self.analysis
+                    .incoming_calls(&without_tests, pos)?
+                    .unwrap_or_default(),
+            )
+            .into_iter()
+            .map(|e| (e.item.path, e.item.line, e.item.col))
+            .collect();
+        for edge in &mut edges {
+            edge.is_test =
+                !non_test.contains(&(edge.item.path.clone(), edge.item.line, edge.item.col));
+        }
+        Ok(edges)
     }
 
     /// Everything the function whose name is at (line, col) calls.
@@ -723,7 +746,11 @@ impl RustEngineSnapshot {
                         Some(offset_to_line_col(&text, range.range.start()))
                     })
                     .collect();
-                Some(CallEdge { item, call_sites })
+                Some(CallEdge {
+                    item,
+                    call_sites,
+                    is_test: false,
+                })
             })
             .collect()
     }
