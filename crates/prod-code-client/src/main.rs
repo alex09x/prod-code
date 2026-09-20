@@ -80,6 +80,15 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Run the tests and explain every failure: site, code, callers, what changed
+    Diagnose {
+        /// Test filter (as for `prod-code test`)
+        filter: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Analyzer diagnostics for a file, in memory (no build): prod-code diagnostics <file>
     Diagnostics {
         file: PathBuf,
@@ -304,6 +313,11 @@ async fn main() -> Result<()> {
             json,
         } => run_dead_code(remote, include_exported, max_files, json).await,
         Commands::Diagnostics { file, json } => run_diagnostics(remote, &file, None, json).await,
+        Commands::Diagnose {
+            filter,
+            timeout_secs,
+            json,
+        } => run_diagnose(remote, filter.as_deref(), timeout_secs, json).await,
         Commands::Validate { file, from, json } => {
             let text = match from {
                 Some(path) => std::fs::read_to_string(&path)
@@ -893,6 +907,27 @@ async fn run_impact(
         )
         .await?;
         std::process::exit(outcome.exit.exit_code.unwrap_or(1));
+    }
+    Ok(())
+}
+
+/// Runs the tests and prints a dossier for every failure.
+async fn run_diagnose(
+    remote: SocketAddr,
+    filter: Option<&str>,
+    timeout_secs: u64,
+    json: bool,
+) -> Result<()> {
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let report = prod_code_mcp::dossier::diagnose(remote, &root, filter, timeout_secs).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+    }
+    if report.tests_failed > 0 || !report.build_errors.is_empty() {
+        std::process::exit(1);
     }
     Ok(())
 }

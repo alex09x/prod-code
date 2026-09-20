@@ -3,6 +3,7 @@
 pub mod cluster;
 pub mod dead_code;
 pub mod diagnostics;
+pub mod dossier;
 pub mod exec;
 pub mod impact;
 pub mod lang;

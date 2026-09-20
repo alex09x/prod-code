@@ -247,6 +247,18 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_diagnose_failure".to_string(),
+            description: "Run the tests (optionally one filter) on the gateway and, for every failure, return a dossier: the failure output, the source around each location it mentions, the enclosing function and its callers, and the working-tree diff of that file. One call instead of test → grep → read → blame."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filter": { "type": "string", "description": "Test name filter, as for code_test" },
+                    "timeout_secs": { "type": "integer", "description": "Kill the run after this many seconds (default 3600)" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_diagnostics".to_string(),
             description: "Analyzer diagnostics for one file, computed in memory without a build: syntax errors, unresolved names, type mismatches, unused items. Milliseconds, not a cargo/tsc run."
                 .to_string(),
@@ -946,6 +958,23 @@ pub async fn execute_tool(
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
             let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
             Ok(McpToolCallResult::text(report.render()))
+        }
+        "code_diagnose_failure" => {
+            let filter = args.get("filter").and_then(|v| v.as_str());
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let report =
+                crate::dossier::diagnose(remote, workspace_root, filter, timeout_secs).await?;
+            let text = report.render();
+            Ok(
+                if report.tests_failed == 0 && report.build_errors.is_empty() {
+                    McpToolCallResult::text(text)
+                } else {
+                    McpToolCallResult::error(text)
+                },
+            )
         }
         "code_diagnostics" | "code_validate_edit" => {
             let path_str = args
