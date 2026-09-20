@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Per-repository Rust analysis options in `prod-code.toml` (`[rust] features = "all" | [..]`,
+  `no_default_features`, `all_targets`, `sysroot`), with rust-analyzer-like defaults: all
+  targets analysed and the standard library loaded from `rust-src`. Repositories that compile
+  one module tree into several crates behind feature flags (BTCR's `src/strategy2`) need
+  `features = "all"`, otherwise those modules resolve to nothing.
+- Sync ships `rustc-wrapper` scripts and `*.sh`, and the gateway keeps the executable bit, so
+  `cargo metadata` works on a workspace whose `.cargo/config.toml` sets `build.rustc-wrapper`.
+  Verified on BTCR: 109 implementations of `StrategyInterface`, 235 references, callers with
+  call sites, where before only syntax-level queries answered.
+
 - Call hierarchy and implementations (Phase 7.5): `prod-code callers | callees | impls` and MCP
   `code_callers` / `code_callees` / `code_implementations` for every engine (rust-analyzer
   in-memory, gopls, clangd, native TypeScript, basedpyright, sourcekit-lsp), with call sites.

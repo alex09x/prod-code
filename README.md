@@ -19,6 +19,25 @@
 
 ---
 
+
+## Per-repository options (`prod-code.toml`)
+
+Put a `prod-code.toml` at the checkout root to tune how the gateway analyses it. It is synced
+like any manifest and read when the workspace is loaded (restart or idle-evict the gateway
+after changing it):
+
+```toml
+[rust]
+features = "all"            # or ["feat-a", "feat-b"]; default: the crate's default features
+no_default_features = false
+all_targets = true          # tests, benches and examples are analysed (default)
+sysroot = true              # standard library from rust-src (default)
+```
+
+Use `features = "all"` when the same module tree is compiled into several crates behind
+feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled
+feature is dead there.
+
 ## 🎯 The Problem: Why Traditional Language Servers Fail at Agent Scale
 
 Modern language servers (`rust-analyzer`, `gopls`, `pyright`, `tsserver`) were architected for a single human developer typing in an interactive desktop editor. 
