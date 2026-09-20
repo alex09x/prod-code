@@ -34,6 +34,8 @@ pub struct FailureDossier {
 #[derive(Debug, Clone, Serialize)]
 pub struct DossierReport {
     pub command: Vec<String>,
+    /// Files changed in the working tree (the usual suspects).
+    pub changed_files: Vec<String>,
     pub tests_passed: u64,
     pub tests_failed: u64,
     pub dossiers: Vec<FailureDossier>,
@@ -50,6 +52,12 @@ impl DossierReport {
             self.tests_passed,
             self.tests_failed
         );
+        if !self.changed_files.is_empty() {
+            out.push_str(&format!(
+                "changed in the working tree: {}\n",
+                self.changed_files.join(", ")
+            ));
+        }
         if !self.build_errors.is_empty() {
             out.push_str("build errors:\n");
             for e in &self.build_errors {
@@ -94,15 +102,29 @@ impl DossierReport {
 /// order of appearance, deduplicated: Rust panics and `-->` notes, Go `file.go:12:`, Python
 /// `File "x.py", line 12`, JS/TS `(x.ts:12:5)`, Swift/C `x.swift:12: error`.
 pub fn locations_in(root: &Path, text: &str) -> Vec<(String, u32)> {
+    locations_in_with_hint(root, text, "")
+}
+
+/// [`locations_in`] with a hint (the failing test's name, e.g. `pkg/sub.TestX`) used to
+/// resolve bare file names such as Go's `signal_test.go:7` to the right directory.
+pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(String, u32)> {
     let root_str = std::fs::canonicalize(root)
         .unwrap_or_else(|_| root.to_path_buf())
         .to_string_lossy()
         .into_owned();
+    // Every source file of the checkout, for resolving bare file names.
+    let all_files: Vec<String> = crate::sync::scan_workspace_files(root, None)
+        .map(|files| files.into_iter().map(|f| f.relative_path).collect())
+        .unwrap_or_default();
+    let hint_segments: Vec<&str> = hint
+        .split(|c: char| c == '/' || c == '.' || c == ':')
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
     let mut push = |file: &str, line: u32| {
         let file = file.trim_matches(|c| c == '"' || c == '(' || c == ')' || c == '\'');
-        let rel = file
+        let mut rel = file
             .strip_prefix(&format!("{root_str}/"))
             .unwrap_or(file)
             .to_string();
@@ -114,7 +136,29 @@ pub fn locations_in(root: &Path, text: &str) -> Vec<(String, u32)> {
             return;
         }
         if !root.join(&rel).is_file() {
-            return;
+            // A bare name: the unique file with that basename, or the one whose directory
+            // matches the test's package.
+            if rel.contains('/') {
+                return;
+            }
+            let candidates: Vec<&String> = all_files
+                .iter()
+                .filter(|p| p.rsplit('/').next() == Some(rel.as_str()))
+                .collect();
+            let chosen = match candidates.as_slice() {
+                [] => return,
+                [one] => (*one).clone(),
+                many => many
+                    .iter()
+                    .find(|p| {
+                        hint_segments
+                            .iter()
+                            .any(|seg| p.split('/').any(|part| part == *seg))
+                    })
+                    .map(|p| (*p).clone())
+                    .unwrap_or_else(|| (*many[0]).clone()),
+            };
+            rel = chosen;
         }
         if seen.insert((rel.clone(), line)) {
             out.push((rel, line));
@@ -213,7 +257,10 @@ pub async fn diagnose(
         let mut session = LspSession::open(remote, root, None).await.ok();
         for failure in report.failures.iter().take(10) {
             let mut sites = Vec::new();
-            for (file, line) in locations_in(root, &failure.output).into_iter().take(3) {
+            for (file, line) in locations_in_with_hint(root, &failure.output, &failure.name)
+                .into_iter()
+                .take(3)
+            {
                 let abs = root.join(&file);
                 let text = std::fs::read_to_string(&abs).unwrap_or_default();
                 let snippet = crate::remote_fs::snippet(&text, line, 6);
@@ -277,8 +324,21 @@ pub async fn diagnose(
             session.close().await;
         }
     }
+    let changed_files: Vec<String> = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", "HEAD"])
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(DossierReport {
         command: report.command.clone(),
+        changed_files,
         tests_passed: report.tests_passed,
         tests_failed: report.tests_failed,
         dossiers,
