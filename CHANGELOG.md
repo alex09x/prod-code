@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The MCP server keeps one gateway session per checkout for the life of the process: a tool
+  call is one request instead of connect + sync + handshake + initialize (20 hovers: 2.8 s →
+  0.6 s, ~10 ms each after the first). Local edits are pushed over the same connection before
+  each call and open documents are updated; a dead connection is replaced transparently.
+- The MCP server sends agent instructions at `initialize` (navigate semantically, validate
+  before writing, build and test on the gateway, impact and diagnose).
+- `prod-code status` probes the named node.
+
 ## v0.2.0 — 2026-09-20
 
 Second release: every language, a real cluster, and the agent tools that make prod-code more
