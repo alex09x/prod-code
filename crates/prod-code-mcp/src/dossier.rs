@@ -240,7 +240,7 @@ pub async fn diagnose(
     let build_errors: Vec<String> = report
         .diagnostics
         .iter()
-        .filter(|d| d.level == "error")
+        .filter(|d| d.level == "error" && !d.message.starts_with("test failed"))
         .map(|d| {
             format!(
                 "{}{}",
@@ -257,10 +257,20 @@ pub async fn diagnose(
         let mut session = LspSession::open(remote, root, None).await.ok();
         for failure in report.failures.iter().take(10) {
             let mut sites = Vec::new();
-            for (file, line) in locations_in_with_hint(root, &failure.output, &failure.name)
-                .into_iter()
-                .take(3)
+            let mut locations = locations_in_with_hint(root, &failure.output, &failure.name);
+            // pytest node ids (`tests/test_x.py::test_y`) name the file but no line: point at
+            // the test function itself.
+            if locations.is_empty()
+                && let Some((file, rest)) = failure.name.split_once("::")
+                && root.join(file).is_file()
             {
+                let func = rest.rsplit("::").next().unwrap_or(rest).to_string();
+                let line = session_symbol_line(session.as_mut(), &root.join(file), &func)
+                    .await
+                    .unwrap_or(1);
+                locations.push((file.to_string(), line));
+            }
+            for (file, line) in locations.into_iter().take(3) {
                 let abs = root.join(&file);
                 let text = std::fs::read_to_string(&abs).unwrap_or_default();
                 let snippet = crate::remote_fs::snippet(&text, line, 6);
@@ -345,6 +355,33 @@ pub async fn diagnose(
         build_errors,
         tail: report.tail.clone(),
     })
+}
+
+/// The 1-based line of function `name` in `file`, through the session's document symbols.
+async fn session_symbol_line(
+    session: Option<&mut LspSession>,
+    file: &Path,
+    name: &str,
+) -> Option<u32> {
+    let session = session?;
+    let uri = session.uri_for(file).ok()?;
+    let symbols = session
+        .query(
+            file,
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .ok()?;
+    let mut functions = Vec::new();
+    collect_functions(
+        symbols.as_array().map(|a| a.as_slice()).unwrap_or(&[]),
+        &mut functions,
+    );
+    functions
+        .iter()
+        .find(|(n, _, _, _, _)| n == name || n.starts_with(&format!("{name}(")))
+        .map(|(_, _, _, sl, _)| *sl)
 }
 
 fn collect_functions(symbols: &[serde_json::Value], out: &mut Vec<(String, u32, u32, u32, u32)>) {
