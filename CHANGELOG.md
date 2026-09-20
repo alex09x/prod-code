@@ -17,6 +17,8 @@
 - Go engine is advertised only when both `gopls` and `go` are on the gateway's PATH (gopls
   without the go tool answers "no views"); ram9 got a Go toolchain.
 - `GoEngine::document_symbols` surfaces gopls errors instead of returning an empty list.
+- rama ran Ubuntu clangd 18, whose `workspace/symbol` reports header symbols under the wrong
+  file; all Linux nodes now run clangd 22.1.6 from `~/.local/clangd`.
 
 ### Changed
 - Gateway channels moved to [`rapidfire`](https://github.com/alex09x/rapidfire) (zero-dependency
