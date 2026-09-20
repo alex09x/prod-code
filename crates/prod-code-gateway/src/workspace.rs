@@ -282,11 +282,10 @@ impl WorkspaceManager {
         match engine {
             "rust" => {
                 let ws_path = workspace_root.to_path_buf();
-                let options = prod_code_engine_rust::LoadOptions {
-                    shared_target_dir: shared_target_dir(workspace_root),
-                };
                 let loaded_engine = tokio::task::spawn_blocking(move || {
-                    prod_code_engine_rust::RustEngine::load_with(&ws_path, &options)
+                    // Every worktree copy builds into its own target directory: worktrees
+                    // never share cargo state or wait on each other's build lock.
+                    prod_code_engine_rust::RustEngine::load(&ws_path)
                 })
                 .await
                 .ok()
@@ -595,21 +594,6 @@ pub fn server_workspace_path(
     storage_root.join(candidate_name)
 }
 
-/// The cargo target directory a worktree copy shares with its origin repository's copy
-/// (`storage/<repo>--wt-<hash>` -> `storage/<repo>/target`), so build-script and proc-macro
-/// artifacts are reused across every worktree of that repository, both for the analyzer's
-/// load and for `exec` builds. `None` for a repository's own workspace.
-pub fn shared_target_dir(workspace_root: &Path) -> Option<PathBuf> {
-    let name = workspace_root.file_name()?.to_str()?;
-    let (origin, _) = name.split_once("--wt-")?;
-    if origin.is_empty() {
-        return None;
-    }
-    let dir = workspace_root.parent()?.join(origin).join("target");
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir)
-}
-
 /// Marker file whose mtime records the last handshake on a workspace directory.
 pub const LAST_USED_MARKER: &str = ".prod-code-last-used";
 
@@ -768,20 +752,6 @@ mod tests {
         manager.unregister_session_view(&view1).await;
         manager.unregister_session_view(&view2).await;
         manager.unregister_session_view(&view3).await;
-    }
-
-    #[test]
-    fn test_shared_target_dir_points_worktree_copies_at_origin() {
-        let temp = tempfile::tempdir().unwrap();
-        let storage = temp.path();
-        let wt = storage.join("BTCR--wt-58ae90a7");
-        assert_eq!(
-            shared_target_dir(&wt),
-            Some(storage.join("BTCR").join("target"))
-        );
-        assert!(storage.join("BTCR").join("target").is_dir());
-        assert_eq!(shared_target_dir(&storage.join("BTCR")), None);
-        assert_eq!(shared_target_dir(&storage.join("--wt-abc")), None);
     }
 
     #[tokio::test]
