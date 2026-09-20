@@ -1828,7 +1828,7 @@ async fn run_session_loop(
                                                          "location": {
                                                              "uri": uri,
                                                              "range": {
-                                                                 "start": { "line": s.line.saturating_sub(1), "character": 0 },
+                                                                 "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
                                                                  "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
                                                              }
                                                          },
