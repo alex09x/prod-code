@@ -265,9 +265,15 @@ async fn main() -> Result<()> {
     let cwd_root = env::current_dir()
         .ok()
         .map(|d| find_workspace_root(&d).unwrap_or(d));
+    // Placement follows the origin repository: every worktree lands on the node that holds
+    // the origin's copy, so seeding from that copy and the shared cargo target directory
+    // work. The workspace name itself stays per worktree (`<repo>--wt-<hash>`).
     let cwd_workspace = cwd_root
         .as_deref()
-        .map(|root| prod_code_mcp::sync::workspace_identity(root).name)
+        .map(|root| {
+            let identity = prod_code_mcp::sync::workspace_identity(root);
+            identity.base.unwrap_or(identity.name)
+        })
         .unwrap_or_default();
     // The engine a query needs is that of the nearest project of the file it names (or of
     // the current directory): a SwiftPM package inside a Rust repository must land on a
