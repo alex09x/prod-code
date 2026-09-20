@@ -362,7 +362,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Generates valid, type-safe, compile-ready code populated with default or randomized values in 1 step.
   - Eliminates hundreds of lines of manual boilerplate authoring and associated compiler type-mismatch errors.
 
-- [ ] **8.6. Dead Code & Orphan Pruning (`code_prune_orphans`)**
+- [~] **8.6. Dead Code & Orphan Pruning (`code_prune_orphans`)** — scan shipped 2026-09-20: `prod-code dead-code [--include-exported] [--max-files N] [--json]` and MCP `code_dead_code` check every function, method and type of the checkout for references through the analyzer over one persistent session (522 symbols of prod-code in 1.5 s). Tests (test modules via symbol containers, test files by convention) and entry points are skipped; exported/public symbols are counted separately; trait-impl methods (Rust) and methods in interface languages go to a "may be reached through a trait / interface" bucket. Known false positives: items referenced only from attributes (`#[serde(with = ...)]`). Automatic pruning (`code_prune_orphans` applying safe-delete) still open.
   - Whole-program graph reachability analysis traversing entry points (`main`, `lib`, public APIs, route handlers).
   - Detects unreachable functions, dead types, and orphaned imports left behind by large refactors.
   - Emits an atomic single-commit cleanup patch.

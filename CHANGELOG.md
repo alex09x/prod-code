@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Dead-code scan (Phase 8.6): `prod-code dead-code` and MCP `code_dead_code` list unreferenced
+  functions, methods and types found through the analyzer, skipping tests and entry points and
+  bucketing exported symbols and trait/interface methods separately. Batch features (impact,
+  dead-code) run on one persistent gateway session instead of a connection per query.
+- Rust document symbols carry their enclosing items (`containerName`: `tests`, `impl Shape for
+  Circle`).
+
 - The Rust engine analyses `cfg(test)` and `debug_assertions` code like rust-analyzer's IDE
   defaults, so `#[test]` functions exist in the call graph; callers are flagged as tests by
   the analyzer. Document symbols point at the item's name and carry its full extent.
