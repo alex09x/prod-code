@@ -8,6 +8,60 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
+/// Primes the analyzer's caches for every crate of a freshly loaded workspace in the
+/// background, so the first semantic query (diagnostics, hover into a dependency) does not
+/// pay tens of seconds of name resolution and type inference. Runs on a snapshot outside the
+/// engine lock; an edit that lands meanwhile cancels the run, which is retried a few times
+/// with growing pauses. `PROD_CODE_PRIME=0` disables it.
+pub fn spawn_cache_priming(
+    engine: Arc<Mutex<prod_code_engine_rust::RustEngine>>,
+    workspace_root: PathBuf,
+) {
+    if std::env::var("PROD_CODE_PRIME").is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off")) {
+        return;
+    }
+    tokio::spawn(async move {
+        // Leave cores for queries that arrive while priming runs.
+        let threads = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).clamp(2, 16))
+            .unwrap_or(4);
+        for attempt in 1..=5u32 {
+            let job = engine.lock().await.prime_job();
+            let crates = job.crate_count();
+            let started = std::time::Instant::now();
+            match tokio::task::spawn_blocking(move || job.run(threads)).await {
+                Ok(Ok(true)) => {
+                    tracing::info!(
+                        workspace = %workspace_root.display(),
+                        crates,
+                        threads,
+                        duration_ms = %format!("{}ms", started.elapsed().as_millis()),
+                        "🔥 [PRIME] analyzer caches primed"
+                    );
+                    return;
+                }
+                Ok(Ok(false)) => {
+                    tracing::debug!(
+                        workspace = %workspace_root.display(),
+                        attempt,
+                        "cache priming cancelled by an edit; retrying"
+                    );
+                    tokio::time::sleep(Duration::from_secs(2 * u64::from(attempt))).await;
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, workspace = %workspace_root.display(), "cache priming failed");
+                    return;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, workspace = %workspace_root.display(), "cache priming task panicked");
+                    return;
+                }
+            }
+        }
+        tracing::warn!(workspace = %workspace_root.display(), "cache priming gave up after repeated cancellations");
+    });
+}
+
 /// Unique identifier for a shared workspace based on its canonical root.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkspaceKey(pub PathBuf);
@@ -292,7 +346,9 @@ impl WorkspaceManager {
                 .and_then(|res| match res {
                     Ok(e) => {
                         tracing::info!(workspace = ?workspace_root, "In-memory RustEngine (ra_ap_ide) loaded into RAM");
-                        Some(Arc::new(Mutex::new(e)))
+                        let engine = Arc::new(Mutex::new(e));
+                        spawn_cache_priming(Arc::clone(&engine), workspace_root.to_path_buf());
+                        Some(engine)
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, "Failed to load in-memory RustEngine; falling back to subprocess");

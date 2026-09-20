@@ -281,6 +281,33 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
     components.into_iter().collect()
 }
 
+/// A cache-priming run prepared under the engine lock and executed outside it: the same
+/// work the first semantic query on each crate would do (name resolution, type inference of
+/// bodies, diagnostics inputs), done ahead of time across worker threads.
+pub struct PrimeJob {
+    analysis: ra_ap_ide::Analysis,
+    crates: Arc<[ra_ap_base_db::Crate]>,
+}
+
+impl PrimeJob {
+    /// Number of crates in scope (workspace members and their dependencies).
+    pub fn crate_count(&self) -> usize {
+        self.crates.len()
+    }
+
+    /// Runs the priming. `Ok(false)` means a concurrent edit bumped the database revision
+    /// and cancelled the run; the caller retries with a fresh job when the engine is idle.
+    pub fn run(self, threads: usize) -> Result<bool> {
+        match self
+            .analysis
+            .parallel_prime_caches(&self.crates, threads.max(1), |_| {})
+        {
+            Ok(()) => Ok(true),
+            Err(_cancelled) => Ok(false),
+        }
+    }
+}
+
 /// Thread-safe, multi-core analysis snapshot backed by warm Salsa database.
 ///
 /// Snapshots can be moved across threads (`tokio::task::spawn_blocking`),
@@ -1285,6 +1312,14 @@ impl RustEngine {
         })
     }
 
+    /// A priming job over every crate in the database, to be run outside the engine lock.
+    pub fn prime_job(&self) -> PrimeJob {
+        PrimeJob {
+            analysis: self.host.analysis(),
+            crates: ra_ap_base_db::all_crates(self.host.raw_database()),
+        }
+    }
+
     /// Obtain a lightweight, thread-safe analysis snapshot for parallel execution.
     pub fn snapshot(&self) -> RustEngineSnapshot {
         RustEngineSnapshot {
@@ -1815,6 +1850,23 @@ impl PathTranslator {
             .apply_assist(&lib, 2, 9, None, "no_such_assist", None)
             .unwrap();
         assert!(refused.is_err());
+    }
+
+    #[test]
+    fn test_prime_job_completes_and_is_cancelled_by_an_edit() {
+        let (temp, lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let job = engine.prime_job();
+        assert!(job.crate_count() >= 1);
+        assert!(job.run(2).unwrap(), "an undisturbed run completes");
+
+        // A write after the job was prepared cancels it: the caller must retry.
+        let stale = engine.prime_job();
+        engine
+            .apply_file_change(&lib_path, "pub const CHANGED: u8 = 1;\n".to_string())
+            .unwrap();
+        assert!(!stale.run(2).unwrap(), "a stale job reports cancellation");
+        assert!(engine.prime_job().run(2).unwrap());
     }
 
     #[test]
