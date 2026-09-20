@@ -280,6 +280,8 @@ pub struct GenericLspEngine {
     /// Latest `textDocument/publishDiagnostics` per document URI, the context quick fixes
     /// (`textDocument/codeAction`) are computed from.
     diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>>,
+    /// Receives the `workspace/applyEdit` a server sends while a command runs.
+    apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>>,
     is_alive: Arc<AtomicBool>,
     _child: Arc<Mutex<Child>>,
 }
@@ -332,6 +334,9 @@ impl GenericLspEngine {
         let diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let diagnostics_writer = diagnostics.clone();
+        let apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>> =
+            Arc::new(Mutex::new(None));
+        let apply_edit_slot = apply_edit_waiter.clone();
 
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -441,6 +446,28 @@ impl GenericLspEngine {
                                                         Self::write_frame_raw(&stdin_writer, &resp)
                                                             .await;
                                                 }
+                                                "workspace/applyEdit" => {
+                                                    // A command's edit: hand it to whoever is
+                                                    // waiting (applyAssist) and confirm.
+                                                    let edit = val
+                                                        .get("params")
+                                                        .and_then(|p| p.get("edit"))
+                                                        .cloned()
+                                                        .unwrap_or(serde_json::Value::Null);
+                                                    if let Some(tx) =
+                                                        apply_edit_slot.lock().await.take()
+                                                    {
+                                                        let _ = tx.send(edit);
+                                                    }
+                                                    let resp = serde_json::json!({
+                                                        "jsonrpc": "2.0",
+                                                        "id": id_val,
+                                                        "result": { "applied": true }
+                                                    });
+                                                    let _ =
+                                                        Self::write_frame_raw(&stdin_writer, &resp)
+                                                            .await;
+                                                }
                                                 "workspace/workspaceFolders" => {
                                                     let resp = serde_json::json!({
                                                         "jsonrpc": "2.0",
@@ -511,6 +538,7 @@ impl GenericLspEngine {
             broadcast_tx: bcast_tx,
             last_activity,
             diagnostics,
+            apply_edit_waiter,
             is_alive,
             _child: Arc::new(Mutex::new(child)),
         };
@@ -589,6 +617,47 @@ impl GenericLspEngine {
     }
 
     /// Send a request and await its response.
+    /// Runs `workspace/executeCommand` and returns the WorkspaceEdit the server pushes back
+    /// through `workspace/applyEdit` while doing so (clangd and others deliver refactorings
+    /// this way), or `None` when the command finished without an edit.
+    pub async fn execute_command_capturing_edit(
+        &self,
+        command: serde_json::Value,
+    ) -> Result<Option<serde_json::Value>> {
+        let (tx, rx) = oneshot::channel();
+        *self.apply_edit_waiter.lock().await = Some(tx);
+        let params = serde_json::json!({
+            "command": command.get("command").cloned().unwrap_or(serde_json::Value::Null),
+            "arguments": command.get("arguments").cloned().unwrap_or(serde_json::json!([])),
+        });
+        let response = self.send_request("workspace/executeCommand", params).await;
+        let edit = match tokio::time::timeout(Duration::from_secs(5), rx).await {
+            Ok(Ok(edit)) if !edit.is_null() => Some(edit),
+            _ => None,
+        };
+        *self.apply_edit_waiter.lock().await = None;
+        let response = response?;
+        if let Some(err) = response.get("error") {
+            anyhow::bail!(
+                "{}",
+                err.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("command failed")
+            );
+        }
+        Ok(edit)
+    }
+
+    /// Whether the server advertises pull diagnostics (`textDocument/diagnostic`).
+    pub async fn has_pull_diagnostics(&self) -> bool {
+        self.capabilities
+            .read()
+            .await
+            .as_ref()
+            .and_then(|c| c.get("diagnosticProvider"))
+            .is_some_and(|d| !d.is_null())
+    }
+
     /// Whether the server has published diagnostics for `uri` at least once.
     pub async fn diagnostics_published(&self, uri: &str) -> bool {
         self.diagnostics.read().await.contains_key(uri)

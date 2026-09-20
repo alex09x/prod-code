@@ -335,6 +335,25 @@ impl ManagedLsp<'_> {
         match self {
             ManagedLsp::Go(_) => Vec::new(),
             ManagedLsp::Generic(engine) => {
+                if engine.has_pull_diagnostics().await {
+                    // Pull model (the native TypeScript server): ask for the document's
+                    // diagnostics instead of waiting for a publication.
+                    let pulled = engine
+                        .send_request(
+                            "textDocument/diagnostic",
+                            serde_json::json!({ "textDocument": { "uri": uri } }),
+                        )
+                        .await
+                        .ok()
+                        .and_then(|r| r.get("result").cloned());
+                    if let Some(items) = pulled
+                        .as_ref()
+                        .and_then(|r| r.get("items"))
+                        .and_then(|i| i.as_array())
+                    {
+                        return items.clone();
+                    }
+                }
                 for _ in 0..30 {
                     if engine.diagnostics_published(uri).await {
                         break;
@@ -481,21 +500,37 @@ async fn lsp_code_actions(
                     return Ok(edit.clone());
                 }
             }
-            let command = action
-                .get("command")
-                .map(|c| {
-                    c.get("command")
-                        .and_then(|n| n.as_str())
-                        .map(String::from)
-                        .unwrap_or_else(|| c.as_str().unwrap_or("?").to_string())
-                })
-                .unwrap_or_else(|| "?".to_string());
+            // A command-only action (clangd refactorings, some tsserver fixes): run it and
+            // capture the edit the server pushes back.
+            let command = match action.get("command") {
+                Some(c) if c.is_object() => c.clone(),
+                Some(c) if c.is_string() => serde_json::json!({
+                    "command": c,
+                    "arguments": action.get("arguments").cloned().unwrap_or(serde_json::json!([])),
+                }),
+                _ => serde_json::Value::Null,
+            };
+            let title = action
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or(&wanted)
+                .to_string();
+            if command.is_null() {
+                anyhow::bail!("code action `{title}` carries neither an edit nor a command");
+            }
+            if let ManagedLsp::Generic(generic) = engine
+                && let Some(edit) = generic
+                    .execute_command_capturing_edit(command.clone())
+                    .await?
+            {
+                return Ok(edit);
+            }
             anyhow::bail!(
-                "code action `{}` only runs the server command `{command}`, which prod-code cannot apply",
-                action
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or(&wanted)
+                "code action `{title}` ran the server command `{}` without producing an edit",
+                command
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("?")
             )
         }
     }
