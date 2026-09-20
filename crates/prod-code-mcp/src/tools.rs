@@ -282,6 +282,34 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_validate_edits".to_string(),
+            description: "Check several proposed file contents TOGETHER before writing any of them: all edits are placed in one private analyzer overlay, then diagnostics are reported per file, so a change in one file is judged against the proposed state of the others (a changed signature and its updated callers). `also_check` lists unchanged files that might break (callers of the edited symbols). Nothing is written anywhere."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "edits": {
+                        "type": "array",
+                        "description": "Proposed complete contents, one entry per file",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
+                                "new_text": { "type": "string", "description": "The complete proposed content of the file" }
+                            },
+                            "required": ["path", "new_text"]
+                        }
+                    },
+                    "also_check": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Unchanged files to diagnose against the proposed edits (optional)"
+                    }
+                },
+                "required": ["edits"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1088,6 +1116,56 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_validate_edits" => {
+            let edits: Vec<(std::path::PathBuf, String)> = args
+                .get("edits")
+                .and_then(|v| v.as_array())
+                .context("Missing 'edits' argument")?
+                .iter()
+                .map(|e| {
+                    let path = e
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .context("edit without 'path'")?;
+                    let text = e
+                        .get("new_text")
+                        .and_then(|v| v.as_str())
+                        .with_context(|| format!("edit for {path} without 'new_text'"))?;
+                    Ok((resolve_file_path(workspace_root, path), text.to_string()))
+                })
+                .collect::<Result<_>>()?;
+            if edits.is_empty() {
+                return Ok(McpToolCallResult::error("'edits' is empty".to_string()));
+            }
+            let also_check: Vec<std::path::PathBuf> = args
+                .get("also_check")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .map(|p| resolve_file_path(workspace_root, p))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let reports =
+                crate::diagnostics::validate_texts(remote, workspace_root, &edits, &also_check)
+                    .await?;
+            let errors: usize = reports.iter().map(|r| r.errors).sum();
+            let warnings: usize = reports.iter().map(|r| r.warnings).sum();
+            let mut text = format!(
+                "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n",
+                reports.len()
+            );
+            for report in &reports {
+                text.push_str(&report.render());
+            }
+            let text = text.trim_end().to_string();
+            Ok(if errors == 0 {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_dead_code" => {
             let include_exported = args
                 .get("include_exported")
@@ -1807,6 +1885,19 @@ mod tests {
             .filter_map(|v| v.as_str())
             .collect();
         assert_eq!(required, vec!["new_name"]);
+    }
+
+    #[test]
+    fn validate_edits_schema_takes_a_list_of_edits() {
+        let tool = list_tools()
+            .into_iter()
+            .find(|t| t.name == "code_validate_edits")
+            .unwrap();
+        assert_eq!(tool.input_schema["required"], serde_json::json!(["edits"]));
+        assert_eq!(
+            tool.input_schema["properties"]["edits"]["items"]["required"],
+            serde_json::json!(["path", "new_text"])
+        );
     }
 
     #[test]

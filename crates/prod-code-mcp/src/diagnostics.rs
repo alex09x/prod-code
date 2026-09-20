@@ -143,6 +143,52 @@ pub async fn validate_text(
     Ok(parse_items(&display(root, file), &result))
 }
 
+/// Validates several proposed file contents together, the way a multi-file refactor must be
+/// judged: every file is opened with its new text in one session (a private overlay on the
+/// gateway), then diagnostics are pulled for each of them and for `also_check` (unchanged
+/// files that may break, typically callers of an edited symbol). An edit in one file is
+/// therefore checked against the proposed state of the others, not against the checkout.
+/// Nothing is written anywhere.
+pub async fn validate_texts(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+    also_check: &[std::path::PathBuf],
+) -> Result<Vec<DiagnosticsReport>> {
+    let hint = edits
+        .first()
+        .map(|(file, _)| file.as_path())
+        .or_else(|| also_check.first().map(|p| p.as_path()));
+    let mut session = LspSession::open(remote, root, hint).await?;
+    let mut uris = Vec::with_capacity(edits.len());
+    for (file, text) in edits {
+        uris.push((file.clone(), session.open_text(file, text).await?));
+    }
+    let mut reports = Vec::with_capacity(edits.len() + also_check.len());
+    for (file, uri) in &uris {
+        let result = session
+            .request(
+                "textDocument/diagnostic",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            )
+            .await?;
+        reports.push(parse_items(&display(root, file), &result));
+    }
+    for file in also_check {
+        let uri = session.uri_for(file)?;
+        let result = session
+            .query(
+                file,
+                "textDocument/diagnostic",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            )
+            .await?;
+        reports.push(parse_items(&display(root, file), &result));
+    }
+    session.close().await;
+    Ok(reports)
+}
+
 fn display(root: &Path, file: &Path) -> String {
     let abs = if file.is_absolute() {
         file.to_path_buf()

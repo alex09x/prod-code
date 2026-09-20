@@ -301,7 +301,7 @@ This document outlines the architectural milestones and engineering phases for b
     - `code_slice(path, symbol)`: extracts a minimal, self-contained semantic slice (e.g. 60 lines instead of 4,000 lines) representing 100% of data and control flow.
     - Reduces LLM context consumption by 85–95%, drastically lowering inference costs and model reasoning errors.
 
-- [ ] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)**
+- [~] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)** — first step shipped 2026-09-20: `code_validate_edits` places several proposed file contents in one private analyzer overlay and reports diagnostics per file (plus `also_check` for unchanged callers), so a multi-file refactor is judged before anything is written. Remaining: named shadow branches, remote test runs per hypothesis, winning diff.
   - When an AI agent explores multiple competing architectural solutions or bug-fix hypotheses:
     - Server creates lightweight in-memory VFS overlays (`shadow-branch-1`, `shadow-branch-2`, `shadow-branch-3`) in RAM (`/dev/shm`).
     - Remote execution engine (Phase 6) runs full test suites against all hypotheses simultaneously across 128 server cores.

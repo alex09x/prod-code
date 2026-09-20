@@ -101,7 +101,7 @@ impl LspSession {
         Ok(())
     }
 
-    async fn request(
+    pub(crate) async fn request(
         &mut self,
         method: &str,
         params: serde_json::Value,
@@ -195,6 +195,14 @@ impl LspSession {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.open_text(file, text).await?;
+        self.request(method, params).await
+    }
+
+    /// Makes `text` the content of `file` in this session (didOpen, or didChange when the
+    /// document is already open) without querying, so several proposed files can be in
+    /// place before diagnostics are pulled for any of them. Returns the document's URI.
+    pub async fn open_text(&mut self, file: &Path, text: &str) -> Result<String> {
         let abs = if file.is_absolute() {
             file.to_path_buf()
         } else {
@@ -225,7 +233,7 @@ impl LspSession {
             .await?;
             self.opened.insert(uri.clone());
         }
-        self.request(method, params).await
+        Ok(uri)
     }
 
     /// The `file://` URI the session uses for `file`.
