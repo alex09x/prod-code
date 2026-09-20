@@ -20,6 +20,22 @@
 ---
 
 
+## For agents
+
+Register the MCP server once and every project gets the tools:
+
+```
+claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.168.2.168:9400 -- prod-code mcp
+codex  mcp add prod-code --env PROD_CODE_REMOTE=192.168.2.168:9400 -- prod-code mcp
+```
+
+The server tells the agent how to work at `initialize` (the same text as
+`prod-code-mcp`'s `AGENT_INSTRUCTIONS`): navigate with `code_definition` / `code_references` /
+`code_callers` instead of grep, validate every proposed file with `code_validate_edit` before
+writing it, build and test on the gateway with `code_check` / `code_test` / `code_exec`, narrow
+test runs with `code_impact`, explain failures with `code_diagnose_failure`. Local edits are
+synced automatically before each call; the agent never manages the gateway.
+
 ## Cluster
 
 Any number of gateways form a cluster: start each with `--peers <one live peer>` and

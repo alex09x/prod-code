@@ -55,7 +55,8 @@ pub async fn handle_mcp_request(
                     "serverInfo": {
                         "name": SERVER_NAME,
                         "version": SERVER_VERSION
-                    }
+                    },
+                    "instructions": crate::protocol::AGENT_INSTRUCTIONS
                 }),
             );
             Ok(Some(serde_json::to_value(resp)?))
