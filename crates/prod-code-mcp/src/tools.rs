@@ -235,6 +235,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_source".to_string(),
+            description: "Read a source file that exists only on the gateway host: standard library sources, dependency registries (cargo, go mod cache, node_modules, site-packages) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Absolute path (or file:// URI) on the gateway, as returned by code_definition" },
+                    "line": { "type": "integer", "description": "1-based line to centre on; omitted: the whole file (up to 2 MiB)" },
+                    "context": { "type": "integer", "description": "Lines of context around `line` (default 30)" }
+                },
+                "required": ["path"]
+            }),
+        },
+        McpTool {
             name: "code_outline".to_string(),
             description: "Extract the structural symbol outline (functions, structs, enums, traits, classes) with line numbers from a source file."
                 .to_string(),
@@ -678,6 +692,24 @@ pub async fn execute_tool(
                             out.push('\n');
                         }
                         out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
+                        // Outside the checkout the file exists only on the gateway: include
+                        // the lines around the definition so the agent can read it.
+                        let path = crate::remote_fs::uri_to_path(uri);
+                        if i < 3 && crate::remote_fs::is_external(workspace_root, &path) {
+                            match crate::remote_fs::read_remote_file(remote, &path, 0).await {
+                                Ok((bytes, _)) => {
+                                    let text = String::from_utf8_lossy(&bytes);
+                                    out.push('\n');
+                                    out.push_str(&crate::remote_fs::snippet(
+                                        &text,
+                                        start_line as u32,
+                                        8,
+                                    ));
+                                }
+                                Err(e) => out
+                                    .push_str(&format!("\n   (external source not readable: {e})")),
+                            }
+                        }
                     }
                 }
             } else if let Some(obj) = res.as_object() {
@@ -859,6 +891,25 @@ pub async fn execute_tool(
                 out.push_str(&format!("  • {uri}:{l}:{c}\n"));
             }
             Ok(McpToolCallResult::text(out.trim_end().to_string()))
+        }
+        "code_source" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let path = crate::remote_fs::uri_to_path(path);
+            let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
+            let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
+            let (bytes, truncated) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
+            let text = String::from_utf8_lossy(&bytes);
+            let mut out = match line {
+                Some(line) => crate::remote_fs::snippet(&text, line, context),
+                None => text.into_owned(),
+            };
+            if truncated {
+                out.push_str("\n[truncated at 2 MiB]");
+            }
+            Ok(McpToolCallResult::text(out))
         }
         "code_references" => {
             let path_str = args

@@ -66,6 +66,14 @@ enum Commands {
     Impls { file: PathBuf, line: u32, col: u32 },
     /// List document outline symbols: prod-code symbols <file>
     Symbols { file: PathBuf },
+    /// Show a source file that lives on the gateway (std, registry, SDK): prod-code source <path> [--line N] [--context K]
+    Source {
+        path: String,
+        #[arg(long)]
+        line: Option<u32>,
+        #[arg(long, default_value_t = 20)]
+        context: u32,
+    },
     /// List code actions (inline, extract, generate, rewrite, quick fixes) at a 1-based
     /// position or selection: prod-code assists <file> <line> <col> [--to LINE:COL]
     Assists {
@@ -239,6 +247,11 @@ async fn main() -> Result<()> {
         }
         Commands::Impls { file, line, col } => run_implementations(remote, &file, line, col).await,
         Commands::Symbols { file } => run_symbols(remote, &file).await,
+        Commands::Source {
+            path,
+            line,
+            context,
+        } => run_source(remote, &path, line, context).await,
         Commands::Rename {
             file,
             line,
@@ -701,6 +714,8 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
     });
 
     let result = execute_lsp_query(remote, file, "textDocument/definition", params).await?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or_else(|| abs_path.clone());
+    let mut shown = 0;
 
     if let Some(arr) = result.as_array() {
         if arr.is_empty() {
@@ -726,6 +741,21 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
                     .unwrap_or(0)
                     + 1;
                 println!("📍 Definition: {uri}:{start_line}:{start_col}");
+                // A definition outside the checkout lives only on the gateway: show it.
+                let path = prod_code_mcp::remote_fs::uri_to_path(uri);
+                if prod_code_mcp::remote_fs::is_external(&ws_root, &path) && shown < 3 {
+                    shown += 1;
+                    match prod_code_mcp::remote_fs::read_remote_file(remote, &path, 0).await {
+                        Ok((bytes, _)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            print!(
+                                "{}",
+                                prod_code_mcp::remote_fs::snippet(&text, start_line as u32, 8)
+                            );
+                        }
+                        Err(e) => println!("   (external source not readable: {e})"),
+                    }
+                }
             }
         }
     } else if let Some(obj) = result.as_object() {
@@ -749,6 +779,25 @@ async fn run_definition(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
         println!("{:#}", result);
     }
 
+    Ok(())
+}
+
+/// Prints a source file that lives on the gateway host (toolchain sources, dependency caches,
+/// SDK headers), optionally a window around one line.
+async fn run_source(remote: SocketAddr, path: &str, line: Option<u32>, context: u32) -> Result<()> {
+    let path = prod_code_mcp::remote_fs::uri_to_path(path);
+    let (bytes, truncated) = prod_code_mcp::remote_fs::read_remote_file(remote, &path, 0).await?;
+    let text = String::from_utf8_lossy(&bytes);
+    match line {
+        Some(line) => print!(
+            "{}",
+            prod_code_mcp::remote_fs::snippet(&text, line, context)
+        ),
+        None => print!("{text}"),
+    }
+    if truncated {
+        eprintln!("[prod-code] {path}: output truncated at 2 MiB");
+    }
     Ok(())
 }
 

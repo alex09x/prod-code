@@ -300,6 +300,90 @@ pub async fn apply_sync_probe(
 /// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: every
 /// rewritten file becomes one whole-file text edit, file moves become rename operations and
 /// new files become create operations followed by their content.
+/// Whether `path` is a source file the gateway may hand to clients: its own workspace
+/// copies, toolchain and dependency caches under the home directory, and system SDK
+/// locations. Nothing else on the host is readable this way.
+fn is_readable_source_path(storage_root: &std::path::Path, path: &std::path::Path) -> bool {
+    if !path.is_absolute() || !path.is_file() {
+        return false;
+    }
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if canonical.starts_with(storage_root) {
+        return true;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        let allowed_home = [
+            ".cargo/registry",
+            ".cargo/git",
+            ".rustup/toolchains",
+            "go/pkg/mod",
+            ".local/go",
+            ".local/lib",
+            ".npm-global/lib",
+            ".bun/install",
+            "Library/Developer",
+            "prod-code-storage",
+        ];
+        if allowed_home
+            .iter()
+            .any(|rel| canonical.starts_with(home.join(rel)))
+        {
+            return true;
+        }
+    }
+    const SYSTEM_ROOTS: [&str; 9] = [
+        "/usr/include",
+        "/usr/local/include",
+        "/usr/lib",
+        "/usr/local/lib",
+        "/usr/local/go",
+        "/usr/share",
+        "/opt/homebrew",
+        "/Applications/Xcode.app",
+        "/Library/Developer",
+    ];
+    SYSTEM_ROOTS.iter().any(|root| canonical.starts_with(root))
+}
+
+/// Serves a `ReadFileRequest` under the readable-path policy, capped in size.
+fn read_server_file(
+    storage_root: &std::path::Path,
+    req: &prod_code_protocol::ReadFileRequest,
+) -> prod_code_protocol::ReadFileResponse {
+    const DEFAULT_MAX: u64 = 2 * 1024 * 1024;
+    let path = PathBuf::from(&req.path);
+    let max = if req.max_bytes == 0 {
+        DEFAULT_MAX
+    } else {
+        req.max_bytes.min(DEFAULT_MAX)
+    };
+    let mut resp = prod_code_protocol::ReadFileResponse {
+        path: req.path.clone(),
+        content: None,
+        truncated: false,
+        error: None,
+    };
+    if !is_readable_source_path(storage_root, &path) {
+        resp.error = Some(format!(
+            "{} is not a readable source location on this gateway",
+            req.path
+        ));
+        return resp;
+    }
+    match std::fs::read(&path) {
+        Ok(mut bytes) => {
+            if bytes.len() as u64 > max {
+                bytes.truncate(max as usize);
+                resp.truncated = true;
+            }
+            resp.content = Some(bytes);
+        }
+        Err(e) => resp.error = Some(format!("cannot read {}: {e}", req.path)),
+    }
+    resp
+}
+
 /// A managed (out-of-process) language server the gateway can talk LSP to.
 enum ManagedLsp<'a> {
     Go(&'a prod_code_engine_go::GoEngine),
@@ -1154,6 +1238,10 @@ pub async fn handle_client(
             }
             WireMessage::ExecRequest(req) => {
                 run_exec(&state.storage_root, &mut framed, req).await?;
+            }
+            WireMessage::ReadFileRequest(req) => {
+                let resp = read_server_file(&state.storage_root, &req);
+                framed.send(WireMessage::ReadFileResponse(resp)).await?;
             }
             WireMessage::Ping => {
                 framed.send(WireMessage::Pong).await?;

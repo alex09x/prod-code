@@ -5,6 +5,7 @@ pub mod exec;
 pub mod lang;
 pub mod protocol;
 pub mod refactor;
+pub mod remote_fs;
 pub mod sync;
 pub mod tools;
 pub mod verify;

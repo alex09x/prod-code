@@ -29,6 +29,10 @@ pub enum WireMessage {
     ExecExit(ExecExit),
     /// Files the command changed on the server (only with `pull_changes`).
     ExecChanges(ExecChanges),
+    /// Read a source file that lives only on the gateway host (standard library, dependency
+    /// registries, SDK headers): what a definition outside the checkout points at.
+    ReadFileRequest(ReadFileRequest),
+    ReadFileResponse(ReadFileResponse),
 }
 
 /// Supported code intelligence engine kinds.
@@ -396,6 +400,29 @@ pub struct ExecExit {
     #[serde(default)]
     pub timed_out: bool,
     /// Set when the command could not be started at all.
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// A request to read a file on the gateway host, for definitions that resolve outside the
+/// checkout (toolchain sources, dependency caches, system headers).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadFileRequest {
+    /// Absolute path on the gateway host.
+    pub path: String,
+    /// Upper bound on the bytes returned; 0 means the server default.
+    #[serde(default)]
+    pub max_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadFileResponse {
+    pub path: String,
+    /// The file's bytes (base64 on the wire), or None when it could not be read.
+    #[serde(default, with = "base64_bytes")]
+    pub content: Option<Vec<u8>>,
+    #[serde(default)]
+    pub truncated: bool,
     #[serde(default)]
     pub error: Option<String>,
 }
