@@ -60,6 +60,12 @@ pub struct ServerCli {
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
     pub prune_worktree_days: u64,
 
+    /// Only serve these engines (comma-separated: rust, go, cpp, swift, python, typescript).
+    /// The node advertises nothing else, so placement never sends other work here, and a
+    /// handshake for another engine is refused. Empty: every installed engine.
+    #[arg(long, env = "PROD_CODE_ENGINES", value_delimiter = ',')]
+    pub engines: Vec<String>,
+
     /// Other gateways of the cluster (`host:port,host:port`); membership then spreads by
     /// gossip, so listing one live peer is enough.
     #[arg(long, env = "PROD_CODE_PEERS", default_value = "")]
@@ -86,6 +92,8 @@ pub struct ServerState {
     pub cluster: tokio::sync::RwLock<std::collections::HashMap<String, PeerEntry>>,
     /// Usage metrics (JSONL on disk + in-memory ring).
     pub metrics: Arc<metrics::Metrics>,
+    /// Engines this node serves (`--engines`); empty means every installed engine.
+    pub engine_allowlist: Vec<String>,
 }
 
 /// Who a session belongs to, for metrics.
@@ -138,7 +146,29 @@ impl ServerState {
             peers: tokio::sync::RwLock::new(std::collections::BTreeSet::new()),
             cluster: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             metrics: Arc::new(metrics::Metrics::new(metrics_dir)),
+            engine_allowlist: Vec::new(),
         }
+    }
+
+    /// Whether this node serves `engine` (an [`EngineKind`] name such as `rust`).
+    pub fn serves_engine(&self, engine: &str) -> bool {
+        self.engine_allowlist.is_empty()
+            || self
+                .engine_allowlist
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(engine))
+    }
+
+    /// The installed engines this node advertises, narrowed by `--engines`.
+    fn advertised_engines(&self) -> Vec<String> {
+        available_engines()
+            .into_iter()
+            .filter(|entry| {
+                let name = entry.split(' ').next().unwrap_or(entry.as_str());
+                let name = name.strip_suffix("-lsp").unwrap_or(name);
+                self.serves_engine(name)
+            })
+            .collect()
     }
 
     /// This node's heartbeat.
@@ -294,7 +324,7 @@ impl ServerState {
             uptime_seconds: self.start_time.elapsed().as_secs(),
             active_sessions: self.active_sessions.load(Ordering::Relaxed),
             loaded_workspaces: self.workspace_manager.loaded_count().await,
-            detected_engines: available_engines(),
+            detected_engines: self.advertised_engines(),
             memory_rss_bytes: memory::get_process_rss_bytes(),
             total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
             active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
@@ -1628,6 +1658,20 @@ pub async fn handle_client(
                 let engine_kind =
                     detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
                 let engine = engine_kind.as_str();
+                if !state.serves_engine(engine) {
+                    let reason = format!(
+                        "engine {engine} is not served by this node (--engines {}); pick a node that lists it",
+                        state.engine_allowlist.join(",")
+                    );
+                    tracing::warn!(
+                        client_root = %req.client_workspace_root,
+                        engine,
+                        "refusing handshake: engine not served here"
+                    );
+                    state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                    framed.send(WireMessage::Disconnect { reason }).await?;
+                    return Ok(());
+                }
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
 
@@ -3173,7 +3217,17 @@ async fn main() -> Result<()> {
         cli.storage
     );
 
-    let state = Arc::new(ServerState::new(cli.storage));
+    let mut state = ServerState::new(cli.storage);
+    state.engine_allowlist = cli
+        .engines
+        .iter()
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+    if !state.engine_allowlist.is_empty() {
+        tracing::info!(engines = ?state.engine_allowlist, "serving only the listed engines");
+    }
+    let state = Arc::new(state);
     let listener = TcpListener::bind(cli.bind).await?;
     tracing::info!("prod-code gateway listening on {}", cli.bind);
 
@@ -3531,6 +3585,31 @@ mod tests {
                 .detected_engines
                 .contains(&"rust (ra_ap_ide)".to_string())
         );
+        assert!(state.serves_engine("rust") && state.serves_engine("swift"));
+    }
+
+    #[tokio::test]
+    async fn test_engine_allowlist_narrows_advertised_engines() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut state = ServerState::new(temp.path().to_path_buf());
+        state.engine_allowlist = vec!["swift".to_string()];
+        let status = state.status().await;
+        assert!(
+            !status
+                .detected_engines
+                .iter()
+                .any(|e| e.starts_with("rust") || e == "generic-lsp"),
+            "{:?}",
+            status.detected_engines
+        );
+        assert!(
+            status
+                .detected_engines
+                .iter()
+                .all(|e| e.starts_with("swift"))
+        );
+        assert!(state.serves_engine("swift") && state.serves_engine("Swift"));
+        assert!(!state.serves_engine("rust") && !state.serves_engine("generic"));
     }
 
     #[test]
