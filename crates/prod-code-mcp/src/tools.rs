@@ -48,7 +48,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
@@ -60,7 +60,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
@@ -73,7 +73,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "properties": {
                     "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
+                    "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
@@ -113,7 +113,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_callers".to_string(),
-            description: "Incoming call hierarchy: every function/method in the workspace that calls the function at a 1-based line/column, with the call sites. Semantic (resolved through the analyzer), not a text search."
+            description: "Incoming call hierarchy: every function/method in the workspace that calls the given function, with the call sites. Name the function with `symbol` (e.g. `Metrics::record`); path/line/character is the alternative. Semantic (resolved through the analyzer), not a text search."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -127,7 +127,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_callees".to_string(),
-            description: "Outgoing call hierarchy: every function/method the function at a 1-based line/column calls, with the call sites."
+            description: "Outgoing call hierarchy: every function/method the given function calls, with the call sites. Name it with `symbol`, or give path/line/character."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -141,7 +141,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_implementations".to_string(),
-            description: "All implementations of the trait/interface/abstract class at a 1-based line/column (or the impl blocks of a type), as locations."
+            description: "All implementations of a trait/interface/abstract class (or the impl blocks of a type), as locations. Give `symbol` (its name) or a file position (path + 1-based line/column)."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -169,7 +169,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_rename".to_string(),
-            description: "Semantic rename of the symbol at a 1-based line/column (type, function, field, variable, module) across the whole workspace, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
+            description: "Semantic rename of a symbol (type, function, field, variable, module) across the whole workspace, named with `symbol` or located by path + 1-based line/column, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -184,7 +184,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_definition".to_string(),
-            description: "Find symbol definition (function, struct, type, variable, module) at specified file and 1-based line/column position."
+            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -207,7 +207,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_references".to_string(),
-            description: "Find all reference locations of a symbol across the workspace at specified file and 1-based line/column position."
+            description: "Find every reference to a symbol across the workspace. Give `symbol` (its name) or a file position (path + 1-based line/column)."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -342,7 +342,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_hover".to_string(),
-            description: "Inspect the type signature, docstring, and documentation for a symbol at specified file and line/column position."
+            description: "Inspect the type signature, docstring and documentation of a symbol. Give `symbol` (its name, e.g. `narrow_scope` or `Metrics::record`) or a file position (path + 1-based line/column)."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1483,17 +1483,22 @@ pub async fn workspace_symbol_search(
     hint: Option<&Path>,
     limit: usize,
 ) -> Result<Vec<SymbolHit>> {
-    let anchor = hint
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| root.to_path_buf());
-    let res = execute_lsp_query(
-        remote,
-        root,
-        &anchor,
-        "workspace/symbol",
-        serde_json::json!({ "query": query, "limit": limit.max(1) }),
-    )
-    .await?;
+    // The LSP servers (tsc, clangd, pyright) index a project once one of its files is open;
+    // the session opens the anchor file before the query, so pick a real source file when the
+    // caller gave none or a directory.
+    let anchor = match hint {
+        Some(h) if h.is_file() => h.to_path_buf(),
+        Some(h) => representative_source_file(h).unwrap_or_else(|| h.to_path_buf()),
+        None => representative_source_file(root).unwrap_or_else(|| root.to_path_buf()),
+    };
+    let params = serde_json::json!({ "query": query, "limit": limit.max(1) });
+    let mut res =
+        execute_lsp_query(remote, root, &anchor, "workspace/symbol", params.clone()).await?;
+    if res.as_array().is_none_or(|a| a.is_empty()) {
+        // A project that has just been opened may still be loading: one short retry.
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+        res = execute_lsp_query(remote, root, &anchor, "workspace/symbol", params).await?;
+    }
     let mut hits = Vec::new();
     for sym in res.as_array().into_iter().flatten() {
         let Some(name) = sym.get("name").and_then(|n| n.as_str()) else {
@@ -1579,6 +1584,11 @@ pub async fn resolve_symbol(
                     score += 30;
                 }
             }
+            // An index can be stale or (clangd) point the right range at the wrong file:
+            // the name must actually be at that position.
+            if !identifier_at(&hit.path, hit.line, hit.col, &hit.name) {
+                score -= 1000;
+            }
             (score, hit)
         })
         .collect();
@@ -1612,4 +1622,84 @@ pub async fn resolve_symbol(
         anyhow::bail!(msg.trim_end().to_string());
     }
     Ok(scored.swap_remove(0).1)
+}
+
+/// A source file of the project at `dir` in its main language (shortest path under `src`
+/// first), used to make an LSP server load the project before a workspace-level query.
+fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
+    let (_, language) = crate::sync::engine_project(dir, dir);
+    let exts: &[&str] = match language? {
+        "rust" => &["rs"],
+        "go" => &["go"],
+        "cpp" => &["cpp", "cc", "cxx", "c", "hpp", "h"],
+        "python" => &["py"],
+        "typescript" => &["ts", "tsx", "mts", "js", "jsx"],
+        "swift" => &["swift"],
+        _ => return None,
+    };
+    const SKIP: &[&str] = &[
+        "node_modules",
+        "target",
+        ".git",
+        "build",
+        "dist",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".build",
+        "vendor",
+        "Pods",
+        "DerivedData",
+    ];
+    let mut best: Option<(usize, usize, std::path::PathBuf)> = None;
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if depth < 4 && !SKIP.contains(&name.as_str()) && !name.starts_with('.') {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !exts.contains(&ext) || name.ends_with(".d.ts") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let outside_src = usize::from(!(rel.starts_with("src/") || rel.starts_with("lib/")));
+            let is_test = usize::from(rel.contains("test") || rel.contains("spec"));
+            let key = (outside_src + is_test, rel.len());
+            if best.as_ref().is_none_or(|(a, b, _)| key < (*a, *b)) {
+                best = Some((key.0, key.1, path));
+            }
+        }
+    }
+    best.map(|(_, _, p)| p)
+}
+
+/// Whether `name` is the identifier at the 1-based line/column of `path` (false when the
+/// file cannot be read).
+fn identifier_at(path: &Path, line: u32, col: u32, name: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(row) = text.lines().nth(line.saturating_sub(1) as usize) else {
+        return false;
+    };
+    let start = row
+        .char_indices()
+        .nth(col.saturating_sub(1) as usize)
+        .map(|(i, _)| i)
+        .unwrap_or(row.len());
+    let bare = name.split(['(', '<']).next().unwrap_or(name);
+    row[start..].starts_with(bare)
 }

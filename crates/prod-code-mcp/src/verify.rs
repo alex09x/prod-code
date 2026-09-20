@@ -6,7 +6,7 @@ use crate::exec::{TailBuffer, run_remote};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifyKind {
@@ -578,6 +578,16 @@ pub fn plan_command_with(
 pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Path, hint: &Path) {
     let canon_dir =
         std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    // A hint that is not a path may be a crate / package name ("prod-code-gateway").
+    let hint_owned;
+    let hint = if hint.exists() {
+        hint
+    } else if let Some(dir) = member_dir_named(&canon_dir, hint) {
+        hint_owned = dir;
+        &hint_owned
+    } else {
+        return;
+    };
     let target = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
     let dir = if target.is_file() {
         target
@@ -626,6 +636,29 @@ pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Pat
         }
         _ => {}
     }
+}
+
+/// The directory of a workspace member whose Cargo package name or directory name is the
+/// last component of `hint` (two levels deep: `crates/x`, `x`).
+fn member_dir_named(root: &Path, hint: &Path) -> Option<PathBuf> {
+    let wanted = hint.file_name()?.to_string_lossy().into_owned();
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(root).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        candidates.push(path.clone());
+        if let Ok(children) = std::fs::read_dir(&path) {
+            candidates.extend(children.flatten().map(|e| e.path()).filter(|p| p.is_dir()));
+        }
+    }
+    candidates.into_iter().find(|dir| {
+        dir.file_name()
+            .map(|n| n.to_string_lossy() == wanted)
+            .unwrap_or(false)
+            || cargo_package_name(&dir.join("Cargo.toml")).as_deref() == Some(wanted.as_str())
+    })
 }
 
 /// `[package] name` of a Cargo manifest (None for a workspace-only or missing manifest).
@@ -1693,6 +1726,11 @@ mod tests {
         let mut cmd = strs(&["cargo", "test", "--workspace"]);
         narrow_scope(&mut cmd, "rust", root, root);
         assert_eq!(cmd, strs(&["cargo", "test", "--workspace"]));
+
+        // A crate name instead of a path.
+        let mut cmd = strs(&["cargo", "test", "--workspace"]);
+        narrow_scope(&mut cmd, "rust", root, &root.join("gw"));
+        assert_eq!(cmd, strs(&["cargo", "test", "-p", "gw"]));
 
         let mut cmd = strs(&["go", "test", "-json", "./..."]);
         narrow_scope(&mut cmd, "go", root, &root.join("crates/gw"));
