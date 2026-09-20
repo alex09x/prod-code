@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Cluster (Phase 5 complete): gateways gossip every 5 s (`--peers`, `--advertise`) and every
+  node knows the whole cluster; one seed address in `PROD_CODE_REMOTE` is enough, the client
+  discovers the rest and caches it. Placement is decided by the cluster: the node that holds
+  the workspace, else the quietest live node with the right engine; idle workspaces move off
+  overloaded nodes. `prod-code cluster` shows the gossip view. The Rust engine now runs build
+  scripts and expands proc macros (rust-analyzer's proc-macro server), so derives resolve.
+
 - Failure dossier (Phase 8.2): `prod-code diagnose [FILTER]` and MCP `code_diagnose_failure`
   run the tests and explain each failure with the code at every mentioned location, the
   enclosing function and its callers, and what changed in the working tree.

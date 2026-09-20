@@ -20,6 +20,21 @@
 ---
 
 
+## Cluster
+
+Any number of gateways form a cluster: start each with `--peers <one live peer>` and
+`--advertise <its host:port>`; membership spreads by gossip (every 5 s: load, engines, loaded
+workspaces). Clients need one seed:
+
+```
+export PROD_CODE_REMOTE=192.168.2.168:9400   # any node; the rest is discovered
+prod-code cluster                            # the gossip view of every node
+```
+
+A checkout is placed by the cluster on the node that already holds it, otherwise on the
+quietest node that serves its language (Swift lands on a macOS node); the placement is
+remembered per checkout and an idle workspace drifts off an overloaded node.
+
 ## What each language gets
 
 | | Rust | Go | C/C++ | TypeScript | Python | Swift |
