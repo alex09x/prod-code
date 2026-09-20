@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Definitions outside the checkout are readable (Phase 8.3): `prod-code def` shows the lines
+  around a definition in the standard library, a dependency cache or a system header, and
+  `prod-code source <path>` prints any such file from the gateway host; MCP `code_definition`
+  embeds the snippet and `code_source` reads the file. Only toolchain, dependency and SDK
+  roots are served.
+
 - Code actions for every language (Phase 7.2): `prod-code assists | assist` and MCP
   `code_assists` / `code_assist` on Go, C/C++, TypeScript, Python and Swift through LSP code
   actions, including quick fixes driven by the server's diagnostics and command-backed

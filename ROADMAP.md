@@ -347,7 +347,7 @@ This document outlines the architectural milestones and engineering phases for b
     `{ failing_test, panic_line, expression, runtime_values, suspect_recent_changes }`.
   - Enables agents to diagnose and fix regressions in a single turn without reading extraneous files or burning reasoning tokens.
 
-- [ ] **8.3. External Dependency & Vendor Source Navigation (`code_definition_external`)**
+- [~] **8.3. External Dependency & Vendor Source Navigation (`code_definition_external`)** — shipped 2026-09-20: a definition outside the checkout (Rust std via rust-src, cargo registry/git caches, GOROOT and the Go module cache, `/usr/include`, Homebrew, Xcode SDKs, npm/bun installs, uv pythons) is read from the gateway host through `ReadFileRequest`; `prod-code def` prints the lines around it, `prod-code source <path> [--line N --context K]` shows any such file, MCP `code_definition` embeds the snippet and `code_source` reads the file. The gateway serves only those roots plus its workspace copies. Verified: clangd → `/usr/include/time.h`, rust-analyzer → `core/src/iter/traits/iterator.rs`, gopls → `fmt/print.go`. Hover on external symbols already worked.
   - Transparent jump-to-definition into third-party libraries (`~/.cargo/registry`, `node_modules`, `GOPATH/pkg/mod`, Python virtualenv wheels, system C++ headers).
   - Returns exact type signatures, trait definitions, and docstrings directly from the server's pre-warmed dependency cache into agent context.
   - Prevents agents from hallucinating method names or argument orders of external crates and packages.
