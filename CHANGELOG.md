@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Project tooling is detected per checkout for `check | lint | test`: TypeScript uses the
+  package manager of the lock file (bun, pnpm, yarn, npm) and the configured test runner
+  (vitest, jest, bun test, mocha, or the `test` script) with parsed results; Python runs
+  through `uv run`, the checkout's `.venv`, or the system interpreter, with pytest or unittest
+  and basedpyright pointed at the venv; C/C++ builds with CMake, Meson or Make and tests with
+  ctest (after a build) or meson test. Rename now reaches every referencing file on pyright
+  (files are opened for the duration of the rename), clangd (CMake is configured with
+  compile_commands.json before clangd starts) and sourcekit-lsp. `exec` never pulls back
+  virtual environments, node_modules or build directories.
+- All six languages verified end to end on fixtures: hover / definition / references /
+  symbols / callers / callees / implementations / rename / check / lint / test; Go on gopls
+  (cross-file rename included), Rust in-memory.
+
 - Per-repository Rust analysis options in `prod-code.toml` (`[rust] features = "all" | [..]`,
   `no_default_features`, `all_targets`, `sysroot`), with rust-analyzer-like defaults: all
   targets analysed and the standard library loaded from `rust-src`. Repositories that compile

@@ -20,6 +20,22 @@
 ---
 
 
+## What each language gets
+
+| | Rust | Go | C/C++ | TypeScript | Python | Swift |
+|---|---|---|---|---|---|---|
+| engine | rust-analyzer in-process | gopls | clangd | TypeScript 7 native LSP | basedpyright | sourcekit-lsp (macOS node) |
+| hover / def / refs / symbols / callers / callees / impls | yes | yes | yes | yes | yes | yes |
+| rename | yes (+ module files) | yes | yes | yes | yes | yes |
+| assists / safe-delete | yes | - | - | - | - | - |
+| check | cargo check | go build | cmake / meson / make | tsc (bunx / pnpm / yarn / npx) | basedpyright (uv / .venv aware) | swift build / xcodebuild |
+| lint | clippy | go vet | - | eslint / biome | ruff | - |
+| test | cargo test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
+
+Tooling is detected from the checkout (lock files, package.json, pyproject, CMakeLists...).
+Dependencies live on the node: run `prod-code exec -- bun install`, `-- uv sync`, `-- npm ci`
+once per checkout and the language servers and test runners use them.
+
 ## Per-repository options (`prod-code.toml`)
 
 Put a `prod-code.toml` at the checkout root to tune how the gateway analyses it. It is synced
