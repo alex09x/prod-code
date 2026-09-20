@@ -1283,6 +1283,7 @@ pub async fn execute_tool(
             let stream = TcpStream::connect(remote)
                 .await
                 .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
+            let _ = stream.set_nodelay(true);
             let rtt = start.elapsed();
 
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
@@ -1335,6 +1336,7 @@ pub async fn execute_tool(
             let stream = TcpStream::connect(remote)
                 .await
                 .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
+            let _ = stream.set_nodelay(true);
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             let req = SyncRequest {

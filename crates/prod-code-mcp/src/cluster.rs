@@ -236,6 +236,7 @@ pub async fn cluster_view(addr: SocketAddr) -> Result<ClusterResponse> {
     let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed.send(WireMessage::ClusterRequest).await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
@@ -256,6 +257,7 @@ pub async fn ask_placement(
     let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::PlaceRequest(PlaceRequest {
@@ -333,6 +335,7 @@ pub async fn node_metrics(addr: SocketAddr, since_secs: u64) -> Result<MetricsRe
     let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::MetricsRequest(MetricsRequest { since_secs }))
@@ -351,6 +354,7 @@ pub async fn node_status(addr: SocketAddr) -> Result<StatusResponse> {
     let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed.send(WireMessage::StatusRequest).await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {

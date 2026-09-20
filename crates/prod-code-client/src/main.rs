@@ -537,6 +537,7 @@ async fn execute_lsp_query(
             let stream = TcpStream::connect(remote)
                 .await
                 .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+            let _ = stream.set_nodelay(true);
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
             timing.mark("connect");
 
@@ -1360,6 +1361,7 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to prod-code gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let rtt = start.elapsed();
 
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
@@ -1406,6 +1408,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     // Perform handshake
@@ -1523,6 +1526,7 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     let outcome =
@@ -1965,6 +1969,7 @@ async fn run_benchmark(
                     return (completed, errors + 1, latencies_us);
                 }
             };
+            let _ = stream.set_nodelay(true);
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             // 1. Handshake

@@ -53,6 +53,7 @@ pub async fn run_remote(
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     push_workspace_sync(&mut framed, root, &identity, None)
         .await

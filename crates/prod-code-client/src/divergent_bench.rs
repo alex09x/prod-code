@@ -912,6 +912,7 @@ pub async fn initial_sync(
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     let outcome =
         prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
@@ -938,6 +939,7 @@ async fn open_session(
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     // Transparent pre-flight sync before the handshake, exactly like a live editor session: a
@@ -1002,6 +1004,8 @@ async fn hover_in_session(
     language: Language,
     request_id: i64,
 ) -> Result<String> {
+    let timing = std::env::var_os("PROD_CODE_TIMING").is_some();
+    let t0 = Instant::now();
     let file_path = &wt.query_file;
     let content = tokio::fs::read_to_string(file_path)
         .await
@@ -1010,6 +1014,7 @@ async fn hover_in_session(
     let file_uri = Url::from_file_path(file_path)
         .map_err(|_| anyhow!("invalid file path for URI: {:?}", file_path))?
         .to_string();
+    let t_read = t0.elapsed();
 
     let did_open = serde_json::json!({
         "jsonrpc": "2.0",
@@ -1026,6 +1031,7 @@ async fn hover_in_session(
     framed
         .send(WireMessage::LspPayload(did_open.to_string()))
         .await?;
+    let t_open = t0.elapsed();
 
     let hover_req = serde_json::json!({
         "jsonrpc": "2.0",
@@ -1039,7 +1045,18 @@ async fn hover_in_session(
     framed
         .send(WireMessage::LspPayload(hover_req.to_string()))
         .await?;
+    let t_sent = t0.elapsed();
     let response = read_response_matching_id(framed, request_id, Duration::from_secs(30)).await?;
+    let t_resp = t0.elapsed();
+    if timing {
+        eprintln!(
+            "[bench-timing] read={:.2}ms did_open_send={:.2}ms hover_send={:.2}ms response_wait={:.2}ms",
+            t_read.as_secs_f64() * 1000.0,
+            (t_open - t_read).as_secs_f64() * 1000.0,
+            (t_sent - t_open).as_secs_f64() * 1000.0,
+            (t_resp - t_sent).as_secs_f64() * 1000.0
+        );
+    }
     let result = response.get("result").unwrap_or(&serde_json::Value::Null);
     if result.is_null() {
         bail!(

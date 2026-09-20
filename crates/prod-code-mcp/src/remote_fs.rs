@@ -18,6 +18,7 @@ pub async fn read_remote_file(
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::ReadFileRequest(ReadFileRequest {

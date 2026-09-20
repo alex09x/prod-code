@@ -3203,6 +3203,8 @@ async fn main() -> Result<()> {
 
     loop {
         let (socket, addr) = listener.accept().await?;
+        // Small request/response frames must not wait for delayed ACKs (Nagle).
+        let _ = socket.set_nodelay(true);
         let state_clone = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(err) = handle_client(socket, addr, state_clone).await {
@@ -3312,6 +3314,7 @@ async fn gossip_loop(state: Arc<ServerState>) {
                 let reply = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     let addr: SocketAddr = peer.parse().ok()?;
                     let stream = TcpStream::connect(addr).await.ok()?;
+                    let _ = stream.set_nodelay(true);
                     let mut framed = Framed::new(stream, ProdCodeCodec::new());
                     framed.send(WireMessage::Gossip(own)).await.ok()?;
                     match framed.next().await {
