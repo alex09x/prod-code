@@ -7,9 +7,10 @@ use crate::sync::{WorkspaceIdentity, engine_project, push_workspace_sync, worksp
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use url::Url;
@@ -235,6 +236,49 @@ impl LspSession {
             .to_string())
     }
 
+    /// Pushes the checkout's changes since the last sync over this same connection and
+    /// brings the documents the session holds open in line with them (`didChange` for
+    /// rewritten files, `didClose` for deleted ones), so a long-lived session sees every
+    /// local edit exactly like a fresh one would.
+    pub async fn refresh(&mut self) -> Result<()> {
+        let identity = workspace_identity(&self.root);
+        let outcome = push_workspace_sync(&mut self.framed, &self.root, &identity, None)
+            .await
+            .context("workspace sync on the open session failed")?;
+        for rel in outcome.changed_paths {
+            let abs = self.root.join(&rel);
+            let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
+                continue;
+            };
+            if !self.opened.contains(&uri) {
+                continue;
+            }
+            match tokio::fs::read_to_string(&abs).await {
+                Ok(text) => {
+                    let version = self.next_id;
+                    self.next_id += 1;
+                    self.notify(
+                        "textDocument/didChange",
+                        serde_json::json!({
+                            "textDocument": { "uri": uri, "version": version },
+                            "contentChanges": [ { "text": text } ]
+                        }),
+                    )
+                    .await?;
+                }
+                Err(_) => {
+                    self.notify(
+                        "textDocument/didClose",
+                        serde_json::json!({ "textDocument": { "uri": uri } }),
+                    )
+                    .await?;
+                    self.opened.remove(&uri);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Ends the session cleanly.
     pub async fn close(mut self) {
         for uri in std::mem::take(&mut self.opened) {
@@ -252,4 +296,71 @@ impl LspSession {
             })
             .await;
     }
+}
+
+/// Long-lived sessions of this process, one per (gateway, checkout, nested project): the
+/// MCP server keeps them across tool calls so a query costs one round trip instead of a
+/// connection, a sync and a handshake each time.
+fn pool() -> &'static tokio::sync::Mutex<HashMap<String, LspSession>> {
+    static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, LspSession>>> = OnceLock::new();
+    POOL.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+fn is_connection_error(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_ascii_lowercase();
+    text.contains("closed")
+        || text.contains("timeout")
+        || text.contains("timed out")
+        || text.contains("broken pipe")
+        || text.contains("reset")
+        || text.contains("decode")
+        || text.contains("connection")
+}
+
+/// Runs one query on the pooled session for `root` (opening it on first use): local
+/// changes are pushed first when the watcher saw any, and a session whose connection died
+/// (gateway restart) is replaced and the query retried once.
+pub async fn pooled_query(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let (subpath, _) = engine_project(&root, file);
+    let key = format!(
+        "{remote}|{}|{}",
+        root.display(),
+        subpath.unwrap_or_default()
+    );
+    let mut sessions = pool().lock().await;
+    for attempt in 0..2 {
+        if !sessions.contains_key(&key) {
+            let session = LspSession::open(remote, &root, Some(file)).await?;
+            crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
+            sessions.insert(key.clone(), session);
+        }
+        let session = sessions.get_mut(&key).expect("just inserted");
+        let generation = crate::watch::current_generation(&root);
+        if crate::watch::sync_due(&root, generation) {
+            match session.refresh().await {
+                Ok(()) => crate::watch::mark_synced(&root, generation),
+                Err(err) if is_connection_error(&err) && attempt == 0 => {
+                    sessions.remove(&key);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        match session.query(file, method, params.clone()).await {
+            Ok(value) => return Ok(value),
+            Err(err) if is_connection_error(&err) && attempt == 0 => {
+                sessions.remove(&key);
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    unreachable!("two attempts always return")
 }

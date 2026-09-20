@@ -335,6 +335,8 @@ pub struct SyncOutcome {
     /// The gateway seeded the workspace from the origin repository's copy.
     pub seeded: bool,
     pub server_workspace_root: String,
+    /// Relative paths this round uploaded or deleted on the gateway.
+    pub changed_paths: Vec<String>,
 }
 
 async fn wait_for_message<T>(
@@ -415,6 +417,7 @@ pub async fn push_workspace_sync(
     // instead of failing the query or command that follows.
     if !plan.files.is_empty() || !plan.initial {
         let files = std::mem::take(&mut plan.files);
+        outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
         framed
             .send(WireMessage::SyncRequest(SyncRequest {
                 client_workspace_root: root_str,
