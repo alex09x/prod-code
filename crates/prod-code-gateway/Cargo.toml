@@ -21,6 +21,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 futures-util.workspace = true
 serde.workspace = true
+rapidfire = "0.2"
 serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

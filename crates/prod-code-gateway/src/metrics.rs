@@ -71,30 +71,36 @@ const RING_CAP: usize = 200_000;
 pub struct Metrics {
     dir: PathBuf,
     ring: Mutex<VecDeque<Event>>,
+    /// Events queued for the disk writer (rapidfire unbounded MPSC: `record` never blocks
+    /// the response path on file I/O).
+    tx: rapidfire::mpsc::Sender<Event>,
+    rx: Mutex<Option<rapidfire::mpsc::Receiver<Event>>>,
 }
 
 impl Metrics {
     pub fn new(dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&dir);
+        let (tx, rx) = rapidfire::mpsc::unbounded::<Event>();
         Self {
             dir,
             ring: Mutex::new(VecDeque::with_capacity(4096)),
+            tx,
+            rx: Mutex::new(Some(rx)),
         }
     }
 
-    /// Records one event: appended to today's JSONL file and to the ring.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
+    /// The receiver for [`run_writer`]; taken once at startup.
+    pub fn take_receiver(&self) -> Option<rapidfire::mpsc::Receiver<Event>> {
+        self.rx.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Records one event: into the ring now, to today's JSONL file by the writer task.
     pub fn record(&self, event: Event) {
-        if let Ok(line) = serde_json::to_string(&event) {
-            let day = days_since_epoch(event.ts_ms);
-            let path = self.dir.join(format!("events-{}.jsonl", format_day(day)));
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                let _ = writeln!(file, "{line}");
-            }
-        }
+        let _ = self.tx.try_send(event.clone());
         let mut ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         if ring.len() >= RING_CAP {
             ring.pop_front();
@@ -200,6 +206,39 @@ impl Metrics {
     }
 }
 
+/// Drains queued events to their daily JSONL files in batches until every sender is gone.
+pub async fn run_writer(dir: PathBuf, mut rx: rapidfire::mpsc::Receiver<Event>) {
+    let mut batch: Vec<Event> = Vec::with_capacity(256);
+    while rx.recv_many(&mut batch, 256).await.is_ok() {
+        write_events(&dir, batch.drain(..));
+    }
+}
+
+/// Appends events to their daily files (one open per day per batch).
+pub fn write_events(dir: &std::path::Path, events: impl Iterator<Item = Event>) {
+    let mut files: BTreeMap<String, std::fs::File> = BTreeMap::new();
+    for event in events {
+        let Ok(line) = serde_json::to_string(&event) else {
+            continue;
+        };
+        let name = format!("events-{}.jsonl", format_day(days_since_epoch(event.ts_ms)));
+        let file = match files.entry(name.clone()) {
+            std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::btree_map::Entry::Vacant(v) => {
+                match std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(&name))
+                {
+                    Ok(f) => v.insert(f),
+                    Err(_) => continue,
+                }
+            }
+        };
+        let _ = writeln!(file, "{line}");
+    }
+}
+
 fn days_since_epoch(ts_ms: u64) -> u64 {
     ts_ms / 86_400_000
 }
@@ -254,6 +293,14 @@ mod tests {
         assert_eq!(s.queries[0].p50_ms, 30);
         assert_eq!(s.queries[0].max_ms, 1000);
         assert_eq!(s.execs[0].failures, 1);
+        // The writer task drains the queue to disk; here we drain it by hand.
+        let mut rx = m.take_receiver().unwrap();
+        let mut pending = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            pending.push(ev);
+        }
+        assert_eq!(pending.len(), 6);
+        write_events(m.dir(), pending.into_iter());
         let files: Vec<_> = std::fs::read_dir(temp.path().join("metrics"))
             .unwrap()
             .collect();

@@ -1255,7 +1255,8 @@ pub async fn run_exec(
         "🛠️ [EXEC] started"
     );
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecChunk>(256);
+    // rapidfire (lock-free MPSC): stdout and stderr readers fan in, the session task drains.
+    let (tx, mut rx) = rapidfire::mpsc::bounded::<ExecChunk>(256);
     let mut readers = Vec::new();
     if let Some(mut out) = child.stdout.take() {
         let tx = tx.clone();
@@ -1313,8 +1314,8 @@ pub async fn run_exec(
     loop {
         tokio::select! {
             chunk = rx.recv(), if chunks_open => match chunk {
-                Some(chunk) => framed.send(WireMessage::ExecChunk(chunk)).await?,
-                None => chunks_open = false,
+                Ok(chunk) => framed.send(WireMessage::ExecChunk(chunk)).await?,
+                Err(_) => chunks_open = false,
             },
             exit = child.wait(), if status.is_none() => {
                 status = Some(exit);
@@ -1714,7 +1715,9 @@ async fn run_session_loop(
     meta: Arc<SessionMeta>,
 ) -> Result<()> {
     let (mut socket_tx, mut socket_rx) = framed.split();
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<WireMessage>(4096);
+    // rapidfire MPSC: every engine task sends, one writer drains in batches and flushes the
+    // socket once per batch.
+    let (out_tx, mut out_rx) = rapidfire::mpsc::bounded::<WireMessage>(4096);
 
     // Requests in flight, keyed by JSON-RPC id, so every answer — whichever engine produced
     // it — becomes one metrics event with its duration.
@@ -1723,40 +1726,46 @@ async fn run_session_loop(
     let pending_writer = Arc::clone(&pending);
     let meta_writer = Arc::clone(&meta);
     let writer_handle = tokio::spawn(async move {
-        while let Some(msg) = out_rx.recv().await {
-            if let WireMessage::LspPayload(ref raw) = msg
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
-                && let Some(id) = val.get("id").filter(|i| !i.is_null())
-                && val.get("method").is_none()
-            {
-                let key = id.to_string();
-                if let Some(req) = pending_writer.lock().await.remove(&key) {
-                    let mut ev = metrics::Event::blank("lsp");
-                    ev.session_id = meta_writer.session_id;
-                    ev.client_name = meta_writer.client_name.clone();
-                    ev.agent = meta_writer.agent.clone();
-                    ev.host = meta_writer.host.clone();
-                    ev.client_addr = meta_writer.client_addr.clone();
-                    ev.workspace = meta_writer.workspace.clone();
-                    ev.engine = meta_writer.engine.clone();
-                    ev.method = req.method;
-                    ev.file = req.file;
-                    ev.line = req.line;
-                    ev.col = req.col;
-                    ev.duration_ms = req.start.elapsed().as_millis() as u64;
-                    ev.ok = val.get("error").is_none();
-                    ev.items = val
-                        .get("result")
-                        .map(|r| match r {
-                            serde_json::Value::Array(a) => a.len() as u64,
-                            serde_json::Value::Null => 0,
-                            _ => 1,
-                        })
-                        .unwrap_or(0);
-                    meta_writer.metrics.record(ev);
+        let mut batch: Vec<WireMessage> = Vec::with_capacity(64);
+        'writer: while out_rx.recv_many(&mut batch, 64).await.is_ok() {
+            for msg in batch.drain(..) {
+                if let WireMessage::LspPayload(ref raw) = msg
+                    && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
+                    && let Some(id) = val.get("id").filter(|i| !i.is_null())
+                    && val.get("method").is_none()
+                {
+                    let key = id.to_string();
+                    if let Some(req) = pending_writer.lock().await.remove(&key) {
+                        let mut ev = metrics::Event::blank("lsp");
+                        ev.session_id = meta_writer.session_id;
+                        ev.client_name = meta_writer.client_name.clone();
+                        ev.agent = meta_writer.agent.clone();
+                        ev.host = meta_writer.host.clone();
+                        ev.client_addr = meta_writer.client_addr.clone();
+                        ev.workspace = meta_writer.workspace.clone();
+                        ev.engine = meta_writer.engine.clone();
+                        ev.method = req.method;
+                        ev.file = req.file;
+                        ev.line = req.line;
+                        ev.col = req.col;
+                        ev.duration_ms = req.start.elapsed().as_millis() as u64;
+                        ev.ok = val.get("error").is_none();
+                        ev.items = val
+                            .get("result")
+                            .map(|r| match r {
+                                serde_json::Value::Array(a) => a.len() as u64,
+                                serde_json::Value::Null => 0,
+                                _ => 1,
+                            })
+                            .unwrap_or(0);
+                        meta_writer.metrics.record(ev);
+                    }
+                }
+                if socket_tx.feed(msg).await.is_err() {
+                    break 'writer;
                 }
             }
-            if socket_tx.send(msg).await.is_err() {
+            if socket_tx.flush().await.is_err() {
                 break;
             }
         }
@@ -3125,6 +3134,9 @@ async fn main() -> Result<()> {
     }
     tracing::info!(advertise, peers = ?peers, "cluster identity");
     tokio::spawn(gossip_loop(Arc::clone(&state)));
+    if let Some(rx) = state.metrics.take_receiver() {
+        tokio::spawn(metrics::run_writer(state.metrics.dir().to_path_buf(), rx));
+    }
 
     tokio::spawn(janitor(
         Arc::clone(&state),
