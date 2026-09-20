@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod detect;
 pub mod memory;
+mod metrics;
 pub mod workspace;
 
 pub use detect::detect_engine;
@@ -83,6 +84,30 @@ pub struct ServerState {
     pub peers: tokio::sync::RwLock<std::collections::BTreeSet<String>>,
     /// Latest heartbeat from every peer and when it arrived.
     pub cluster: tokio::sync::RwLock<std::collections::HashMap<String, PeerEntry>>,
+    /// Usage metrics (JSONL on disk + in-memory ring).
+    pub metrics: Arc<metrics::Metrics>,
+}
+
+/// Who a session belongs to, for metrics.
+pub struct SessionMeta {
+    pub session_id: u64,
+    pub client_name: String,
+    pub agent: String,
+    pub host: String,
+    pub client_addr: String,
+    pub workspace: String,
+    pub engine: String,
+    pub engine_root: PathBuf,
+    pub metrics: Arc<metrics::Metrics>,
+}
+
+/// An LSP request awaiting its answer.
+pub struct PendingRequest {
+    pub method: String,
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    pub start: Instant,
 }
 
 /// A peer's latest heartbeat.
@@ -98,6 +123,10 @@ const GOSSIP_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl ServerState {
     pub fn new(storage_root: PathBuf) -> Self {
+        let metrics_dir = storage_root
+            .parent()
+            .map(|p| p.join("metrics"))
+            .unwrap_or_else(|| storage_root.join("metrics"));
         Self {
             start_time: Instant::now(),
             server_pid: std::process::id(),
@@ -108,6 +137,7 @@ impl ServerState {
             advertise: tokio::sync::RwLock::new(String::new()),
             peers: tokio::sync::RwLock::new(std::collections::BTreeSet::new()),
             cluster: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            metrics: Arc::new(metrics::Metrics::new(metrics_dir)),
         }
     }
 
@@ -1142,6 +1172,7 @@ fn kill_exec_tree(child: &mut tokio::process::Child) {
 /// or the timeout elapses.
 pub async fn run_exec(
     storage_root: &std::path::Path,
+    metrics: &metrics::Metrics,
     framed: &mut Framed<TcpStream, ProdCodeCodec>,
     req: ExecRequest,
 ) -> Result<()> {
@@ -1319,6 +1350,26 @@ pub async fn run_exec(
         duration_ms,
         "🛠️ [EXEC] finished"
     );
+    {
+        let mut ev = metrics::Event::blank("exec");
+        ev.agent = req
+            .client_agent
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        ev.host = req
+            .client_host
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        ev.workspace = workspace
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ev.command = req.command.join(" ");
+        ev.duration_ms = start.elapsed().as_millis() as u64;
+        ev.exit_code = exit_code;
+        ev.ok = exit_code == Some(0);
+        metrics.record(ev);
+    }
     if req.pull_changes {
         let root = workspace.clone();
         let files = tokio::task::spawn_blocking(move || changed_since(&root, &before))
@@ -1351,6 +1402,15 @@ pub async fn run_exec(
 pub async fn apply_sync(
     storage_root: &std::path::Path,
     workspace_manager: &WorkspaceManager,
+    req: SyncRequest,
+) -> SyncResponse {
+    apply_sync_with_metrics(storage_root, workspace_manager, None, req).await
+}
+
+pub async fn apply_sync_with_metrics(
+    storage_root: &std::path::Path,
+    workspace_manager: &WorkspaceManager,
+    metrics: Option<&metrics::Metrics>,
     req: SyncRequest,
 ) -> SyncResponse {
     let start = Instant::now();
@@ -1450,6 +1510,14 @@ pub async fn apply_sync(
         "⚡ [SYNC] Workspace fast-sync applied"
     );
 
+    if let Some(metrics) = metrics {
+        let mut ev = metrics::Event::blank("sync");
+        ev.workspace = folder_name.to_string();
+        ev.items = (files_updated + files_deleted) as u64;
+        ev.bytes = bytes_transferred as u64;
+        ev.duration_ms = duration_ms;
+        metrics.record(ev);
+    }
     SyncResponse {
         files_updated,
         files_deleted,
@@ -1487,8 +1555,19 @@ pub async fn handle_client(
                 let resp = state.place(&req).await;
                 framed.send(WireMessage::PlaceResponse(resp)).await?;
             }
+            WireMessage::MetricsRequest(req) => {
+                let node = state.advertise.read().await.clone();
+                let resp = state.metrics.summary(&node, req.since_secs);
+                framed.send(WireMessage::MetricsResponse(resp)).await?;
+            }
             WireMessage::SyncRequest(req) => {
-                let resp = apply_sync(&state.storage_root, &state.workspace_manager, req).await;
+                let resp = apply_sync_with_metrics(
+                    &state.storage_root,
+                    &state.workspace_manager,
+                    Some(&state.metrics),
+                    req,
+                )
+                .await;
                 framed.send(WireMessage::SyncResponse(resp)).await?;
             }
             WireMessage::SyncProbeRequest(req) => {
@@ -1497,7 +1576,7 @@ pub async fn handle_client(
                 framed.send(WireMessage::SyncProbeResponse(resp)).await?;
             }
             WireMessage::ExecRequest(req) => {
-                run_exec(&state.storage_root, &mut framed, req).await?;
+                run_exec(&state.storage_root, &state.metrics, &mut framed, req).await?;
             }
             WireMessage::ReadFileRequest(req) => {
                 let resp = read_server_file(&state.storage_root, &req);
@@ -1577,7 +1656,27 @@ pub async fn handle_client(
                     .await?;
 
                 // Session loop for streaming LSP and control messages
-                let session_res = run_session_loop(framed, &translator, &session_view).await;
+                let meta = Arc::new(SessionMeta {
+                    session_id,
+                    client_name: req.client_name.clone(),
+                    agent: req
+                        .client_agent
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    host: req
+                        .client_host
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    client_addr: addr.to_string(),
+                    workspace: engine_root
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    engine: engine.to_string(),
+                    engine_root: engine_root.clone(),
+                    metrics: Arc::clone(&state.metrics),
+                });
+                let session_res = run_session_loop(framed, &translator, &session_view, meta).await;
 
                 if let Some(engine_lock) = &session_view.workspace.rust_engine {
                     let mut engine = engine_lock.lock().await;
@@ -1612,12 +1711,51 @@ async fn run_session_loop(
     framed: Framed<TcpStream, ProdCodeCodec>,
     translator: &PathTranslator,
     view: &SessionView,
+    meta: Arc<SessionMeta>,
 ) -> Result<()> {
     let (mut socket_tx, mut socket_rx) = framed.split();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<WireMessage>(4096);
 
+    // Requests in flight, keyed by JSON-RPC id, so every answer — whichever engine produced
+    // it — becomes one metrics event with its duration.
+    let pending: Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>> =
+        Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+    let pending_writer = Arc::clone(&pending);
+    let meta_writer = Arc::clone(&meta);
     let writer_handle = tokio::spawn(async move {
         while let Some(msg) = out_rx.recv().await {
+            if let WireMessage::LspPayload(ref raw) = msg
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
+                && let Some(id) = val.get("id").filter(|i| !i.is_null())
+                && val.get("method").is_none()
+            {
+                let key = id.to_string();
+                if let Some(req) = pending_writer.lock().await.remove(&key) {
+                    let mut ev = metrics::Event::blank("lsp");
+                    ev.session_id = meta_writer.session_id;
+                    ev.client_name = meta_writer.client_name.clone();
+                    ev.agent = meta_writer.agent.clone();
+                    ev.host = meta_writer.host.clone();
+                    ev.client_addr = meta_writer.client_addr.clone();
+                    ev.workspace = meta_writer.workspace.clone();
+                    ev.engine = meta_writer.engine.clone();
+                    ev.method = req.method;
+                    ev.file = req.file;
+                    ev.line = req.line;
+                    ev.col = req.col;
+                    ev.duration_ms = req.start.elapsed().as_millis() as u64;
+                    ev.ok = val.get("error").is_none();
+                    ev.items = val
+                        .get("result")
+                        .map(|r| match r {
+                            serde_json::Value::Array(a) => a.len() as u64,
+                            serde_json::Value::Null => 0,
+                            _ => 1,
+                        })
+                        .unwrap_or(0);
+                    meta_writer.metrics.record(ev);
+                }
+            }
             if socket_tx.send(msg).await.is_err() {
                 break;
             }
@@ -1651,6 +1789,31 @@ async fn run_session_loop(
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
                             let method = val.get("method").and_then(|m| m.as_str());
                             let id = val.get("id").cloned();
+                            if let (Some(m), Some(id_val)) = (method, &id)
+                                && !id_val.is_null()
+                                && m != "initialize"
+                            {
+                                let params = val.get("params");
+                                let uri = params
+                                    .and_then(|p| p.get("textDocument").and_then(|t| t.get("uri")).or_else(|| p.get("item").and_then(|i| i.get("uri"))))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                let file = std::path::Path::new(uri.trim_start_matches("file://"))
+                                    .strip_prefix(&meta.engine_root)
+                                    .map(|p| p.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|_| uri.trim_start_matches("file://").to_string());
+                                let pos = params.and_then(|p| p.get("position").or_else(|| p.get("range").and_then(|r| r.get("start"))));
+                                pending.lock().await.insert(
+                                    id_val.to_string(),
+                                    PendingRequest {
+                                        method: m.to_string(),
+                                        file,
+                                        line: pos.and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32 + 1,
+                                        col: pos.and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1,
+                                        start: Instant::now(),
+                                    },
+                                );
+                            }
 
                             // 1. Intercept "initialize": reply immediately with cached server capabilities
                             if method == Some("initialize") {

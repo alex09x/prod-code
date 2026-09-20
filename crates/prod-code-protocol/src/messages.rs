@@ -42,6 +42,9 @@ pub enum WireMessage {
     /// A client asks any node where a workspace should live.
     PlaceRequest(PlaceRequest),
     PlaceResponse(PlaceResponse),
+    /// Usage metrics of one node (who asked what, how often, how fast).
+    MetricsRequest(MetricsRequest),
+    MetricsResponse(MetricsResponse),
 }
 
 /// Supported code intelligence engine kinds.
@@ -109,6 +112,12 @@ pub struct HandshakeRequest {
     /// (a SwiftPM package inside a Rust repository): the gateway loads the engine there.
     #[serde(default)]
     pub engine_subpath: Option<String>,
+    /// What drives this client: `claude-code`, `codex`, `cli`, or a custom `PROD_CODE_AGENT`.
+    #[serde(default)]
+    pub client_agent: Option<String>,
+    /// The client machine's hostname.
+    #[serde(default)]
+    pub client_host: Option<String>,
 }
 
 /// Handshake acknowledgement sent by remote gateway.
@@ -383,6 +392,10 @@ pub struct ExecRequest {
     /// workspace root when absent. Lets a nested project be built and tested in place.
     #[serde(default)]
     pub subdir: Option<String>,
+    #[serde(default)]
+    pub client_agent: Option<String>,
+    #[serde(default)]
+    pub client_host: Option<String>,
 }
 
 /// Files the command changed in the server workspace, sent before `ExecExit` when
@@ -490,4 +503,88 @@ pub struct PlaceResponse {
     /// The node to use, or None when no node in the cluster can serve the engine.
     pub node: Option<String>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetricsRequest {
+    /// Window in seconds; 0 means everything the node still holds.
+    #[serde(default)]
+    pub since_secs: u64,
+}
+
+/// Queries of one (agent, host, workspace, method) group in the window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QueryMetric {
+    pub agent: String,
+    pub host: String,
+    pub workspace: String,
+    pub method: String,
+    pub count: u64,
+    pub errors: u64,
+    pub p50_ms: u64,
+    pub p95_ms: u64,
+    pub max_ms: u64,
+}
+
+/// Commands run through `exec` (including check/lint/test) in the window.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecMetric {
+    pub agent: String,
+    pub host: String,
+    pub workspace: String,
+    pub command: String,
+    pub count: u64,
+    pub failures: u64,
+    pub total_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetricsResponse {
+    pub node: String,
+    pub since_secs: u64,
+    /// Events the node holds in memory (the JSONL files on disk hold everything).
+    pub events_in_memory: u64,
+    pub queries: Vec<QueryMetric>,
+    pub execs: Vec<ExecMetric>,
+    /// Sync rounds: files and bytes uploaded to this node in the window.
+    pub sync_rounds: u64,
+    pub sync_files: u64,
+    pub sync_bytes: u64,
+}
+
+/// What drives this client, for usage metrics: `PROD_CODE_AGENT` when set, otherwise
+/// `claude-code` / `codex` when launched by those tools, else `cli`.
+pub fn detect_client_agent() -> String {
+    if let Ok(agent) = std::env::var("PROD_CODE_AGENT")
+        && !agent.trim().is_empty()
+    {
+        return agent;
+    }
+    if std::env::var_os("CLAUDECODE").is_some()
+        || std::env::var_os("CLAUDE_CODE_ENTRYPOINT").is_some()
+    {
+        return "claude-code".to_string();
+    }
+    if std::env::var_os("CODEX_SANDBOX").is_some()
+        || std::env::var_os("CODEX_HOME").is_some()
+        || std::env::var_os("CODEX_THREAD_ID").is_some()
+    {
+        return "codex".to_string();
+    }
+    "cli".to_string()
+}
+
+/// The client machine's hostname (cached).
+pub fn client_host() -> String {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(|| {
+        std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|h| !h.is_empty())
+            .or_else(|| std::env::var("HOSTNAME").ok())
+            .unwrap_or_else(|| "unknown".to_string())
+    })
+    .clone()
 }

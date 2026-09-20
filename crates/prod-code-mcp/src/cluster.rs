@@ -6,8 +6,8 @@
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ClusterResponse, PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, WireMessage,
-    content_hash,
+    ClusterResponse, MetricsRequest, MetricsResponse, PlaceRequest, PlaceResponse, ProdCodeCodec,
+    StatusResponse, WireMessage, content_hash,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -326,6 +326,24 @@ pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
         }
     }
     nodes
+}
+
+/// Asks one node for its usage metrics over the last `since_secs` (0 = all it holds).
+pub async fn node_metrics(addr: SocketAddr, since_secs: u64) -> Result<MetricsResponse> {
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+        .await
+        .map_err(|_| anyhow!("connect timed out"))??;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::MetricsRequest(MetricsRequest { since_secs }))
+        .await?;
+    match tokio::time::timeout(Duration::from_secs(10), framed.next()).await {
+        Ok(Some(Ok(WireMessage::MetricsResponse(m)))) => Ok(m),
+        Ok(Some(Ok(other))) => Err(anyhow!("unexpected reply: {other:?}")),
+        Ok(Some(Err(e))) => Err(anyhow!("decode error: {e}")),
+        Ok(None) => Err(anyhow!("connection closed")),
+        Err(_) => Err(anyhow!("metrics timed out")),
+    }
 }
 
 /// Asks one node for its status.

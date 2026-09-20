@@ -1146,6 +1146,7 @@ dependencies = [
  "prod-code-engine-go",
  "prod-code-engine-rust",
  "prod-code-protocol",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

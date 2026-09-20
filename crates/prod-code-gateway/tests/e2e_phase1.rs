@@ -180,6 +180,8 @@ async fn test_full_phase1_e2e_flow() {
                 preferred_engine: None,
                 base_workspace_name: None,
                 engine_subpath: None,
+                client_agent: None,
+                client_host: None,
             }))
             .await
             .unwrap();

@@ -67,6 +67,8 @@ pub async fn run_remote(
             timeout_secs,
             pull_changes,
             subdir: subdir.map(str::to_string),
+            client_agent: Some(prod_code_protocol::detect_client_agent()),
+            client_host: Some(prod_code_protocol::client_host()),
         }))
         .await?;
 

@@ -959,6 +959,8 @@ async fn open_session(
             preferred_engine: None,
             base_workspace_name: Some(wt.workspace_name.clone()),
             engine_subpath: None,
+            client_agent: Some(prod_code_protocol::detect_client_agent()),
+            client_host: Some(prod_code_protocol::client_host()),
         }))
         .await?;
 

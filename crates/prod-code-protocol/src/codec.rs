@@ -108,6 +108,8 @@ mod tests {
             preferred_engine: None,
             base_workspace_name: None,
             engine_subpath: None,
+            client_agent: None,
+            client_host: None,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();

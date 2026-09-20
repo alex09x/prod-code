@@ -49,6 +49,8 @@ impl LspSession {
                 preferred_engine: None,
                 base_workspace_name: Some(identity.name.clone()),
                 engine_subpath,
+                client_agent: Some(prod_code_protocol::detect_client_agent()),
+                client_host: Some(prod_code_protocol::client_host()),
             }))
             .await?;
         let handshake = match framed.next().await {

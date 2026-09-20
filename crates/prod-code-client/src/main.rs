@@ -80,6 +80,14 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Usage metrics of every node: who queried what, how often, how fast; exec runs; syncs
+    Metrics {
+        /// Window in seconds (default 24h; 0 = everything the nodes hold in memory)
+        #[arg(long, default_value_t = 86_400)]
+        since: u64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the tests and explain every failure: site, code, callers, what changed
     Diagnose {
         /// Test filter (as for `prod-code test`)
@@ -286,6 +294,7 @@ async fn main() -> Result<()> {
         // `status` is about the node you name, not about where this checkout is placed.
         Commands::Status => run_status_probe(seeds[0]).await,
         Commands::Cluster => run_cluster(&remotes, &cwd_workspace, cwd_engine).await,
+        Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
         Commands::Def { file, line, col } => run_definition(remote, &file, line, col).await,
@@ -555,6 +564,8 @@ async fn execute_lsp_query(
                     preferred_engine: None,
                     base_workspace_name: base_ws_name.clone(),
                     engine_subpath,
+                    client_agent: Some(prod_code_protocol::detect_client_agent()),
+                    client_host: Some(prod_code_protocol::client_host()),
                 }))
                 .await?;
 
@@ -912,6 +923,111 @@ async fn run_impact(
         std::process::exit(outcome.exit.exit_code.unwrap_or(1));
     }
     Ok(())
+}
+
+/// Usage metrics merged across every node of the cluster.
+async fn run_metrics(nodes: &[SocketAddr], since: u64, json: bool) -> Result<()> {
+    let mut all = Vec::new();
+    for node in nodes {
+        match prod_code_mcp::cluster::node_metrics(*node, since).await {
+            Ok(m) => all.push(m),
+            Err(e) => eprintln!("{node}: {e}"),
+        }
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&all)?);
+        return Ok(());
+    }
+    let window = if since == 0 {
+        "all in memory".to_string()
+    } else {
+        format!("last {}h{:02}m", since / 3600, (since % 3600) / 60)
+    };
+    println!("⚡ prod-code usage ({window}, {} node(s))", all.len());
+    println!("────────────────────────────────────────────────────────────────────────");
+    // Queries: by agent → workspace → method, summed over nodes.
+    type Key = (String, String, String, String);
+    type Agg = (u64, u64, u64, u64);
+    let mut by_key: std::collections::BTreeMap<Key, Agg> = std::collections::BTreeMap::new();
+    for m in &all {
+        for q in &m.queries {
+            let e = by_key
+                .entry((
+                    q.agent.clone(),
+                    q.host.clone(),
+                    q.workspace.clone(),
+                    q.method.clone(),
+                ))
+                .or_default();
+            e.0 += q.count;
+            e.1 += q.errors;
+            e.2 = e.2.max(q.p50_ms);
+            e.3 = e.3.max(q.p95_ms);
+        }
+    }
+    if by_key.is_empty() {
+        println!("no queries in the window");
+    } else {
+        println!(
+            "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7}",
+            "agent", "host", "workspace", "method", "count", "err", "p50ms", "p95ms"
+        );
+        for ((agent, host, ws, method), (count, errors, p50, p95)) in &by_key {
+            println!(
+                "{:<12} {:<18} {:<28} {:<34} {:>7} {:>5} {:>7} {:>7}",
+                truncate(agent, 12),
+                truncate(host, 18),
+                truncate(ws, 28),
+                truncate(method.trim_start_matches("textDocument/"), 34),
+                count,
+                errors,
+                p50,
+                p95
+            );
+        }
+    }
+    let mut execs: Vec<_> = all.iter().flat_map(|m| m.execs.iter().cloned()).collect();
+    if !execs.is_empty() {
+        execs.sort_by_key(|e| std::cmp::Reverse(e.total_ms));
+        println!("────────────────────────────────────────────────────────────────────────");
+        println!(
+            "{:<12} {:<18} {:<28} {:<40} {:>5} {:>4} {:>8}",
+            "agent", "host", "workspace", "command", "runs", "fail", "total s"
+        );
+        for e in execs.iter().take(30) {
+            println!(
+                "{:<12} {:<18} {:<28} {:<40} {:>5} {:>4} {:>8.1}",
+                truncate(&e.agent, 12),
+                truncate(&e.host, 18),
+                truncate(&e.workspace, 28),
+                truncate(&e.command, 40),
+                e.count,
+                e.failures,
+                e.total_ms as f64 / 1000.0
+            );
+        }
+    }
+    println!("────────────────────────────────────────────────────────────────────────");
+    for m in &all {
+        println!(
+            "{:<22} syncs {:>5}  files {:>7}  {:>8.1} MB  events in memory {}",
+            m.node,
+            m.sync_rounds,
+            m.sync_files,
+            m.sync_bytes as f64 / 1_048_576.0,
+            m.events_in_memory
+        );
+    }
+    Ok(())
+}
+
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
 }
 
 /// Runs the tests and prints a dossier for every failure.
@@ -1303,6 +1419,8 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             preferred_engine: None,
             base_workspace_name: detect_workspace_name(&cwd),
             engine_subpath: None,
+            client_agent: Some(prod_code_protocol::detect_client_agent()),
+            client_host: Some(prod_code_protocol::client_host()),
         }))
         .await?;
 
@@ -1859,6 +1977,8 @@ async fn run_benchmark(
                 preferred_engine: None,
                 base_workspace_name: base_name,
                 engine_subpath: None,
+                client_agent: Some(prod_code_protocol::detect_client_agent()),
+                client_host: Some(prod_code_protocol::client_host()),
             };
 
             if framed
