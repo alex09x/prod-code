@@ -247,6 +247,18 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_dead_code".to_string(),
+            description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "include_exported": { "type": "boolean", "description": "Also list exported / public symbols nothing in the checkout uses" },
+                    "max_files": { "type": "integer", "description": "Stop after this many source files (default 400)" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_source".to_string(),
             description: "Read a source file that exists only on the gateway host: standard library sources, dependency registries (cargo, go mod cache, node_modules, site-packages) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
                 .to_string(),
@@ -908,6 +920,24 @@ pub async fn execute_tool(
             let base = args.get("base").and_then(|v| v.as_str());
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
             let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
+            Ok(McpToolCallResult::text(report.render()))
+        }
+        "code_dead_code" => {
+            let include_exported = args
+                .get("include_exported")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let max_files = args
+                .get("max_files")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(400) as usize;
+            let report = crate::dead_code::find_dead_code(
+                remote,
+                workspace_root,
+                include_exported,
+                max_files,
+            )
+            .await?;
             Ok(McpToolCallResult::text(report.render()))
         }
         "code_source" => {

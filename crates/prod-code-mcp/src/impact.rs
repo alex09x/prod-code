@@ -2,7 +2,7 @@
 //! reach them through the analyzer's call hierarchy, and the tests among those callers,
 //! with the command that runs only the affected tests.
 
-use crate::tools::execute_lsp_query;
+use crate::session::LspSession;
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -358,6 +358,7 @@ pub async fn analyze(
         .to_string();
     let tools = crate::verify::detect_tools(root);
     let ranges = changed_lines(root, base)?;
+    let mut session = LspSession::open(remote, root, None).await?;
     let changed_files: Vec<String> = ranges.keys().cloned().collect();
     let mut changed: Vec<Symbol> = Vec::new();
     let mut unattributed: Vec<String> = Vec::new();
@@ -374,15 +375,14 @@ pub async fn analyze(
         let uri = Url::from_file_path(&abs)
             .map_err(|_| anyhow!("bad path {file}"))?
             .to_string();
-        let symbols = execute_lsp_query(
-            remote,
-            root,
-            &abs,
-            "textDocument/documentSymbol",
-            serde_json::json!({ "textDocument": { "uri": uri } }),
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
+        let symbols = session
+            .query(
+                &abs,
+                "textDocument/documentSymbol",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+            .unwrap_or(serde_json::Value::Null);
         let mut functions = Vec::new();
         collect_functions(
             symbols.as_array().map(|a| a.as_slice()).unwrap_or(&[]),
@@ -427,27 +427,25 @@ pub async fn analyze(
             Err(_) => continue,
         };
         let position = serde_json::json!({ "line": sym.line.saturating_sub(1), "character": sym.col.saturating_sub(1) });
-        let items = execute_lsp_query(
-            remote,
-            root,
-            &abs,
-            "textDocument/prepareCallHierarchy",
-            serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
+        let items = session
+            .query(
+                &abs,
+                "textDocument/prepareCallHierarchy",
+                serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
+            )
+            .await
+            .unwrap_or(serde_json::Value::Null);
         let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
             continue;
         };
-        let incoming = execute_lsp_query(
-            remote,
-            root,
-            &abs,
-            "callHierarchy/incomingCalls",
-            serde_json::json!({ "item": item }),
-        )
-        .await
-        .unwrap_or(serde_json::Value::Null);
+        let incoming = session
+            .query(
+                &abs,
+                "callHierarchy/incomingCalls",
+                serde_json::json!({ "item": item }),
+            )
+            .await
+            .unwrap_or(serde_json::Value::Null);
         for edge in incoming.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
             let Some(from) = edge.get("from") else {
                 continue;
@@ -499,6 +497,7 @@ pub async fn analyze(
         }
     }
 
+    session.close().await;
     let tests: Vec<Symbol> = tests.into_iter().collect();
     let test_command = test_command(&language, &tools, &tests);
     Ok(ImpactReport {

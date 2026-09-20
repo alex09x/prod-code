@@ -80,6 +80,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Unreferenced functions, methods and types across the checkout
+    DeadCode {
+        /// Also list exported / public symbols nothing in the checkout uses
+        #[arg(long)]
+        include_exported: bool,
+        /// Stop after this many source files
+        #[arg(long, default_value_t = 400)]
+        max_files: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show a source file that lives on the gateway (std, registry, SDK): prod-code source <path> [--line N] [--context K]
     Source {
         path: String,
@@ -272,6 +283,11 @@ async fn main() -> Result<()> {
             run,
             json,
         } => run_impact(remote, base.as_deref(), depth, run, json).await,
+        Commands::DeadCode {
+            include_exported,
+            max_files,
+            json,
+        } => run_dead_code(remote, include_exported, max_files, json).await,
         Commands::Rename {
             file,
             line,
@@ -849,6 +865,31 @@ async fn run_impact(
         )
         .await?;
         std::process::exit(outcome.exit.exit_code.unwrap_or(1));
+    }
+    Ok(())
+}
+
+/// Scans the checkout for unreferenced symbols.
+async fn run_dead_code(
+    remote: SocketAddr,
+    include_exported: bool,
+    max_files: usize,
+    json: bool,
+) -> Result<()> {
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let started = std::time::Instant::now();
+    let report =
+        prod_code_mcp::dead_code::find_dead_code(remote, &root, include_exported, max_files)
+            .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print!("{}", report.render());
+        eprintln!(
+            "[prod-code dead-code] scanned in {:.2}s",
+            started.elapsed().as_secs_f64()
+        );
     }
     Ok(())
 }
