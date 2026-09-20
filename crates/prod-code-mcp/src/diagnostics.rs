@@ -92,6 +92,10 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
                         source: d.get("source").and_then(|s| s.as_str()).map(String::from),
                     }
                 })
+                // `inactive-code` marks the branch of a `#[cfg]` pair that is off on the
+                // node (`#[cfg(not(unix))]` on Linux). It is correct and says nothing about
+                // the edit under review, so agents never see it.
+                .filter(|d| d.code.as_deref() != Some("inactive-code"))
                 .collect()
         })
         .unwrap_or_default();
@@ -200,4 +204,33 @@ fn display(root: &Path, file: &Path) -> String {
     abs.strip_prefix(&root)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| abs.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inactive_code_hints_are_dropped_and_counts_ignore_them() {
+        let result = serde_json::json!({ "items": [
+            { "range": { "start": { "line": 3, "character": 4 } }, "severity": 4,
+              "code": "inactive-code", "message": "code is inactive due to #[cfg] directives: unix is enabled" },
+            { "range": { "start": { "line": 10, "character": 8 } }, "severity": 1,
+              "code": "E0425", "message": "cannot find value `x` in this scope" },
+            { "range": { "start": { "line": 12, "character": 1 } }, "severity": 4,
+              "code": "unused_variables", "message": "unused variable" }
+        ]});
+        let report = parse_items("src/lib.rs", &result);
+        assert_eq!(report.errors, 1);
+        assert_eq!(report.warnings, 0);
+        assert_eq!(report.items.len(), 2, "{:?}", report.items);
+        assert!(
+            report
+                .items
+                .iter()
+                .all(|d| d.code.as_deref() != Some("inactive-code"))
+        );
+        assert_eq!(report.items[0].line, 11);
+        assert_eq!(report.items[0].col, 9);
+    }
 }
