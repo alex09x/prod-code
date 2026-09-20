@@ -202,9 +202,19 @@ async fn main() -> Result<()> {
         .as_deref()
         .map(|root| prod_code_mcp::sync::workspace_identity(root).name)
         .unwrap_or_default();
-    let cwd_engine = cwd_root
-        .as_deref()
-        .and_then(prod_code_mcp::sync::expected_engine);
+    // The engine a query needs is that of the nearest project of the file it names (or of
+    // the current directory): a SwiftPM package inside a Rust repository must land on a
+    // macOS node even though the repository root is Rust.
+    let cwd_engine = cwd_root.as_deref().and_then(|root| {
+        let hint = env::args()
+            .skip(1)
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .or_else(|| env::current_dir().ok())
+            .unwrap_or_else(|| root.to_path_buf());
+        prod_code_mcp::sync::engine_project(root, &hint).1
+    });
 
     if matches!(cli.command, Some(Commands::Cluster)) {
         return run_cluster(&remotes, &cwd_workspace, cwd_engine).await;
@@ -439,6 +449,8 @@ async fn execute_lsp_query(
             }
             timing.mark("preflight_sync");
 
+            let (engine_subpath, expected_engine) =
+                prod_code_mcp::sync::engine_project(&ws_root, &abs_path);
             framed
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
@@ -448,6 +460,7 @@ async fn execute_lsp_query(
                     client_workspace_root: ws_root_str.clone(),
                     preferred_engine: None,
                     base_workspace_name: base_ws_name.clone(),
+                    engine_subpath,
                 }))
                 .await?;
 
@@ -461,7 +474,7 @@ async fn execute_lsp_query(
             // everything was sent. Forget the watermark, push the full tree and reconnect;
             // the gateway reloads a workspace whose engine kind changed.
             if attempt == 1
-                && let Some(expected) = prod_code_mcp::sync::expected_engine(&ws_root)
+                && let Some(expected) = expected_engine
                 && handshake.detected_engine != expected
             {
                 prod_code_mcp::sync::clear_sync_cache(&ws_root);
@@ -1029,6 +1042,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             client_workspace_root: cwd_str,
             preferred_engine: None,
             base_workspace_name: detect_workspace_name(&cwd),
+            engine_subpath: None,
         }))
         .await?;
 
@@ -1547,6 +1561,7 @@ async fn run_benchmark(
                 client_workspace_root: ws_str.clone(),
                 preferred_engine: None,
                 base_workspace_name: base_name,
+                engine_subpath: None,
             };
 
             if framed

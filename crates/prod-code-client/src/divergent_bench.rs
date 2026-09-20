@@ -958,6 +958,7 @@ async fn open_session(
             client_workspace_root: ws_root_str.clone(),
             preferred_engine: None,
             base_workspace_name: Some(wt.workspace_name.clone()),
+            engine_subpath: None,
         }))
         .await?;
 

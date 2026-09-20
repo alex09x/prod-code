@@ -91,6 +91,11 @@ pub struct HandshakeRequest {
     pub preferred_engine: Option<String>,
     #[serde(default)]
     pub base_workspace_name: Option<String>,
+    /// Directory inside the checkout (relative, `/`-separated) whose project the session is
+    /// about, when it is a nested project of another language than the checkout root
+    /// (a SwiftPM package inside a Rust repository): the gateway loads the engine there.
+    #[serde(default)]
+    pub engine_subpath: Option<String>,
 }
 
 /// Handshake acknowledgement sent by remote gateway.

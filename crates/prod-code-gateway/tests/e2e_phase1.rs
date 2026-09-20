@@ -179,6 +179,7 @@ async fn test_full_phase1_e2e_flow() {
                 client_workspace_root: client_root.to_string(),
                 preferred_engine: None,
                 base_workspace_name: None,
+                engine_subpath: None,
             }))
             .await
             .unwrap();

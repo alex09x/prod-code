@@ -1141,6 +1141,7 @@ async fn execute_lsp_query(
 ) -> Result<serde_json::Value> {
     let root_str = workspace_root.to_string_lossy().to_string();
     let workspace_name = crate::sync::workspace_identity(workspace_root).name;
+    let (engine_subpath, expected_engine) = crate::sync::engine_project(workspace_root, file_path);
     let file_uri = Url::from_file_path(file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
@@ -1182,6 +1183,7 @@ async fn execute_lsp_query(
                     client_workspace_root: root_str.clone(),
                     preferred_engine: None,
                     base_workspace_name: Some(workspace_name.clone()),
+                    engine_subpath: engine_subpath.clone(),
                 }))
                 .await?;
 
@@ -1195,7 +1197,7 @@ async fn execute_lsp_query(
             // everything was sent. Forget the watermark, push the full tree and reconnect;
             // the gateway reloads a workspace whose engine kind changed.
             if attempt == 1
-                && let Some(expected) = crate::sync::expected_engine(workspace_root)
+                && let Some(expected) = expected_engine
                 && handshake.detected_engine != expected
             {
                 crate::sync::clear_sync_cache(workspace_root);

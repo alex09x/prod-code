@@ -60,6 +60,43 @@ pub struct WorkspaceIdentity {
 
 /// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
 /// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
+/// The project a path belongs to inside a checkout: the nearest ancestor of `hint` (up to
+/// `root`) carrying a manifest of a *different* language than the checkout root. Returns the
+/// engine subpath (relative, `/`-separated) and that project's engine; `(None, root engine)`
+/// when the path belongs to the root project (nested crates of one Cargo workspace stay
+/// with the workspace).
+pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'static str>) {
+    let root_engine = expected_engine(root);
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut dir = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
+    if dir.is_file() {
+        dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
+    }
+    while dir.starts_with(&canonical_root) && dir != canonical_root {
+        if let Some(engine) = expected_engine(&dir) {
+            if Some(engine) == root_engine {
+                break;
+            }
+            let rel = dir
+                .strip_prefix(&canonical_root)
+                .ok()
+                .map(|r| {
+                    r.components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("/")
+                })
+                .filter(|r| !r.is_empty());
+            return (rel, Some(engine));
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    (None, root_engine)
+}
+
 pub fn expected_engine(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
     let has_xcode = std::fs::read_dir(root)
@@ -1610,6 +1647,28 @@ mod tests {
             Some(content_hash(b"fn f() {}\n"))
         );
         clear_sync_cache(root);
+    }
+
+    #[test]
+    fn nested_project_of_another_language_gets_a_subpath() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::create_dir_all(root.join("crates/a/src")).unwrap();
+        std::fs::write(root.join("crates/a/Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("swift/Sources/App")).unwrap();
+        std::fs::write(root.join("swift/Package.swift"), "").unwrap();
+        std::fs::write(root.join("swift/Sources/App/main.swift"), "").unwrap();
+        assert_eq!(
+            engine_project(root, &root.join("crates/a/src/lib.rs")),
+            (None, Some("rust"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("swift/Sources/App/main.swift")),
+            (Some("swift".to_string()), Some("swift"))
+        );
+        assert_eq!(engine_project(root, root), (None, Some("rust")));
     }
 
     #[test]

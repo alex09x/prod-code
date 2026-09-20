@@ -1160,8 +1160,26 @@ pub async fn handle_client(
                 let server_workspace_str = server_workspace.to_string_lossy().to_string();
                 workspace::touch_last_used(&server_workspace);
 
+                // A nested project of another language (engine_subpath) gets its own engine
+                // rooted there; sync and path translation stay on the checkout root.
+                let engine_root = match req.engine_subpath.as_deref() {
+                    Some(sub)
+                        if !sub.is_empty()
+                            && !sub.starts_with('/')
+                            && !sub.split('/').any(|c| c == "..")
+                            && server_workspace.join(sub).is_dir() =>
+                    {
+                        server_workspace.join(sub)
+                    }
+                    Some(sub) if !sub.is_empty() => {
+                        tracing::warn!(subpath = sub, "engine_subpath ignored (missing or unsafe)");
+                        server_workspace.clone()
+                    }
+                    _ => server_workspace.clone(),
+                };
+
                 let engine_kind =
-                    detect::resolve_engine(&server_workspace, req.preferred_engine.as_deref());
+                    detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
                 let engine = engine_kind.as_str();
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
@@ -1169,7 +1187,7 @@ pub async fn handle_client(
                 // Attach to shared workspace using leader-follower coalescing
                 let shared_ws = state
                     .workspace_manager
-                    .get_or_load(&server_workspace, engine)
+                    .get_or_load(&engine_root, engine)
                     .await?;
 
                 let session_view = state
@@ -1182,6 +1200,7 @@ pub async fn handle_client(
                     client_pid = req.client_pid,
                     client_root = %req.client_workspace_root,
                     server_root = %server_workspace_str,
+                    engine_root = %engine_root.display(),
                     engine,
                     is_single_owner = session_view.is_single_owner,
                     "Client session established (Direct-Edit fast path active: {})",

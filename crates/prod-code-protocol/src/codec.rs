@@ -107,6 +107,7 @@ mod tests {
             client_workspace_root: "/home/user/project".to_string(),
             preferred_engine: None,
             base_workspace_name: None,
+            engine_subpath: None,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();
