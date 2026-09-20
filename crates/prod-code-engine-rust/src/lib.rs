@@ -1,6 +1,7 @@
 //! High-performance, in-memory Rust analysis engine for prod-code directly utilizing `ra_ap_ide::AnalysisHost`.
 
 use anyhow::{Context, Result};
+use ra_ap_cfg::{CfgAtom, CfgDiff};
 use ra_ap_ide::{
     AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig, DiagnosticsConfig,
     FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
@@ -11,12 +12,13 @@ use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
 use ra_ap_ide_db::source_change::FileSystemEdit;
 use ra_ap_ide_db::source_change::SourceChange;
+use ra_ap_intern::sym;
 use ra_ap_load_cargo::{
     LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
 };
 use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{
-    CargoConfig, CargoFeatures, ProjectManifest, ProjectWorkspace, RustLibSource,
+    CargoConfig, CargoFeatures, CfgOverrides, ProjectManifest, ProjectWorkspace, RustLibSource,
 };
 use ra_ap_vfs::AnchoredPathBuf;
 use ra_ap_vfs::{Vfs, VfsPath};
@@ -113,6 +115,19 @@ impl ProdCodeConfig {
             all_targets: rust.all_targets,
             features,
             sysroot: rust.sysroot.then_some(RustLibSource::Discover),
+            // Like rust-analyzer's `cargo.cfgs` default: `cfg(test)` modules and
+            // `debug_assertions` code are analysed, so #[test] functions exist in the
+            // call graph and the impact analysis sees them.
+            cfg_overrides: CfgOverrides {
+                global: CfgDiff::new(
+                    vec![
+                        CfgAtom::Flag(sym::test),
+                        CfgAtom::Flag(sym::debug_assertions),
+                    ],
+                    Vec::new(),
+                ),
+                ..CfgOverrides::default()
+            },
             ..CargoConfig::default()
         }
     }

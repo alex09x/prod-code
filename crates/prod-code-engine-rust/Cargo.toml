@@ -23,6 +23,8 @@ ra_ap_syntax = "=0.0.344"
 ra_ap_ide_db = "=0.0.344"
 ra_ap_paths = "=0.0.344"
 ra_ap_base_db = "=0.0.344"
+ra_ap_cfg = "=0.0.344"
+ra_ap_intern = "=0.0.344"
 
 [dev-dependencies]
 tempfile.workspace = true
