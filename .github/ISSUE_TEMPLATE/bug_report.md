@@ -4,12 +4,20 @@ about: Something behaves wrongly or slower than it should
 labels: bug
 ---
 
-## What happened
+## Reproduce
 
-Command or tool call, the workspace shape (language, size, worktree or main checkout), and the exact output.
+The exact command(s), the workspace shape (language, size, worktree or main checkout),
+and the output as it is today:
 
-## What was expected
+```sh
+$ prod-code ...
+```
+
+## Expected
+
+What the output should have been.
 
 ## Evidence
 
-Gateway log lines, `PROD_CODE_TIMING=1` phases, benchmark output, or a minimal repository that reproduces it.
+Gateway log lines (`journalctl --user -u prod-code-gateway -o short-precise`),
+`PROD_CODE_TIMING=1` phases, benchmark output, or a minimal repository that reproduces it.

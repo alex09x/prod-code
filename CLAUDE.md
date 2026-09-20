@@ -5,15 +5,17 @@ full version; this is the part that is not optional.
 
 ## Process
 
-- Work is tracked on GitHub. Before writing code: find or open the issue. After: open a
-  pull request from a branch, filled in with the template (Problem, Change,
+- Work is tracked on GitHub. Before writing code: find or open the issue, with the exact
+  command that reproduces the problem and its current output. After: open a pull request
+  from a branch, filled in with the template (Problem, Change, Reproduce and verify,
   Measurements, Checks, `Closes #N`). No direct commits or pushes to `main`.
-- Run `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D
-  warnings` and the tests for the touched crates before the PR, on a build node when one
-  is available rather than on the developer's machine.
-- Merge only after CI is green; squash-merge, delete the branch.
-- Measurements back every performance or correctness claim: before/after, hardware and
-  workload named generically.
+- There is no hosted CI. Run `cargo fmt --all -- --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings` and the tests for the touched crates on a build node
+  (`prod-code exec -- ...` or the MCP `code_check` / `code_lint` / `code_test`), never on
+  the developer's machine, and paste what they printed into the PR.
+- Every PR shows how to repeat the result: commands, output before, output after, node
+  kind. Performance and correctness claims come with before/after numbers.
+- Merge only with recorded checks; squash-merge, delete the branch.
 
 ## Privacy
 
