@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+- Gateway channels moved to [`rapidfire`](https://github.com/alex09x/rapidfire) (zero-dependency
+  MPSC): the per-session outgoing queue is drained in batches of 64 with one socket flush per
+  batch, exec stdout/stderr chunks fan in through a bounded rapidfire channel, and metrics
+  events are appended to disk by a background writer (`recv_many` batches of 256) instead of on
+  the response path. Broadcast channels (engine notifications) stay on tokio.
+
 - Usage metrics: every query, exec and sync round on a gateway is one event (agent —
   claude-code / codex / cli — client host and address, workspace, engine, method, file,
   position, duration, ok, item count), appended to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`
