@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- In-memory diagnostics and edit validation (Phase 7.7): `prod-code diagnostics <file>` and
+  `prod-code validate <file>` (MCP `code_diagnostics`, `code_validate_edit`) report what the
+  analyzer thinks of a file, or of a proposed new content, without a build and without
+  writing: rust-analyzer diagnostics from the in-memory database, pull or published
+  diagnostics from the managed servers. Type errors, unresolved names and hallucinated APIs
+  are caught in well under a second on every language.
+
 - Dead-code scan (Phase 8.6): `prod-code dead-code` and MCP `code_dead_code` list unreferenced
   functions, methods and types found through the analyzer, skipping tests and entry points and
   bucketing exported symbols and trait/interface methods separately. Batch features (impact,

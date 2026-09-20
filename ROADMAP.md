@@ -320,7 +320,7 @@ This document outlines the architectural milestones and engineering phases for b
     - Changing a backend schema (Protobuf, OpenAPI, SQL, or Rust/Go data models) automatically coordinates with frontend TypeScript interfaces, API clients, and UI components.
     - Emits an atomic multi-repository `WorkspaceEdit` synchronizing backend and frontend simultaneously.
 
-- [ ] **7.7. Pre-Validation On-the-Fly (Instant Hallucination Interception)**
+- [~] **7.7. Pre-Validation On-the-Fly (Instant Hallucination Interception)** — shipped 2026-09-20: `prod-code diagnostics <file>` and `prod-code validate <file> [--from NEW | stdin]` (MCP `code_diagnostics`, `code_validate_edit {path, new_text}`) return the analyzer's diagnostics for a file or for a proposed replacement text, in memory and without writing anything: rust-analyzer's full diagnostics from the Salsa database (type errors, unresolved names, unused items — no cargo check), pull diagnostics from the native TypeScript server and gopls, published diagnostics from basedpyright, clangd and sourcekit-lsp. Measured 0.1–0.6 s per validation on the fixtures. Open: validating multi-file WorkspaceEdits and diffs rather than whole files; wiring it into MCP write tools automatically.
   - Streamed syntax and type check verification during agent code generation.
   - Intercepts invalid method invocations, incorrect argument types, or borrow-checker errors before the agent even finishes generating its turn, providing immediate feedback and eliminating multi-turn debugging cycles.
 
