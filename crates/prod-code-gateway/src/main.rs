@@ -300,6 +300,197 @@ pub async fn apply_sync_probe(
 /// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: every
 /// rewritten file becomes one whole-file text edit, file moves become rename operations and
 /// new files become create operations followed by their content.
+/// A managed (out-of-process) language server the gateway can talk LSP to.
+enum ManagedLsp<'a> {
+    Go(&'a prod_code_engine_go::GoEngine),
+    Generic(&'a prod_code_engine_generic::GenericLspEngine),
+}
+
+impl ManagedLsp<'_> {
+    async fn request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        let resp = match self {
+            ManagedLsp::Go(engine) => engine.send_request(method, params).await?,
+            ManagedLsp::Generic(engine) => engine.send_request(method, params).await?,
+        };
+        if let Some(err) = resp.get("error") {
+            let message = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("request failed");
+            anyhow::bail!("{method}: {message}");
+        }
+        Ok(resp
+            .get("result")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
+        match self {
+            ManagedLsp::Go(_) => Vec::new(),
+            ManagedLsp::Generic(engine) => engine.diagnostics_for(uri).await,
+        }
+    }
+}
+
+fn range_line(value: &serde_json::Value, end: bool) -> u64 {
+    value
+        .get(if end { "end" } else { "start" })
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0)
+}
+
+/// Stable id of a code action in a list: its index plus a slug of the title.
+fn code_action_id(index: usize, action: &serde_json::Value) -> String {
+    let title = action
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("action");
+    let slug: String = title
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|p| !p.is_empty())
+        .take(6)
+        .collect::<Vec<_>>()
+        .join("_");
+    format!("{index}:{slug}")
+}
+
+/// Lists (`prodCode/assists`) or applies (`prodCode/applyAssist`) LSP code actions on a
+/// managed language server. The listing is `[{id, kind, label}]` like the Rust engine's; the
+/// apply step re-queries the actions, picks the one with the requested id, resolves it when
+/// its edit is lazy and returns the WorkspaceEdit for the client to apply.
+async fn lsp_code_actions(
+    engine: &ManagedLsp<'_>,
+    method: &str,
+    params: serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
+    let uri = params
+        .get("textDocument")
+        .and_then(|t| t.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    let range = params.get("range").cloned().unwrap_or(serde_json::json!({
+        "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 }
+    }));
+    let (from, to) = (range_line(&range, false), range_line(&range, true));
+    // Quick fixes are offered for the diagnostics in the requested range.
+    let diagnostics: Vec<serde_json::Value> = engine
+        .diagnostics_for(&uri)
+        .await
+        .into_iter()
+        .filter(|d| {
+            d.get("range")
+                .map(|r| range_line(r, false) <= to && range_line(r, true) >= from)
+                .unwrap_or(false)
+        })
+        .collect();
+    let actions = engine
+        .request(
+            "textDocument/codeAction",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": diagnostics },
+            }),
+        )
+        .await?;
+    let actions = actions.as_array().cloned().unwrap_or_default();
+    match method {
+        "prodCode/assists" => Ok(serde_json::Value::Array(
+            actions
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let kind = a.get("kind").and_then(|k| k.as_str()).unwrap_or(
+                        if a.get("command").is_some() && a.get("edit").is_none() {
+                            "command"
+                        } else {
+                            "action"
+                        },
+                    );
+                    serde_json::json!({
+                        "id": code_action_id(i, a),
+                        "kind": kind,
+                        "label": a.get("title").and_then(|t| t.as_str()).unwrap_or(""),
+                    })
+                })
+                .collect(),
+        )),
+        _ => {
+            let wanted = params
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let found = actions
+                .iter()
+                .enumerate()
+                .find(|(i, a)| code_action_id(*i, a) == wanted)
+                .or_else(|| {
+                    // Fall back to the title, so an id from an older listing still matches.
+                    let title = wanted.split_once(':').map(|(_, t)| t).unwrap_or(&wanted);
+                    actions
+                        .iter()
+                        .enumerate()
+                        .find(|(i, a)| code_action_id(*i, a).ends_with(&format!(":{title}")))
+                });
+            let Some((_, action)) = found else {
+                anyhow::bail!(
+                    "no code action `{wanted}` at this position (available: {})",
+                    actions
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| code_action_id(i, a))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            };
+            if let Some(edit) = action.get("edit").filter(|e| !e.is_null()) {
+                return Ok(edit.clone());
+            }
+            if action.get("title").is_some()
+                && action.get("command").and_then(|c| c.as_str()).is_none()
+            {
+                let resolved = engine.request("codeAction/resolve", action.clone()).await?;
+                if let Some(edit) = resolved.get("edit").filter(|e| !e.is_null()) {
+                    return Ok(edit.clone());
+                }
+            }
+            let command = action
+                .get("command")
+                .map(|c| {
+                    c.get("command")
+                        .and_then(|n| n.as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| c.as_str().unwrap_or("?").to_string())
+                })
+                .unwrap_or_else(|| "?".to_string());
+            anyhow::bail!(
+                "code action `{}` only runs the server command `{command}`, which prod-code cannot apply",
+                action
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(&wanted)
+            )
+        }
+    }
+}
+
 /// LSP `languageId` for a server-side path, for the documents the gateway opens itself.
 fn language_id_for_server_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
@@ -1854,6 +2045,45 @@ async fn run_session_loop(
                                 } else {
                                     backend.open_files.write().await.insert(uri.to_string());
                                 }
+                            }
+
+                            // 5a'. Code actions on managed language servers: the Rust-style
+                            // prodCode/assists | applyAssist requests become LSP codeAction.
+                            if let (Some(pm @ ("prodCode/assists" | "prodCode/applyAssist")), Some(req_id)) = (method, &id)
+                                && (view.workspace.go_engine.is_some() || view.workspace.generic_engine.is_some())
+                            {
+                                let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                                let go = view.workspace.go_engine.clone();
+                                let generic = view.workspace.generic_engine.clone();
+                                let out_tx_task = out_tx.clone();
+                                let translator_task = translator.clone();
+                                let r_id = req_id.clone();
+                                let session_id = view.session_id;
+                                let method_name = pm.to_string();
+                                let start = Instant::now();
+                                TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                tokio::task::spawn(async move {
+                                    let engine = match (&go, &generic) {
+                                        (_, Some(g)) => ManagedLsp::Generic(g),
+                                        (Some(g), None) => ManagedLsp::Go(g),
+                                        (None, None) => unreachable!("guarded above"),
+                                    };
+                                    let outcome = lsp_code_actions(&engine, &method_name, params).await;
+                                    let ms = start.elapsed().as_secs_f64() * 1000.0;
+                                    let resp = match outcome {
+                                        Ok(result) => {
+                                            tracing::info!(session = session_id, method = %method_name, duration_ms = format!("{ms:.2}ms"), "✅ [LSP DONE] code actions");
+                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": result })
+                                        }
+                                        Err(err) => {
+                                            tracing::info!(session = session_id, method = %method_name, error = %err, "🚫 [LSP REFUSED] code actions");
+                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32602, "message": err.to_string() } })
+                                        }
+                                    };
+                                    let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                    let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                });
+                                continue;
                             }
 
                             // 5b. Supervised GoEngine fast path

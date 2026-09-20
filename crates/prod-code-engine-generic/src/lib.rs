@@ -277,6 +277,9 @@ pub struct GenericLspEngine {
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     broadcast_tx: broadcast::Sender<String>,
     last_activity: Arc<RwLock<Instant>>,
+    /// Latest `textDocument/publishDiagnostics` per document URI, the context quick fixes
+    /// (`textDocument/codeAction`) are computed from.
+    diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>>,
     is_alive: Arc<AtomicBool>,
     _child: Arc<Mutex<Child>>,
 }
@@ -326,6 +329,9 @@ impl GenericLspEngine {
 
         let (bcast_tx, _) = broadcast::channel(1024);
         let bcast_tx_clone = bcast_tx.clone();
+        let diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>> =
+            Arc::new(RwLock::new(HashMap::new()));
+        let diagnostics_writer = diagnostics.clone();
 
         let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -465,6 +471,24 @@ impl GenericLspEngine {
                                         }
                                     }
 
+                                    if val.get("method").and_then(|m| m.as_str())
+                                        == Some("textDocument/publishDiagnostics")
+                                        && let Some(uri) = val
+                                            .get("params")
+                                            .and_then(|p| p.get("uri"))
+                                            .and_then(|u| u.as_str())
+                                    {
+                                        let items = val
+                                            .get("params")
+                                            .and_then(|p| p.get("diagnostics"))
+                                            .and_then(|d| d.as_array())
+                                            .cloned()
+                                            .unwrap_or_default();
+                                        diagnostics_writer
+                                            .write()
+                                            .await
+                                            .insert(uri.to_string(), items);
+                                    }
                                     let _ = bcast_tx_clone.send(json_str);
                                 }
                             }
@@ -486,6 +510,7 @@ impl GenericLspEngine {
             capabilities: Arc::new(RwLock::new(None)),
             broadcast_tx: bcast_tx,
             last_activity,
+            diagnostics,
             is_alive,
             _child: Arc::new(Mutex::new(child)),
         };
@@ -564,6 +589,16 @@ impl GenericLspEngine {
     }
 
     /// Send a request and await its response.
+    /// The diagnostics the server last published for `uri` (empty when none).
+    pub async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
+        self.diagnostics
+            .read()
+            .await
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub async fn send_request(
         &self,
         method: &str,
