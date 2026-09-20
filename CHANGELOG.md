@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — 2026-09-20
+
+Second release: every language, a real cluster, and the agent tools that make prod-code more
+than a fast LSP. Since v0.1.0:
 
 - Cluster (Phase 5 complete): gateways gossip every 5 s (`--peers`, `--advertise`) and every
   node knows the whole cluster; one seed address in `PROD_CODE_REMOTE` is enough, the client
