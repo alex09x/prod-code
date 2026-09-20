@@ -170,8 +170,412 @@ impl VerifyReport {
     }
 }
 
-/// The command a verification kind maps to for `language`.
+/// JavaScript package manager, from the lock file (or `packageManager` in package.json).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PackageManager {
+    Npm,
+    Pnpm,
+    Yarn,
+    Bun,
+}
+
+impl PackageManager {
+    /// Runs a binary from the project's dependencies (`npx tsc`, `bunx tsc`, ...).
+    pub fn exec(self) -> Vec<&'static str> {
+        match self {
+            PackageManager::Npm => vec!["npx", "--no-install"],
+            PackageManager::Pnpm => vec!["pnpm", "exec"],
+            PackageManager::Yarn => vec!["yarn"],
+            PackageManager::Bun => vec!["bunx"],
+        }
+    }
+
+    /// Runs a package.json script.
+    pub fn run(self) -> Vec<&'static str> {
+        match self {
+            PackageManager::Npm => vec!["npm", "run", "--silent"],
+            PackageManager::Pnpm => vec!["pnpm", "run", "--silent"],
+            PackageManager::Yarn => vec!["yarn", "run"],
+            PackageManager::Bun => vec!["bun", "run"],
+        }
+    }
+}
+
+/// JavaScript / TypeScript test runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum JsTestRunner {
+    Vitest,
+    Jest,
+    BunTest,
+    Mocha,
+    /// `npm test` (or the package manager's equivalent): output is not parsed.
+    Script,
+}
+
+/// How Python is invoked: `uv run`, the checkout's virtual environment, or the system one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PythonRuntime {
+    Uv,
+    Venv(String),
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum PythonTestRunner {
+    Pytest,
+    Unittest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum CppBuild {
+    CMake,
+    Meson,
+    Make,
+}
+
+/// The build, lint and test tooling detected in a checkout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectTools {
+    pub package_manager: PackageManager,
+    pub js_tests: JsTestRunner,
+    /// `eslint` or `biome` when configured.
+    pub js_linter: Option<&'static str>,
+    pub python: PythonRuntime,
+    pub python_tests: PythonTestRunner,
+    pub cpp: CppBuild,
+}
+
+impl Default for ProjectTools {
+    fn default() -> Self {
+        Self {
+            package_manager: PackageManager::Npm,
+            js_tests: JsTestRunner::Script,
+            js_linter: None,
+            python: PythonRuntime::System,
+            python_tests: PythonTestRunner::Pytest,
+            cpp: CppBuild::CMake,
+        }
+    }
+}
+
+fn any_exists(root: &Path, names: &[&str]) -> bool {
+    names.iter().any(|n| root.join(n).exists())
+}
+
+fn file_contains(root: &Path, name: &str, needle: &str) -> bool {
+    std::fs::read_to_string(root.join(name))
+        .map(|t| t.contains(needle))
+        .unwrap_or(false)
+}
+
+/// Detects the tooling of the checkout at `root` from its manifests and lock files.
+pub fn detect_tools(root: &Path) -> ProjectTools {
+    let mut tools = ProjectTools::default();
+
+    // JavaScript / TypeScript
+    let package_json: serde_json::Value = std::fs::read(root.join("package.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let has_dep = |name: &str| {
+        ["dependencies", "devDependencies"]
+            .iter()
+            .any(|k| package_json.get(k).and_then(|d| d.get(name)).is_some())
+    };
+    let declared_pm = package_json
+        .get("packageManager")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    tools.package_manager =
+        if any_exists(root, &["bun.lockb", "bun.lock"]) || declared_pm.starts_with("bun") {
+            PackageManager::Bun
+        } else if root.join("pnpm-lock.yaml").exists() || declared_pm.starts_with("pnpm") {
+            PackageManager::Pnpm
+        } else if root.join("yarn.lock").exists() || declared_pm.starts_with("yarn") {
+            PackageManager::Yarn
+        } else {
+            PackageManager::Npm
+        };
+    let test_script = package_json
+        .get("scripts")
+        .and_then(|s| s.get("test"))
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    tools.js_tests = if has_dep("vitest")
+        || any_exists(
+            root,
+            &[
+                "vitest.config.ts",
+                "vitest.config.js",
+                "vitest.config.mts",
+                "vitest.config.mjs",
+            ],
+        ) {
+        JsTestRunner::Vitest
+    } else if has_dep("jest")
+        || any_exists(
+            root,
+            &[
+                "jest.config.js",
+                "jest.config.ts",
+                "jest.config.cjs",
+                "jest.config.mjs",
+                "jest.config.json",
+            ],
+        )
+    {
+        JsTestRunner::Jest
+    } else if test_script.starts_with("bun test")
+        || (tools.package_manager == PackageManager::Bun && !has_dep("mocha"))
+    {
+        JsTestRunner::BunTest
+    } else if has_dep("mocha") || test_script.starts_with("mocha") {
+        JsTestRunner::Mocha
+    } else {
+        JsTestRunner::Script
+    };
+    tools.js_linter = if has_dep("eslint")
+        || any_exists(
+            root,
+            &[
+                "eslint.config.js",
+                "eslint.config.mjs",
+                "eslint.config.cjs",
+                "eslint.config.ts",
+                ".eslintrc",
+                ".eslintrc.js",
+                ".eslintrc.cjs",
+                ".eslintrc.json",
+                ".eslintrc.yml",
+            ],
+        ) {
+        Some("eslint")
+    } else if has_dep("@biomejs/biome") || any_exists(root, &["biome.json", "biome.jsonc"]) {
+        Some("biome")
+    } else {
+        None
+    };
+
+    // Python
+    tools.python = if root.join("uv.lock").exists() {
+        PythonRuntime::Uv
+    } else if root.join(".venv/bin/python").is_file() {
+        PythonRuntime::Venv(".venv/bin/python".to_string())
+    } else if root.join("venv/bin/python").is_file() {
+        PythonRuntime::Venv("venv/bin/python".to_string())
+    } else {
+        PythonRuntime::System
+    };
+    let pytest_configured = any_exists(root, &["pytest.ini", "conftest.py"])
+        || file_contains(root, "pyproject.toml", "pytest")
+        || file_contains(root, "setup.cfg", "[tool:pytest]")
+        || file_contains(root, "tox.ini", "[pytest]")
+        || file_contains(root, "requirements.txt", "pytest")
+        || file_contains(root, "requirements-dev.txt", "pytest");
+    tools.python_tests = if pytest_configured {
+        PythonTestRunner::Pytest
+    } else if tests_import_unittest_only(root) {
+        PythonTestRunner::Unittest
+    } else {
+        PythonTestRunner::Pytest
+    };
+
+    // C / C++
+    tools.cpp = if root.join("CMakeLists.txt").exists() {
+        CppBuild::CMake
+    } else if root.join("meson.build").exists() {
+        CppBuild::Meson
+    } else if any_exists(root, &["Makefile", "makefile", "GNUmakefile"]) {
+        CppBuild::Make
+    } else {
+        CppBuild::CMake
+    };
+    tools
+}
+
+/// True when the test files under `tests/` (or `test/`) import `unittest` and none imports
+/// `pytest`.
+fn tests_import_unittest_only(root: &Path) -> bool {
+    let mut saw_unittest = false;
+    for dir in ["tests", "test"] {
+        let Ok(entries) = std::fs::read_dir(root.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten().take(200) {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("py") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.contains("import pytest") || text.contains("from pytest") {
+                return false;
+            }
+            if text.contains("import unittest") || text.contains("from unittest") {
+                saw_unittest = true;
+            }
+        }
+    }
+    saw_unittest
+}
+
+/// The command a verification kind maps to for `language` with default tooling
+/// (npm, pytest, CMake). Prefer [`plan_command_with`] with detected tools.
 pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> Result<Vec<String>> {
+    plan_command_with(&ProjectTools::default(), language, kind, filter)
+}
+
+fn strs(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| s.to_string()).collect()
+}
+
+/// The command for `kind` in `language` given the checkout's detected tooling.
+pub fn plan_command_with(
+    tools: &ProjectTools,
+    language: &str,
+    kind: VerifyKind,
+    filter: Option<&str>,
+) -> Result<Vec<String>> {
+    let filter = filter.filter(|f| !f.is_empty());
+    let pm = tools.package_manager;
+    let py: Vec<String> = match &tools.python {
+        PythonRuntime::Uv => strs(&["uv", "run", "python"]),
+        PythonRuntime::Venv(path) => vec![path.clone()],
+        PythonRuntime::System => strs(&["python3"]),
+    };
+    let mut cmd: Vec<String> = match (language, kind) {
+        ("typescript", VerifyKind::Check) => {
+            let mut c = strs(&pm.exec());
+            c.extend(strs(&["tsc", "--noEmit", "--pretty", "false"]));
+            c
+        }
+        ("typescript", VerifyKind::Lint) => match tools.js_linter {
+            Some("eslint") => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["eslint", ".", "-f", "unix"]));
+                c
+            }
+            Some("biome") => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["biome", "lint", "."]));
+                c
+            }
+            _ => {
+                return Err(anyhow!(
+                    "no linter configured (eslint or biome) in this project"
+                ));
+            }
+        },
+        ("typescript", VerifyKind::Test) => match tools.js_tests {
+            JsTestRunner::Vitest => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["vitest", "run", "--reporter=verbose"]));
+                if let Some(f) = filter {
+                    c.extend(strs(&["-t", f]));
+                }
+                c
+            }
+            JsTestRunner::Jest => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["jest", "--ci", "--colors=false", "--verbose"]));
+                if let Some(f) = filter {
+                    c.extend(strs(&["-t", f]));
+                }
+                c
+            }
+            JsTestRunner::BunTest => {
+                let mut c = strs(&["bun", "test"]);
+                if let Some(f) = filter {
+                    c.extend(strs(&["-t", f]));
+                }
+                c
+            }
+            JsTestRunner::Mocha => {
+                let mut c = strs(&pm.exec());
+                c.push("mocha".to_string());
+                if let Some(f) = filter {
+                    c.extend(strs(&["-g", f]));
+                }
+                c
+            }
+            JsTestRunner::Script => {
+                let mut c = strs(&pm.run());
+                c.push("test".to_string());
+                c
+            }
+        },
+        ("python", VerifyKind::Check) => match &tools.python {
+            PythonRuntime::Uv => strs(&["uv", "run", "basedpyright", "--outputjson"]),
+            PythonRuntime::Venv(path) => {
+                strs(&["basedpyright", "--outputjson", "--pythonpath", path])
+            }
+            PythonRuntime::System => strs(&["basedpyright", "--outputjson"]),
+        },
+        ("python", VerifyKind::Lint) => {
+            let mut c = if tools.python == PythonRuntime::Uv {
+                strs(&["uv", "run", "ruff"])
+            } else {
+                strs(&["ruff"])
+            };
+            c.extend(strs(&["check", ".", "--output-format", "concise"]));
+            c
+        }
+        ("python", VerifyKind::Test) => {
+            let mut c = py.clone();
+            match tools.python_tests {
+                PythonTestRunner::Pytest => c.extend(strs(&["-m", "pytest", "-q", "-rf"])),
+                PythonTestRunner::Unittest => c.extend(strs(&["-m", "unittest", "-v"])),
+            }
+            if let Some(f) = filter {
+                c.extend(strs(&["-k", f]));
+            }
+            c
+        }
+        ("cpp", VerifyKind::Check) => match tools.cpp {
+            CppBuild::CMake => strs(&[
+                "sh",
+                "-c",
+                "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null && cmake --build build",
+            ]),
+            CppBuild::Meson => strs(&[
+                "sh",
+                "-c",
+                "[ -d build ] || meson setup build >/dev/null; meson compile -C build",
+            ]),
+            CppBuild::Make => strs(&["make"]),
+        },
+        ("cpp", VerifyKind::Test) => match tools.cpp {
+            CppBuild::CMake => {
+                let mut c = strs(&["ctest", "--test-dir", "build", "--output-on-failure"]);
+                if let Some(f) = filter {
+                    c.extend(strs(&["-R", f]));
+                }
+                c
+            }
+            CppBuild::Meson => {
+                let mut c = strs(&["meson", "test", "-C", "build", "--print-errorlogs"]);
+                if let Some(f) = filter {
+                    c.push(f.to_string());
+                }
+                c
+            }
+            CppBuild::Make => strs(&["make", "test"]),
+        },
+        _ => plan_command_basic(language, kind, filter)?,
+    };
+    if cmd.is_empty() {
+        cmd = plan_command_basic(language, kind, filter)?;
+    }
+    Ok(cmd)
+}
+
+/// Commands that do not depend on detected tooling (Rust, Go, Swift packages).
+fn plan_command_basic(
+    language: &str,
+    kind: VerifyKind,
+    filter: Option<&str>,
+) -> Result<Vec<String>> {
     let mut cmd: Vec<String> = match (language, kind) {
         ("rust", VerifyKind::Check) => vec![
             "cargo",
@@ -194,18 +598,6 @@ pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> R
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
         ("go", VerifyKind::Lint) => vec!["go", "vet", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
-        ("typescript", VerifyKind::Check) => vec!["npx", "tsc", "--noEmit", "--pretty", "false"],
-        ("typescript", VerifyKind::Lint) => vec!["npx", "eslint", ".", "-f", "unix"],
-        ("typescript", VerifyKind::Test) => vec!["npm", "test", "--silent", "--"],
-        ("python", VerifyKind::Check) => vec!["basedpyright", "--outputjson"],
-        ("python", VerifyKind::Lint) => vec!["ruff", "check", ".", "--output-format", "concise"],
-        ("python", VerifyKind::Test) => vec!["python3", "-m", "pytest", "-q", "-rf"],
-        ("cpp", VerifyKind::Check) => vec![
-            "sh",
-            "-c",
-            "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null && cmake --build build",
-        ],
-        ("cpp", VerifyKind::Test) => vec!["ctest", "--test-dir", "build", "--output-on-failure"],
         ("swift", VerifyKind::Check) => vec!["swift", "build"],
         ("swift", VerifyKind::Test) => vec!["swift", "test"],
         _ => {
@@ -223,14 +615,6 @@ pub fn plan_command(language: &str, kind: VerifyKind, filter: Option<&str>) -> R
             ("rust", VerifyKind::Test) => cmd.push(filter.to_string()),
             ("go", VerifyKind::Test) => {
                 cmd.push("-run".to_string());
-                cmd.push(filter.to_string());
-            }
-            ("python", VerifyKind::Test) => {
-                cmd.push("-k".to_string());
-                cmd.push(filter.to_string());
-            }
-            ("cpp", VerifyKind::Test) => {
-                cmd.push("-R".to_string());
                 cmd.push(filter.to_string());
             }
             ("swift", VerifyKind::Test) => {
@@ -599,6 +983,262 @@ pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
+/// Parses jest output: `Tests:       1 failed, 2 passed, 3 total` plus `  ● suite › name`
+/// failure headers followed by their message.
+pub fn parse_jest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        if let Some(rest) = line.trim().strip_prefix("Tests:") {
+            for part in rest.split(',') {
+                let part = part.trim();
+                let mut it = part.split_whitespace();
+                let n: u64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                match it.next() {
+                    Some("passed") => passed = n,
+                    Some("failed") => failed = n,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if let Some(name) = line.trim().strip_prefix("● ") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            if !name.starts_with("Test suite failed") {
+                current = Some((name.trim().to_string(), Vec::new()));
+            }
+            continue;
+        }
+        if let Some((_, lines)) = current.as_mut() {
+            if lines.len() < 40 {
+                lines.push(line.to_string());
+            }
+        }
+    }
+    if let Some((n, lines)) = current.take() {
+        failures.push(TestFailure {
+            name: n,
+            output: lines.join("\n"),
+        });
+    }
+    failures.retain(|f| !f.name.is_empty());
+    (passed, failed, failures)
+}
+
+/// Parses vitest output: ` Tests  1 failed | 2 passed (3)` and `FAIL  file > name` / ` × name`.
+pub fn parse_vitest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("Tests ") {
+            for part in rest.split('|') {
+                let mut it = part.split_whitespace();
+                let n: u64 = it.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                match it.next() {
+                    Some("passed") => passed = n,
+                    Some("failed") => failed = n,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("FAIL ") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            current = Some((rest.trim().to_string(), Vec::new()));
+            continue;
+        }
+        if trimmed.starts_with("Test Files") || trimmed.starts_with("Start at") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            continue;
+        }
+        if let Some((_, lines)) = current.as_mut() {
+            if lines.len() < 40 && !trimmed.is_empty() {
+                lines.push(line.to_string());
+            }
+        }
+    }
+    if let Some((n, lines)) = current.take() {
+        failures.push(TestFailure {
+            name: n,
+            output: lines.join("\n"),
+        });
+    }
+    (passed, failed, failures)
+}
+
+/// Parses `bun test` output: ` 2 pass`, ` 1 fail` and `(fail) name` lines.
+pub fn parse_bun_test_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        let mut it = trimmed.split_whitespace();
+        if let (Some(n), Some(word), None) = (it.next(), it.next(), it.next())
+            && let Ok(n) = n.parse::<u64>()
+        {
+            match word {
+                "pass" => {
+                    passed = n;
+                    continue;
+                }
+                "fail" => {
+                    failed = n;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        if let Some(name) = trimmed.strip_prefix("(fail) ") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            current = Some((
+                name.split(" [").next().unwrap_or(name).to_string(),
+                Vec::new(),
+            ));
+            continue;
+        }
+        if trimmed.starts_with("(pass) ") || trimmed.starts_with("Ran ") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            continue;
+        }
+        if let Some((_, lines)) = current.as_mut() {
+            if lines.len() < 40 && !trimmed.is_empty() {
+                lines.push(raw.trim_end().to_string());
+            }
+        }
+    }
+    if let Some((n, lines)) = current.take() {
+        failures.push(TestFailure {
+            name: n,
+            output: lines.join("\n"),
+        });
+    }
+    (passed, failed, failures)
+}
+
+/// Parses `python -m unittest -v` output: `test_x (mod.Class.test_x) ... ok|FAIL|ERROR`,
+/// `Ran N tests`, and the `FAIL:` / `ERROR:` blocks with their tracebacks.
+pub fn parse_unittest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures: Vec<TestFailure> = Vec::new();
+    let mut current: Option<(String, Vec<String>)> = None;
+    for raw in text.lines() {
+        let trimmed = raw.trim_end();
+        if trimmed.ends_with("... ok") {
+            passed += 1;
+            continue;
+        }
+        if trimmed.ends_with("... FAIL") || trimmed.ends_with("... ERROR") {
+            failed += 1;
+            continue;
+        }
+        if let Some(name) = trimmed
+            .strip_prefix("FAIL: ")
+            .or_else(|| trimmed.strip_prefix("ERROR: "))
+        {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            current = Some((name.trim().to_string(), Vec::new()));
+            continue;
+        }
+        if trimmed.starts_with("Ran ") || trimmed.starts_with("======") {
+            if let Some((n, lines)) = current.take() {
+                failures.push(TestFailure {
+                    name: n,
+                    output: lines.join("\n"),
+                });
+            }
+            continue;
+        }
+        if trimmed.starts_with("------") {
+            continue;
+        }
+        if let Some((_, lines)) = current.as_mut() {
+            if lines.len() < 40 && !trimmed.trim().is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    if let Some((n, lines)) = current.take() {
+        failures.push(TestFailure {
+            name: n,
+            output: lines.join("\n"),
+        });
+    }
+    (passed, failed, failures)
+}
+
+/// Parses `meson test` output: `1/3 name   OK|FAIL|ERROR|TIMEOUT` lines and the summary.
+pub fn parse_meson_test_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut failures = Vec::new();
+    for raw in text.lines() {
+        let trimmed = raw.trim();
+        let Some((idx, rest)) = trimmed.split_once(' ') else {
+            continue;
+        };
+        if !idx.contains('/') || !idx.chars().all(|c| c.is_ascii_digit() || c == '/') {
+            continue;
+        }
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let Some(name) = words.first() else {
+            continue;
+        };
+        if words.contains(&"OK") {
+            passed += 1;
+        } else if words
+            .iter()
+            .any(|w| matches!(*w, "FAIL" | "ERROR" | "TIMEOUT"))
+        {
+            failed += 1;
+            failures.push(TestFailure {
+                name: name.to_string(),
+                output: rest.to_string(),
+            });
+        }
+    }
+    (passed, failed, failures)
+}
+
 /// Parses XCTest (`swift test`) output on macOS and Linux: `Test Case '-[Suite test]' passed
 /// (0.001 seconds)` / `Test Case 'Suite.test' failed`, assertion lines `file:line: error:
 /// -[Suite test] : message`, plus swift-testing `✔ Test "name" passed` / `✘ Test "name" failed`.
@@ -784,10 +1424,11 @@ pub async fn run_verify(
 ) -> Result<VerifyReport> {
     let language = expected_engine(root)
         .ok_or_else(|| anyhow!("no Cargo.toml or go.mod at {}", root.display()))?;
+    let tools = detect_tools(root);
     let command = if language == "swift" && has_xcode_project(root) {
         plan_xcode_command(kind, filter)?
     } else {
-        plan_command(language, kind, filter)?
+        plan_command_with(&tools, language, kind, filter)?
     };
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
@@ -850,7 +1491,23 @@ pub async fn run_verify(
             diagnostics.extend(parse_pyright_json(&stdout));
         }
         ("python", VerifyKind::Test) => {
-            let (p, f, fails) = parse_pytest_text(&stdout);
+            let combined = format!("{stdout}\n{stderr}");
+            let (p, f, fails) = match tools.python_tests {
+                PythonTestRunner::Pytest => parse_pytest_text(&stdout),
+                PythonTestRunner::Unittest => parse_unittest_text(&combined),
+            };
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("typescript", VerifyKind::Test) => {
+            let combined = format!("{stdout}\n{stderr}");
+            let (p, f, fails) = match tools.js_tests {
+                JsTestRunner::Vitest => parse_vitest_text(&combined),
+                JsTestRunner::Jest => parse_jest_text(&combined),
+                JsTestRunner::BunTest => parse_bun_test_text(&combined),
+                JsTestRunner::Mocha | JsTestRunner::Script => (0, 0, Vec::new()),
+            };
             tests_passed = p;
             tests_failed = f;
             failures = fails;
@@ -865,7 +1522,11 @@ pub async fn run_verify(
             failures = fails;
         }
         ("cpp", VerifyKind::Test) => {
-            let (p, f, fails) = parse_ctest_text(&stdout);
+            let (p, f, fails) = match tools.cpp {
+                CppBuild::CMake => parse_ctest_text(&stdout),
+                CppBuild::Meson => parse_meson_test_text(&stdout),
+                CppBuild::Make => (0, 0, Vec::new()),
+            };
             tests_passed = p;
             tests_failed = f;
             failures = fails;
@@ -905,6 +1566,88 @@ pub async fn run_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_js_and_python_tooling() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"devDependencies":{"vitest":"1","eslint":"9"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("bun.lock"), "").unwrap();
+        std::fs::write(root.join("uv.lock"), "").unwrap();
+        std::fs::write(root.join("meson.build"), "").unwrap();
+        let tools = detect_tools(root);
+        assert_eq!(tools.package_manager, PackageManager::Bun);
+        assert_eq!(tools.js_tests, JsTestRunner::Vitest);
+        assert_eq!(tools.js_linter, Some("eslint"));
+        assert_eq!(tools.python, PythonRuntime::Uv);
+        assert_eq!(tools.cpp, CppBuild::Meson);
+        let cmd = plan_command_with(&tools, "typescript", VerifyKind::Test, Some("adds")).unwrap();
+        assert_eq!(cmd[..3], ["bunx", "vitest", "run"]);
+        assert!(cmd.ends_with(&["-t".to_string(), "adds".to_string()]));
+        let cmd = plan_command_with(&tools, "python", VerifyKind::Check, None).unwrap();
+        assert_eq!(cmd[..2], ["uv", "run"]);
+        let cmd = plan_command_with(&tools, "python", VerifyKind::Test, None).unwrap();
+        assert_eq!(cmd[..5], ["uv", "run", "python", "-m", "pytest"]);
+
+        std::fs::remove_file(root.join("bun.lock")).unwrap();
+        std::fs::remove_file(root.join("uv.lock")).unwrap();
+        std::fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+        std::fs::create_dir_all(root.join(".venv/bin")).unwrap();
+        std::fs::write(root.join(".venv/bin/python"), "").unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("tests/test_a.py"), "import unittest\n").unwrap();
+        let tools = detect_tools(root);
+        assert_eq!(tools.package_manager, PackageManager::Pnpm);
+        assert_eq!(tools.python, PythonRuntime::Venv(".venv/bin/python".into()));
+        assert_eq!(tools.python_tests, PythonTestRunner::Unittest);
+        let cmd = plan_command_with(&tools, "python", VerifyKind::Test, None).unwrap();
+        assert_eq!(cmd[..3], [".venv/bin/python", "-m", "unittest"]);
+        let cmd = plan_command_with(&tools, "python", VerifyKind::Check, None).unwrap();
+        assert!(cmd.contains(&"--pythonpath".to_string()));
+
+        let defaults = ProjectTools::default();
+        assert_eq!(
+            plan_command_with(&defaults, "typescript", VerifyKind::Check, None).unwrap()[..3],
+            ["npx", "--no-install", "tsc"]
+        );
+        assert!(plan_command_with(&defaults, "typescript", VerifyKind::Lint, None).is_err());
+    }
+
+    #[test]
+    fn parses_js_and_python_test_runners() {
+        let jest = "PASS src/a.test.ts\nFAIL src/b.test.ts\n  ● math › adds\n\n    expect(received).toBe(expected)\n\nTests:       1 failed, 1 passed, 2 total\n";
+        let (p, f, fails) = parse_jest_text(jest);
+        assert_eq!((p, f), (1, 1));
+        assert_eq!(fails[0].name, "math › adds");
+        assert!(fails[0].output.contains("expect(received)"));
+
+        let vitest = " ✓ src/a.test.ts (1)\n ❯ src/b.test.ts (1)\n   × adds\n\n FAIL  src/b.test.ts > adds\nAssertionError: expected 2 to be 3\n\n Test Files  1 failed | 1 passed (2)\n      Tests  1 failed | 1 passed (2)\n";
+        let (p, f, fails) = parse_vitest_text(vitest);
+        assert_eq!((p, f), (1, 1));
+        assert_eq!(fails[0].name, "src/b.test.ts > adds");
+        assert!(fails[0].output.contains("AssertionError"));
+
+        let bun = "bun test v1.4.2\n\nsrc/a.test.ts:\n(pass) adds\n(fail) subtracts [0.10ms]\nerror: expect(received).toBe(expected)\n\n 1 pass\n 1 fail\nRan 2 tests across 1 file.\n";
+        let (p, f, fails) = parse_bun_test_text(bun);
+        assert_eq!((p, f), (1, 1));
+        assert_eq!(fails[0].name, "subtracts");
+        assert!(fails[0].output.contains("expect(received)"));
+
+        let unittest = "test_adds (tests.test_a.T.test_adds) ... ok\ntest_subs (tests.test_a.T.test_subs) ... FAIL\n\n======================================================================\nFAIL: test_subs (tests.test_a.T.test_subs)\n----------------------------------------------------------------------\nTraceback (most recent call last):\nAssertionError: 2 != 3\n\n----------------------------------------------------------------------\nRan 2 tests in 0.001s\n\nFAILED (failures=1)\n";
+        let (p, f, fails) = parse_unittest_text(unittest);
+        assert_eq!((p, f), (1, 1));
+        assert_eq!(fails[0].name, "test_subs (tests.test_a.T.test_subs)");
+        assert!(fails[0].output.contains("AssertionError: 2 != 3"));
+
+        let meson = "1/2 adds        OK              0.01s\n2/2 subs        FAIL            0.02s   exit status 1\n\nOk:                 1\nFail:               1\n";
+        let (p, f, fails) = parse_meson_test_text(meson);
+        assert_eq!((p, f), (1, 1));
+        assert_eq!(fails[0].name, "subs");
+    }
 
     #[test]
     fn plans_xcodebuild_commands() {

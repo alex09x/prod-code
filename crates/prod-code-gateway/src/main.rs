@@ -2160,11 +2160,18 @@ fn prefer_rustup_toolchain() {
         return;
     };
     let home = PathBuf::from(home);
-    let preferred: Vec<PathBuf> = [".cargo/bin", "go/bin", ".local/bin", ".npm-global/bin"]
-        .iter()
-        .map(|rel| home.join(rel))
-        .filter(|dir| dir.is_dir())
-        .collect();
+    let preferred: Vec<PathBuf> = [
+        ".cargo/bin",
+        "go/bin",
+        ".local/go/bin",
+        ".local/bin",
+        ".npm-global/bin",
+        ".bun/bin",
+    ]
+    .iter()
+    .map(|rel| home.join(rel))
+    .filter(|dir| dir.is_dir())
+    .collect();
     if preferred.is_empty() {
         return;
     }

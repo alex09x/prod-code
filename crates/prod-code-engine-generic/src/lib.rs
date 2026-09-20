@@ -214,6 +214,44 @@ impl GenericLspConfig {
     }
 }
 
+/// The settings a language server gets for a `workspace/configuration` section. Pyright
+/// analyses the whole workspace (so rename and references cover files nobody opened) and
+/// uses the checkout's virtual environment when there is one; everything else gets `{}`.
+pub fn settings_for_section(root: &Path, section: &str) -> serde_json::Value {
+    let analysis = serde_json::json!({
+        "diagnosticMode": "workspace",
+        "autoSearchPaths": true,
+        "useLibraryCodeForTypes": true,
+    });
+    match section {
+        "python.analysis" | "basedpyright.analysis" => analysis,
+        s if s.starts_with("python") || s.starts_with("basedpyright") => {
+            let mut settings = serde_json::json!({ "analysis": analysis });
+            if let Some(python) = venv_python(root) {
+                settings["pythonPath"] = serde_json::Value::String(python);
+                settings["venvPath"] =
+                    serde_json::Value::String(root.to_string_lossy().into_owned());
+                settings["venv"] = serde_json::Value::String(".venv".to_string());
+            }
+            settings
+        }
+        _ => serde_json::json!({}),
+    }
+}
+
+/// `<root>/.venv/bin/python` (or `venv/`) when the checkout carries a virtual environment.
+pub fn venv_python(root: &Path) -> Option<String> {
+    ["\x2evenv", "venv"]
+        .iter()
+        .map(|dir| {
+            root.join(dir.replace("\\x2e", "."))
+                .join("bin")
+                .join("python")
+        })
+        .find(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
 /// Helper to check if an executable binary is present in PATH.
 pub fn which_bin(name: &str) -> Result<PathBuf> {
     let output = std::process::Command::new("which")
@@ -295,6 +333,7 @@ impl GenericLspEngine {
 
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_writer = stdin_arc.clone();
+        let config_root = workspace_root.to_path_buf();
 
         let is_alive = Arc::new(AtomicBool::new(true));
         let is_alive_clone = is_alive.clone();
@@ -362,17 +401,35 @@ impl GenericLspEngine {
                                                     // One empty settings object per requested
                                                     // item: pyright stalls on `null` settings, and
                                                     // a short array leaves the server waiting.
-                                                    let items = val
+                                                    let sections: Vec<String> = val
                                                         .get("params")
                                                         .and_then(|p| p.get("items"))
                                                         .and_then(|i| i.as_array())
-                                                        .map(|i| i.len())
-                                                        .unwrap_or(1)
-                                                        .max(1);
+                                                        .map(|items| {
+                                                            items
+                                                                .iter()
+                                                                .map(|item| {
+                                                                    item.get("section")
+                                                                        .and_then(|s| s.as_str())
+                                                                        .unwrap_or("")
+                                                                        .to_string()
+                                                                })
+                                                                .collect()
+                                                        })
+                                                        .unwrap_or_else(|| vec![String::new()]);
+                                                    let values: Vec<serde_json::Value> = sections
+                                                        .iter()
+                                                        .map(|section| {
+                                                            settings_for_section(
+                                                                &config_root,
+                                                                section,
+                                                            )
+                                                        })
+                                                        .collect();
                                                     let resp = serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
-                                                        "result": vec![serde_json::json!({}); items]
+                                                        "result": values
                                                     });
                                                     let _ =
                                                         Self::write_frame_raw(&stdin_writer, &resp)

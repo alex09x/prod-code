@@ -313,6 +313,7 @@ impl WorkspaceManager {
                 }
             }
             "cpp" => {
+                warm_cmake_compile_commands(workspace_root).await;
                 match prod_code_engine_generic::GenericLspEngine::spawn(
                     workspace_root,
                     prod_code_engine_generic::GenericLspConfig::for_cpp(),
@@ -607,6 +608,51 @@ pub async fn prune_stale_worktree_dirs(
 pub fn touch_last_used(workspace_dir: &Path) {
     let marker = workspace_dir.join(LAST_USED_MARKER);
     let _ = std::fs::write(&marker, unix_now().to_string());
+}
+
+/// Configures a CMake project into `build/` with `compile_commands.json` before clangd starts,
+/// so its background index covers the whole tree (cross-file rename and references) from the
+/// first query. Best effort: a failure only means clangd runs without a compilation database.
+async fn warm_cmake_compile_commands(workspace_root: &std::path::Path) {
+    if !workspace_root.join("CMakeLists.txt").is_file()
+        || workspace_root
+            .join("build")
+            .join("compile_commands.json")
+            .is_file()
+    {
+        return;
+    }
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        tokio::process::Command::new("cmake")
+            .args([
+                "-S",
+                ".",
+                "-B",
+                "build",
+                "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+            ])
+            .current_dir(workspace_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .output(),
+    )
+    .await;
+    match result {
+        Ok(Ok(out)) if out.status.success() => tracing::info!(
+            workspace = ?workspace_root,
+            duration_ms = started.elapsed().as_millis() as u64,
+            "cmake configured build/compile_commands.json for clangd"
+        ),
+        Ok(Ok(out)) => tracing::warn!(
+            workspace = ?workspace_root,
+            stderr = %String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or(""),
+            "cmake configure failed; clangd runs without a compilation database"
+        ),
+        Ok(Err(e)) => tracing::warn!(workspace = ?workspace_root, error = %e, "cmake not runnable"),
+        Err(_) => tracing::warn!(workspace = ?workspace_root, "cmake configure timed out"),
+    }
 }
 
 #[cfg(test)]
