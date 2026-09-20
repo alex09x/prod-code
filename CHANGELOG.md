@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The Rust engine analyses `cfg(test)` and `debug_assertions` code like rust-analyzer's IDE
+  defaults, so `#[test]` functions exist in the call graph; callers are flagged as tests by
+  the analyzer. Document symbols point at the item's name and carry its full extent.
+- A synced project manifest (tsconfig, package.json, pyproject, CMakeLists, Package.swift,
+  go.mod, Cargo.toml, prod-code.toml ...) restarts the workspace's engines on the next session.
+
 - Impact analysis (Phase 8.1): `prod-code impact` (and MCP `code_impact`) lists the functions
   the working-tree diff touches, the callers that reach them through the call hierarchy and
   the affected tests, and emits (or with `--run` executes) the command that runs only those

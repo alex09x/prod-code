@@ -622,6 +622,36 @@ async fn lsp_code_actions(
     }
 }
 
+/// Whether a synced file configures a language server's view of the project, so that a
+/// running engine must be restarted to honour it.
+fn is_project_config_file(rel_path: &str) -> bool {
+    let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    matches!(
+        name,
+        "tsconfig.json"
+            | "jsconfig.json"
+            | "package.json"
+            | "deno.json"
+            | "pyproject.toml"
+            | "setup.cfg"
+            | "setup.py"
+            | "pyrightconfig.json"
+            | "uv.lock"
+            | "CMakeLists.txt"
+            | "compile_commands.json"
+            | ".clangd"
+            | "meson.build"
+            | "Package.swift"
+            | "Package.resolved"
+            | "project.pbxproj"
+            | "go.mod"
+            | "go.work"
+            | "Cargo.toml"
+            | "rust-toolchain.toml"
+            | "prod-code.toml"
+    ) || name.starts_with("requirements")
+}
+
 /// LSP `languageId` for a server-side path, for the documents the gateway opens itself.
 fn language_id_for_server_path(path: &std::path::Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
@@ -1154,8 +1184,10 @@ pub async fn apply_sync(
     let mut files_deleted = 0;
     let mut bytes_transferred = 0;
 
+    let mut project_config_changed = false;
     for delta in req.files {
         let target_path = server_workspace.join(&delta.relative_path);
+        project_config_changed |= is_project_config_file(&delta.relative_path);
         match delta.content {
             Some(content_bytes) => {
                 if let Some(parent) = target_path.parent() {
@@ -1194,6 +1226,20 @@ pub async fn apply_sync(
                     }
                 }
             }
+        }
+    }
+
+    // A changed project manifest (tsconfig, package.json, pyproject, CMakeLists, Package.swift,
+    // go.mod, Cargo.toml ...) changes what the language server should see: drop the loaded
+    // engines so the next session starts them on the new configuration.
+    if project_config_changed {
+        let dropped = workspace_manager.unload_under(&server_workspace).await;
+        if dropped > 0 {
+            tracing::info!(
+                folder_name,
+                dropped,
+                "project configuration changed; engines reloaded on next session"
+            );
         }
     }
 

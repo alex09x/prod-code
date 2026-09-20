@@ -124,6 +124,22 @@ impl WorkspaceManager {
         evicted
     }
 
+    /// Drops every loaded workspace rooted at or below `prefix` (the checkout and the engines
+    /// of its nested projects), so the next session loads it afresh. Sessions that still hold
+    /// the old workspace keep it until they end. Returns how many were dropped.
+    pub async fn unload_under(&self, prefix: &Path) -> usize {
+        let mut guard = self.workspaces.write().await;
+        let keys: Vec<WorkspaceKey> = guard
+            .keys()
+            .filter(|key| key.0.starts_with(prefix))
+            .cloned()
+            .collect();
+        for key in &keys {
+            guard.remove(key);
+        }
+        keys.len()
+    }
+
     /// Whether a workspace is currently loaded (or loading) at `workspace_root`.
     pub async fn is_loaded(&self, workspace_root: &Path) -> bool {
         self.workspaces
