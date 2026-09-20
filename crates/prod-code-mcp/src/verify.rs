@@ -547,11 +547,14 @@ pub fn plan_command_with(
         },
         ("cpp", VerifyKind::Test) => match tools.cpp {
             CppBuild::CMake => {
-                let mut c = strs(&["ctest", "--test-dir", "build", "--output-on-failure"]);
+                // ctest runs whatever binaries exist: build first so edits are tested.
+                let mut script = String::from(
+                    "cmake --build build >/dev/null && ctest --test-dir build --output-on-failure",
+                );
                 if let Some(f) = filter {
-                    c.extend(strs(&["-R", f]));
+                    script.push_str(&format!(" -R '{}'", f.replace('\'', "'\\''")));
                 }
-                c
+                strs(&["sh", "-c", &script])
             }
             CppBuild::Meson => {
                 let mut c = strs(&["meson", "test", "-C", "build", "--print-errorlogs"]);
