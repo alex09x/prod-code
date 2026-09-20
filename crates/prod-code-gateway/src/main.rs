@@ -2277,6 +2277,63 @@ async fn run_session_loop(
                                              continue;
                                          }
                                     }
+                                    Some("workspace/symbol") => {
+                                        if let Some(params) = val.get("params") {
+                                            let query = params.get("query").and_then(|q| q.as_str()).unwrap_or("").to_string();
+                                            let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(64) as usize;
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+                                            tracing::info!(req = req_num, session = view.session_id, method = "workspace/symbol", query = %query, in_flight, "🚀 [LSP START]");
+
+                                            let engine_arc = Arc::clone(engine_lock);
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
+
+                                            tokio::task::spawn(async move {
+                                                let syms = {
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    let q = query.clone();
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.workspace_symbols(&q, limit).unwrap_or_else(|e| {
+                                                            tracing::warn!(error = %e, session = session_id, "query failed");
+                                                            Vec::new()
+                                                        })
+                                                    })
+                                                    .await
+                                                    .unwrap_or_default()
+                                                };
+                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                tracing::info!(req = req_num, session = session_id, method = "workspace/symbol", duration_ms = format!("{:.2}ms", ms), symbols = syms.len(), in_flight = remaining, "✅ [LSP DONE]");
+
+                                                let sym_list: Vec<_> = syms.into_iter().map(|s| {
+                                                    serde_json::json!({
+                                                        "name": s.name,
+                                                        "kind": lsp_symbol_kind(&s.kind),
+                                                        "location": {
+                                                            "uri": format!("file://{}", s.path.display()),
+                                                            "range": {
+                                                                "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
+                                                                "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
+                                                            }
+                                                        },
+                                                        "containerName": s.container
+                                                    })
+                                                }).collect();
+                                                let resp = serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": sym_list });
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            });
+                                            continue;
+                                        }
+                                    }
                                     Some("prodCode/assists") | Some("prodCode/applyAssist") => {
                                         if let Some(params) = val.get("params") {
                                             let apply = method == Some("prodCode/applyAssist");
@@ -3162,7 +3219,10 @@ async fn main() -> Result<()> {
 /// language server on PATH. Clients place a workspace only on a node that lists its engine.
 fn available_engines() -> Vec<String> {
     let mut engines = vec!["rust (ra_ap_ide)".to_string()];
-    if prod_code_engine_generic::which_bin("gopls").is_ok() {
+    // gopls is useless without the go tool it drives ("no views" for every file).
+    if prod_code_engine_generic::which_bin("gopls").is_ok()
+        && prod_code_engine_generic::which_bin("go").is_ok()
+    {
         engines.push("go (gopls)".to_string());
     }
     for engine in ["cpp", "swift", "python", "typescript"] {

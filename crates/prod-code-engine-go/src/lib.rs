@@ -472,6 +472,9 @@ impl GoEngine {
             )
             .await?;
 
+        if let Some(err) = resp.get("error") {
+            anyhow::bail!("gopls documentSymbol failed: {err}");
+        }
         Ok(resp.get("result").cloned().unwrap_or(serde_json::json!([])))
     }
 

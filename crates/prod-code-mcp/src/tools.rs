@@ -66,7 +66,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_test".to_string(),
-            description: "Run tests on the remote gateway (cargo test / go test -json), optionally filtered by test name, and return pass/fail counts plus the output of each failed test."
+            description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -327,6 +327,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_symbols".to_string(),
+            description: "Search the workspace symbol index by name (fuzzy, analyzer-backed): functions, types, methods, constants across every file, with file:line:col and the enclosing item. Use it to locate a symbol, or pass `symbol` directly to code_callers / code_references / code_hover and the other position tools."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Symbol name or prefix (e.g. `record`, `Metrics`); case-insensitive fuzzy match" },
+                    "limit": { "type": "integer", "description": "Maximum hits (default 30)" },
+                    "path": { "type": "string", "description": "A file or directory inside a nested project to search that project instead of the root" }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpTool {
             name: "code_hover".to_string(),
             description: "Inspect the type signature, docstring, and documentation for a symbol at specified file and line/column position."
                 .to_string(),
@@ -405,7 +419,55 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    // `symbol` instead of line/character: resolve the name through the workspace symbol
+    // index, then run the tool at that position.
+    let args = if SYMBOL_ADDRESSABLE.contains(&tool_name)
+        && let Some(symbol) = args.get("symbol").and_then(|v| v.as_str())
+        && !symbol.trim().is_empty()
+    {
+        let hint = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| resolve_file_path(workspace_root, p));
+        let hit = resolve_symbol(remote, workspace_root, symbol.trim(), hint.as_deref()).await?;
+        let mut owned = args.clone();
+        if let Some(obj) = owned.as_object_mut() {
+            obj.insert(
+                "path".into(),
+                serde_json::Value::String(hit.path.to_string_lossy().into_owned()),
+            );
+            obj.insert("line".into(), serde_json::json!(hit.line));
+            obj.insert("character".into(), serde_json::json!(hit.col));
+        }
+        owned
+    } else {
+        args
+    };
     match tool_name {
+        "code_symbols" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .context("Missing 'query' argument")?;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+            let hint = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p));
+            let hits =
+                workspace_symbol_search(remote, workspace_root, query, hint.as_deref(), limit)
+                    .await?;
+            if hits.is_empty() {
+                return Ok(McpToolCallResult::text(format!(
+                    "No symbols match `{query}`."
+                )));
+            }
+            let mut out = format!("{} symbol(s) matching `{query}`:\n", hits.len());
+            for hit in &hits {
+                out.push_str(&format!("  {}\n", hit.render(workspace_root)));
+            }
+            Ok(McpToolCallResult::text(out.trim_end()))
+        }
         "code_safe_delete" => {
             let path_str = args
                 .get("path")
@@ -1337,4 +1399,217 @@ pub async fn execute_lsp_query(
     // One long-lived session per checkout for the life of this process (see
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+}
+
+/// Tools that accept `symbol` in place of `path`/`line`/`character`.
+const SYMBOL_ADDRESSABLE: &[&str] = &[
+    "code_definition",
+    "code_references",
+    "code_hover",
+    "code_type_at",
+    "code_callers",
+    "code_callees",
+    "code_implementations",
+    "code_rename",
+    "code_safe_delete",
+    "code_assists",
+    "code_assist",
+];
+
+/// One `workspace/symbol` hit, positioned on the symbol's name (1-based).
+#[derive(Debug, Clone)]
+pub struct SymbolHit {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub kind: &'static str,
+    pub container: Option<String>,
+    pub line: u32,
+    pub col: u32,
+}
+
+impl SymbolHit {
+    pub fn render(&self, root: &Path) -> String {
+        let rel = self.path.strip_prefix(root).unwrap_or(&self.path).display();
+        let container = self
+            .container
+            .as_deref()
+            .map(|c| format!("{c}::"))
+            .unwrap_or_default();
+        format!(
+            "[{}] {container}{} — {rel}:{}:{}",
+            self.kind, self.name, self.line, self.col
+        )
+    }
+}
+
+fn symbol_kind_name(kind: u64) -> &'static str {
+    match kind {
+        1 => "File",
+        2 => "Module",
+        3 => "Namespace",
+        4 => "Package",
+        5 => "Class",
+        6 => "Method",
+        7 => "Property",
+        8 => "Field",
+        9 => "Constructor",
+        10 => "Enum",
+        11 => "Interface",
+        12 => "Function",
+        13 => "Variable",
+        14 => "Constant",
+        15 => "String",
+        16 => "Number",
+        17 => "Boolean",
+        18 => "Array",
+        19 => "Object",
+        20 => "Key",
+        21 => "Null",
+        22 => "EnumMember",
+        23 => "Struct",
+        24 => "Event",
+        25 => "Operator",
+        26 => "TypeParameter",
+        _ => "Symbol",
+    }
+}
+
+/// `workspace/symbol` through the pooled session of the project `hint` belongs to (the root
+/// when absent). Hits without a range (LSP `WorkspaceSymbol` without resolve) are skipped.
+pub async fn workspace_symbol_search(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+) -> Result<Vec<SymbolHit>> {
+    let anchor = hint
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.to_path_buf());
+    let res = execute_lsp_query(
+        remote,
+        root,
+        &anchor,
+        "workspace/symbol",
+        serde_json::json!({ "query": query, "limit": limit.max(1) }),
+    )
+    .await?;
+    let mut hits = Vec::new();
+    for sym in res.as_array().into_iter().flatten() {
+        let Some(name) = sym.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let Some(uri) = sym.pointer("/location/uri").and_then(|u| u.as_str()) else {
+            continue;
+        };
+        let Some(path) = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()) else {
+            continue;
+        };
+        let Some(start) = sym.pointer("/location/range/start") else {
+            continue;
+        };
+        let line = start.get("line").and_then(|l| l.as_u64()).unwrap_or(0) as u32 + 1;
+        let col = start.get("character").and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1;
+        hits.push(SymbolHit {
+            path,
+            name: name.to_string(),
+            kind: symbol_kind_name(sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0)),
+            container: sym
+                .get("containerName")
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(str::to_string),
+            line,
+            col,
+        });
+        if hits.len() >= limit {
+            break;
+        }
+    }
+    Ok(hits)
+}
+
+/// Resolves a (possibly qualified) symbol name to one position. Qualifiers (`Type::name`,
+/// `pkg.Func`, `Class.method`) are matched against the hit's container, `hint` (a file or
+/// directory) prefers hits under it. A tie between different locations is an error listing
+/// the candidates.
+pub async fn resolve_symbol(
+    remote: SocketAddr,
+    root: &Path,
+    symbol: &str,
+    hint: Option<&Path>,
+) -> Result<SymbolHit> {
+    let parts: Vec<&str> = symbol
+        .split(['.', ':', '#', '/'])
+        .map(|p| p.trim().trim_end_matches("()"))
+        .filter(|p| !p.is_empty())
+        .collect();
+    let name = parts.last().copied().unwrap_or(symbol);
+    let qualifier = parts.len().checked_sub(2).map(|i| parts[i]);
+    let hits = workspace_symbol_search(remote, root, name, hint, 200).await?;
+    let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
+    let mut scored: Vec<(i32, SymbolHit)> = hits
+        .into_iter()
+        .map(|hit| {
+            let mut score = 0;
+            if hit.name == name {
+                score += 100;
+            } else if hit.name.eq_ignore_ascii_case(name) {
+                score += 60;
+            } else if hit.name.starts_with(name) {
+                score += 20;
+            }
+            if let Some(q) = qualifier {
+                match &hit.container {
+                    Some(c)
+                        if c == q
+                            || c.ends_with(&format!("::{q}"))
+                            || c.ends_with(&format!(".{q}")) =>
+                    {
+                        score += 50
+                    }
+                    Some(c) if c.contains(q) => score += 30,
+                    Some(_) => score -= 10,
+                    None => {}
+                }
+            }
+            if let Some(h) = &hint_str {
+                let p = hit.path.to_string_lossy();
+                if *p == **h || p.starts_with(h.as_str()) {
+                    score += 30;
+                }
+            }
+            (score, hit)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| a.1.path.cmp(&b.1.path))
+            .then_with(|| a.1.line.cmp(&b.1.line))
+    });
+    let Some(best) = scored.first().map(|(s, _)| *s) else {
+        anyhow::bail!(
+            "no symbol named `{symbol}` in the workspace index (try code_symbols with a shorter name)"
+        );
+    };
+    let ties: Vec<&SymbolHit> = scored
+        .iter()
+        .filter(|(s, _)| *s == best)
+        .map(|(_, h)| h)
+        .collect();
+    if ties.len() > 1
+        && ties
+            .iter()
+            .any(|h| h.path != ties[0].path || h.line != ties[0].line)
+    {
+        let mut msg = format!(
+            "`{symbol}` is ambiguous ({} candidates); qualify it (Type::name) or pass `path`:\n",
+            ties.len()
+        );
+        for hit in ties.iter().take(10) {
+            msg.push_str(&format!("  {}\n", hit.render(root)));
+        }
+        anyhow::bail!(msg.trim_end().to_string());
+    }
+    Ok(scored.swap_remove(0).1)
 }

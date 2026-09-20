@@ -948,6 +948,52 @@ impl RustEngineSnapshot {
 
         Ok(results)
     }
+
+    /// Workspace-wide symbol search by name (what `workspace/symbol` answers): fuzzy on the
+    /// name, workspace crates only, associated items included. Positions point at the name.
+    pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
+        let query = ra_ap_ide::Query::new(query.to_string());
+        let targets = self.analysis.symbol_search(query, limit.max(1))?;
+        let mut out = Vec::with_capacity(targets.len());
+        for target in targets {
+            let Some(path) = self.path_for_file_id(target.file_id) else {
+                continue;
+            };
+            let Ok(text) = self.analysis.file_text(target.file_id) else {
+                continue;
+            };
+            let focus = target.focus_range.unwrap_or(target.full_range);
+            let (line, col) = offset_to_line_col(&text, focus.start());
+            let (end_line, _) = offset_to_line_col(&text, target.full_range.end());
+            out.push(WorkspaceSymbol {
+                path,
+                name: target.name.to_string(),
+                kind: target
+                    .kind
+                    .map(|k| format!("{k:?}"))
+                    .unwrap_or_else(|| "Symbol".to_string()),
+                line,
+                col,
+                end_line: end_line.max(line),
+                container: target.container_name.map(|c| c.to_string()),
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// One hit of a workspace-wide symbol search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSymbol {
+    pub path: PathBuf,
+    pub name: String,
+    pub kind: String,
+    /// 1-based line and column of the name.
+    pub line: u32,
+    pub col: u32,
+    pub end_line: u32,
+    /// Enclosing item (`impl` self type, module, trait), when the index knows it.
+    pub container: Option<String>,
 }
 
 /// In-memory Rust analysis engine core backed by a warm Salsa database.
@@ -1357,6 +1403,11 @@ impl RustEngine {
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
         self.snapshot().document_symbols(path)
+    }
+
+    /// Workspace-wide symbol search by name; see the snapshot method.
+    pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
+        self.snapshot().workspace_symbols(query, limit)
     }
 
     /// Single-owner fast path: Apply live buffer edits directly into Salsa DB in memory.

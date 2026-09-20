@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+- Symbol-addressed queries: every position tool (`code_definition`, `code_references`,
+  `code_hover`, `code_callers`, `code_callees`, `code_implementations`, `code_rename`,
+  `code_safe_delete`, `code_assists`, `code_assist`, `code_type_at`) accepts `symbol`
+  (`Metrics::record`, `pkg.Func`, `Class.method`) instead of `path`/`line`/`character`; the
+  name is resolved through the analyzer's workspace symbol index (`workspace/symbol`, served
+  in-process for Rust, forwarded for the LSP engines). Ambiguous names list the candidates.
+- `code_symbols {query}`: workspace symbol search by name with file:line:col and container.
+- `code_test` / `code_check` / `code_lint` with `path` narrow to the Cargo crate
+  (`-p <name>`), Go package tree (`./dir/...`) or pytest path containing it.
+
+### Fixed
+- Go engine is advertised only when both `gopls` and `go` are on the gateway's PATH (gopls
+  without the go tool answers "no views"); ram9 got a Go toolchain.
+- `GoEngine::document_symbols` surfaces gopls errors instead of returning an empty list.
+
 ### Changed
 - Gateway channels moved to [`rapidfire`](https://github.com/alex09x/rapidfire) (zero-dependency
   MPSC): the per-session outgoing queue is drained in batches of 64 with one socket flush per

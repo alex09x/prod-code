@@ -164,7 +164,8 @@ impl LspSession {
         let uri = Url::from_file_path(&abs)
             .map_err(|_| anyhow!("invalid file path {}", abs.display()))?
             .to_string();
-        if !self.opened.contains(&uri) {
+        // A directory stands for a workspace-level query (workspace/symbol): nothing to open.
+        if !self.opened.contains(&uri) && !abs.is_dir() {
             let text = tokio::fs::read_to_string(&abs)
                 .await
                 .with_context(|| format!("failed to read {}", abs.display()))?;

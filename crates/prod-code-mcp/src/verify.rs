@@ -572,6 +572,82 @@ pub fn plan_command_with(
     Ok(cmd)
 }
 
+/// A `path` inside the project narrows the command to that part: `cargo … -p <crate>` for
+/// the Cargo package containing it, `./dir/...` for a Go package tree, the directory or file
+/// for pytest. Anything else keeps the whole-project command.
+pub fn narrow_scope(command: &mut Vec<String>, language: &str, project_dir: &Path, hint: &Path) {
+    let canon_dir =
+        std::fs::canonicalize(project_dir).unwrap_or_else(|_| project_dir.to_path_buf());
+    let target = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
+    let dir = if target.is_file() {
+        target
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| target.clone())
+    } else {
+        target.clone()
+    };
+    if !dir.starts_with(&canon_dir) || dir == canon_dir {
+        return;
+    }
+    let rel_of = |p: &Path| -> String {
+        p.strip_prefix(&canon_dir)
+            .map(|r| {
+                r.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .unwrap_or_default()
+    };
+    match language {
+        "rust" => {
+            let mut probe = dir.clone();
+            while probe.starts_with(&canon_dir) && probe != canon_dir {
+                if let Some(name) = cargo_package_name(&probe.join("Cargo.toml")) {
+                    if let Some(i) = command.iter().position(|a| a == "--workspace") {
+                        command.splice(i..=i, ["-p".to_string(), name]);
+                    }
+                    return;
+                }
+                match probe.parent() {
+                    Some(parent) => probe = parent.to_path_buf(),
+                    None => break,
+                }
+            }
+        }
+        "go" => {
+            if let Some(i) = command.iter().position(|a| a == "./...") {
+                command[i] = format!("./{}/...", rel_of(&dir));
+            }
+        }
+        "python" if command.iter().any(|a| a == "pytest") => {
+            command.push(rel_of(&target));
+        }
+        _ => {}
+    }
+}
+
+/// `[package] name` of a Cargo manifest (None for a workspace-only or missing manifest).
+fn cargo_package_name(manifest: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
+    let mut in_package = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_package = line == "[package]";
+            continue;
+        }
+        if in_package
+            && let Some(rest) = line.strip_prefix("name")
+            && let Some(value) = rest.trim_start().strip_prefix('=')
+        {
+            return Some(value.trim().trim_matches('"').to_string());
+        }
+    }
+    None
+}
+
 /// Commands that do not depend on detected tooling (Rust, Go, Swift packages).
 fn plan_command_basic(
     language: &str,
@@ -1439,11 +1515,14 @@ pub async fn run_verify(
         None => root.to_path_buf(),
     };
     let tools = detect_tools(&project_dir);
-    let command = if language == "swift" && has_xcode_project(&project_dir) {
+    let mut command = if language == "swift" && has_xcode_project(&project_dir) {
         plan_xcode_command(kind, filter)?
     } else {
         plan_command_with(&tools, language, kind, filter)?
     };
+    if let Some(hint) = project_hint {
+        narrow_scope(&mut command, language, &project_dir, hint);
+    }
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut tail = TailBuffer::new(8 * 1024);
@@ -1588,6 +1667,41 @@ pub async fn run_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrow_scope_picks_cargo_member_go_dir_and_pytest_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+        let member = root.join("crates/gw/src");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            root.join("crates/gw/Cargo.toml"),
+            "[package]\nname = \"gw\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(member.join("lib.rs"), "").unwrap();
+
+        let mut cmd = strs(&["cargo", "test", "--workspace"]);
+        narrow_scope(&mut cmd, "rust", root, &member.join("lib.rs"));
+        assert_eq!(cmd, strs(&["cargo", "test", "-p", "gw"]));
+
+        let mut cmd = strs(&["cargo", "test", "--workspace"]);
+        narrow_scope(&mut cmd, "rust", root, root);
+        assert_eq!(cmd, strs(&["cargo", "test", "--workspace"]));
+
+        let mut cmd = strs(&["go", "test", "-json", "./..."]);
+        narrow_scope(&mut cmd, "go", root, &root.join("crates/gw"));
+        assert_eq!(cmd, strs(&["go", "test", "-json", "./crates/gw/..."]));
+
+        let mut cmd = strs(&["python3", "-m", "pytest", "-q"]);
+        narrow_scope(&mut cmd, "python", root, &member.join("lib.rs"));
+        assert_eq!(cmd.last().unwrap(), "crates/gw/src/lib.rs");
+    }
 
     #[test]
     fn detects_js_and_python_tooling() {

@@ -36,6 +36,20 @@ writing it, build and test on the gateway with `code_check` / `code_test` / `cod
 test runs with `code_impact`, explain failures with `code_diagnose_failure`. Local edits are
 synced automatically before each call; the agent never manages the gateway.
 
+### Addressing symbols by name
+
+Every position tool takes `symbol` instead of `path`/`line`/`character`:
+
+```
+code_callers   {"symbol": "Metrics::record"}
+code_hover     {"symbol": "pkg.Func"}          code_references {"symbol": "Class.method", "path": "src/a.ts"}
+code_symbols   {"query": "record"}             → [Method] Metrics::record — crates/gw/src/metrics.rs:102:12
+```
+
+The name goes through the analyzer's workspace symbol index; qualifiers are matched against the
+enclosing item and `path` (file or directory) only disambiguates. A tie between different
+locations comes back as an error listing the candidates.
+
 ## Cluster
 
 Any number of gateways form a cluster: start each with `--peers <one live peer>` and
