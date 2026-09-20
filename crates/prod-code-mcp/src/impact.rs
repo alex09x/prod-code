@@ -467,7 +467,11 @@ pub async fn analyze(
                 line,
                 col,
             };
-            if looks_like_test(&language, &caller.name, &caller.file) {
+            let flagged = edge
+                .get("isTest")
+                .and_then(|t| t.as_bool())
+                .unwrap_or(false);
+            if flagged || looks_like_test(&language, &caller.name, &caller.file) {
                 tests.insert(caller.clone());
             } else {
                 callers.insert(caller.clone());
