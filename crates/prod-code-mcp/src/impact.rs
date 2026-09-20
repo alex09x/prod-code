@@ -225,6 +225,14 @@ fn collect_functions(symbols: &[serde_json::Value], out: &mut Vec<(String, u32, 
 /// Whether a caller is a test by name or file conventions of `language`.
 pub fn looks_like_test(language: &str, name: &str, file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
+    // `SignalTests.testDoubles()` / `pkg.TestX`: judge the unqualified name.
+    let name = name
+        .split('(')
+        .next()
+        .unwrap_or(name)
+        .rsplit('.')
+        .next()
+        .unwrap_or(name);
     match language {
         "rust" => {
             name.starts_with("test") || lower.contains("/tests/") || lower.ends_with("_test.rs")
@@ -512,7 +520,13 @@ mod tests {
     #[test]
     fn test_conventions_per_language() {
         assert!(looks_like_test("go", "TestAdd", "pkg/add_test.go"));
+        assert!(looks_like_test("go", "pkg.TestAdd", "pkg/add_test.go"));
         assert!(!looks_like_test("go", "helper", "pkg/add_test.go"));
+        assert!(looks_like_test(
+            "swift",
+            "MathTests.testAdds()",
+            "Tests/MathTests/MathTests.swift"
+        ));
         assert!(looks_like_test(
             "rust",
             "adds_numbers",
