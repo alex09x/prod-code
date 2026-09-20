@@ -16,10 +16,9 @@ use ra_ap_intern::sym;
 use ra_ap_load_cargo::{
     LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
 };
-use ra_ap_paths::{AbsPathBuf, Utf8PathBuf};
+use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{
     CargoConfig, CargoFeatures, CfgOverrides, ProjectManifest, ProjectWorkspace, RustLibSource,
-    TargetDirectoryConfig,
 };
 use ra_ap_vfs::AnchoredPathBuf;
 use ra_ap_vfs::{Vfs, VfsPath};
@@ -280,15 +279,6 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
         }
     }
     components.into_iter().collect()
-}
-
-/// Options controlling how a workspace is loaded.
-#[derive(Debug, Clone, Default)]
-pub struct LoadOptions {
-    /// Cargo target directory for the build-script and proc-macro run on load, instead of the
-    /// workspace's own `target`. Worktree copies of one repository share the origin's, so only
-    /// the first copy pays the full build-script run; the others find warm fingerprints.
-    pub shared_target_dir: Option<PathBuf>,
 }
 
 /// Thread-safe, multi-core analysis snapshot backed by warm Salsa database.
@@ -1243,26 +1233,9 @@ impl RustEngine {
 
     /// Load and index a Cargo workspace directly into in-memory Salsa DB using multi-core worker threads.
     pub fn load(workspace_root: &Path) -> Result<Self> {
-        Self::load_with(workspace_root, &LoadOptions::default())
-    }
-
-    /// Load and index a Cargo workspace with explicit [`LoadOptions`].
-    pub fn load_with(workspace_root: &Path, options: &LoadOptions) -> Result<Self> {
         let config = ProdCodeConfig::load(workspace_root);
         tracing::info!(?workspace_root, rust = ?config.rust, "analysis options");
-        let mut cargo_config = config.cargo_config();
-        if let Some(dir) = &options.shared_target_dir {
-            match Utf8PathBuf::from_path_buf(dir.clone()) {
-                Ok(dir) => {
-                    tracing::info!(?workspace_root, target_dir = %dir, "sharing cargo target directory");
-                    cargo_config.target_dir_config = TargetDirectoryConfig::Directory(dir);
-                }
-                Err(dir) => tracing::warn!(
-                    ?dir,
-                    "shared target directory is not UTF-8; using the workspace's own"
-                ),
-            }
-        }
+        let cargo_config = config.cargo_config();
         let build_scripts = config.rust.build_scripts;
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
