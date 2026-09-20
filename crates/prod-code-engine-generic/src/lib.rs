@@ -589,6 +589,11 @@ impl GenericLspEngine {
     }
 
     /// Send a request and await its response.
+    /// Whether the server has published diagnostics for `uri` at least once.
+    pub async fn diagnostics_published(&self, uri: &str) -> bool {
+        self.diagnostics.read().await.contains_key(uri)
+    }
+
     /// The diagnostics the server last published for `uri` (empty when none).
     pub async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
         self.diagnostics

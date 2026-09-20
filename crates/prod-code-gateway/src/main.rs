@@ -329,10 +329,20 @@ impl ManagedLsp<'_> {
             .unwrap_or(serde_json::Value::Null))
     }
 
+    /// The diagnostics published for `uri`, waiting briefly for the first publication after a
+    /// didOpen so quick fixes can be offered in a one-shot session.
     async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
         match self {
             ManagedLsp::Go(_) => Vec::new(),
-            ManagedLsp::Generic(engine) => engine.diagnostics_for(uri).await,
+            ManagedLsp::Generic(engine) => {
+                for _ in 0..30 {
+                    if engine.diagnostics_published(uri).await {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                engine.diagnostics_for(uri).await
+            }
         }
     }
 }
