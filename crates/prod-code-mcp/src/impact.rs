@@ -302,12 +302,18 @@ pub fn test_command(
                 None,
             )
             .ok()?;
-            let pattern = names.join("|");
-            if c.iter()
-                .any(|w| w == "vitest" || w == "jest" || w == "test")
-            {
-                c.push("-t".to_string());
-                c.push(pattern);
+            let selectable = c
+                .iter()
+                .any(|w| w == "vitest" || w == "jest" || w == "test");
+            // Module-level test files are selected by path, named tests by pattern.
+            let (files, named): (Vec<&str>, Vec<&str>) =
+                names.iter().partition(|n| n.contains('/'));
+            if selectable {
+                c.extend(files.iter().map(|f| f.to_string()));
+                if !named.is_empty() {
+                    c.push("-t".to_string());
+                    c.push(named.join("|"));
+                }
             }
             c
         }
@@ -438,12 +444,17 @@ pub async fn analyze(
             let Some(from) = edge.get("from") else {
                 continue;
             };
-            let name = from
+            let mut name = from
                 .get("name")
                 .and_then(|n| n.as_str())
                 .unwrap_or("")
                 .to_string();
             let file = rel(root, from.get("uri").and_then(|u| u.as_str()).unwrap_or(""));
+            // Module-level code (a test file's top-level `it(...)` calls) is reported with the
+            // file as its name: keep it checkout-relative.
+            if name.starts_with('/') {
+                name = rel(root, &name);
+            }
             let sel = from.get("selectionRange").and_then(|r| r.get("start"));
             let line = sel
                 .and_then(|s| s.get("line"))
@@ -540,6 +551,12 @@ mod tests {
         let py = test_command("python", &tools, &[t("test_a")]).unwrap();
         assert!(py.ends_with(&["-k".to_string(), "test_a".to_string()]));
         assert!(test_command("cpp", &tools, &[t("x")]).is_none());
+        let ts = test_command("typescript", &tools, &[t("tests/a.test.ts"), t("adds")]).unwrap();
+        assert!(ts.ends_with(&[
+            "tests/a.test.ts".to_string(),
+            "-t".to_string(),
+            "adds".to_string()
+        ]));
         assert!(test_command("go", &tools, &[]).is_none());
     }
 }
