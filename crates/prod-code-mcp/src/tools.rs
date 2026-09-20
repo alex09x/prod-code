@@ -30,6 +30,10 @@ pub fn list_tools() -> Vec<McpTool> {
                         "type": "integer",
                         "description": "Kill the command after this many seconds (default 3600)"
                     },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Directory inside the workspace to run in (relative to the workspace root); default: the root"
+                    },
                     "tail_bytes": {
                         "type": "integer",
                         "description": "How much of the output tail to return (default 16384)"
@@ -45,7 +49,8 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
                 }
             }),
         },
@@ -56,7 +61,8 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
                 }
             }),
         },
@@ -68,7 +74,8 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
-                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" }
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "path": { "type": "string", "description": "A file or directory inside a nested project (e.g. a SwiftPM package in a Rust repo) to verify that project instead of the root" }
                 }
             }),
         },
@@ -472,9 +479,15 @@ pub async fn execute_tool(
                 .get("timeout_secs")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            // `path` selects a nested project (any file or directory inside it).
+            let hint = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p));
             let report = crate::verify::run_verify(
                 remote,
                 workspace_root,
+                hint.as_deref(),
                 kind,
                 filter.as_deref(),
                 timeout_secs,
@@ -555,9 +568,15 @@ pub async fn execute_tool(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(16 * 1024) as usize;
             let mut tail = crate::exec::TailBuffer::new(tail_bytes);
+            let subdir = args
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p))
+                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
             let outcome = crate::exec::run_remote(
                 remote,
                 workspace_root,
+                subdir.as_deref(),
                 argv.clone(),
                 vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
                 timeout_secs,

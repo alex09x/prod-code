@@ -869,9 +869,20 @@ pub async fn run_exec(
         Default::default()
     };
 
+    let run_dir = match req.subdir.as_deref() {
+        Some(sub)
+            if !sub.is_empty()
+                && !sub.starts_with('/')
+                && !sub.split('/').any(|c| c == "..")
+                && workspace.join(sub).is_dir() =>
+        {
+            workspace.join(sub)
+        }
+        _ => workspace.clone(),
+    };
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
-        .current_dir(&workspace)
+        .current_dir(&run_dir)
         .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

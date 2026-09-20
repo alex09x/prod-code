@@ -1428,10 +1428,16 @@ async fn run_verify(
     json: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
-    let root = find_workspace_root(&cwd).unwrap_or(cwd);
-    let report =
-        prod_code_mcp::verify::run_verify(remote, &root, kind, filter.as_deref(), timeout_secs)
-            .await?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let report = prod_code_mcp::verify::run_verify(
+        remote,
+        &root,
+        Some(&cwd),
+        kind,
+        filter.as_deref(),
+        timeout_secs,
+    )
+    .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -1449,7 +1455,10 @@ async fn run_exec(
 ) -> Result<()> {
     use std::io::Write;
     let cwd = env::current_dir().context("Failed to get current working directory")?;
-    let root = find_workspace_root(&cwd).unwrap_or(cwd);
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    // Commands run where they were typed: a subdirectory of the checkout maps to the same
+    // subdirectory of the server copy.
+    let subdir = prod_code_mcp::exec::subdir_of(&root, &cwd);
     let mut env_pairs = Vec::new();
     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         env_pairs.push(("CARGO_TERM_COLOR".to_string(), "always".to_string()));
@@ -1458,6 +1467,7 @@ async fn run_exec(
     let outcome = prod_code_mcp::exec::run_remote(
         remote,
         &root,
+        subdir.as_deref(),
         command.clone(),
         env_pairs,
         timeout_secs,

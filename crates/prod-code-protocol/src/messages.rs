@@ -366,6 +366,10 @@ pub struct ExecRequest {
     /// formatters, code generators and lockfile updates land in the client's checkout.
     #[serde(default)]
     pub pull_changes: bool,
+    /// Directory inside the workspace (relative, `/`-separated) to run the command in; the
+    /// workspace root when absent. Lets a nested project be built and tested in place.
+    #[serde(default)]
+    pub subdir: Option<String>,
 }
 
 /// Files the command changed in the server workspace, sent before `ExecExit` when

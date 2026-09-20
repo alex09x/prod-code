@@ -20,12 +20,28 @@ pub struct RemoteOutcome {
     pub pulled_files: Vec<String>,
 }
 
+/// The `/`-separated path of `dir` inside `root`, or `None` when `dir` is the root itself
+/// or lies outside it: the directory a command runs in on the server.
+pub fn subdir_of(root: &Path, dir: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let rel = dir.strip_prefix(&root).ok()?;
+    let rel = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    (!rel.is_empty()).then_some(rel)
+}
+
 /// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
 /// every chunk as it arrives. With `pull_changes`, files the command created, changed or
 /// deleted on the server are written back into the checkout and recorded in the watermark.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_remote(
     remote: SocketAddr,
     root: &Path,
+    subdir: Option<&str>,
     command: Vec<String>,
     env: Vec<(String, String)>,
     timeout_secs: u64,
@@ -50,6 +66,7 @@ pub async fn run_remote(
             env,
             timeout_secs,
             pull_changes,
+            subdir: subdir.map(str::to_string),
         }))
         .await?;
 

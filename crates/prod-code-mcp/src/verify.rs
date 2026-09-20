@@ -3,7 +3,6 @@
 //! diagnostics and test failures for terminals and agents.
 
 use crate::exec::{TailBuffer, run_remote};
-use crate::sync::expected_engine;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -1421,14 +1420,26 @@ xcodebuild {action} -scheme \"$scheme\" -destination \"$dest\" -quiet 2>&1"
 pub async fn run_verify(
     remote: SocketAddr,
     root: &Path,
+    project_hint: Option<&Path>,
     kind: VerifyKind,
     filter: Option<&str>,
     timeout_secs: u64,
 ) -> Result<VerifyReport> {
-    let language = expected_engine(root)
-        .ok_or_else(|| anyhow!("no Cargo.toml or go.mod at {}", root.display()))?;
-    let tools = detect_tools(root);
-    let command = if language == "swift" && has_xcode_project(root) {
+    // A nested project of another language (a SwiftPM package in a Rust repository) is
+    // verified in its own directory with its own tooling.
+    let (subdir, language) = crate::sync::engine_project(root, project_hint.unwrap_or(root));
+    let language = language.ok_or_else(|| {
+        anyhow!(
+            "no project manifest (Cargo.toml, go.mod, package.json, pyproject.toml, CMakeLists.txt, Package.swift) at {}",
+            root.display()
+        )
+    })?;
+    let project_dir = match &subdir {
+        Some(sub) => root.join(sub),
+        None => root.to_path_buf(),
+    };
+    let tools = detect_tools(&project_dir);
+    let command = if language == "swift" && has_xcode_project(&project_dir) {
         plan_xcode_command(kind, filter)?
     } else {
         plan_command_with(&tools, language, kind, filter)?
@@ -1439,6 +1450,7 @@ pub async fn run_verify(
     let outcome = run_remote(
         remote,
         root,
+        subdir.as_deref(),
         command.clone(),
         vec![
             ("CARGO_TERM_COLOR".to_string(), "never".to_string()),
@@ -1540,6 +1552,13 @@ pub async fn run_verify(
         }
     }
     diagnostics.dedup();
+    if let Some(sub) = &subdir {
+        let nested = format!(
+            "{}/{sub}",
+            outcome.exit.server_workspace_root.trim_end_matches('/')
+        );
+        relativize_diagnostics(&mut diagnostics, &nested);
+    }
     relativize_diagnostics(&mut diagnostics, &outcome.exit.server_workspace_root);
     for failure in &mut failures {
         let prefix = format!(
