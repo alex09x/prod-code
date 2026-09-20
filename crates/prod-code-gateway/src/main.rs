@@ -1234,6 +1234,14 @@ pub async fn run_exec(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    // A worktree copy builds into its origin repository's target directory, so `cargo
+    // check`/`test` in a fresh worktree reuse the origin's artifacts (unless the client
+    // chose a target directory itself).
+    if !req.env.iter().any(|(k, _)| k == "CARGO_TARGET_DIR")
+        && let Some(shared) = workspace::shared_target_dir(&workspace)
+    {
+        cmd.env("CARGO_TARGET_DIR", shared);
+    }
     // Own process group, so a timeout or client disconnect can take down the whole tree
     // (cargo -> test binary -> its helpers), not just the direct child.
     #[cfg(unix)]

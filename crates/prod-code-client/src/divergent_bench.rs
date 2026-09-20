@@ -804,7 +804,12 @@ pub fn setup(
         let (query_file, symbol) = apply_mutation(&root, kind, &target)?;
         let wt_workspace_name = match mode {
             WorkspaceMode::Shared => workspace_name.clone(),
-            WorkspaceMode::Isolated => format!("{workspace_name}-{}", kind.dir_name()),
+            // Same shape as production worktree workspaces (`<repo>--wt-<id>`), so the
+            // gateway's seeding, pruning and shared-target logic applies to the bench too.
+            WorkspaceMode::Isolated => format!(
+                "{workspace_name}--wt-{}",
+                kind.dir_name().trim_start_matches("wt-")
+            ),
         };
         worktrees.push(DivergentWorktree {
             kind,
@@ -1652,10 +1657,10 @@ mod tests {
         assert_eq!(
             names,
             vec![
-                "fixture-divergent-bench-wt-master",
-                "fixture-divergent-bench-wt-signature",
-                "fixture-divergent-bench-wt-dependency",
-                "fixture-divergent-bench-wt-untracked",
+                "fixture-divergent-bench--wt-master",
+                "fixture-divergent-bench--wt-signature",
+                "fixture-divergent-bench--wt-dependency",
+                "fixture-divergent-bench--wt-untracked",
             ]
         );
     }
