@@ -11,7 +11,7 @@ use url::Url;
 
 /// Return list of tools exposed by the MCP server.
 pub fn list_tools() -> Vec<McpTool> {
-    vec![
+    let mut tools = vec![
         McpTool {
             name: "code_exec".to_string(),
             description: "Run a build, test, lint or format command on the remote gateway inside this workspace's server copy (warm per-worktree caches, 32-core server). The checkout is synced first; files the command changes (formatters, generators, lockfiles) are written back. Returns the exit code and the tail of the combined output."
@@ -309,7 +309,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_outline".to_string(),
-            description: "Extract the structural symbol outline (functions, structs, enums, traits, classes) with line numbers from a source file."
+            description: "Extract the structural symbol outline (functions, structs, enums, traits, classes, methods, fields) with line numbers from a source file. Local variables are left out unless `include_locals` is set."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -320,7 +320,11 @@ pub fn list_tools() -> Vec<McpTool> {
                     },
                     "max_depth": {
                         "type": "integer",
-                        "description": "Maximum hierarchy depth (default: 3)"
+                        "description": "Maximum nesting depth to list, 1 = top-level items only (default: 3)"
+                    },
+                    "include_locals": {
+                        "type": "boolean",
+                        "description": "Also list local variables and bindings inside function bodies (default: false)"
                     }
                 },
                 "required": ["path"]
@@ -409,7 +413,30 @@ pub fn list_tools() -> Vec<McpTool> {
                 }
             }),
         },
-    ]
+    ];
+    for tool in &mut tools {
+        if SYMBOL_ADDRESSABLE.contains(&tool.name.as_str()) {
+            relax_position_schema(&mut tool.input_schema);
+        }
+    }
+    tools
+}
+
+/// Symbol-addressable tools accept `symbol` instead of a position: advertise the property and
+/// stop requiring path/line/character, otherwise a schema-validating client cannot use the
+/// name-based form at all.
+fn relax_position_schema(schema: &mut serde_json::Value) {
+    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        props.entry("symbol").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "Symbol name instead of path/line/character, optionally qualified (`Metrics::record`, `pkg.Func`, `Class.method`); resolved through the workspace symbol index. `path` may still be given to disambiguate."
+            })
+        });
+    }
+    if let Some(required) = schema.get_mut("required").and_then(|r| r.as_array_mut()) {
+        required.retain(|r| !matches!(r.as_str(), Some("path") | Some("line") | Some("character")));
+    }
 }
 
 /// Execute an MCP tool call against the remote gateway.
@@ -1191,12 +1218,38 @@ pub async fn execute_tool(
             )
             .await?;
 
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(3)
+                .max(1) as usize;
+            let include_locals = args
+                .get("include_locals")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let mut out = String::new();
             if let Some(arr) = res.as_array() {
                 out.push_str(&format!("Outline for {path_str}:\n"));
+                let mut skipped_locals = 0usize;
                 for sym in arr {
                     let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
+                    // Locals (LSP kind 13, Variable) are noise for a structural outline:
+                    // a 2000-line file lists hundreds of them.
+                    if kind == 13 && !include_locals {
+                        skipped_locals += 1;
+                        continue;
+                    }
+                    // Depth from the container chain the gateway reports ("a > b > c").
+                    let depth = sym
+                        .get("containerName")
+                        .and_then(|c| c.as_str())
+                        .filter(|c| c.contains(" > "))
+                        .map(|c| c.split(" > ").count() + 1)
+                        .unwrap_or(1);
+                    if depth > max_depth {
+                        continue;
+                    }
                     let kind_str = match kind {
                         2 => "Module",
                         5 => "Class",
@@ -1221,6 +1274,11 @@ pub async fn execute_tool(
                         .unwrap_or(0)
                         + 1;
                     out.push_str(&format!("  [{kind_str}] {name} (line {line})\n"));
+                }
+                if skipped_locals > 0 {
+                    out.push_str(&format!(
+                        "  ({skipped_locals} local variable(s) hidden; pass include_locals: true to list them)\n"
+                    ));
                 }
             } else {
                 out.push_str("No outline symbols available.");
@@ -1704,4 +1762,59 @@ fn identifier_at(path: &Path, line: u32, col: u32, name: &str) -> bool {
         .unwrap_or(row.len());
     let bare = name.split(['(', '<']).next().unwrap_or(name);
     row[start..].starts_with(bare)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbol_addressable_tools_advertise_symbol_and_do_not_require_a_position() {
+        for tool in list_tools() {
+            let props = tool.input_schema["properties"]
+                .as_object()
+                .expect("schema has properties");
+            let required: Vec<&str> = tool.input_schema["required"]
+                .as_array()
+                .map(|r| r.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            if SYMBOL_ADDRESSABLE.contains(&tool.name.as_str()) {
+                assert!(props.contains_key("symbol"), "{} lacks `symbol`", tool.name);
+                assert!(props.contains_key("path"), "{} lacks `path`", tool.name);
+                for positional in ["path", "line", "character"] {
+                    assert!(
+                        !required.contains(&positional),
+                        "{} still requires `{positional}`",
+                        tool.name
+                    );
+                }
+            } else {
+                assert!(
+                    !props.contains_key("symbol"),
+                    "{} unexpectedly takes `symbol`",
+                    tool.name
+                );
+            }
+        }
+        let rename = list_tools()
+            .into_iter()
+            .find(|t| t.name == "code_rename")
+            .unwrap();
+        let required: Vec<&str> = rename.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(required, vec!["new_name"]);
+    }
+
+    #[test]
+    fn outline_schema_offers_locals_toggle() {
+        let outline = list_tools()
+            .into_iter()
+            .find(|t| t.name == "code_outline")
+            .unwrap();
+        assert!(outline.input_schema["properties"]["include_locals"].is_object());
+    }
 }
