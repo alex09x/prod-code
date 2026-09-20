@@ -283,7 +283,8 @@ async fn main() -> Result<()> {
 
     match cli.command.unwrap_or(Commands::Lsp) {
         Commands::Lsp => run_lsp_bridge(remote).await,
-        Commands::Status => run_status_probe(remote).await,
+        // `status` is about the node you name, not about where this checkout is placed.
+        Commands::Status => run_status_probe(seeds[0]).await,
         Commands::Cluster => run_cluster(&remotes, &cwd_workspace, cwd_engine).await,
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
