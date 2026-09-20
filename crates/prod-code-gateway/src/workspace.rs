@@ -21,15 +21,20 @@ pub fn spawn_cache_priming(
         return;
     }
     tokio::spawn(async move {
+        // Leave cores for queries that arrive while priming runs.
+        let threads = std::thread::available_parallelism()
+            .map(|n| (n.get() / 2).clamp(2, 16))
+            .unwrap_or(4);
         for attempt in 1..=5u32 {
             let job = engine.lock().await.prime_job();
             let crates = job.crate_count();
             let started = std::time::Instant::now();
-            match tokio::task::spawn_blocking(move || job.run()).await {
+            match tokio::task::spawn_blocking(move || job.run(threads)).await {
                 Ok(Ok(true)) => {
                     tracing::info!(
                         workspace = %workspace_root.display(),
                         crates,
+                        threads,
                         duration_ms = %format!("{}ms", started.elapsed().as_millis()),
                         "🔥 [PRIME] analyzer caches primed"
                     );

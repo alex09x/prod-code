@@ -281,41 +281,35 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
     components.into_iter().collect()
 }
 
-/// A cache-priming run prepared under the engine lock and executed outside it: the same
-/// semantic work the first diagnostics request on each local crate would do (name resolution,
-/// type inference of the crate's bodies), done ahead of time so that request costs about a
-/// second instead of tens of seconds.
+/// A cache-priming run prepared under the engine lock and executed outside it: rust-analyzer's
+/// own parallel primer over every crate in the database (name resolution, item trees, type
+/// inference), the work the first semantic query on each crate would otherwise pay.
 ///
-/// It deliberately issues ordinary [`ra_ap_ide::Analysis`] queries rather than rust-analyzer's
-/// `parallel_prime_caches`: those queries return `Cancelled` cleanly when an edit bumps the
-/// database revision, whereas the parallel primer, started on a snapshot that is already
-/// stale, blocks its worker threads for good.
+/// Run it the moment it is created. It holds an analysis snapshot, and a write to the engine
+/// waits until every snapshot is released or cancelled; a snapshot that is parked never sees
+/// the cancellation, so the write would block for good. While the primer runs, a write cancels
+/// it cleanly (`Ok(false)`).
 pub struct PrimeJob {
     analysis: ra_ap_ide::Analysis,
-    /// One file per local crate (its root when it can be told apart, any file otherwise).
-    files: Vec<FileId>,
+    crates: Arc<[ra_ap_base_db::Crate]>,
 }
 
 impl PrimeJob {
-    /// Number of crates the job will touch.
+    /// Number of crates in scope (workspace members and their dependencies).
     pub fn crate_count(&self) -> usize {
-        self.files.len()
+        self.crates.len()
     }
 
-    /// Runs the priming. `Ok(false)` means a concurrent edit cancelled it; the caller retries
-    /// with a fresh job when the engine is idle.
-    pub fn run(self) -> Result<bool> {
-        let config = DiagnosticsConfig::test_sample();
-        for file_id in self.files {
-            match self
-                .analysis
-                .full_diagnostics(&config, AssistResolveStrategy::None, file_id)
-            {
-                Ok(_) => {}
-                Err(_cancelled) => return Ok(false),
-            }
+    /// Runs the priming across `threads` workers. `Ok(false)` means a concurrent edit cancelled
+    /// it; the caller retries with a fresh job when the engine is idle.
+    pub fn run(self, threads: usize) -> Result<bool> {
+        match self
+            .analysis
+            .parallel_prime_caches(&self.crates, threads.max(1), |_| {})
+        {
+            Ok(()) => Ok(true),
+            Err(_cancelled) => Ok(false),
         }
-        Ok(true)
     }
 }
 
@@ -1323,28 +1317,13 @@ impl RustEngine {
         })
     }
 
-    /// A priming job over the workspace's own crates, to be run outside the engine lock.
-    ///
-    /// Run it right away: the job holds an analysis snapshot, and a write to the engine
-    /// (`apply_file_change`, `set_session_overlay`, ...) waits until every snapshot is
-    /// released or cancelled. A job that is created and parked would block that write for
-    /// good, since nothing inside it observes the cancellation until it runs.
+    /// A priming job over every crate in the database, to be run outside the engine lock and
+    /// immediately (see [`PrimeJob`]).
     pub fn prime_job(&self) -> PrimeJob {
-        let analysis = self.host.analysis();
-        let db = self.host.raw_database();
-        let mut files: Vec<FileId> = Vec::new();
-        for krate in ra_ap_base_db::all_crates(db).iter() {
-            let root = krate.root_file_id(db).file_id(db);
-            // Library crates (registry, sysroot) are primed transitively by the local ones.
-            let is_local = analysis
-                .source_root_id(root)
-                .and_then(|id| analysis.is_local_source_root(id))
-                .unwrap_or(false);
-            if is_local && !files.contains(&root) {
-                files.push(root);
-            }
+        PrimeJob {
+            analysis: self.host.analysis(),
+            crates: ra_ap_base_db::all_crates(self.host.raw_database()),
         }
-        PrimeJob { analysis, files }
     }
 
     /// Obtain a lightweight, thread-safe analysis snapshot for parallel execution.
@@ -1884,8 +1863,8 @@ impl PathTranslator {
         let (temp, lib_path) = create_test_fixture();
         let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
         let job = engine.prime_job();
-        assert_eq!(job.crate_count(), 1, "one local crate in the fixture");
-        assert!(job.run().unwrap(), "an undisturbed run completes");
+        assert!(job.crate_count() >= 1, "the fixture crate is in scope");
+        assert!(job.run(2).unwrap(), "an undisturbed run completes");
 
         // The primed state is consistent with a later edit: the engine keeps working and a
         // fresh job after the edit completes again. (A job must never be held across an
@@ -1893,7 +1872,7 @@ impl PathTranslator {
         engine
             .apply_file_change(&lib_path, "pub const CHANGED: u8 = 1;\n".to_string())
             .unwrap();
-        assert!(engine.prime_job().run().unwrap());
+        assert!(engine.prime_job().run(2).unwrap());
         assert!(
             engine
                 .document_symbols(&lib_path)
