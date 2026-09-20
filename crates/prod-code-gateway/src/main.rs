@@ -1829,7 +1829,7 @@ async fn run_session_loop(
                                                              "uri": uri,
                                                              "range": {
                                                                  "start": { "line": s.line.saturating_sub(1), "character": 0 },
-                                                                 "end": { "line": s.line.saturating_sub(1), "character": 0 }
+                                                                 "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
                                                              }
                                                          },
                                                          "containerName": s.detail

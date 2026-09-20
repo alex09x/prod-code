@@ -335,7 +335,7 @@ This document outlines the architectural milestones and engineering phases for b
 
 ### Engineering Milestones
 
-- [ ] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)**
+- [~] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)** — shipped 2026-09-20 as `prod-code impact [--base REF] [--depth N] [--run] [--json]` and MCP `code_impact`: the diff's line ranges are mapped onto document symbols to find the changed functions, the call hierarchy is walked upwards (default 4 levels) and callers that follow the language's test conventions become the affected tests, with the command that runs only them (`cargo test -- names`, `go test -run '^(A|B)$'`, `pytest -k`, `vitest|jest -t`, `swift test --filter`). Changes outside functions (module-level code, manifests) are reported as needing the full suite. Verified on Go and Rust fixtures. Open: test discovery beyond naming conventions (attributes, registries), CI integration.
   - Compare working tree uncommitted edits against base commit via call graph and AST dependency trees.
   - Calculate exact "blast radius": modified functions, impacted downstream callers, and test suites directly covering the modified paths.
   - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Impact analysis (Phase 8.1): `prod-code impact` (and MCP `code_impact`) lists the functions
+  the working-tree diff touches, the callers that reach them through the call hierarchy and
+  the affected tests, and emits (or with `--run` executes) the command that runs only those
+  tests. Rust document symbols now carry their full extent.
+
 - Definitions outside the checkout are readable (Phase 8.3): `prod-code def` shows the lines
   around a definition in the standard library, a dependency cache or a system header, and
   `prod-code source <path>` prints any such file from the gateway host; MCP `code_definition`

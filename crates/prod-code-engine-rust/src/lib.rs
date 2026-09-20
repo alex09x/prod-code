@@ -165,7 +165,11 @@ pub struct ReferenceTarget {
 pub struct SymbolTarget {
     pub name: String,
     pub kind: String,
+    /// 1-based line of the item's name.
     pub line: u32,
+    /// 1-based last line of the whole item (its body included).
+    #[serde(default)]
+    pub end_line: u32,
     pub detail: Option<String>,
 }
 
@@ -810,6 +814,7 @@ impl RustEngineSnapshot {
             // The navigation range is the item's name; the node range would start at its
             // doc comments and attributes.
             let (sym_line, _) = offset_to_line_col(&text, node.navigation_range.start());
+            let (end_line, _) = offset_to_line_col(&text, node.node_range.end());
             results.push(SymbolTarget {
                 name: node.label,
                 kind: match node.kind {
@@ -817,6 +822,7 @@ impl RustEngineSnapshot {
                     other => format!("{other:?}"),
                 },
                 line: sym_line,
+                end_line: end_line.max(sym_line),
                 detail: node.detail,
             });
         }
