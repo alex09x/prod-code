@@ -15,13 +15,108 @@ use ra_ap_load_cargo::{
     LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
 };
 use ra_ap_paths::AbsPathBuf;
-use ra_ap_project_model::{CargoConfig, ProjectManifest, ProjectWorkspace};
+use ra_ap_project_model::{
+    CargoConfig, CargoFeatures, ProjectManifest, ProjectWorkspace, RustLibSource,
+};
 use ra_ap_vfs::AnchoredPathBuf;
 use ra_ap_vfs::{Vfs, VfsPath};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// Per-repository analysis settings, read from `prod-code.toml` at the workspace root:
+///
+/// ```toml
+/// [rust]
+/// features = "all"            # or ["feat-a", "feat-b"]
+/// no_default_features = false
+/// all_targets = true          # tests, benches and examples are analysed too
+/// sysroot = true              # load the standard library sources (rust-src)
+/// ```
+///
+/// Repositories that compile the same source files into several crates behind different
+/// feature flags (a `#[path]`-shared module tree) need `features = "all"`: rust-analyzer
+/// attaches each file to one crate, and a module behind a disabled feature is dead there.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct ProdCodeConfig {
+    pub rust: RustAnalysisOptions,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RustAnalysisOptions {
+    pub features: FeatureSelection,
+    pub no_default_features: bool,
+    pub all_targets: bool,
+    pub sysroot: bool,
+}
+
+impl Default for RustAnalysisOptions {
+    fn default() -> Self {
+        Self {
+            features: FeatureSelection::Selected(Vec::new()),
+            no_default_features: false,
+            all_targets: true,
+            sysroot: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum FeatureSelection {
+    /// `features = "all"`.
+    Keyword(String),
+    /// `features = ["a", "b"]`.
+    Selected(Vec<String>),
+}
+
+impl ProdCodeConfig {
+    /// The configuration file name looked up at the workspace root.
+    pub const FILE_NAME: &'static str = "prod-code.toml";
+
+    /// Reads `<root>/prod-code.toml`; a missing file is the default configuration and a
+    /// malformed one is reported and ignored.
+    pub fn load(root: &Path) -> Self {
+        let path = root.join(Self::FILE_NAME);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            return Self::default();
+        };
+        match toml::from_str::<Self>(&text) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "prod-code.toml ignored");
+                Self::default()
+            }
+        }
+    }
+
+    /// The rust-analyzer cargo configuration these options describe.
+    pub fn cargo_config(&self) -> CargoConfig {
+        let rust = &self.rust;
+        let features = match &rust.features {
+            FeatureSelection::Keyword(word) if word.eq_ignore_ascii_case("all") => {
+                CargoFeatures::All
+            }
+            FeatureSelection::Keyword(word) => CargoFeatures::Selected {
+                features: vec![word.clone()],
+                no_default_features: rust.no_default_features,
+            },
+            FeatureSelection::Selected(features) => CargoFeatures::Selected {
+                features: features.clone(),
+                no_default_features: rust.no_default_features,
+            },
+        };
+        CargoConfig {
+            all_targets: rust.all_targets,
+            features,
+            sysroot: rust.sysroot.then_some(RustLibSource::Discover),
+            ..CargoConfig::default()
+        }
+    }
+}
 
 /// 24-bit mask limit (0x007F_FFFF) to ensure EditionedFileId edition bits are never corrupted.
 pub const MAX_SAFE_FILE_ID: u32 = 0x007F_FFFF;
@@ -967,7 +1062,9 @@ impl RustEngine {
 
     /// Load and index a Cargo workspace directly into in-memory Salsa DB using multi-core worker threads.
     pub fn load(workspace_root: &Path) -> Result<Self> {
-        let cargo_config = CargoConfig::default();
+        let config = ProdCodeConfig::load(workspace_root);
+        tracing::info!(?workspace_root, rust = ?config.rust, "analysis options");
+        let cargo_config = config.cargo_config();
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(8);
@@ -1225,6 +1322,37 @@ fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prod_code_toml_maps_to_cargo_config() {
+        use super::*;
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(ProdCodeConfig::load(temp.path()), ProdCodeConfig::default());
+        let defaults = ProdCodeConfig::default().cargo_config();
+        assert!(defaults.all_targets);
+        assert_eq!(defaults.sysroot, Some(RustLibSource::Discover));
+        std::fs::write(
+            temp.path().join("prod-code.toml"),
+            "[rust]\nfeatures = \"all\"\nsysroot = false\n",
+        )
+        .unwrap();
+        let cfg = ProdCodeConfig::load(temp.path()).cargo_config();
+        assert_eq!(cfg.features, CargoFeatures::All);
+        assert_eq!(cfg.sysroot, None);
+        std::fs::write(
+            temp.path().join("prod-code.toml"),
+            "[rust]\nfeatures = [\"a\", \"b\"]\nno_default_features = true\n",
+        )
+        .unwrap();
+        let cfg = ProdCodeConfig::load(temp.path()).cargo_config();
+        assert_eq!(
+            cfg.features,
+            CargoFeatures::Selected {
+                features: vec!["a".into(), "b".into()],
+                no_default_features: true
+            }
+        );
+    }
+
     use super::*;
 
     #[test]

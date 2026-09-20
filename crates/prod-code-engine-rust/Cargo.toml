@@ -13,6 +13,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
+toml = "0.9"
 
 ra_ap_ide = "=0.0.344"
 ra_ap_load-cargo = "=0.0.344"
