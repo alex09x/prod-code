@@ -341,7 +341,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).
   - Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
 
-- [ ] **8.2. Automated Root-Cause Failure Dossier (`code_diagnose_failure`)**
+- [~] **8.2. Automated Root-Cause Failure Dossier (`code_diagnose_failure`)** — shipped 2026-09-20: `prod-code diagnose [FILTER]` and MCP `code_diagnose_failure` run the tests and, per failure, return the failure output, the source around every location it mentions (Rust panics/`-->` notes, Go `file:line`, Python tracebacks, JS/TS stacks, Swift/C), the enclosing function with its callers, the working-tree diff of that file and the list of changed files; bare Go file names are resolved through the failing test's package. Open: ranking suspects across the callers graph, suggested fixes.
   - When test suites fail (assertions, panics, unhandled exceptions), the server parses stack traces and maps frame pointers back to AST source spans.
   - Extracts runtime values and correlates failure expressions with recent diff lines into a structured JSON dossier:
     `{ failing_test, panic_line, expression, runtime_values, suspect_recent_changes }`.

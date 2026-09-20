@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Failure dossier (Phase 8.2): `prod-code diagnose [FILTER]` and MCP `code_diagnose_failure`
+  run the tests and explain each failure with the code at every mentioned location, the
+  enclosing function and its callers, and what changed in the working tree.
+
 - In-memory diagnostics and edit validation (Phase 7.7): `prod-code diagnostics <file>` and
   `prod-code validate <file>` (MCP `code_diagnostics`, `code_validate_edit`) report what the
   analyzer thinks of a file, or of a proposed new content, without a build and without

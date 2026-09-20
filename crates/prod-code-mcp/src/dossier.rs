@@ -117,7 +117,7 @@ pub fn locations_in_with_hint(root: &Path, text: &str, hint: &str) -> Vec<(Strin
         .map(|files| files.into_iter().map(|f| f.relative_path).collect())
         .unwrap_or_default();
     let hint_segments: Vec<&str> = hint
-        .split(|c: char| c == '/' || c == '.' || c == ':')
+        .split(['/', '.', ':'])
         .filter(|s| !s.is_empty())
         .collect();
     let mut seen = BTreeSet::new();
