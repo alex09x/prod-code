@@ -51,6 +51,15 @@ A checkout is placed by the cluster on the node that already holds it, otherwise
 quietest node that serves its language (Swift lands on a macOS node); the placement is
 remembered per checkout and an idle workspace drifts off an overloaded node.
 
+## Usage metrics
+
+Each gateway records every query, command and sync round as one JSON line under
+`~/prod-code-storage/metrics/events-YYYY-MM-DD.jsonl` (importable into ClickHouse) and keeps
+the recent ones in memory. `prod-code metrics --since 86400` merges every node: who (agent and
+host) asked what (workspace, method) how often and how fast, which commands ran and failed,
+and how much was synced. Clients identify themselves as `claude-code`, `codex`, `cli` or
+whatever `PROD_CODE_AGENT` says.
+
 ## What each language gets
 
 | | Rust | Go | C/C++ | TypeScript | Python | Swift |

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Usage metrics: every query, exec and sync round on a gateway is one event (agent —
+  claude-code / codex / cli — client host and address, workspace, engine, method, file,
+  position, duration, ok, item count), appended to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`
+  and summarised by `prod-code metrics [--since SECS] [--json]` across the cluster (per agent,
+  host, workspace and method with p50/p95, exec runs with failures, sync volume).
+
 - The MCP server keeps one gateway session per checkout for the life of the process: a tool
   call is one request instead of connect + sync + handshake + initialize (20 hovers: 2.8 s →
   0.6 s, ~10 ms each after the first). Local edits are pushed over the same connection before
