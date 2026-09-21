@@ -101,9 +101,18 @@ fn mentions_identifier(line: &str, name: &str) -> bool {
     false
 }
 
-/// Adds a note to every error or warning whose line uses a symbol that the proposed edits
-/// removed or renamed (`missing` pairs a symbol name with the file it disappeared from).
-/// `sources` maps a report's file to the text the diagnostics were computed against.
+/// Code of the warning prod-code synthesises for a line that still uses a removed symbol.
+pub const STALE_REFERENCE: &str = "prod-code::stale-reference";
+
+/// Explains, and where the analyzer stayed silent reports, uses of a symbol that the proposed
+/// edits removed or renamed. `missing` pairs a symbol name with the file it disappeared from;
+/// `sources` maps a report's file to the text its diagnostics were computed against.
+///
+/// An existing error or warning on such a line gets a note. A line with no diagnostic gets a
+/// synthesised warning: rust-analyzer does not report a plain call to a function that no
+/// longer exists (that is rustc's E0425), so without this the report would say "0 errors"
+/// for a caller the edit just broke. The file the symbol vanished from is skipped: mentions
+/// of the old name there are its own doc comments.
 fn annotate_missing_symbols(
     reports: &mut [DiagnosticsReport],
     sources: &HashMap<String, String>,
@@ -116,7 +125,20 @@ fn annotate_missing_symbols(
         let Some(text) = sources.get(&report.file) else {
             continue;
         };
+        let relevant: Vec<&(String, String)> = missing
+            .iter()
+            .filter(|(_, from)| *from != report.file)
+            .collect();
+        if relevant.is_empty() {
+            continue;
+        }
         let lines: Vec<&str> = text.lines().collect();
+        let note_for = |name: &str, from: &str| {
+            format!(
+                "this line uses `{name}`, which the proposed edit to {from} removed or renamed; update the caller or keep the symbol"
+            )
+        };
+        let mut flagged: BTreeSet<u32> = BTreeSet::new();
         for item in report.items.iter_mut() {
             if item.severity != "error" && item.severity != "warning" {
                 continue;
@@ -124,16 +146,40 @@ fn annotate_missing_symbols(
             let Some(line) = lines.get(item.line.saturating_sub(1) as usize) else {
                 continue;
             };
-            let hits: Vec<&(String, String)> = missing
+            if let Some((name, from)) = relevant
                 .iter()
-                .filter(|(name, _)| mentions_identifier(line, name))
-                .collect();
-            if let Some((name, from)) = hits.first() {
-                item.note = Some(format!(
-                    "this line uses `{name}`, which the proposed edit to {from} removed or renamed; update the caller or keep the symbol"
-                ));
+                .find(|(name, _)| mentions_identifier(line, name))
+            {
+                item.note = Some(note_for(name, from));
+                flagged.insert(item.line);
             }
         }
+        for (idx, line) in lines.iter().enumerate() {
+            let line_no = idx as u32 + 1;
+            if flagged.contains(&line_no) {
+                continue;
+            }
+            let Some((name, from)) = relevant
+                .iter()
+                .find(|(name, _)| mentions_identifier(line, name))
+            else {
+                continue;
+            };
+            let col = line.find(name.as_str()).unwrap_or(0) as u32 + 1;
+            report.items.push(DocDiagnostic {
+                severity: "warning".to_string(),
+                code: Some(STALE_REFERENCE.to_string()),
+                message: format!(
+                    "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                ),
+                line: line_no,
+                col,
+                source: Some("prod-code".to_string()),
+                note: Some(note_for(name, from)),
+            });
+            report.warnings += 1;
+        }
+        report.items.sort_by_key(|d| (d.line, d.col));
     }
 }
 
@@ -432,10 +478,62 @@ mod tests {
             "{note}"
         );
         assert!(reports[0].items[1].note.is_none(), "hints are left alone");
+        assert_eq!(
+            reports[0].items.len(),
+            2,
+            "a line that already has an error gets no extra warning"
+        );
         assert!(
             reports[0]
                 .render()
                 .contains("note: this line uses `shared_target_dir`")
+        );
+    }
+
+    #[test]
+    fn silent_lines_using_a_removed_symbol_get_a_synthesised_warning() {
+        let mut reports = vec![
+            DiagnosticsReport {
+                file: "crates/gateway/src/main.rs".to_string(),
+                errors: 0,
+                warnings: 0,
+                items: vec![],
+            },
+            DiagnosticsReport {
+                file: "crates/gateway/src/workspace.rs".to_string(),
+                errors: 0,
+                warnings: 0,
+                items: vec![],
+            },
+        ];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/main.rs".to_string(),
+            "fn run() {\n    workspace::touch_last_used(&server_workspace);\n}\n".to_string(),
+        );
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "/// touch_last_used used to live here\npub fn record_last_used() {}\n".to_string(),
+        );
+        let missing = vec![(
+            "touch_last_used".to_string(),
+            "crates/gateway/src/workspace.rs".to_string(),
+        )];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 1);
+        assert_eq!(reports[0].items.len(), 1);
+        let item = &reports[0].items[0];
+        assert_eq!((item.line, item.col), (2, 16));
+        assert_eq!(item.code.as_deref(), Some(STALE_REFERENCE));
+        assert!(
+            item.note
+                .as_deref()
+                .unwrap()
+                .contains("crates/gateway/src/workspace.rs")
+        );
+        assert!(
+            reports[1].items.is_empty(),
+            "the file the symbol vanished from is not flagged"
         );
     }
 }
