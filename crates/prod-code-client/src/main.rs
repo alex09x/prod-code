@@ -202,6 +202,17 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Find code by what it does: ranked declarations with the doc comment that matched.
+    Search {
+        /// What the code does, in words.
+        query: String,
+        /// Hits to return.
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Restrict to declarations under this directory.
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Print only the code a symbol depends on: its declaration plus the items it uses.
     Slice {
         /// Symbol name (`Metrics::record`, `pkg.Func`), or a file with `--line`.
@@ -421,6 +432,7 @@ async fn main() -> Result<()> {
             no_pull,
             command,
         } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
             target,
             line,
@@ -1912,6 +1924,21 @@ async fn run_verify(
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_search_cli(
+    remote: SocketAddr,
+    query: String,
+    limit: usize,
+    path: Option<String>,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let subpath = path.or_else(|| prod_code_mcp::exec::subdir_of(&root, &cwd));
+    let resp =
+        prod_code_mcp::search::search(remote, &root, &query, limit, subpath.as_deref()).await?;
+    println!("{}", prod_code_mcp::search::render(&resp, &query));
+    Ok(())
+}
+
 async fn run_slice(
     remote: SocketAddr,
     target: String,

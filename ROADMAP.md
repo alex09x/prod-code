@@ -352,7 +352,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Returns exact type signatures, trait definitions, and docstrings directly from the server's pre-warmed dependency cache into agent context.
   - Prevents agents from hallucinating method names or argument orders of external crates and packages.
 
-- [ ] **8.4. Natural-Language Semantic Code Search (`code_search_semantic`)**
+- [~] **8.4. Natural-Language Semantic Code Search (`code_search_semantic`)** — lexical half shipped 2026-09-21: `code_search` / `prod-code search` rank every declaration and the doc comment above it against the words of a question (BM25 over name, container, signature and doc; tests excluded unless the question is about tests), 33 ms over a 26712-declaration index (568 ms for the first query, which builds it). The dense half (embeddings fused with the symbol graph) is not built: a question sharing no words with the code or its comments still finds nothing.
   - Hybrid neural-lexical code search: dense embeddings (BGE) fused with typed AST symbol graphs on the server.
   - Allows agents to locate code by intent and behavior (e.g. *"where do we handle websocket reconnection on drop"*) rather than guessing exact identifier names via brittle grep.
   - Returns exact symbols, file locations, line numbers, and doc comments in < 10 ms.

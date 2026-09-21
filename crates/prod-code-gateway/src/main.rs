@@ -4,6 +4,7 @@ pub mod backend;
 pub mod detect;
 pub mod memory;
 mod metrics;
+pub mod search;
 pub mod shadow;
 pub mod workspace;
 
@@ -103,6 +104,8 @@ pub struct ServerState {
     pub engine_allowlist: Vec<String>,
     /// Where shadow runs keep the upper directories of their overlays (`--shadow-dir`).
     pub shadow_root: PathBuf,
+    /// Per-workspace declaration indexes for `code_search`.
+    pub search_indexes: search::SearchIndexes,
 }
 
 /// Who a session belongs to, for metrics.
@@ -150,6 +153,7 @@ impl ServerState {
             next_session_id: AtomicU64::new(1),
             active_sessions: AtomicUsize::new(0),
             shadow_root: shadow::default_root(&storage_root),
+            search_indexes: search::SearchIndexes::new(),
             storage_root,
             workspace_manager: Arc::new(WorkspaceManager::new()),
             advertise: tokio::sync::RwLock::new(String::new()),
@@ -1602,6 +1606,13 @@ pub async fn handle_client(
                 framed.send(WireMessage::MetricsResponse(resp)).await?;
             }
             WireMessage::SyncRequest(req) => {
+                let workspace = workspace::server_workspace_path(
+                    &state.storage_root,
+                    &req.client_workspace_root,
+                    req.base_workspace_name.as_deref(),
+                );
+                let touched: Vec<String> =
+                    req.files.iter().map(|f| f.relative_path.clone()).collect();
                 let resp = apply_sync_with_metrics(
                     &state.storage_root,
                     &state.workspace_manager,
@@ -1609,6 +1620,9 @@ pub async fn handle_client(
                     req,
                 )
                 .await;
+                // The search index is kept current by what the sync wrote, so a query never
+                // has to walk the tree.
+                state.search_indexes.invalidate(&workspace, touched);
                 framed.send(WireMessage::SyncResponse(resp)).await?;
             }
             WireMessage::SyncProbeRequest(req) => {
@@ -1621,6 +1635,16 @@ pub async fn handle_client(
             }
             WireMessage::ShadowRunRequest(req) => {
                 shadow::run_shadow(&state, &mut framed, req).await?;
+            }
+            WireMessage::SearchRequest(req) => {
+                let resp = {
+                    let state = Arc::clone(&state);
+                    tokio::task::spawn_blocking(move || {
+                        search::run_search(&state.search_indexes, &state.storage_root, &req)
+                    })
+                    .await?
+                };
+                framed.send(WireMessage::SearchResponse(resp)).await?;
             }
             WireMessage::ReadFileRequest(req) => {
                 let resp = read_server_file(&state.storage_root, &req);
