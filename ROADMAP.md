@@ -357,7 +357,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Allows agents to locate code by intent and behavior (e.g. *"where do we handle websocket reconnection on drop"*) rather than guessing exact identifier names via brittle grep.
   - Returns exact symbols, file locations, line numbers, and doc comments in < 10 ms.
 
-- [ ] **8.5. Instant Test Fixture & Mock Generator (`code_generate_fixture`)**
+- [x] **8.5. Instant Test Fixture & Mock Generator (`code_generate_fixture`)** — shipped 2026-09-21: `code_generate_fixture` / `prod-code fixture` build the value from the declaration the analyzer points at (not from hover, which elides fields past the tenth), verify it in an in-memory overlay before returning it, and name every type that fell back to `Default::default()`. Rust only.
   - Compiler-backed generation of test mocks, builders, and dummy fixtures for complex data structures with dozens of fields.
   - Generates valid, type-safe, compile-ready code populated with default or randomized values in 1 step.
   - Eliminates hundreds of lines of manual boilerplate authoring and associated compiler type-mismatch errors.

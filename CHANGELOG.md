@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- Fixture generation (roadmap 8.5): `code_generate_fixture` (MCP) and `prod-code fixture
+  <Type>` build a compile-ready value for a type from the declaration the analyzer resolves the
+  name to, filling every field by type, recursing into types declared in the workspace down to
+  `depth` and falling back to `Default::default()` beyond it. The fixture is then type-checked
+  in an in-memory overlay of the file that declares the type, so a missing field or a type
+  without `Default` comes back as the analyzer's error rather than as a failed build. Nothing
+  is written. Rust only.
 - Structural codemod (roadmap 8.7): `code_codemod` (MCP) and `prod-code codemod
   "pattern ==>> replacement"` rewrite code on the syntax tree through rust-analyzer's own SSR
   engine, with `$name` placeholders bound by the match. A call split over three lines matches,

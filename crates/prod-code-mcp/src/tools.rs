@@ -395,6 +395,21 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_generate_fixture".to_string(),
+            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "The type to build (`Config`, `SliceReport`)" },
+                    "path": { "type": "string", "description": "The file that declares it, when the name is ambiguous (a re-export makes a type resolve twice)" },
+                    "depth": { "type": "integer", "description": "How deep to build nested workspace types before falling back to Default::default() (default 2)" },
+                    "verify": { "type": "boolean", "description": "Type-check the fixture before returning it (default true)" }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1447,6 +1462,37 @@ pub async fn execute_tool(
             }
             Ok(McpToolCallResult::text(text.trim_end().to_string()))
         }
+        "code_generate_fixture" => {
+            let symbol = args
+                .get("symbol")
+                .and_then(|v| v.as_str())
+                .context("Missing 'symbol' argument")?;
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
+            let verify = args.get("verify").and_then(|v| v.as_bool()).unwrap_or(true);
+            let hint = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p));
+            let fixture = crate::fixture::generate(
+                remote,
+                workspace_root,
+                symbol,
+                depth,
+                verify,
+                hint.as_deref(),
+            )
+            .await?;
+            let clean = fixture.diagnostics.is_empty();
+            let text = fixture.render();
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_dead_code" => {
             let include_exported = args
                 .get("include_exported")
@@ -1819,6 +1865,12 @@ pub async fn execute_lsp_query(
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
 }
+
+/// Tools whose `symbol` is the name of the thing to act on rather than a way of pointing at a
+/// position. They are not symbol-addressable: nothing resolves their `symbol` to a
+/// path/line/character before the handler runs, because the handler wants the name itself.
+#[cfg(test)]
+const NAMES_A_SYMBOL: &[&str] = &["code_generate_fixture"];
 
 /// Tools that accept `symbol` in place of `path`/`line`/`character`.
 const SYMBOL_ADDRESSABLE: &[&str] = &[
@@ -2235,7 +2287,7 @@ mod tests {
                         tool.name
                     );
                 }
-            } else {
+            } else if !NAMES_A_SYMBOL.contains(&tool.name.as_str()) {
                 assert!(
                     !props.contains_key("symbol"),
                     "{} unexpectedly takes `symbol`",
