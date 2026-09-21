@@ -113,7 +113,14 @@ impl LspSession {
         self.framed
             .send(WireMessage::LspPayload(msg.to_string()))
             .await?;
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        // A structural rewrite searches the workspace with type inference and legitimately
+        // takes minutes; everything else is an interactive query and should not.
+        let budget = if method == "prodCode/structuralReplace" {
+            std::time::Duration::from_secs(900)
+        } else {
+            std::time::Duration::from_secs(60)
+        };
+        let deadline = tokio::time::Instant::now() + budget;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {

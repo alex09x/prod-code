@@ -202,6 +202,17 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Structural search and replace across the workspace: `pattern ==>> replacement`.
+    Codemod {
+        /// The rule, for example `$a.unwrap() ==>> $a.expect("invariant")`.
+        rule: String,
+        /// A file used to resolve the paths the pattern mentions.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the edits into the checkout instead of only reporting them.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+    },
     /// Find code by what it does: ranked declarations with the doc comment that matched.
     Search {
         /// What the code does, in words.
@@ -432,6 +443,7 @@ async fn main() -> Result<()> {
             no_pull,
             command,
         } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        Commands::Codemod { rule, path, apply } => run_codemod_cli(remote, rule, path, apply).await,
         Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
             target,
@@ -1924,6 +1936,29 @@ async fn run_verify(
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_codemod_cli(
+    remote: SocketAddr,
+    rule: String,
+    path: Option<String>,
+    apply: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({ "rule": rule, "apply": apply });
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_codemod", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn run_search_cli(
     remote: SocketAddr,
     query: String,

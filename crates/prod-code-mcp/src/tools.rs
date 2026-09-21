@@ -381,6 +381,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_codemod".to_string(),
+            description: "Structural search and replace across the whole workspace, on the syntax tree rather than on text. The rule is rust-analyzer's own SSR syntax, `pattern ==>> replacement`, where `$name` is a placeholder the match binds: `$a.unwrap() ==>> $a.expect(\"invariant\")`, `Foo::new($a, $b) ==>> Foo::builder().a($a).b($b).build()`. A call split over three lines still matches, a comment that looks like the pattern does not, and paths are resolved rather than compared as strings. Returns a unified diff of what it would change; `apply: true` writes it into the checkout. Rust only, and not interactive: the search resolves usages across the workspace, so a call takes tens of seconds to minutes."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "rule": { "type": "string", "description": "`pattern ==>> replacement` with `$name` placeholders" },
+                    "path": { "type": "string", "description": "Restrict the edits to this one file, which also resolves the paths the pattern mentions. It does not make the call faster: the search resolves usages across the workspace either way, which takes tens of seconds to minutes on a warm engine." },
+                    "apply": { "type": "boolean", "description": "Write the edits into the checkout (default false: report only)" }
+                },
+                "required": ["rule"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1336,6 +1350,103 @@ pub async fn execute_tool(
                     .await?;
             Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
         }
+        "code_codemod" => {
+            let rule = args
+                .get("rule")
+                .and_then(|v| v.as_str())
+                .context("Missing 'rule' argument")?;
+            if !rule.contains("==>>") {
+                return Ok(McpToolCallResult::error(
+                    "a rule is `pattern ==>> replacement`, for example `$a.unwrap() ==>> $a.expect(\"invariant\")`"
+                        .to_string(),
+                ));
+            }
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            // `path` restricts the rewrite to one file and doubles as the resolve context.
+            // Without it the rewrite covers the workspace, which is correct and slow.
+            let scope = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p));
+            let context = match scope.clone() {
+                Some(p) => p,
+                None => representative_source_file(workspace_root)
+                    .context("no source file found to resolve the rule against; pass `path`")?,
+            };
+            let uri = Url::from_file_path(&context)
+                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", context))?
+                .to_string();
+            let edit = execute_lsp_query(
+                remote,
+                workspace_root,
+                &context,
+                "prodCode/structuralReplace",
+                serde_json::json!({
+                    "rule": rule,
+                    "scope": scope.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                    "textDocument": { "uri": uri },
+                    "position": { "line": 0, "character": 0 },
+                }),
+            )
+            .await?;
+            let rewritten = rewritten_files(&edit);
+            if rewritten.is_empty() {
+                return Ok(McpToolCallResult::text(format!(
+                    "`{rule}` matches nothing{}",
+                    match &scope {
+                        Some(p) => format!(" in {}", p.display()),
+                        None => " in this workspace".to_string(),
+                    }
+                )));
+            }
+            let mut text = format!("`{rule}`\n");
+            let mut changed_lines = 0usize;
+            let mut body = String::new();
+            for (path, new_text) in &rewritten {
+                let rel = std::path::Path::new(path)
+                    .strip_prefix(workspace_root)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| path.clone());
+                let old_text = std::fs::read_to_string(path).unwrap_or_default();
+                let diff = similar::TextDiff::from_lines(&old_text, new_text);
+                let file_changed = diff
+                    .iter_all_changes()
+                    .filter(|c| c.tag() != similar::ChangeTag::Equal)
+                    .count();
+                changed_lines += file_changed;
+                body.push_str(
+                    &diff
+                        .unified_diff()
+                        .context_radius(2)
+                        .header(&format!("a/{rel}"), &format!("b/{rel}"))
+                        .to_string(),
+                );
+            }
+            text.push_str(&format!(
+                "{} changed line(s) in {} file(s)\n\n",
+                changed_lines,
+                rewritten.len()
+            ));
+            const MAX_DIFF: usize = 6000;
+            if body.len() > MAX_DIFF {
+                let cut: String = body.chars().take(MAX_DIFF).collect();
+                text.push_str(&cut);
+                text.push_str("\n… diff truncated\n");
+            } else {
+                text.push_str(&body);
+            }
+            if apply {
+                let written = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+                text.push_str(&format!(
+                    "\n[applied to {} file(s): {}]\n",
+                    written.len(),
+                    written.join(", ")
+                ));
+            } else {
+                text.push_str("\nnothing was written; pass `apply: true` to make these edits\n");
+            }
+            Ok(McpToolCallResult::text(text.trim_end().to_string()))
+        }
         "code_dead_code" => {
             let include_exported = args
                 .get("include_exported")
@@ -1933,6 +2044,38 @@ pub async fn resolve_symbol(
     Ok(scored.swap_remove(0).1)
 }
 
+/// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
+/// structural rewrite with `documentChanges`, one whole-file replacement per file, so the
+/// caller can diff each against what is on disk.
+fn rewritten_files(edit: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for change in edit
+        .get("documentChanges")
+        .and_then(|c| c.as_array())
+        .map(|a| a.as_slice())
+        .unwrap_or_default()
+    {
+        let Some(uri) = change
+            .get("textDocument")
+            .and_then(|t| t.get("uri"))
+            .and_then(|u| u.as_str())
+        else {
+            continue;
+        };
+        let Some(new_text) = change
+            .get("edits")
+            .and_then(|e| e.as_array())
+            .and_then(|e| e.first())
+            .and_then(|e| e.get("newText"))
+            .and_then(|t| t.as_str())
+        else {
+            continue;
+        };
+        out.push((crate::remote_fs::uri_to_path(uri), new_text.to_string()));
+    }
+    out
+}
+
 /// A source file of the project at `dir` in its main language (shortest path under `src`
 /// first), used to make an LSP server load the project before a workspace-level query.
 fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
@@ -2016,6 +2159,39 @@ fn identifier_at(path: &Path, line: u32, col: u32, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewritten_files_reads_document_changes_and_skips_the_rest() {
+        let edit = serde_json::json!({
+            "documentChanges": [
+                { "kind": "rename", "oldUri": "file:///w/a.rs", "newUri": "file:///w/b.rs" },
+                { "textDocument": { "uri": "file:///w/b.rs", "version": null },
+                  "edits": [ { "range": {}, "newText": "fn b() {}\n" } ] },
+                { "textDocument": { "uri": "file:///w/c.rs" } }
+            ]
+        });
+        assert_eq!(
+            rewritten_files(&edit),
+            vec![("/w/b.rs".to_string(), "fn b() {}\n".to_string())]
+        );
+        assert!(rewritten_files(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn codemod_schema_requires_a_rule_and_offers_apply() {
+        let tool = list_tools()
+            .into_iter()
+            .find(|t| t.name == "code_codemod")
+            .expect("code_codemod is listed");
+        assert_eq!(tool.input_schema["required"], serde_json::json!(["rule"]));
+        assert_eq!(tool.input_schema["properties"]["apply"]["type"], "boolean");
+        assert!(
+            tool.input_schema["properties"]["rule"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("==>>")
+        );
+    }
 
     #[test]
     fn shadow_run_schema_takes_hypotheses_and_argv() {

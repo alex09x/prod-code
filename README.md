@@ -61,7 +61,7 @@ binary is replaced, so a running session picks up new tools without a restart.
 
 ## What it gives an agent
 
-Twenty-nine tools, all of them answered by the node that holds the workspace.
+Thirty tools, all of them answered by the node that holds the workspace.
 
 **Find code**
 
@@ -91,6 +91,7 @@ Twenty-nine tools, all of them answered by the node that holds the workspace.
 | `code_diagnostics` | diagnostics for a file, in memory, without a build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace; delete only when nothing references it |
 | `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
+| `code_codemod` | structural search and replace on the syntax tree (`pattern ==>> replacement`), as a diff or applied |
 | `code_shadow_run` | run a command once per candidate fix, each in a private shadow of the workspace, and take the winner's diff |
 
 **Run it**
@@ -114,7 +115,7 @@ has to grep for a line number:
 { "name": "code_callers", "arguments": { "symbol": "Metrics::record" } }
 ```
 
-The same surface exists as a CLI for humans and scripts: `prod-code search | slice | hover |
+The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod | hover |
 def | refs | callers | callees | impls | symbols | validate | diagnostics | check | lint | test |
 exec | impact | diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run |
 source | status | cluster | metrics`.

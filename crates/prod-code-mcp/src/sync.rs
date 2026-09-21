@@ -112,7 +112,13 @@ pub fn expected_engine(root: &Path) -> Option<&'static str> {
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !path.is_dir() || name.starts_with('.') || matches!(name.as_ref(), "target" | "node_modules" | "vendor" | "build" | "dist") {
+        if !path.is_dir()
+            || name.starts_with('.')
+            || matches!(
+                name.as_ref(),
+                "target" | "node_modules" | "vendor" | "build" | "dist"
+            )
+        {
             continue;
         }
         match (engine_at(&path), found) {

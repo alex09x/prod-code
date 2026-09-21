@@ -368,7 +368,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Emits an atomic single-commit cleanup patch.
 
 
-- [ ] **8.7. Structural AST Codemod Engine (`code_codemod`)**
+- [x] **8.7. Structural AST Codemod Engine (`code_codemod`)** — shipped 2026-09-21: `code_codemod` / `prod-code codemod` run rust-analyzer's structural search and replace over the workspace (`pattern ==>> replacement`, `$name` placeholders), return a unified diff and apply it on request; `path` restricts where edits land, not how long the search takes. Rust only, because the engine is the analyzer's.
   - Pattern-based structural code transformations (AST pattern matching).
   - Matches syntax trees regardless of whitespace, formatting, or variable names.
   - Executes large-scale library migrations and API upgrades across hundreds of files in sub-second time.
