@@ -1,160 +1,189 @@
 <div align="center">
 
 # ⚡ `prod-code`
-### Remote Code Intelligence (RCI) for AI Agent Fleets & Distributed Workspaces
+### Remote code intelligence for fleets of coding agents
 
 [![GitHub release](https://img.shields.io/github/v/release/alex09x/prod-code?color=blue&style=flat-square)](https://github.com/alex09x/prod-code/releases)
 [![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue?style=flat-square)](LICENSE-MIT)
-[![Fleet Scale](https://img.shields.io/badge/fleet--scale-AI_Agent_Optimized-success?style=flat-square)]()
 [![Rust](https://img.shields.io/badge/rust-2024_edition-dea584?style=flat-square&logo=rust)]()
-[![Go](https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go)]()
-[![Protocol](https://img.shields.io/badge/protocol-LSP_%2B_Native_MCP-purple?style=flat-square)]()
+[![Protocol](https://img.shields.io/badge/protocol-LSP_%2B_native_MCP-purple?style=flat-square)]()
 
 <p align="center">
-  <b>Decouple semantic code intelligence from local developer machines.</b><br>
-  Purpose-built for autonomous AI coding agent fleets, multi-worktree parallelism, and high-throughput polyglot development with native Model Context Protocol (MCP) and drop-in LSP.
+  <b>The analyzer, the builds and the tests run on a LAN node. The laptop edits.</b><br>
+  Your checkout is mirrored to a gateway that keeps a warm analyzer for it (rust-analyzer in
+  process; gopls, clangd, TypeScript, pyright, sourcekit-lsp as children) and runs commands
+  there. Agents reach it as MCP tools, editors as a drop-in language server.
 </p>
 
 </div>
 
 ---
 
+## Why
 
-## For agents
+A language server was designed for one human typing in one checkout. What runs on a machine
+now is a fleet: a resident agent in the main checkout, workers in their own worktrees, each
+asking the analyzer the kind of question a human asks once a minute and asking it ten times a
+second. Every worktree brings its own analyzer and its own `cargo test`, and they share the
+cores with your editor.
 
-Register the MCP server once and every project gets the tools:
+`prod-code` moves all of it one hop away. Measured on this repository, with nothing compiled
+on the laptop:
 
-```
+| | |
+|---|---|
+| hover on a warm workspace | 1–4 ms |
+| tool call over a persistent session | ~10 ms |
+| `cargo clippy --workspace --all-targets` on a 32-core node | 2.5 s |
+| `cargo test --workspace` | 46 s |
+| first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
+
+## Install
+
+```sh
+# the client (one binary; the gateway is the same binary's sibling)
+cargo install --path crates/prod-code-client        # or take a release binary
+
+# register it once; every repository then has the tools
 claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
 codex  mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
 ```
 
-The server tells the agent how to work at `initialize` (the same text as
-`prod-code-mcp`'s `AGENT_INSTRUCTIONS`): navigate with `code_definition` / `code_references` /
-`code_callers` instead of grep, validate every proposed file with `code_validate_edit` before
-writing it, build and test on the gateway with `code_check` / `code_test` / `code_exec`, narrow
-test runs with `code_impact`, explain failures with `code_diagnose_failure`. Local edits are
-synced automatically before each call; the agent never manages the gateway.
+For Antigravity/Gemini, add the same command to `~/.gemini/config/mcp_config.json`. On a node:
 
-### Addressing symbols by name
-
-Every position tool takes `symbol` instead of `path`/`line`/`character`:
-
-```
-code_callers   {"symbol": "Metrics::record"}
-code_hover     {"symbol": "pkg.Func"}          code_references {"symbol": "Class.method", "path": "src/a.ts"}
-code_symbols   {"query": "record"}             → [Method] Metrics::record — crates/gw/src/metrics.rs:102:12
+```sh
+prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces \
+  --advertise <this host>:9400 --peers <other nodes>
 ```
 
-The name goes through the analyzer's workspace symbol index; qualifiers are matched against the
-enclosing item and `path` (file or directory) only disambiguates. A tie between different
-locations comes back as an error listing the candidates.
+The MCP server tells the agent how to work at `initialize`, and reloads itself when the
+binary is replaced, so a running session picks up new tools without a restart.
 
-## Shadow runs: several fixes against the tests at once
+## What it gives an agent
 
-An agent with two candidate fixes no longer writes one, runs the tests, reverts and writes
-the other. `code_shadow_run` (CLI: `prod-code shadow-run spec.json -- cargo test -p x`)
-takes named hypotheses, each a complete set of proposed file contents, and the gateway runs
-the command once per hypothesis in a private shadow of the workspace copy:
+Twenty-nine tools, all of them answered by the node that holds the workspace.
 
-* on Linux a shadow is an overlay mount **at the workspace's own path** inside a user
-  namespace: cargo, go and tsc see the same absolute paths, their fingerprints and the warm
-  `target/` stay valid, every write goes to the hypothesis's upper directory and the
-  workspace copy is never touched; hypotheses run in parallel (`parallel`, default cores / 8);
-* without user namespaces (macOS nodes, kernels that restrict them) hypotheses run one after
-  another in place and the touched files are restored afterwards.
+**Find code**
 
-The result lists every hypothesis (exit code, test counts parsed from the runner's output,
-changed lines), ranks them (passed, fewest failures, most passed, smallest diff), prints the
-winner's unified diff and the output tail of every failing one; `apply: true` writes the
-winner into the checkout. One hypothesis is a dry run of a fix; a hypothesis without edits is
-the baseline. Upper directories live under `--shadow-dir` (default `shadow` next to the
-storage directory; a tmpfs path keeps hypothesis builds in RAM) and are removed after each
-run. Ubuntu 24.04 needs `kernel.apparmor_restrict_unprivileged_userns=0` for the overlay
-mode.
+| tool | what it does |
+|---|---|
+| `code_search` | find code by what it does, ranked declarations with the doc comment that matched |
+| `code_symbols` | workspace symbol index by name, fuzzy, analyzer-backed |
+| `code_definition` · `code_references` | where a symbol is defined; every use of it |
+| `code_callers` · `code_callees` · `code_implementations` | call hierarchy both ways; implementations of a trait or interface |
+| `code_outline` | a file's declarations with their kinds and lines |
+| `code_source` | read std, registry and SDK sources that live only on the node |
 
-## Cluster
+**Understand it without reading everything**
 
-Any number of gateways form a cluster: start each with `--peers <one live peer>` and
-`--advertise <its host:port>`; membership spreads by gossip (every 5 s: load, engines, loaded
-workspaces). Clients need one seed:
+| tool | what it does |
+|---|---|
+| `code_slice` | only the code a symbol depends on, typically 90–96% smaller than its files |
+| `code_hover` · `code_type_at` | signature, type and docs |
+| `code_impact` | blast radius of a change: the functions it touches, their callers, the tests that cover them |
+| `code_dead_code` | unreferenced functions, methods and types |
 
+**Change it safely**
+
+| tool | what it does |
+|---|---|
+| `code_validate_edit` · `code_validate_edits` | analyzer diagnostics for proposed file contents, nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
+| `code_diagnostics` | diagnostics for a file, in memory, without a build |
+| `code_rename` · `code_safe_delete` | semantic rename across the workspace; delete only when nothing references it |
+| `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
+| `code_shadow_run` | run a command once per candidate fix, each in a private shadow of the workspace, and take the winner's diff |
+
+**Run it**
+
+| tool | what it does |
+|---|---|
+| `code_check` · `code_lint` · `code_test` | build, lint and test on the node with parsed diagnostics; `path` narrows to one crate, package or directory |
+| `code_exec` | any command in the workspace copy; formatters, generators and lockfiles are written back |
+| `code_diagnose_failure` | run the tests and, for each failure, the failing site, its callers and what changed |
+
+**Operate it**
+
+| tool | what it does |
+|---|---|
+| `code_status` · `code_sync` | gateway health, engines, loaded workspaces; a manual push (the watcher does this for you) |
+
+Every position tool also takes `symbol` instead of a file and a position, so an agent never
+has to grep for a line number:
+
+```json
+{ "name": "code_callers", "arguments": { "symbol": "Metrics::record" } }
 ```
-export PROD_CODE_REMOTE=192.0.2.10:9400   # any node; the rest is discovered
-prod-code cluster                            # the gossip view of every node
-```
 
-A checkout is placed by the cluster on the node that already holds it, otherwise on the
-quietest node that serves its language (Swift lands on a macOS node); the placement is
-remembered per checkout and an idle workspace drifts off an overloaded node.
+The same surface exists as a CLI for humans and scripts: `prod-code search | slice | hover |
+def | refs | callers | callees | impls | symbols | validate | diagnostics | check | lint | test |
+exec | impact | diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run |
+source | status | cluster | metrics`.
 
-### macOS nodes: signing
+## Three things worth seeing
 
-macOS treats every ad-hoc-signed build as a new program (the linker identifier carries a
-hash), so a gateway that gossips to LAN peers triggers the Local Network / privacy prompt
-after each redeploy. `scripts/deploy-mac-node.sh <host> <advertise> <peers> [release|dev]`
-builds on the node (or installs `PROD_CODE_SERVER_BIN`, e.g. a release binary), signs it
-with the identity in `PROD_CODE_SIGN_IDENTITY` and the stable identifier
-`com.prod-code.gateway`, installs it atomically and restarts the launchd agent. The grant is
-remembered per identifier + team, so the prompt appears once.
-
-A macOS node exists for Swift, so the unit is written with `--engines swift`
-(`PROD_CODE_ENGINES` to change it): the node advertises and serves only those engines and
-refuses handshakes for the rest, and placement never sends Rust, Go, C++ or Python work to a
-workstation that happens to have their toolchains installed.
-
-## Finding code by what it does
-
-`code_search` (CLI: `prod-code search "..."`) answers a question about the codebase with
-declarations rather than file matches. The gateway keeps an index of every declaration in the
-workspace copy with the doc comment above it, and ranks them against the question's words:
+**Ask a question in words.** The gateway indexes every declaration with the doc comment above
+it and ranks them against your question. Lexical, not embeddings: a question sharing no words
+with the code or its comments finds nothing.
 
 ```
 $ prod-code search "how do we decide which node runs a workspace"
-10 hit(s) for `how do we decide which node runs a workspace` in 16 ms (1001 declarations, 40 files)
+10 hit(s) in 16 ms (1010 declarations, 40 files)
 
  1. [function] pick_node  crates/prod-code-mcp/src/cluster.rs:107
-    pub async fn pick_node(
-    Chooses the gateway for `workspace_name` among `nodes`: the remembered placement when it is
-    still one of the nodes, alive and able to serve `engine`, otherwise the quietest alive node
+    Chooses the gateway for `workspace_name` among `nodes`: the remembered placement when it
+    is still one of the nodes, alive and able to serve `engine`, otherwise the quietest node
 ```
 
-It is lexical, so a question sharing no words with the code or its comments finds nothing, and
-`code_symbols` remains the way to look up a name you already know. Declarations that belong to
-tests are left out unless the question mentions tests. The index is built on the first query
-and then kept current by the sync layer, which tells it which files it wrote: 568 ms for the
-first query against a 26712-declaration repository, 33 ms for every one after it.
-
-## Reading a symbol without reading its files
-
-`code_slice` (CLI: `prod-code slice <symbol|file --line N>`) returns the code a symbol
-depends on instead of the files it lives in. From the seed declaration it follows the
-analyzer's own edges, the functions the body calls and the types, constants and traits it
-mentions, and returns each as a whole declaration with its file and line range:
+**Read a symbol without reading its files.** `code_slice` follows the analyzer's own edges
+from a declaration and returns what it depends on.
 
 ```
 $ prod-code slice crates/prod-code-gateway/src/shadow.rs --line 469 --depth 1
 slice of `run_shadow`: 10 item(s), 11474 bytes from 284105 bytes of source (96% smaller)
-outside the workspace, not followed: Arc, Duration, Framed, HashSet, Instant, PathBuf, and 28 more
-
-=== crates/prod-code-gateway/src/main.rs
-
-[struct] ServerState  crates/prod-code-gateway/src/main.rs:87-106 (depth 1, used by run_shadow)
-...
 ```
 
-`depth` bounds how far the walk goes (default 2), `max_bytes` bounds the result, and names
-that resolve outside the workspace are listed rather than expanded. The unit is a
-declaration: there is no data-flow slicing inside a body.
+**Try three fixes at once.** Each candidate runs in an overlay of the workspace mounted at
+the workspace's own path, so the warm `target/` stays valid and nothing touches your checkout.
 
-## Usage metrics
+```
+$ prod-code shadow-run spec.json -- cargo test
+  plus      exit 0     in 0.4s  2 passed, 0 failed  <- winner
+  clamp     exit 0     in 0.4s  2 passed, 0 failed
+  baseline  exit 101   in 0.0s  0 passed, 2 failed
+  mul       exit 101   in 0.4s  0 passed, 2 failed
+```
 
-Each gateway records every query, command and sync round as one JSON line under
-`~/prod-code-storage/metrics/events-YYYY-MM-DD.jsonl` (importable into ClickHouse) and keeps
-the recent ones in memory. `prod-code metrics --since 86400` merges every node: who (agent and
-host) asked what (workspace, method) how often and how fast, which commands ran and failed,
-and how much was synced. Clients identify themselves as `claude-code`, `codex`, `cli` or
-whatever `PROD_CODE_AGENT` says.
+## How it works
+
+**The checkout is mirrored, not mounted.** First contact sends a manifest of paths, sizes and
+hashes; the gateway seeds a new worktree from the origin repository's copy and asks only for
+what is missing (0.4 s instead of ~7 s for a 10 MB repository). After that the client keeps a
+watermark per node and sends a diff. Content travels base64, which took a 10.8 MB first sync
+from 8.1 s to 0.76 s. The MCP server watches the tree and syncs only when something changed.
+
+**One analyzer per worktree, never shared.** Salsa holds one state of one workspace keyed by
+file path, so two worktrees served from one database answer each other's questions. Every git
+worktree gets its own server workspace and its own database, named `<repo>--wt-<hash>`. The
+cost is the first load; the engine then stays resident until it has been idle for thirty
+minutes (`--idle-evict-secs`), and worktree directories are pruned after seven days
+(`--prune-worktree-days`).
+
+**Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
+between runs. Files a command changes are written back into your checkout.
+
+**Several nodes.** Gateways gossip every 5 s; a client needs one seed address. A checkout is
+placed on the node that already holds it, otherwise on the quietest one that serves its
+language. `--engines rust,go` restricts a node to what it should serve, so a macOS node can be
+Swift-only and placement never sends Rust work to a workstation.
+
+```
+$ prod-code cluster
+⚡ prod-code cluster (5 node(s))
+192.0.2.11:9400   UP   load 0.10/cpu (32 cpus)   workspaces 0   rss 10 MB
+                  engines: rust, go, cpp, python, typescript
+192.0.2.20:9400   UP   load 2.96/cpu (24 cpus)   workspaces 0   rss 14 MB
+                  engines: swift
+```
 
 ## What each language gets
 
@@ -168,15 +197,15 @@ whatever `PROD_CODE_AGENT` says.
 | lint | clippy | go vet | - | eslint / biome | ruff | - |
 | test | cargo test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
 
-Tooling is detected from the checkout (lock files, package.json, pyproject, CMakeLists...).
-Dependencies live on the node: run `prod-code exec -- bun install`, `-- uv sync`, `-- npm ci`
-once per checkout and the language servers and test runners use them.
+`code_search` and `code_slice` work on all six. Tooling is detected from the checkout (lock
+files, `package.json`, `pyproject`, `CMakeLists`…). Dependencies live on the node: run
+`prod-code exec -- bun install`, `-- uv sync` or `-- npm ci` once per checkout and the
+language servers and test runners use them.
 
 ## Per-repository options (`prod-code.toml`)
 
 Put a `prod-code.toml` at the checkout root to tune how the gateway analyses it. It is synced
-like any manifest and read when the workspace is loaded (restart or idle-evict the gateway
-after changing it):
+like any manifest and read when the workspace is loaded:
 
 ```toml
 [rust]
@@ -190,161 +219,41 @@ Use `features = "all"` when the same module tree is compiled into several crates
 feature flags: rust-analyzer attaches each file to one crate, and a module behind a disabled
 feature is dead there.
 
-## 🎯 The Problem: Why Traditional Language Servers Fail at Agent Scale
+## Operating it
 
-Modern language servers (`rust-analyzer`, `gopls`, `pyright`, `tsserver`) were architected for a single human developer typing in an interactive desktop editor. 
+**Usage metrics.** Every query, command and sync round on a node is one event (which agent,
+from which host, against which workspace and method, how long, whether it worked), appended
+to `<storage>/../metrics/events-YYYY-MM-DD.jsonl`. `prod-code metrics [--since SECS]`
+aggregates them across the cluster with p50 and p95.
 
-When deploying **fleets of autonomous AI coding agents** (Claude, Codex, Agy, Cursor Agent) across dozens of parallel Git worktrees, the architecture collapses:
+**macOS nodes.** `scripts/deploy-mac-node.sh <host> <advertise> <peers>` builds or installs
+the gateway, signs it with the identity in `PROD_CODE_SIGN_IDENTITY` under a stable bundle
+identifier (so macOS remembers the Local Network grant instead of prompting after every
+redeploy), writes the launchd agent with `--engines` (`PROD_CODE_ENGINES`, default `swift`)
+and reloads it.
 
-| Bottleneck | Traditional Language Servers (`rust-analyzer` / `gopls`) | `prod-code` Remote Code Intelligence |
-|:---|:---|:---|
-| **Memory Footprint** | 20–60+ GB RAM duplicated per session. Developer Mac freezes or OOMs. | **0 MB on client**. Entire Salsa DB / AST cache stays in server RAM (128+ GB). |
-| **CPU / Battery** | 100% CPU lockups on AST re-indexing; fans spin at full speed on laptop. | **0% CPU on client**. Heavy analysis runs on dedicated 32–64 core server CPUs. |
-| **Overlay Contention** | Global database write locks on every text edit. Concurrent sessions queue up (p95: **71s**). | **Single-Owner Direct-Edits**: edits write directly to in-memory inputs (p95: **12s**). |
-| **Protocol Overhead** | Heavy bidirectional JSON-RPC state synchronization gymnastics. | **Dual Surface**: Standard LSP for IDEs + **Native MCP** tools for AI agents. |
-| **Multi-Language Ops** | Fractured supervisor processes per language (`gopls`, `analyzed`, `pyright`). | **Unified Polyglot Gateway**: single 10G port routes Rust, Go, Python, and TS. |
+## Reading more
 
----
+The design decisions, with the measurements behind them, are written up as a series:
+[**prod.codes/blog/series/prod-code**](https://prod.codes/blog/series/prod-code/) — why the
+laptop is the wrong place for the analyzer, why worktrees cannot share a database, how the
+mirror stays current, why tools take a symbol instead of a position, validating an edit before
+writing it, where the milliseconds went, and running candidate fixes in overlay shadows.
 
-## 🏗️ Architecture
+In this repository: [`ROADMAP.md`](ROADMAP.md) for what is built and what is not,
+[`CHANGELOG.md`](CHANGELOG.md) for what each release changed, and
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for how a change gets made here (an issue and a pull
+request with the commands that reproduce it; checks run on the build nodes, there is no
+hosted CI).
 
-```text
- ┌────────────────────────────────────────────────────────┐
- │   Developer Laptop / Agent Fleet Pod                   │
- │   • Thin Client (`prod-code`, < 15 MB binary)          │
- │   • Local IDEs (Cursor / VS Code / Neovim) via stdio   │
- │   • AI Agents (Claude / Codex / Agy) via MCP           │
- │   Local Resource Usage: ~0% CPU, < 10 MB RAM           │
- └───────────────────────────┬────────────────────────────┘
-                             │
-                             │ 10 GbE TCP / QUIC (~0.05–0.1 ms RTT, 1.2 GB/s)
-                             ▼
- ┌────────────────────────────────────────────────────────┐
- │   Remote Compute Node (128+ GB RAM, 32–64 Cores, NVMe) │
- │                                                        │
- │   ┌────────────────────────────────────────────────┐   │
- │   │  Universal Gateway (:9400)                     │   │
- │   │  • Dual-Surface: LSP Multiplexer + MCP Server  │   │
- │   │  • Bi-directional Path Translation             │   │
- │   │  • Multi-Tenant Session Registry               │   │
- │   └───────────────────────┬────────────────────────┘   │
- │                           │                            │
- │         ┌─────────────────┼─────────────────┐          │
- │         ▼                 ▼                 ▼          │
- │   ┌───────────┐     ┌───────────┐     ┌───────────┐    │
- │   │Rust Engine│     │ Go Engine │     │ Python/TS │    │
- │   │• RA Salsa │     │• gopls    │     │• Managed  │    │
- │   │  in RAM   │     │  pool     │     │  workers  │    │
- │   │• Direct   │     │• Shared   │     │• Scaled   │    │
- │   │  Edits    │     │  GOCACHE  │     │  workers  │    │
- │   └───────────┘     └───────────┘     └───────────┘    │
- └────────────────────────────────────────────────────────┘
-```
-
----
-
-## ✨ Key Capabilities
-
-### 1. Ultra-Low Latency 10G Wire Protocol
-Over a 10 GbE local network, network latency drops to **0.05–0.1 ms** with **~1.1–1.2 GB/s throughput** — indistinguishable from local NVMe storage. `prod-code` uses a tuned TCP streaming protocol with `TCP_NODELAY`, binary frame headers, and connection reuse.
-
-### 2. Dual-Surface API: LSP for Humans, MCP for Agents
-* **For Editors**: Drops directly into Cursor, VS Code, or Neovim as an ordinary language server speaking JSON-RPC LSP over `stdio`.
-* **For AI Coding Agents**: Exposes clean, structured Model Context Protocol (MCP) endpoints (`code_definition`, `code_references`, `code_outline`, `code_diagnostics`, `code_type_at`). No parsing multi-megabyte JSON-RPC streams in agent loops.
-
-### 3. Single-Owner Direct-Edit Fast Path
-For ephemeral Git worktrees used by autonomous agents:
-* Bypasses costly overlay crate cones and global database invalidation locks.
-* Unsaved buffer edits write directly into in-memory base Salsa inputs.
-* Benchmarked under 15 concurrent agent sessions: cuts query latency from **71s down to 12s**.
-
-### 4. Transparent Bi-directional Path Translation
-Your client talks about `/Users/me/workspace/repo/src/main.rs`.
-The remote daemon maps it to `/srv/prod-code/workspaces/repo/src/main.rs`.
-All response URIs, diagnostics, and symbol definitions are translated back into local client paths seamlessly.
-
-### 5. Multi-Server Homelab / Cloud Clustering
-Deploy across multiple machines on your 10G network:
-* Consistent workspace hashing pins repositories to dedicated memory nodes.
-* Procedural macro execution offloaded into an isolated worker pool.
-
----
-
-## 📦 Workspace Layout
-
-```text
-prod-code/
-├── Cargo.toml                  # Workspace definition
-├── README.md                   # Project overview & architecture
-├── ROADMAP.md                  # 5-phase engineering plan
-├── LICENSE-MIT                 # MIT License
-├── LICENSE-APACHE              # Apache 2.0 License
-├── crates/
-│   ├── prod-code-protocol/     # Binary wire framing, handshake & path translation
-│   ├── prod-code-client/       # Ultra-thin CLI bridge (stdio LSP -> 10G TCP)
-│   ├── prod-code-gateway/      # Daemon gateway, multi-tenant session dispatcher
-│   ├── prod-code-engine-rust/  # In-memory Rust engine (ra_ap_ide::AnalysisHost)
-│   ├── prod-code-engine-go/    # Managed gopls worker pool with shared caches
-│   └── prod-code-mcp/          # Model Context Protocol (MCP) server for agents
-└── bench/                      # Agent fleet mass load testing harness
-```
-
----
-
-## 🚀 Quick Start (Phase 1 Preview)
-
-### Build from Source
-```bash
-git clone https://github.com/alex09x/prod-code.git
-cd prod-code
-cargo build --release
-```
-
-### 1. Launch the Server Daemon (on server)
-```bash
-# Bind to 10G interface
-./target/release/prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces
-```
-
-### 2. Connect from Laptop / Agent Workstation
-```bash
-# Configure endpoint
-export PROD_CODE_REMOTE=192.0.2.10:9400
-
-# Check connectivity
-./target/release/prod-code status
-
-# Run as drop-in language server in your editor
-./target/release/prod-code lsp
-
-# Or run as an MCP server for AI coding agents
-./target/release/prod-code mcp
-```
-
----
-
-## 🗺️ Roadmap & Milestones
-
-See [**`ROADMAP.md`**](ROADMAP.md) for the active engineering plan:
-* **Phase 1**: Wire Protocol, 10G TCP Streaming & Path Translation.
-* **Phase 2**: In-Memory Rust Engine Core (`ra_ap_ide::AnalysisHost` + Direct-Edits).
-* **Phase 3**: Polyglot Hub (Managed Go `gopls` pool + Python/TS adapters).
-* **Phase 4**: Dual-Surface Gateway (LSP Multiplexer + Native Agent MCP Server).
-* **Phase 5**: Multi-Node Clustering, Sharding & 50-Worker Fleet Stress Verification.
-
----
-
-## 👤 Author
+## Author
 
 **Alex** ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
 
----
-
-## 📄 License
+## License
 
 Dual-licensed under either of:
 * Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
 * MIT license ([`LICENSE-MIT`](LICENSE-MIT))
 
 at your option.
-
