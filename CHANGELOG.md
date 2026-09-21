@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- Structural codemod (roadmap 8.7): `code_codemod` (MCP) and `prod-code codemod
+  "pattern ==>> replacement"` rewrite code on the syntax tree through rust-analyzer's own SSR
+  engine, with `$name` placeholders bound by the match. A call split over three lines matches,
+  a comment that looks like the pattern does not, and paths are resolved rather than compared
+  as strings. The result is a unified diff of what would change; `apply: true` writes it.
+  Rust only, and not interactive: the search resolves usages across the workspace, so a call
+  takes tens of seconds on a warm engine and minutes on a cold one.
 - Intent search (roadmap 8.4, first step): `code_search` (MCP) and `prod-code search "..."`
   find code by what it does when you do not know what it is called. The gateway indexes every
   declaration in the workspace copy together with the doc comment above it, its signature and

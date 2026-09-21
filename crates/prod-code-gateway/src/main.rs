@@ -2676,6 +2676,85 @@ async fn run_session_loop(
                                             continue;
                                         }
                                     }
+                                    Some("prodCode/structuralReplace") => {
+                                        if let Some(params) = val.get("params") {
+                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
+                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
+                                            let rule = params.get("rule").and_then(|r| r.as_str()).unwrap_or("").to_string();
+                                            let scope = params
+                                                .get("scope")
+                                                .and_then(|s| s.as_str())
+                                                .filter(|s| !s.is_empty())
+                                                .map(|s| PathBuf::from(s.trim_start_matches("file://")));
+                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                            let query_start = Instant::now();
+                                            tracing::info!(
+                                                req = req_num,
+                                                session = view.session_id,
+                                                method = "prodCode/structuralReplace",
+                                                file = %file_path.display(),
+                                                pos = format!("{}:{}", line + 1, col + 1),
+                                                rule = %rule,
+                                                in_flight,
+                                                "🚀 [LSP START]"
+                                            );
+
+                                            let engine_arc = Arc::clone(engine_lock);
+                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
+                                            let fp_clone = file_path.clone();
+                                            let out_tx_task = out_tx.clone();
+                                            let translator_task = translator.clone();
+                                            let session_id = view.session_id;
+
+                                            tokio::task::spawn(async move {
+                                                let outcome = {
+                                                    let mut engine = engine_arc.lock_owned().await;
+                                                    tokio::task::spawn_blocking(move || {
+                                                        if let Err(e) = engine.activate_session(session_id) {
+                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                                                        }
+                                                        engine.structural_replace(&rule, &fp_clone, line + 1, col + 1, scope.as_deref())
+                                                    })
+                                                    .await
+                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("codemod task failed: {e}")))
+                                                };
+                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+                                                let resp = match outcome {
+                                                    Ok(Ok(outcome)) => {
+                                                        tracing::info!(
+                                                            req = req_num,
+                                                            session = session_id,
+                                                            method = "prodCode/structuralReplace",
+                                                            duration_ms = format!("{:.2}ms", ms),
+                                                            files = outcome.files.len(),
+                                                            edits = outcome.total_edits(),
+                                                            moves = outcome.moves.len(),
+                                                            in_flight = remaining,
+                                                            "✅ [LSP DONE]"
+                                                        );
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
+                                                    }
+                                                    Ok(Err(refused)) => {
+                                                        tracing::info!(req = req_num, session = session_id, method = "prodCode/structuralReplace", reason = %refused, "🚫 [LSP REFUSED]");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(req = req_num, session = session_id, error = %e, "codemod failed");
+                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+                                                    }
+                                                };
+                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                                            });
+                                            continue;
+                                        }
+                                    }
                                     Some("textDocument/didOpen") => {
                                         if let Some(params) = val.get("params") {
                                             let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
