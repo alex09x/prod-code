@@ -202,6 +202,23 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Print only the code a symbol depends on: its declaration plus the items it uses.
+    Slice {
+        /// Symbol name (`Metrics::record`, `pkg.Func`), or a file with `--line`.
+        target: String,
+        /// 1-based line, when `target` is a file path.
+        #[arg(long)]
+        line: Option<u32>,
+        /// 1-based column, when `target` is a file path.
+        #[arg(long, default_value_t = 1)]
+        character: u32,
+        /// How many edges to follow from the seed.
+        #[arg(long, default_value_t = 2)]
+        depth: u32,
+        /// Stop once the slice reaches this many bytes.
+        #[arg(long, default_value_t = 24576)]
+        max_bytes: usize,
+    },
     /// Try several hypotheses (sets of proposed file contents) against a command, each in a
     /// private shadow of the server workspace; print every outcome and the winner's diff.
     ShadowRun {
@@ -404,6 +421,13 @@ async fn main() -> Result<()> {
             no_pull,
             command,
         } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        Commands::Slice {
+            target,
+            line,
+            character,
+            depth,
+            max_bytes,
+        } => run_slice(remote, target, line, character, depth, max_bytes).await,
         Commands::ShadowRun {
             spec,
             timeout_secs,
@@ -1888,6 +1912,48 @@ async fn run_verify(
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_slice(
+    remote: SocketAddr,
+    target: String,
+    line: Option<u32>,
+    character: u32,
+    depth: u32,
+    max_bytes: usize,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let (file, line, col) = match line {
+        Some(line) => {
+            let path = PathBuf::from(&target);
+            let abs = if path.is_absolute() {
+                path
+            } else {
+                root.join(path)
+            };
+            (std::fs::canonicalize(&abs).unwrap_or(abs), line, character)
+        }
+        None => {
+            let hit = prod_code_mcp::tools::resolve_symbol(remote, &root, &target, None).await?;
+            println!(
+                "{} {} at {}:{}:{}",
+                hit.kind,
+                hit.name,
+                hit.path
+                    .strip_prefix(&root)
+                    .unwrap_or(&hit.path)
+                    .to_string_lossy(),
+                hit.line,
+                hit.col
+            );
+            (hit.path, hit.line, hit.col)
+        }
+    };
+    let report =
+        prod_code_mcp::slice::slice(remote, &root, &file, line, col, depth, max_bytes).await?;
+    println!("{}", report.render());
+    Ok(())
+}
+
 async fn run_shadow_cli(
     remote: SocketAddr,
     spec: PathBuf,
