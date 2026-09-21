@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Change signature (roadmap 7.1.1): `code_change_signature` (MCP) and
+  `prod-code change-signature <fn> --param …` change what a function takes, with its call
+  sites. `params` is the list the function should end up with — `name` keeps a parameter,
+  `name: Type = expression` adds one and passes `expression` at every call site, anything not
+  listed is removed. The arity and the types come from the declaration, so the structural rule
+  that rewrites the call sites is built rather than guessed, and it is resolved in the
+  declaring file's own scope, so calls match however they are spelled. What was rewritten is
+  reconciled against the analyzer's reference list and anything it did not touch is named;
+  dropping a parameter the body still uses is refused with the usages; and the declaration and
+  every call site are type-checked together in an overlay before anything is written. Rust
+  only.
 - Fixture generation (roadmap 8.5): `code_generate_fixture` (MCP) and `prod-code fixture
   <Type>` build a compile-ready value for a type from the declaration the analyzer resolves the
   name to, filling every field by type, recursing into types declared in the workspace down to

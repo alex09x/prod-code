@@ -183,6 +183,27 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_change_signature".to_string(),
+            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`; changing the return type is not supported. Rust only; re-run your formatter afterwards."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line of the declaration" },
+                    "character": { "type": "integer", "description": "1-based column of the declaration" },
+                    "params": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The whole new parameter list, in order: `name` to keep, `name: Type = expression` to add; omit one to remove it. The receiver (`&self`) is never listed."
+                    },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Drop a parameter the body still uses, and write even when the result does not compile" }
+                },
+                "required": ["params"]
+            }),
+        },
+        McpTool {
             name: "code_definition".to_string(),
             description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it."
                 .to_string(),
@@ -1462,6 +1483,51 @@ pub async fn execute_tool(
             }
             Ok(McpToolCallResult::text(text.trim_end().to_string()))
         }
+        "code_change_signature" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or `symbol`)")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument (or `symbol`)")? as u32;
+            let character =
+                args.get("character")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'character' argument (or `symbol`)")? as u32;
+            let specs = args.get("params").and_then(|v| v.as_array()).context(
+                "Missing 'params' argument: the parameter list the function should end up with",
+            )?;
+            let mut params = Vec::with_capacity(specs.len());
+            for spec in specs {
+                let spec = spec.as_str().context(
+                    "every entry of `params` is a string: `name`, or `name: Type = expression`",
+                )?;
+                params.push(crate::signature::parse_param(spec)?);
+            }
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let change = crate::signature::change(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                &params,
+                apply,
+                force,
+            )
+            .await?;
+            let clean = change.diagnostics.is_empty();
+            let text = change.render(6000);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_generate_fixture" => {
             let symbol = args
                 .get("symbol")
@@ -1875,6 +1941,7 @@ const NAMES_A_SYMBOL: &[&str] = &["code_generate_fixture"];
 /// Tools that accept `symbol` in place of `path`/`line`/`character`.
 const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_slice",
+    "code_change_signature",
     "code_definition",
     "code_references",
     "code_hover",
@@ -2099,7 +2166,7 @@ pub async fn resolve_symbol(
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
 /// structural rewrite with `documentChanges`, one whole-file replacement per file, so the
 /// caller can diff each against what is on disk.
-fn rewritten_files(edit: &serde_json::Value) -> Vec<(String, String)> {
+pub(crate) fn rewritten_files(edit: &serde_json::Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for change in edit
         .get("documentChanges")
