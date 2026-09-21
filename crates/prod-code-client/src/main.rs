@@ -216,6 +216,23 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Rename a schema field across every language that spells it.
+    SchemaRename {
+        /// The field as the schema spells it (`order_id`).
+        field: String,
+        /// What it becomes (`trade_id`); spelled per language automatically.
+        #[arg(long)]
+        to: String,
+        /// Only look under this directory.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the rename instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Allow a short name, many occurrences, and a result that does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Change what a function takes, with every call site.
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
@@ -481,6 +498,13 @@ async fn main() -> Result<()> {
             no_verify,
             path,
         } => run_fixture_cli(remote, symbol, depth, !no_verify, path).await,
+        Commands::SchemaRename {
+            field,
+            to,
+            path,
+            apply,
+            force,
+        } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
         Commands::ChangeSignature {
             symbol,
             params,
@@ -2003,6 +2027,32 @@ async fn run_fixture_cli(
             .await?;
     println!("{}", fixture.render());
     if !fixture.diagnostics.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_schema_rename_cli(
+    remote: SocketAddr,
+    field: String,
+    to: String,
+    path: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({ "field": field, "to": to, "apply": apply, "force": force });
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
         std::process::exit(1);
     }
     Ok(())

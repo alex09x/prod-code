@@ -183,6 +183,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_schema_rename".to_string(),
+            description: "Rename a schema field across every language that spells it: `order_id` in the .proto and in Rust, `OrderID` with a `json:\"order_id\"` tag in Go, `orderId` in TypeScript, the column in the SQL. All spellings (snake, camel, Pascal, Go's initialism form, SCREAMING, kebab) are found by a whole-word scan — that is discovery, not editing. Then every identifier is renamed by the analyzer of its own sub-project, so the change follows the symbol into files the scan never looked at; only what no analyzer owns (schema files, and the name inside string literals such as a json tag or an SQL query) is edited textually, at the positions that were found. Identifiers in comments are reported, not rewritten. The result is type-checked per project, and `apply` refuses to write a rename that does not compile. Nothing is written without `apply`."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "field": { "type": "string", "description": "The field as the schema spells it (`order_id`)" },
+                    "to": { "type": "string", "description": "What it becomes (`trade_id`); spelled per language automatically" },
+                    "path": { "type": "string", "description": "Only look under this directory (default: the whole workspace)" },
+                    "apply": { "type": "boolean", "description": "Write the rename (default false: report the diff and the checks only)" },
+                    "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" }
+                },
+                "required": ["field", "to"]
+            }),
+        },
+        McpTool {
             name: "code_change_signature".to_string(),
             description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`; changing the return type is not supported. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1482,6 +1498,39 @@ pub async fn execute_tool(
                 text.push_str("\nnothing was written; pass `apply: true` to make these edits\n");
             }
             Ok(McpToolCallResult::text(text.trim_end().to_string()))
+        }
+        "code_schema_rename" => {
+            let field = args
+                .get("field")
+                .and_then(|v| v.as_str())
+                .context("Missing 'field' argument")?;
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .context("Missing 'to' argument")?;
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let scope = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p));
+            let done = crate::schema::rename(
+                remote,
+                workspace_root,
+                field,
+                to,
+                apply,
+                force,
+                scope.as_deref(),
+            )
+            .await?;
+            let clean = done.diagnostics.is_empty();
+            let text = done.render(6000);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
         }
         "code_change_signature" => {
             let path_str = args

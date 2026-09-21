@@ -12,6 +12,7 @@ pub mod lang;
 pub mod protocol;
 pub mod refactor;
 pub mod remote_fs;
+pub mod schema;
 pub mod search;
 pub mod session;
 pub mod shadow;

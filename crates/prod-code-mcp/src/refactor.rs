@@ -25,7 +25,7 @@ fn uri_to_relative(root: &Path, uri: &str) -> Result<String> {
 
 /// Applies LSP text edits (0-based line/character, character counted in chars) to `text`.
 /// A single edit starting at 0:0 and ending at or past the last line replaces the whole file.
-fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Result<String> {
+pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Result<String> {
     let line_count = text.lines().count() as u64;
     if let [edit] = edits
         && edit.pointer("/range/start/line").and_then(|v| v.as_u64()) == Some(0)
