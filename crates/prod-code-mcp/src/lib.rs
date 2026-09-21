@@ -5,6 +5,7 @@ pub mod dead_code;
 pub mod diagnostics;
 pub mod dossier;
 pub mod exec;
+pub mod hot_reload;
 pub mod impact;
 pub mod lang;
 pub mod protocol;
@@ -50,7 +51,7 @@ pub async fn handle_mcp_request(
                 serde_json::json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {
-                        "tools": {}
+                        "tools": { "listChanged": true }
                     },
                     "serverInfo": {
                         "name": SERVER_NAME,
@@ -124,42 +125,84 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
         version = SERVER_VERSION,
         gateway = %remote,
         workspace = %workspace_root.display(),
+        resumed = std::env::var_os(hot_reload::RESUMED_ENV).is_some(),
         "Starting prod-code stdio MCP server"
     );
 
-    let stdin = tokio::io::stdin();
-    let mut reader = BufReader::new(stdin);
     let mut stdout = tokio::io::stdout();
 
-    let mut line = String::new();
+    // Hot reload: watch our own executable and swap to a newly installed one between
+    // requests (see `hot_reload`).
+    let reload_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reload_notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let exe = std::env::current_exe().ok();
+    if let Some(exe) = &exe
+        && let Some(initial) = hot_reload::stamp(exe)
+    {
+        hot_reload::spawn_watch(
+            exe.clone(),
+            initial,
+            std::sync::Arc::clone(&reload_flag),
+            std::sync::Arc::clone(&reload_notify),
+        );
+    }
+    if std::env::var_os(hot_reload::RESUMED_ENV).is_some() {
+        // The session was initialised with the previous binary: tell the client to refresh
+        // its tool list from this one.
+        stdout
+            .write_all(hot_reload::tools_list_changed().as_bytes())
+            .await?;
+        stdout.flush().await?;
+    }
+
+    let mut reader = BufReader::new(tokio::io::stdin());
+    let mut pending: Vec<u8> = Vec::new();
     loop {
-        line.clear();
-        let bytes_read = reader
-            .read_line(&mut line)
-            .await
-            .context("Failed reading from stdin")?;
-
-        if bytes_read == 0 {
-            // EOF reached
-            break;
+        if reload_flag.load(std::sync::atomic::Ordering::Acquire)
+            && pending.is_empty()
+            && reader.buffer().is_empty()
+            && let Some(exe) = &exe
+        {
+            stdout
+                .write_all(hot_reload::tools_list_changed().as_bytes())
+                .await?;
+            stdout.flush().await?;
+            tracing::info!(exe = %exe.display(), "re-executing the installed binary");
+            let err = hot_reload::reexec(exe);
+            tracing::error!(error = %err, "hot reload failed; continuing with the current binary");
+            reload_flag.store(false, std::sync::atomic::Ordering::Release);
         }
 
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Ok(req_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            match handle_mcp_request(remote, &workspace_root, req_json).await {
-                Ok(Some(resp_val)) => {
-                    let mut out = serde_json::to_string(&resp_val)?;
-                    out.push('\n');
-                    stdout.write_all(out.as_bytes()).await?;
-                    stdout.flush().await?;
+        let consumed = tokio::select! {
+            filled = reader.fill_buf() => {
+                let buf = filled.context("Failed reading from stdin")?;
+                if buf.is_empty() {
+                    break; // EOF
                 }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::error!(error = %e, "MCP request handler internal error");
+                pending.extend_from_slice(buf);
+                buf.len()
+            }
+            _ = reload_notify.notified() => 0,
+        };
+        reader.consume(consumed);
+
+        while let Some(line) = hot_reload::take_line(&mut pending) {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(req_json) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                match handle_mcp_request(remote, &workspace_root, req_json).await {
+                    Ok(Some(resp_val)) => {
+                        let mut out = serde_json::to_string(&resp_val)?;
+                        out.push('\n');
+                        stdout.write_all(out.as_bytes()).await?;
+                        stdout.flush().await?;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::error!(error = %e, "MCP request handler internal error");
+                    }
                 }
             }
         }
