@@ -62,6 +62,11 @@
   (`-p <name>`), Go package tree (`./dir/...`) or pytest path containing it.
 
 ### Fixed
+- The engine of a checkout whose manifest sits one directory below the root is detected from
+  that child (`project/go.mod`, `server/Cargo.toml`), as long as every child with a manifest
+  agrees; a polyglot monorepo still resolves to "any engine".
+- A workspace whose engine is unknown is no longer placed on a node that advertises a single
+  engine. A Swift-only macOS node used to qualify for it, and the work failed there.
 - Position tools' MCP schemas declare the `symbol` parameter (the tools accepted it, agents
   could not see it). `code_outline` hides local variables unless `include_locals` is set and
   `max_depth` limits nesting.

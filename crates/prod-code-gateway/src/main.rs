@@ -270,9 +270,13 @@ impl ServerState {
     pub async fn place(&self, req: &PlaceRequest) -> PlaceResponse {
         let view = self.cluster_view().await;
         let engine = req.engine.as_deref();
+        // A node started with `--engines swift` advertises one engine and serves nothing
+        // else. A workspace whose engine the client could not determine must not be sent
+        // there: it would be refused at the handshake, or worse, accepted by an older
+        // gateway that does not know it is specialised.
         let capable = |n: &PeerInfo| match engine {
             Some(e) => cluster_supports_engine(&n.status, e),
-            None => true,
+            None => n.status.detected_engines.len() > 1,
         };
         let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
         let quietest = view

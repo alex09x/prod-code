@@ -98,6 +98,34 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
 }
 
 pub fn expected_engine(root: &Path) -> Option<&'static str> {
+    if let Some(engine) = engine_at(root) {
+        return Some(engine);
+    }
+    // A repository often keeps its project one directory down (`project/go.mod`,
+    // `server/Cargo.toml`). Look one level deep and accept the answer only when every
+    // child that has a manifest agrees, so a polyglot monorepo stays "any engine".
+    let mut found: Option<&'static str> = None;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !path.is_dir() || name.starts_with('.') || matches!(name.as_ref(), "target" | "node_modules" | "vendor" | "build" | "dist") {
+            continue;
+        }
+        match (engine_at(&path), found) {
+            (Some(engine), None) => found = Some(engine),
+            (Some(engine), Some(seen)) if engine != seen => return None,
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The engine a directory's own manifests ask for.
+fn engine_at(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
     let has_xcode = std::fs::read_dir(root)
         .map(|entries| {
@@ -1818,6 +1846,23 @@ mod tests {
         commit_workspace_sync(root, &reverted);
         assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
         clear_sync_cache(root);
+    }
+
+    #[test]
+    fn engine_is_found_one_directory_down() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("project")).unwrap();
+        std::fs::write(root.path().join("project/go.mod"), "module x\n").unwrap();
+        assert_eq!(expected_engine(root.path()), Some("go"));
+
+        // Two children asking for different engines is not one answer.
+        std::fs::create_dir_all(root.path().join("server")).unwrap();
+        std::fs::write(root.path().join("server/Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(expected_engine(root.path()), None);
+
+        // A manifest at the root still wins outright.
+        std::fs::write(root.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert_eq!(expected_engine(root.path()), Some("rust"));
     }
 
     #[test]
