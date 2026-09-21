@@ -9,10 +9,13 @@
 #   peers      comma-separated peer addresses
 #   profile    release (default) or dev
 #   PROD_CODE_SIGN_IDENTITY  codesign identity from the local keychain (required)
+#   PROD_CODE_ENGINES        engines the node serves, comma-separated (default: swift)
+#   PROD_CODE_SERVER_BIN     prebuilt gateway binary to install instead of building on the node
 set -euo pipefail
 HOST=${1:?host}; ADV=${2:?advertise}; PEERS=${3:?peers}; PROFILE=${4:-release}
 IDENTITY=${PROD_CODE_SIGN_IDENTITY:?set to the codesign identity, e.g. "Apple Development: you@example.com (TEAMID)"}
 BUNDLE_ID=com.prod-code.gateway
+ENGINES=${PROD_CODE_ENGINES:-swift}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -31,7 +34,9 @@ fi
 RB
 )
 
-if [ "$HOST" = local ]; then
+if [ -n "${PROD_CODE_SERVER_BIN:-}" ]; then
+  cp "$PROD_CODE_SERVER_BIN" "$TMP/prod-code-server"
+elif [ "$HOST" = local ]; then
   BIN=$(PROFILE=$PROFILE bash -c "$REMOTE_BUILD" | tee /dev/stderr | tail -1)
   cp "$BIN" "$TMP/prod-code-server"
 else
@@ -55,6 +60,7 @@ PLIST=$(cat <<PL
         <string>--storage</string><string>__HOME__/prod-code-storage/workspaces</string>
         <string>--advertise</string><string>$ADV</string>
         <string>--peers</string><string>$PEERS</string>
+        <string>--engines</string><string>$ENGINES</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
@@ -77,8 +83,10 @@ mv -f ~/.local/bin/prod-code-server.new ~/.local/bin/prod-code-server
 codesign -v ~/.local/bin/prod-code-server
 sed -i "" "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/com.prod-code.gateway.plist.new
 mv -f ~/Library/LaunchAgents/com.prod-code.gateway.plist.new ~/Library/LaunchAgents/com.prod-code.gateway.plist
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prod-code.gateway.plist 2>/dev/null || true
-launchctl kickstart -k gui/$(id -u)/com.prod-code.gateway
+# launchd keeps the definition it loaded: kickstart -k would restart the OLD arguments, so the
+# unit is unloaded and loaded again to pick up the rewritten plist (RunAtLoad starts it).
+launchctl bootout gui/$(id -u)/com.prod-code.gateway 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prod-code.gateway.plist
 sleep 2
 launchctl print gui/$(id -u)/com.prod-code.gateway | grep -E "state = " | head -1
 IN
