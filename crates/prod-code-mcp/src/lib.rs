@@ -15,6 +15,7 @@ pub mod remote_fs;
 pub mod search;
 pub mod session;
 pub mod shadow;
+pub mod signature;
 pub mod slice;
 pub mod sync;
 pub mod tools;

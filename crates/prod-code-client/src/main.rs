@@ -216,6 +216,24 @@ enum Commands {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Change what a function takes, with every call site.
+    ChangeSignature {
+        /// The function, by name (`validate_texts`, `Session::open_text`).
+        symbol: String,
+        /// One entry of the new parameter list, in order: `name` keeps it, `name: Type = expr`
+        /// adds it; a declared parameter that is not listed is removed. Repeat the flag.
+        #[arg(long = "param", required = true)]
+        params: Vec<String>,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the change instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Drop a parameter the body still uses, and write even when it does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Structural search and replace across the workspace: `pattern ==>> replacement`.
     Codemod {
         /// The rule, for example `$a.unwrap() ==>> $a.expect("invariant")`.
@@ -463,6 +481,13 @@ async fn main() -> Result<()> {
             no_verify,
             path,
         } => run_fixture_cli(remote, symbol, depth, !no_verify, path).await,
+        Commands::ChangeSignature {
+            symbol,
+            params,
+            path,
+            apply,
+            force,
+        } => run_change_signature_cli(remote, symbol, params, path, apply, force).await,
         Commands::Codemod { rule, path, apply } => run_codemod_cli(remote, rule, path, apply).await,
         Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
@@ -1978,6 +2003,33 @@ async fn run_fixture_cli(
             .await?;
     println!("{}", fixture.render());
     if !fixture.diagnostics.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_change_signature_cli(
+    remote: SocketAddr,
+    symbol: String,
+    params: Vec<String>,
+    path: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args =
+        serde_json::json!({ "symbol": symbol, "params": params, "apply": apply, "force": force });
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_change_signature", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
         std::process::exit(1);
     }
     Ok(())
