@@ -111,8 +111,8 @@ This document outlines the architectural milestones and engineering phases for b
   - Command: `prod-code sync` — push delta / worktree state to the remote server over 10G in < 200 ms.
   - In-memory temporary overlays and Salsa direct file mutation for live buffer edits.
   - [x] Isolated server workspace and analysis database per git worktree (`<repo>--wt-<hash>`); first contact sends a size/hash manifest probe, the gateway seeds the copy from the origin repository and asks only for missing files (2026-09-19).
-  - [ ] Binary-safe file transfer: `FileDelta.content` is a JSON byte array today (4x inflation, ~5-8 s for 10 MB); switch to base64 or a binary frame to meet the < 200 ms target.
-  - [ ] Persistent MCP session: reuse one gateway session per agent process instead of connect + git status + handshake per query.
+  - [x] Binary-safe file transfer: `FileDelta.content` is base64 on the wire (`base64_bytes` in the protocol crate), not a JSON byte array, which cost a four-fold inflation and dominated sync time. Shipped in `c2b36f3`; the round trip and the wire form are covered by tests in `prod-code-protocol`.
+  - [x] Persistent MCP session: one long-lived session per checkout for the life of the process (`session::pooled_query`), which pushes local changes only when the file watcher saw any and re-opens the session when the gateway restarts. Shipped in `c2b36f3`. What remains is the CLI, where every invocation is a new process and pays connect + handshake once (~0.75 s measured over the LAN); the MCP server, which is how agents call it, pays it once per process.
 
 ---
 
