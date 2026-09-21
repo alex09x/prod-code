@@ -202,6 +202,20 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Build a compile-ready value for a type, checked by the analyzer before it is printed.
+    Fixture {
+        /// The type to build.
+        symbol: String,
+        /// How deep to build nested workspace types.
+        #[arg(long, default_value_t = 2)]
+        depth: u32,
+        /// Skip the type check.
+        #[arg(long, default_value_t = false)]
+        no_verify: bool,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Structural search and replace across the workspace: `pattern ==>> replacement`.
     Codemod {
         /// The rule, for example `$a.unwrap() ==>> $a.expect("invariant")`.
@@ -443,6 +457,12 @@ async fn main() -> Result<()> {
             no_pull,
             command,
         } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        Commands::Fixture {
+            symbol,
+            depth,
+            no_verify,
+            path,
+        } => run_fixture_cli(remote, symbol, depth, !no_verify, path).await,
         Commands::Codemod { rule, path, apply } => run_codemod_cli(remote, rule, path, apply).await,
         Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
@@ -1936,6 +1956,33 @@ async fn run_verify(
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_fixture_cli(
+    remote: SocketAddr,
+    symbol: String,
+    depth: u32,
+    verify: bool,
+    path: Option<String>,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let hint = path.map(|p| {
+        let path = PathBuf::from(&p);
+        if path.is_absolute() {
+            path
+        } else {
+            root.join(path)
+        }
+    });
+    let fixture =
+        prod_code_mcp::fixture::generate(remote, &root, &symbol, depth, verify, hint.as_deref())
+            .await?;
+    println!("{}", fixture.render());
+    if !fixture.diagnostics.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn run_codemod_cli(
     remote: SocketAddr,
     rule: String,
