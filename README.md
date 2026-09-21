@@ -70,10 +70,15 @@ remembered per checkout and an idle workspace drifts off an overloaded node.
 macOS treats every ad-hoc-signed build as a new program (the linker identifier carries a
 hash), so a gateway that gossips to LAN peers triggers the Local Network / privacy prompt
 after each redeploy. `scripts/deploy-mac-node.sh <host> <advertise> <peers> [release|dev]`
-builds on the node, signs the binary through the Mac Studio keychain
-(`PROD_CODE_SIGN_IDENTITY`, default the Apple Development identity) with the stable
-identifier `com.prod-code.gateway`, installs it atomically and restarts the launchd agent.
-The grant is remembered per identifier + team, so the prompt appears once.
+builds on the node (or installs `PROD_CODE_SERVER_BIN`, e.g. a release binary), signs it
+with the identity in `PROD_CODE_SIGN_IDENTITY` and the stable identifier
+`com.prod-code.gateway`, installs it atomically and restarts the launchd agent. The grant is
+remembered per identifier + team, so the prompt appears once.
+
+A macOS node exists for Swift, so the unit is written with `--engines swift`
+(`PROD_CODE_ENGINES` to change it): the node advertises and serves only those engines and
+refuses handshakes for the rest, and placement never sends Rust, Go, C++ or Python work to a
+workstation that happens to have their toolchains installed.
 
 ## Usage metrics
 
