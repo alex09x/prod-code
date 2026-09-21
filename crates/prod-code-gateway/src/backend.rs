@@ -1,4 +1,4 @@
-//! Managed language server backend workers (e.g. rust-analyzer on booster) supervised by prod-code gateway.
+//! Managed language server backend workers (e.g. rust-analyzer on a Linux node) supervised by prod-code gateway.
 
 use anyhow::{Context, Result};
 use std::collections::HashSet;

@@ -25,8 +25,8 @@
 Register the MCP server once and every project gets the tools:
 
 ```
-claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.168.2.168:9400 -- prod-code mcp
-codex  mcp add prod-code --env PROD_CODE_REMOTE=192.168.2.168:9400 -- prod-code mcp
+claude mcp add --scope user prod-code -e PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
+codex  mcp add prod-code --env PROD_CODE_REMOTE=192.0.2.10:9400 -- prod-code mcp
 ```
 
 The server tells the agent how to work at `initialize` (the same text as
@@ -57,7 +57,7 @@ Any number of gateways form a cluster: start each with `--peers <one live peer>`
 workspaces). Clients need one seed:
 
 ```
-export PROD_CODE_REMOTE=192.168.2.168:9400   # any node; the rest is discovered
+export PROD_CODE_REMOTE=192.0.2.10:9400   # any node; the rest is discovered
 prod-code cluster                            # the gossip view of every node
 ```
 
@@ -187,7 +187,7 @@ For ephemeral Git worktrees used by autonomous agents:
 * Benchmarked under 15 concurrent agent sessions: cuts query latency from **71s down to 12s**.
 
 ### 4. Transparent Bi-directional Path Translation
-Your client talks about `/Users/alex09x/Documents/workspace/repo/src/main.rs`.
+Your client talks about `/Users/me/workspace/repo/src/main.rs`.
 The remote daemon maps it to `/srv/prod-code/workspaces/repo/src/main.rs`.
 All response URIs, diagnostics, and symbol definitions are translated back into local client paths seamlessly.
 
@@ -237,7 +237,7 @@ cargo build --release
 ### 2. Connect from Laptop / Agent Workstation
 ```bash
 # Configure endpoint
-export PROD_CODE_REMOTE=192.168.2.100:9400
+export PROD_CODE_REMOTE=192.0.2.10:9400
 
 # Check connectivity
 ./target/release/prod-code status

@@ -88,21 +88,21 @@ mod tests {
     #[test]
     fn test_path_and_uri_translation() {
         let translator = PathTranslator::new(
-            "/Users/alex09x/Documents/workspace/my-app",
+            "/Users/dev/Documents/workspace/my-app",
             "/srv/prod-code/workspaces/my-app",
         );
 
         let server_path =
-            translator.to_server_path("/Users/alex09x/Documents/workspace/my-app/src/main.rs");
+            translator.to_server_path("/Users/dev/Documents/workspace/my-app/src/main.rs");
         assert_eq!(server_path, "/srv/prod-code/workspaces/my-app/src/main.rs");
 
         let client_path = translator.to_client_path("/srv/prod-code/workspaces/my-app/src/main.rs");
         assert_eq!(
             client_path,
-            "/Users/alex09x/Documents/workspace/my-app/src/main.rs"
+            "/Users/dev/Documents/workspace/my-app/src/main.rs"
         );
 
-        let client_uri = "file:///Users/alex09x/Documents/workspace/my-app/src/lib.rs";
+        let client_uri = "file:///Users/dev/Documents/workspace/my-app/src/lib.rs";
         let server_uri = translator.to_server_uri(client_uri);
         assert_eq!(
             server_uri,
@@ -116,14 +116,14 @@ mod tests {
     #[test]
     fn test_lsp_json_translation() {
         let translator = PathTranslator::new(
-            "/Users/alex09x/Documents/workspace/my-app",
+            "/Users/dev/Documents/workspace/my-app",
             "/srv/prod-code/workspaces/my-app",
         );
 
-        let client_lsp = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///Users/alex09x/Documents/workspace/my-app/src/main.rs","text":"fn main() {}"}}}"#;
+        let client_lsp = r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///Users/dev/Documents/workspace/my-app/src/main.rs","text":"fn main() {}"}}}"#;
         let server_lsp = translator.translate_lsp_to_server(client_lsp);
         assert!(server_lsp.contains("file:///srv/prod-code/workspaces/my-app/src/main.rs"));
-        assert!(!server_lsp.contains("/Users/alex09x"));
+        assert!(!server_lsp.contains("/Users/dev"));
 
         let restored_lsp = translator.translate_lsp_to_client(&server_lsp);
         assert_eq!(restored_lsp, client_lsp);
