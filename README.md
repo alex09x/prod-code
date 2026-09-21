@@ -103,6 +103,28 @@ A macOS node exists for Swift, so the unit is written with `--engines swift`
 refuses handshakes for the rest, and placement never sends Rust, Go, C++ or Python work to a
 workstation that happens to have their toolchains installed.
 
+## Reading a symbol without reading its files
+
+`code_slice` (CLI: `prod-code slice <symbol|file --line N>`) returns the code a symbol
+depends on instead of the files it lives in. From the seed declaration it follows the
+analyzer's own edges, the functions the body calls and the types, constants and traits it
+mentions, and returns each as a whole declaration with its file and line range:
+
+```
+$ prod-code slice crates/prod-code-gateway/src/shadow.rs --line 469 --depth 1
+slice of `run_shadow`: 10 item(s), 11474 bytes from 284105 bytes of source (96% smaller)
+outside the workspace, not followed: Arc, Duration, Framed, HashSet, Instant, PathBuf, and 28 more
+
+=== crates/prod-code-gateway/src/main.rs
+
+[struct] ServerState  crates/prod-code-gateway/src/main.rs:87-106 (depth 1, used by run_shadow)
+...
+```
+
+`depth` bounds how far the walk goes (default 2), `max_bytes` bounds the result, and names
+that resolve outside the workspace are listed rather than expanded. The unit is a
+declaration: there is no data-flow slicing inside a body.
+
 ## Usage metrics
 
 Each gateway records every query, command and sync round as one JSON line under

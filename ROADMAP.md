@@ -295,7 +295,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Wire protocol endpoint: `code_quickfix(file, diagnostic_id)` returning pre-computed compiler diffs.
   - AI agents can inspect and apply exact compiler-suggested fixes in one step (e.g. missing trait imports, mutable borrow corrections, lifetime annotations) with zero LLM token consumption or hallucination loops.
 
-- [ ] **7.3. Program Slicing & Context Tree-Shaking (10x Token Reduction)**
+- [x] **7.3. Program Slicing & Context Tree-Shaking (10x Token Reduction)** — shipped 2026-09-21: `code_slice` / `prod-code slice` walk the analyzer's definition and call edges from a seed symbol and return the declarations it depends on, grouped by file, with a depth and a byte budget; measured 92-96% smaller than the files an agent would otherwise read, in about a second. Data-flow slicing inside a body is not attempted: the unit is a declaration.
   - Program Dependency Graph (PDG) and data-flow analysis on remote server:
     - Given a target function or bug location, slice away all unreferenced structs, unrelated methods, and irrelevant imports.
     - `code_slice(path, symbol)`: extracts a minimal, self-contained semantic slice (e.g. 60 lines instead of 4,000 lines) representing 100% of data and control flow.

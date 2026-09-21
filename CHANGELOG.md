@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- Program slicing (roadmap 7.3): `code_slice` (MCP) and `prod-code slice` return only the code
+  a symbol depends on. From the seed declaration the analyzer's own edges are followed, the
+  functions it calls and the types, constants and traits its body mentions, each returned as a
+  whole declaration with its file and line range; `depth` bounds the walk and `max_bytes` the
+  result. Names resolving outside the workspace are listed, not expanded. Measured on this
+  repository: a 31-line function's slice is 1.8 kB against 21 kB of source (92% smaller, 1.2 s);
+  the gateway's shadow-run entry point is 11.5 kB against 284 kB across two files (96% smaller,
+  1.3 s). No new wire message: it is built from documentSymbol and definition queries.
 - Shadow runs (roadmap 7.4, second step): `code_shadow_run` / `prod-code shadow-run` run a
   command once per named hypothesis (complete proposed file contents) in a private shadow of
   the server workspace. On Linux a shadow is an overlay mount at the workspace's own path

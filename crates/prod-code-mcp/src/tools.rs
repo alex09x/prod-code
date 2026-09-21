@@ -350,6 +350,23 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_slice".to_string(),
+            description: "Return only the code a symbol depends on, instead of the files it lives in. Starting from the symbol, the analyzer's own edges are followed: the functions it calls, and the types, constants and traits its body mentions, each returned as its whole declaration with its file and line range. `depth` bounds how far the walk goes (default 2), `max_bytes` bounds the result. Use it to read an unfamiliar function without opening four files, and to hand a model the relevant tenth of a codebase rather than the whole of it. Names that resolve outside the workspace (std, dependencies) are listed, not expanded."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "symbol": { "type": "string", "description": "Name of the symbol to slice from (`Metrics::record`, `pkg.Func`); or give path/line/character" },
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line of the symbol" },
+                    "character": { "type": "integer", "description": "1-based column of the symbol" },
+                    "depth": { "type": "integer", "description": "How many edges to follow from the seed (default 2, 0 returns the seed alone)" },
+                    "max_bytes": { "type": "integer", "description": "Stop once the slice reaches this many bytes (default 24576)" }
+                },
+                "required": []
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1258,6 +1275,37 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_slice" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or pass 'symbol')")?;
+            let line =
+                args.get("line")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'line' argument (or pass 'symbol')")? as u32;
+            let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(crate::slice::DEFAULT_DEPTH as u64) as u32;
+            let max_bytes =
+                args.get("max_bytes")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(crate::slice::DEFAULT_MAX_BYTES as u64) as usize;
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let report = crate::slice::slice(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                depth,
+                max_bytes,
+            )
+            .await?;
+            Ok(McpToolCallResult::text(report.render()))
+        }
         "code_dead_code" => {
             let include_exported = args
                 .get("include_exported")
@@ -1633,6 +1681,7 @@ pub async fn execute_lsp_query(
 
 /// Tools that accept `symbol` in place of `path`/`line`/`character`.
 const SYMBOL_ADDRESSABLE: &[&str] = &[
+    "code_slice",
     "code_definition",
     "code_references",
     "code_hover",
