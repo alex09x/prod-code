@@ -310,6 +310,46 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_shadow_run".to_string(),
+            description: "Try several candidate edits AGAINST A COMMAND (usually the tests) without touching the checkout. Each hypothesis is a name plus complete proposed file contents; the gateway runs `argv` once per hypothesis in a private shadow of the workspace (on Linux an overlay mounted at the workspace's own path, so warm build caches stay valid and hypotheses run in parallel). Returns every hypothesis's exit code, test counts and output tail, ranks them (passed, fewest failures, most passed tests, smallest diff) and prints the winner's unified diff; `apply: true` writes the winner into the checkout. One hypothesis is a dry run of a fix; a hypothesis without edits is the baseline."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "hypotheses": {
+                        "type": "array",
+                        "description": "Candidates to compare, each a complete set of proposed file contents",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Short label, unique within the run" },
+                                "edits": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
+                                            "new_text": { "type": "string", "description": "The complete proposed content of the file" }
+                                        },
+                                        "required": ["path", "new_text"]
+                                    }
+                                },
+                                "delete": { "type": "array", "items": { "type": "string" }, "description": "Files this hypothesis removes (optional)" }
+                            },
+                            "required": ["name"]
+                        }
+                    },
+                    "argv": { "type": "array", "items": { "type": "string" }, "description": "Command run once per hypothesis, e.g. [\"cargo\", \"test\", \"-p\", \"my-crate\"]" },
+                    "cwd": { "type": "string", "description": "Directory inside the workspace to run in (relative to the workspace root); default: the root" },
+                    "apply": { "type": "boolean", "description": "Write the winning hypothesis into the checkout (default false)" },
+                    "timeout_secs": { "type": "integer", "description": "Kill a hypothesis after this many seconds (default 3600)" },
+                    "parallel": { "type": "integer", "description": "Hypotheses run at once (default: server cores / 8)" },
+                    "tail_bytes": { "type": "integer", "description": "Output kept per hypothesis (default 16384)" }
+                },
+                "required": ["hypotheses", "argv"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1166,6 +1206,58 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_shadow_run" => {
+            let argv: Vec<String> = args
+                .get("argv")
+                .and_then(|v| v.as_array())
+                .context("Missing 'argv' argument")?
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if argv.is_empty() {
+                return Ok(McpToolCallResult::error("'argv' is empty".to_string()));
+            }
+            let specs = crate::shadow::parse_specs(workspace_root, &args, None)?;
+            let timeout_secs = args
+                .get("timeout_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let parallel = args.get("parallel").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let tail_bytes = args
+                .get("tail_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(16 * 1024) as usize;
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let subdir = args
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p))
+                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+            let outcome = crate::shadow::run_shadow(
+                remote,
+                workspace_root,
+                subdir.as_deref(),
+                &specs,
+                argv.clone(),
+                vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+                timeout_secs,
+                parallel,
+                tail_bytes,
+            )
+            .await?;
+            let applied = match (apply, outcome.winner) {
+                (true, Some(i)) => {
+                    Some(crate::shadow::apply_hypothesis(workspace_root, &specs[i])?)
+                }
+                _ => None,
+            };
+            let text = crate::shadow::render_report(&outcome, &argv, applied.as_deref(), 2000);
+            Ok(if outcome.winner.is_some() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_dead_code" => {
             let include_exported = args
                 .get("include_exported")
@@ -1845,6 +1937,28 @@ fn identifier_at(path: &Path, line: u32, col: u32, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shadow_run_schema_takes_hypotheses_and_argv() {
+        let tool = list_tools()
+            .into_iter()
+            .find(|t| t.name == "code_shadow_run")
+            .expect("code_shadow_run is listed");
+        let required: Vec<&str> = tool.input_schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(required, vec!["hypotheses", "argv"]);
+        let item = &tool.input_schema["properties"]["hypotheses"]["items"];
+        assert_eq!(item["required"], serde_json::json!(["name"]));
+        assert_eq!(
+            item["properties"]["edits"]["items"]["required"],
+            serde_json::json!(["path", "new_text"])
+        );
+        assert_eq!(tool.input_schema["properties"]["apply"]["type"], "boolean");
+    }
 
     #[test]
     fn symbol_addressable_tools_advertise_symbol_and_do_not_require_a_position() {

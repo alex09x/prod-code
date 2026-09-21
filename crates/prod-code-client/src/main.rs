@@ -202,6 +202,25 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Try several hypotheses (sets of proposed file contents) against a command, each in a
+    /// private shadow of the server workspace; print every outcome and the winner's diff.
+    ShadowRun {
+        /// JSON spec: {"hypotheses":[{"name":"h1","edits":[{"path":"src/x.rs","file":"h1-x.rs"}],"delete":["old.rs"]}]}
+        /// (`file` is read relative to the spec file; `new_text` inlines the content).
+        spec: PathBuf,
+        /// Kill a hypothesis after this many seconds (0 = server default, 1 hour).
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+        /// Hypotheses to run at once (0 = server default: cores / 8).
+        #[arg(long, default_value_t = 0)]
+        parallel: usize,
+        /// Write the winning hypothesis into the checkout.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Command and arguments (put `--` before them).
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
     /// Benchmark throughput and concurrency across workspaces and worktrees.
     Bench {
         /// Target workspace directories (or worktrees). If omitted, uses current working directory.
@@ -385,6 +404,13 @@ async fn main() -> Result<()> {
             no_pull,
             command,
         } => run_exec(remote, command, timeout_secs, !no_pull).await,
+        Commands::ShadowRun {
+            spec,
+            timeout_secs,
+            parallel,
+            apply,
+            command,
+        } => run_shadow_cli(remote, spec, timeout_secs, parallel, apply, command).await,
         Commands::Bench {
             workspaces,
             concurrency,
@@ -1862,6 +1888,48 @@ async fn run_verify(
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+async fn run_shadow_cli(
+    remote: SocketAddr,
+    spec: PathBuf,
+    timeout_secs: u64,
+    parallel: usize,
+    apply: bool,
+    command: Vec<String>,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let subdir = prod_code_mcp::exec::subdir_of(&root, &cwd);
+    let text = std::fs::read_to_string(&spec)
+        .with_context(|| format!("cannot read {}", spec.display()))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("{} is not JSON", spec.display()))?;
+    let specs = prod_code_mcp::shadow::parse_specs(&root, &json, spec.parent())?;
+    let outcome = prod_code_mcp::shadow::run_shadow(
+        remote,
+        &root,
+        subdir.as_deref(),
+        &specs,
+        command.clone(),
+        vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+        timeout_secs,
+        parallel,
+        16 * 1024,
+    )
+    .await?;
+    let applied = match (apply, outcome.winner) {
+        (true, Some(i)) => Some(prod_code_mcp::shadow::apply_hypothesis(&root, &specs[i])?),
+        _ => None,
+    };
+    println!(
+        "{}",
+        prod_code_mcp::shadow::render_report(&outcome, &command, applied.as_deref(), 4000)
+    );
+    if outcome.winner.is_none() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn run_exec(
     remote: SocketAddr,
     command: Vec<String>,

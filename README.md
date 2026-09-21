@@ -50,6 +50,29 @@ The name goes through the analyzer's workspace symbol index; qualifiers are matc
 enclosing item and `path` (file or directory) only disambiguates. A tie between different
 locations comes back as an error listing the candidates.
 
+## Shadow runs: several fixes against the tests at once
+
+An agent with two candidate fixes no longer writes one, runs the tests, reverts and writes
+the other. `code_shadow_run` (CLI: `prod-code shadow-run spec.json -- cargo test -p x`)
+takes named hypotheses, each a complete set of proposed file contents, and the gateway runs
+the command once per hypothesis in a private shadow of the workspace copy:
+
+* on Linux a shadow is an overlay mount **at the workspace's own path** inside a user
+  namespace: cargo, go and tsc see the same absolute paths, their fingerprints and the warm
+  `target/` stay valid, every write goes to the hypothesis's upper directory and the
+  workspace copy is never touched; hypotheses run in parallel (`parallel`, default cores / 8);
+* without user namespaces (macOS nodes, kernels that restrict them) hypotheses run one after
+  another in place and the touched files are restored afterwards.
+
+The result lists every hypothesis (exit code, test counts parsed from the runner's output,
+changed lines), ranks them (passed, fewest failures, most passed, smallest diff), prints the
+winner's unified diff and the output tail of every failing one; `apply: true` writes the
+winner into the checkout. One hypothesis is a dry run of a fix; a hypothesis without edits is
+the baseline. Upper directories live under `--shadow-dir` (default `shadow` next to the
+storage directory; a tmpfs path keeps hypothesis builds in RAM) and are removed after each
+run. Ubuntu 24.04 needs `kernel.apparmor_restrict_unprivileged_userns=0` for the overlay
+mode.
+
 ## Cluster
 
 Any number of gateways form a cluster: start each with `--peers <one live peer>` and

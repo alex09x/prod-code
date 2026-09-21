@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod refactor;
 pub mod remote_fs;
 pub mod session;
+pub mod shadow;
 pub mod sync;
 pub mod tools;
 pub mod verify;
