@@ -9,6 +9,9 @@ members = [
     "crates/prod-code-engine-generic",
     "crates/prod-code-mcp",
 ]
+# The multi-language fixture under fixtures/ is a test bed, not a member: its crate is meant to
+# be analysed by the gateway, not built here.
+exclude = ["fixtures"]
 
 [workspace.package]
 version = "0.2.1"

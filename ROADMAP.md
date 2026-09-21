@@ -315,7 +315,7 @@ This document outlines the architectural milestones and engineering phases for b
     - `code_implementations(path, line, col)`: all structs/classes implementing a trait, interface, or abstract class.
     - `code_dead_code()`: whole-program graph reachability analysis identifying unused functions and types post-refactoring.
 
-- [ ] **7.6. Cross-Language Full-Stack Schema Refactoring**
+- [~] **7.6. Cross-Language Full-Stack Schema Refactoring** — shipped 2026-09-21 as `code_schema_rename` / `prod-code schema-rename`: one field, renamed across the languages that spell it differently (snake, camel, Pascal, Go's initialism form, SCREAMING, kebab). Identifiers are renamed by the analyzer of their own sub-project — which is what carries the change into files the scan never looked at — and only schema files and string literals (a `json:` tag, an SQL query) are edited as text, at the positions found. Colliding renames are skipped and reported rather than merged, identifiers in comments are reported rather than rewritten, and the result is type-checked per project before it is written. Verified on `fixtures/polyglot-order` (proto + SQL + Go + TypeScript + Rust). Open: a single atomic edit across several repositories, and OpenAPI and GraphQL schemas as first-class inputs rather than as text.
   - Unified multi-language schema evolution across polyglot repositories:
     - Changing a backend schema (Protobuf, OpenAPI, SQL, or Rust/Go data models) automatically coordinates with frontend TypeScript interfaces, API clients, and UI components.
     - Emits an atomic multi-repository `WorkspaceEdit` synchronizing backend and frontend simultaneously.

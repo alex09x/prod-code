@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Cross-language schema rename (roadmap 7.6): `code_schema_rename` (MCP) and
+  `prod-code schema-rename <field> --to <new>` rename a schema field across every language
+  that spells it — `order_id` in the `.proto` and in Rust, `OrderID` with a `json:"order_id"`
+  tag in Go, `orderId` in TypeScript, the column in the SQL. All spellings (snake, camel,
+  Pascal, Go's initialism form, SCREAMING, kebab) are found by a whole-word scan, which is
+  discovery only; every identifier is then renamed by the analyzer of its own sub-project, so
+  the change follows the symbol into files the scan never looked at, and only what no analyzer
+  owns — schema files, and the name inside string literals — is edited textually at the
+  positions that were found. Two renames that want the same characters are never merged: the
+  second is skipped and reported. The result is type-checked per project before anything is
+  written. A test bed is in `fixtures/polyglot-order`.
 - Change signature (roadmap 7.1.1): `code_change_signature` (MCP) and
   `prod-code change-signature <fn> --param …` change what a function takes, with its call
   sites. `params` is the list the function should end up with — `name` keeps a parameter,

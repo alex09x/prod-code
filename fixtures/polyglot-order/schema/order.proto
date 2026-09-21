@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package trading;
+
+// One filled order as the exchange reports it.
+message Order {
+  string order_id = 1;
+  string symbol = 2;
+  double price = 3;
+}
+
+message OrderBatch {
+  repeated Order orders = 1;
+  string order_id_cursor = 2;
+}
