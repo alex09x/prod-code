@@ -14,7 +14,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Streaming transport support: 10 GbE TCP stream with TCP_NODELAY and socket buffer tuning.
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
 - [x] **1.2. Bi-directional Path Translation**
-  - Canonical URI/path rewriting between client workspace roots (`file:///Users/alex09x/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
+  - Canonical URI/path rewriting between client workspace roots (`file:///Users/me/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
 - [x] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
@@ -74,7 +74,7 @@ This document outlines the architectural milestones and engineering phases for b
 - [x] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
-- [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on booster and rama; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. Shared PCH / index cache across worktrees still open.
+- [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on two Linux nodes; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. Shared PCH / index cache across worktrees still open.
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
   - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
   - Offloads multi-gigabyte AST indexing for massive C++ codebases (e.g. Chromium, ClickHouse, trading engines) from local laptops to 32–128 core servers.
@@ -86,7 +86,7 @@ This document outlines the architectural milestones and engineering phases for b
   - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
   - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
   - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
-- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: the Mac Studio (192.168.2.242:9400, launchd unit `com.prod-code.gateway`) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
+- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: a Mac Studio (launchd unit `com.prod-code.gateway`) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
   - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
   - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
 
@@ -120,12 +120,12 @@ This document outlines the architectural milestones and engineering phases for b
 
 **Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers) with dynamic load balancing, repository affinity, and zero-configuration service discovery.
 
-- [x] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19 (`--remote a:9400,b:9400`, rendezvous hashing, remembered placement, failover, engine-aware placement). Server-side dispatch 2026-09-20: the client asks any node `PlaceRequest {workspace, engine}` and the node answers from its gossip view — the node that already holds the workspace, otherwise the quietest live node that serves the engine; the client goes there directly (no mid-handshake redirect needed, so sync never happens on the wrong node). Five nodes: booster, rama, ram9, Mac Studio, MacBook.
+- [x] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19 (`--remote a:9400,b:9400`, rendezvous hashing, remembered placement, failover, engine-aware placement). Server-side dispatch 2026-09-20: the client asks any node `PlaceRequest {workspace, engine}` and the node answers from its gossip view — the node that already holds the workspace, otherwise the quietest live node that serves the engine; the client goes there directly (no mid-handshake redirect needed, so sync never happens on the wrong node). Five nodes: three Linux, two macOS.
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
   - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
   - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.
-- [x] **5.2. Smart DNS & Service Discovery (`*.code.internal`)** — done 2026-09-20 without DNS: one seed address is enough (`PROD_CODE_REMOTE=192.168.2.168:9400`); the client asks it for the gossip view (`ClusterRequest`), adds every live member and caches the list in `~/.local/share/prod_code/cluster.json` for when the seed is down. Gateways learn peers transitively from gossip, so a node needs only one live `--peers` entry. mDNS/SRV publication judged unnecessary on a static LAN.
-  - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `btcr.code.internal` -> `192.168.2.168:9400`, `codehaus.code.internal` -> `192.168.2.190:9400`).
+- [x] **5.2. Smart DNS & Service Discovery (`*.code.internal`)** — done 2026-09-20 without DNS: one seed address is enough (`PROD_CODE_REMOTE=192.0.2.10:9400`); the client asks it for the gossip view (`ClusterRequest`), adds every live member and caches the list in `~/.local/share/prod_code/cluster.json` for when the seed is down. Gateways learn peers transitively from gossip, so a node needs only one live `--peers` entry. mDNS/SRV publication judged unnecessary on a static LAN.
+  - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `btcr.code.internal` -> `192.0.2.10:9400`, `codehaus.code.internal` -> `192.0.2.11:9400`).
   - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
   - Dynamic SRV record publication for active daemon instances across the LAN.
 - [x] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing** — 2026-09-20: every gateway heartbeats its peers every 5 s (`Gossip`: load average, CPU count, RSS, engines, loaded workspaces with session counts, known peers); a peer silent for 30 s counts as stale. Placement answers move an idle workspace (0 sessions) off a node above 1.0 load/CPU to a node below half that; active sessions are never moved. `prod-code cluster` prints the gossip view of the whole cluster from one node.
@@ -171,7 +171,7 @@ This document outlines the architectural milestones and engineering phases for b
     - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
 
 - [~] **6.2. Server-Side Execution Engine & Warm Polyglot Caches (`crates/prod-code-gateway`)** — commands run inside the synced workspace copy; `target/` and `node_modules/` persist per workspace between runs (2026-09-19).
-  - Dispatch execution to dedicated high-performance Linux worker nodes (`booster` with 32 cores, or `rama` with 128 Ampere cores / 250 GB RAM).
+  - Dispatch execution to dedicated high-performance Linux worker nodes (a 32-core x86 node, or a 128-core Ampere node / 250 GB RAM).
   - Persistent server-side build caches on fast NVMe / RAM-disk (`/dev/shm`):
     - Rust: shared `~/.cargo/registry`, `target/` on NVMe.
     - Go: warm shared `GOCACHE` and `GOPATH/pkg/mod`.

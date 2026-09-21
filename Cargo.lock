@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-client"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1082,7 +1082,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-generic"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-go"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-engine-rust"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "prod-code-protocol",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-gateway"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1158,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "prod-code-protocol"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",

@@ -4,13 +4,14 @@
 # TCC grants across rebuilds instead of prompting after every deploy), install, restart.
 #
 # usage: scripts/deploy-mac-node.sh <host> <advertise> <peers-csv> [release|dev]
-#   host       ssh target of the node (e.g. 192.168.2.40); "local" = this machine
-#   advertise  address the node announces to the cluster (e.g. 192.168.2.40:9400)
+#   host       ssh target of the node (e.g. 192.0.2.20); "local" = this machine
+#   advertise  address the node announces to the cluster (e.g. 192.0.2.20:9400)
 #   peers      comma-separated peer addresses
 #   profile    release (default) or dev
+#   PROD_CODE_SIGN_IDENTITY  codesign identity from the local keychain (required)
 set -euo pipefail
 HOST=${1:?host}; ADV=${2:?advertise}; PEERS=${3:?peers}; PROFILE=${4:-release}
-IDENTITY=${PROD_CODE_SIGN_IDENTITY:-"Apple Development: afonya@student.su (53BSRDD35M)"}
+IDENTITY=${PROD_CODE_SIGN_IDENTITY:?set to the codesign identity, e.g. "Apple Development: you@example.com (TEAMID)"}
 BUNDLE_ID=com.prod-code.gateway
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
@@ -49,9 +50,9 @@ PLIST=$(cat <<PL
     <key>Label</key><string>com.prod-code.gateway</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/alex09x/.local/bin/prod-code-server</string>
+        <string>__HOME__/.local/bin/prod-code-server</string>
         <string>--bind</string><string>0.0.0.0:9400</string>
-        <string>--storage</string><string>/Users/alex09x/prod-code-storage/workspaces</string>
+        <string>--storage</string><string>__HOME__/prod-code-storage/workspaces</string>
         <string>--advertise</string><string>$ADV</string>
         <string>--peers</string><string>$PEERS</string>
     </array>
@@ -60,8 +61,8 @@ PLIST=$(cat <<PL
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
     <key>ProcessType</key><string>Interactive</string>
-    <key>StandardOutPath</key><string>/Users/alex09x/Library/Logs/prod-code-gateway.log</string>
-    <key>StandardErrorPath</key><string>/Users/alex09x/Library/Logs/prod-code-gateway.log</string>
+    <key>StandardOutPath</key><string>__HOME__/Library/Logs/prod-code-gateway.log</string>
+    <key>StandardErrorPath</key><string>__HOME__/Library/Logs/prod-code-gateway.log</string>
 </dict>
 </plist>
 PL
@@ -74,6 +75,7 @@ set -e
 mkdir -p ~/.local/bin ~/Library/LaunchAgents
 mv -f ~/.local/bin/prod-code-server.new ~/.local/bin/prod-code-server
 codesign -v ~/.local/bin/prod-code-server
+sed -i "" "s|__HOME__|$HOME|g" ~/Library/LaunchAgents/com.prod-code.gateway.plist.new
 mv -f ~/Library/LaunchAgents/com.prod-code.gateway.plist.new ~/Library/LaunchAgents/com.prod-code.gateway.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prod-code.gateway.plist 2>/dev/null || true
 launchctl kickstart -k gui/$(id -u)/com.prod-code.gateway

@@ -131,7 +131,7 @@ mod tests {
         let mut buf = BytesMut::new();
 
         let req = WireMessage::SyncRequest(SyncRequest {
-            client_workspace_root: "/Users/alex09x/repo".to_string(),
+            client_workspace_root: "/Users/dev/repo".to_string(),
             files: vec![
                 FileDelta {
                     relative_path: "src/main.rs".to_string(),

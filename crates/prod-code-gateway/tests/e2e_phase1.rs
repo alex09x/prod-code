@@ -169,7 +169,7 @@ async fn test_full_phase1_e2e_flow() {
         let stream = TcpStream::connect(server_addr).await.unwrap();
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
-        let client_root = "/Users/alex09x/Documents/workspace/my-cool-project";
+        let client_root = "/Users/dev/Documents/workspace/my-cool-project";
         framed
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,

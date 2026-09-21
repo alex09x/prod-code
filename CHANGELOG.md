@@ -1,8 +1,24 @@
 # Changelog
 
-## Unreleased
+## v0.2.1 — 2026-09-20
 
 ### Added
+- `code_validate_edits {edits: [{path, text}], also_check}`: several proposed files are
+  validated together in one in-memory overlay, plus any extra files to check. When an edited
+  file drops or renames a symbol, errors in other files that mention it carry a note naming the
+  removed or renamed symbol and the file it vanished from; rust-analyzer stays silent on a
+  qualified call to a function that no longer exists, so a `prod-code::stale-reference`
+  warning is synthesised on that line.
+- MCP hot reload: `prod-code mcp` polls its own binary every 3 s. When the installed file
+  changes it finishes the in-flight request, sends `notifications/tools/list_changed`,
+  re-executes itself with the same arguments and environment (`initialize` declares
+  `tools.listChanged`), and the resumed process sends the notification again, so a running
+  agent session gets the new tools and schemas without a restart.
+- Gateway `--engines rust,go,cpp` allowlist: a node advertises and serves only the listed
+  engines and refuses handshakes for the others, so a macOS node can be Swift-only and
+  placement never sends Rust work to a workstation.
+- `PROD_CODE_TIMING=1` prints the client's per-phase timing (connect, sync, handshake, query)
+  to stderr; `divergent-bench --persistent` reports the same phases.
 - Symbol-addressed queries: every position tool (`code_definition`, `code_references`,
   `code_hover`, `code_callers`, `code_callees`, `code_implementations`, `code_rename`,
   `code_safe_delete`, `code_assists`, `code_assist`, `code_type_at`) accepts `symbol`
@@ -14,13 +30,28 @@
   (`-p <name>`), Go package tree (`./dir/...`) or pytest path containing it.
 
 ### Fixed
+- Position tools' MCP schemas declare the `symbol` parameter (the tools accepted it, agents
+  could not see it). `code_outline` hides local variables unless `include_locals` is set and
+  `max_depth` limits nesting.
+- A worktree is placed on the node that holds its origin repository (placement is keyed by the
+  origin checkout), so the gateway can seed the worktree copy from the origin's files.
+- Diagnostics reports (`code_diagnostics`, `code_validate_edit(s)`, `prod-code diagnostics`)
+  drop rust-analyzer's `inactive-code` hints: code behind an inactive `cfg` is not an error.
+- Worktree copies keep their own `target/` directory: no shared cargo state and no shared
+  build lock between worktrees. The first load of a new worktree runs its build scripts once.
 - Go engine is advertised only when both `gopls` and `go` are on the gateway's PATH (gopls
-  without the go tool answers "no views"); ram9 got a Go toolchain.
+  without the go tool answers "no views"); the third Linux node got a Go toolchain.
 - `GoEngine::document_symbols` surfaces gopls errors instead of returning an empty list.
-- rama ran Ubuntu clangd 18, whose `workspace/symbol` reports header symbols under the wrong
+- One node ran Ubuntu clangd 18, whose `workspace/symbol` reports header symbols under the wrong
   file; all Linux nodes now run clangd 22.1.6 from `~/.local/clangd`.
 
 ### Changed
+- `TCP_NODELAY` on every gateway connection (client connect, gateway accept, gossip). Nagle
+  plus delayed ACK stalled half of the didOpen→hover rounds by 32–43 ms; the server round trip
+  is now p50 ~1 ms.
+- Development process: every change is an issue and a pull request with the commands that
+  reproduce and verify it (`CONTRIBUTING.md`); checks run on the build nodes, there is no
+  hosted CI.
 - Gateway channels moved to [`rapidfire`](https://github.com/alex09x/rapidfire) (zero-dependency
   MPSC): the per-session outgoing queue is drained in batches of 64 with one socket flush per
   batch, exec stdout/stderr chunks fan in through a bounded rapidfire channel, and metrics
@@ -123,7 +154,7 @@ than a fast LSP. Since v0.1.0:
   `code_callers` / `code_callees` / `code_implementations` for every engine (rust-analyzer
   in-memory, gopls, clangd, native TypeScript, basedpyright, sourcekit-lsp), with call sites.
 - Rust document symbols report their real kinds and lines (all were `Variable (line 1)`).
-- Second macOS node: the MacBook Pro (192.168.2.40, Xcode 15.4 with iOS simulators, live GUI
+- Second macOS node: a MacBook Pro (Xcode 15.4 with iOS simulators, live GUI
   session) runs a gateway for Swift and Xcode UI tests.
 
 - Sync watermarks are kept per gateway node: a checkout placed on a second node (or moved by
@@ -132,8 +163,8 @@ than a fast LSP. Since v0.1.0:
   "fresh" and the client resyncs before the query or `exec` runs. Files rewritten by the client
   for rename / assists / safe-delete are no longer recorded as synced (the gateway only computed
   those edits); the next sync uploads them, so hover after rename sees the new code.
-- Third Linux node ram9 (192.168.2.143, Ryzen 9 7950X) joined the cluster with all Linux
-  engines; the Mac Studio (192.168.2.242) is the macOS node for Swift.
+- A third Linux node (Ryzen 9 7950X) joined the cluster with all Linux
+  engines; a Mac Studio is the macOS node for Swift.
 
 - Language engines (Phase 3.4–3.6): C/C++ (`clangd`), TypeScript (native TypeScript 7
   `tsc --lsp`, fallback `typescript-language-server`) and Python (`basedpyright`) workspaces
