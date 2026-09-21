@@ -124,6 +124,63 @@ mod tests {
     }
 
     #[test]
+    fn test_shadow_codec_roundtrip() {
+        use crate::messages::{
+            FileDelta, ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest,
+            ShadowRunResponse,
+        };
+
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::new();
+        let req = WireMessage::ShadowRunRequest(ShadowRunRequest {
+            client_workspace_root: "/Users/dev/repo".to_string(),
+            base_workspace_name: Some("repo".to_string()),
+            hypotheses: vec![ShadowHypothesis {
+                name: "h1".to_string(),
+                files: vec![
+                    FileDelta {
+                        relative_path: "src/lib.rs".to_string(),
+                        content: Some(b"pub fn x() {}".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: "old.rs".to_string(),
+                        content: None,
+                        is_executable: false,
+                    },
+                ],
+            }],
+            command: vec!["cargo".to_string(), "test".to_string()],
+            env: Vec::new(),
+            timeout_secs: 0,
+            subdir: None,
+            parallel: 0,
+            tail_bytes: 0,
+            client_agent: None,
+            client_host: None,
+        });
+        codec.encode(req.clone(), &mut buf).unwrap();
+        assert_eq!(codec.decode(&mut buf).unwrap().expect("decodes"), req);
+
+        let resp = WireMessage::ShadowRunResponse(ShadowRunResponse {
+            server_workspace_root: "/srv/ws/repo".to_string(),
+            mode: "overlay".to_string(),
+            results: vec![ShadowHypothesisResult {
+                name: "h1".to_string(),
+                exit_code: Some(0),
+                duration_ms: 950,
+                timed_out: false,
+                error: None,
+                output_tail: Some(b"test result: ok".to_vec()),
+                output_len: 15,
+            }],
+            error: None,
+        });
+        codec.encode(resp.clone(), &mut buf).unwrap();
+        assert_eq!(codec.decode(&mut buf).unwrap().expect("decodes"), resp);
+    }
+
+    #[test]
     fn test_sync_codec_roundtrip() {
         use crate::messages::{FileDelta, SyncRequest, SyncResponse};
 

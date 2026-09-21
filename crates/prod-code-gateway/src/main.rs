@@ -4,6 +4,7 @@ pub mod backend;
 pub mod detect;
 pub mod memory;
 mod metrics;
+pub mod shadow;
 pub mod workspace;
 
 pub use detect::detect_engine;
@@ -66,6 +67,12 @@ pub struct ServerCli {
     #[arg(long, env = "PROD_CODE_ENGINES", value_delimiter = ',')]
     pub engines: Vec<String>,
 
+    /// Directory for the overlays of shadow runs (one upper directory per hypothesis, holding
+    /// what its build wrote). Default: `shadow` next to the storage directory; a tmpfs path
+    /// (`/dev/shm/prod-code-shadow`) keeps hypothesis builds in RAM.
+    #[arg(long, env = "PROD_CODE_SHADOW_DIR")]
+    pub shadow_dir: Option<PathBuf>,
+
     /// Other gateways of the cluster (`host:port,host:port`); membership then spreads by
     /// gossip, so listing one live peer is enough.
     #[arg(long, env = "PROD_CODE_PEERS", default_value = "")]
@@ -94,6 +101,8 @@ pub struct ServerState {
     pub metrics: Arc<metrics::Metrics>,
     /// Engines this node serves (`--engines`); empty means every installed engine.
     pub engine_allowlist: Vec<String>,
+    /// Where shadow runs keep the upper directories of their overlays (`--shadow-dir`).
+    pub shadow_root: PathBuf,
 }
 
 /// Who a session belongs to, for metrics.
@@ -140,6 +149,7 @@ impl ServerState {
             server_pid: std::process::id(),
             next_session_id: AtomicU64::new(1),
             active_sessions: AtomicUsize::new(0),
+            shadow_root: shadow::default_root(&storage_root),
             storage_root,
             workspace_manager: Arc::new(WorkspaceManager::new()),
             advertise: tokio::sync::RwLock::new(String::new()),
@@ -1608,6 +1618,9 @@ pub async fn handle_client(
             }
             WireMessage::ExecRequest(req) => {
                 run_exec(&state.storage_root, &state.metrics, &mut framed, req).await?;
+            }
+            WireMessage::ShadowRunRequest(req) => {
+                shadow::run_shadow(&state, &mut framed, req).await?;
             }
             WireMessage::ReadFileRequest(req) => {
                 let resp = read_server_file(&state.storage_root, &req);
@@ -3218,6 +3231,19 @@ async fn main() -> Result<()> {
         .collect();
     if !state.engine_allowlist.is_empty() {
         tracing::info!(engines = ?state.engine_allowlist, "serving only the listed engines");
+    }
+    if let Some(dir) = cli.shadow_dir.clone() {
+        state.shadow_root = dir;
+    }
+    let swept = shadow::sweep(&state.shadow_root);
+    if swept > 0 {
+        tracing::info!(dir = %state.shadow_root.display(), swept, "removed leftover shadow directories");
+    }
+    match shadow::overlay_unavailable() {
+        None => {
+            tracing::info!(dir = %state.shadow_root.display(), "shadow runs: overlay mode (user namespaces + overlayfs)")
+        }
+        Some(reason) => tracing::info!(reason, "shadow runs: in-place mode"),
     }
     let state = Arc::new(state);
     let listener = TcpListener::bind(cli.bind).await?;

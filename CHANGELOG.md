@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Shadow runs (roadmap 7.4, second step): `code_shadow_run` / `prod-code shadow-run` run a
+  command once per named hypothesis (complete proposed file contents) in a private shadow of
+  the server workspace. On Linux a shadow is an overlay mount at the workspace's own path
+  inside a user namespace, so warm build caches stay valid and hypotheses run in parallel;
+  without user namespaces they run one at a time in place with the files restored. Every
+  hypothesis reports exit code, parsed test counts and output tail; the outcomes are ranked
+  (passed, fewest failures, most passed, smallest diff) and the winner comes back as a
+  unified diff (`apply: true` writes it). Gateway `--shadow-dir` places the upper
+  directories; leftovers are swept at start.
+
 ## v0.2.1 — 2026-09-20
 
 ### Added
