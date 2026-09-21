@@ -103,6 +103,28 @@ A macOS node exists for Swift, so the unit is written with `--engines swift`
 refuses handshakes for the rest, and placement never sends Rust, Go, C++ or Python work to a
 workstation that happens to have their toolchains installed.
 
+## Finding code by what it does
+
+`code_search` (CLI: `prod-code search "..."`) answers a question about the codebase with
+declarations rather than file matches. The gateway keeps an index of every declaration in the
+workspace copy with the doc comment above it, and ranks them against the question's words:
+
+```
+$ prod-code search "how do we decide which node runs a workspace"
+10 hit(s) for `how do we decide which node runs a workspace` in 16 ms (1001 declarations, 40 files)
+
+ 1. [function] pick_node  crates/prod-code-mcp/src/cluster.rs:107
+    pub async fn pick_node(
+    Chooses the gateway for `workspace_name` among `nodes`: the remembered placement when it is
+    still one of the nodes, alive and able to serve `engine`, otherwise the quietest alive node
+```
+
+It is lexical, so a question sharing no words with the code or its comments finds nothing, and
+`code_symbols` remains the way to look up a name you already know. Declarations that belong to
+tests are left out unless the question mentions tests. The index is built on the first query
+and then kept current by the sync layer, which tells it which files it wrote: 568 ms for the
+first query against a 26712-declaration repository, 33 ms for every one after it.
+
 ## Reading a symbol without reading its files
 
 `code_slice` (CLI: `prod-code slice <symbol|file --line N>`) returns the code a symbol

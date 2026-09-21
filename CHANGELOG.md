@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Intent search (roadmap 8.4, first step): `code_search` (MCP) and `prod-code search "..."`
+  find code by what it does when you do not know what it is called. The gateway indexes every
+  declaration in the workspace copy together with the doc comment above it, its signature and
+  its container, and ranks them with BM25 over those fields (name weighted highest) against the
+  words of the question. Declarations belonging to tests are excluded unless the question is
+  about tests, because a test's name repeats every word of the thing it tests. Lexical, not
+  embeddings: the dense half of 8.4 is still open. The index is built on the first query and
+  then kept current by the sync layer telling it which files it wrote, so a query never walks
+  the tree. Measured: on a 1000-declaration repository a question answers in 2-42 ms; on a
+  26712-declaration, 1051-file Go repository the first query costs 568 ms (the index build) and
+  every later one 33 ms.
 - Program slicing (roadmap 7.3): `code_slice` (MCP) and `prod-code slice` return only the code
   a symbol depends on. From the seed declaration the analyzer's own edges are followed, the
   functions it calls and the types, constants and traits its body mentions, each returned as a

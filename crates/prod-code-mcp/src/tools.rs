@@ -367,6 +367,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_search".to_string(),
+            description: "Find code by what it does when you do not know what it is called. The gateway indexes every declaration in the workspace together with the doc comment above it, and ranks them against your question's words (BM25 over name, container, signature and doc, name weighted highest). Ask it the way you would ask a colleague: \"where do we decide which node runs a workspace\". Returns declarations with file:line, signature and the doc sentence that matched, best first. This is lexical, not embeddings: a question sharing no words with the code or its comments finds nothing, and `code_symbols` remains the way to look up a name you already know."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "What the code does, in words (`how do we retry a dropped websocket`)" },
+                    "limit": { "type": "integer", "description": "Hits to return (default 10)" },
+                    "path": { "type": "string", "description": "Restrict to declarations under this directory (relative to the workspace root)" }
+                },
+                "required": ["query"]
+            }),
+        },
+        McpTool {
             name: "code_dead_code".to_string(),
             description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
                 .to_string(),
@@ -1305,6 +1319,22 @@ pub async fn execute_tool(
             )
             .await?;
             Ok(McpToolCallResult::text(report.render()))
+        }
+        "code_search" => {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .context("Missing 'query' argument")?;
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let subpath = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p))
+                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+            let resp =
+                crate::search::search(remote, workspace_root, query, limit, subpath.as_deref())
+                    .await?;
+            Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
         }
         "code_dead_code" => {
             let include_exported = args

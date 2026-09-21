@@ -32,6 +32,9 @@ pub enum WireMessage {
     /// Run a command per hypothesis in shadows of the workspace (roadmap 7.4).
     ShadowRunRequest(ShadowRunRequest),
     ShadowRunResponse(ShadowRunResponse),
+    /// Rank a workspace's declarations against a question (roadmap 8.4).
+    SearchRequest(SearchRequest),
+    SearchResponse(SearchResponse),
     /// Read a source file that lives only on the gateway host (standard library, dependency
     /// registries, SDK headers): what a definition outside the checkout points at.
     ReadFileRequest(ReadFileRequest),
@@ -660,6 +663,53 @@ pub struct ShadowRunResponse {
     pub mode: String,
     pub results: Vec<ShadowHypothesisResult>,
     /// Set when the run could not start at all (workspace not synced, empty command, ...).
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+/// Search a workspace's declarations by intent (roadmap 8.4): the gateway keeps an index of
+/// every declaration with the doc comment above it, and ranks them against the query's words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchRequest {
+    pub client_workspace_root: String,
+    #[serde(default)]
+    pub base_workspace_name: Option<String>,
+    pub query: String,
+    /// Hits to return; 0 means the server default.
+    #[serde(default)]
+    pub limit: usize,
+    /// Restrict to declarations under this relative path.
+    #[serde(default)]
+    pub subpath: Option<String>,
+    #[serde(default)]
+    pub client_agent: Option<String>,
+    #[serde(default)]
+    pub client_host: Option<String>,
+}
+
+/// One declaration the query matched.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchHit {
+    /// Path relative to the workspace root.
+    pub file: String,
+    pub line: u32,
+    pub kind: String,
+    pub name: String,
+    #[serde(default)]
+    pub container: Option<String>,
+    pub signature: String,
+    /// First sentence of the doc comment attached to the declaration.
+    #[serde(default)]
+    pub doc: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchResponse {
+    pub server_workspace_root: String,
+    pub hits: Vec<SearchHit>,
+    pub indexed_files: usize,
+    pub indexed_declarations: usize,
+    pub took_ms: u64,
     #[serde(default)]
     pub error: Option<String>,
 }
