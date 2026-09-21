@@ -4,6 +4,7 @@
 use crate::session::LspSession;
 use anyhow::Result;
 use serde::Serialize;
+use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -15,6 +16,10 @@ pub struct DocDiagnostic {
     pub line: u32,
     pub col: u32,
     pub source: Option<String>,
+    /// Extra explanation added by prod-code (for example that the failing line uses a symbol
+    /// the proposed edits removed or renamed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,8 +53,133 @@ impl DiagnosticsReport {
                 d.line,
                 d.col
             ));
+            if let Some(note) = &d.note {
+                out.push_str(&format!("    note: {note}\n"));
+            }
         }
         out
+    }
+}
+
+/// Every symbol name in a `textDocument/documentSymbol` result (flat or hierarchical).
+fn symbol_names(result: &serde_json::Value) -> BTreeSet<String> {
+    fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match value {
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            serde_json::Value::Object(map) => {
+                if let Some(name) = map.get("name").and_then(|n| n.as_str()) {
+                    out.insert(name.to_string());
+                }
+                if let Some(children) = map.get("children") {
+                    walk(children, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(result, &mut out);
+    out
+}
+
+/// Whether `line` mentions `name` as a whole identifier.
+fn mentions_identifier(line: &str, name: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = line[from..].find(name) {
+        let start = from + pos;
+        let end = start + name.len();
+        let before_ok =
+            start == 0 || !(bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_');
+        let after_ok =
+            end >= bytes.len() || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// Code of the warning prod-code synthesises for a line that still uses a removed symbol.
+pub const STALE_REFERENCE: &str = "prod-code::stale-reference";
+
+/// Explains, and where the analyzer stayed silent reports, uses of a symbol that the proposed
+/// edits removed or renamed. `missing` pairs a symbol name with the file it disappeared from;
+/// `sources` maps a report's file to the text its diagnostics were computed against.
+///
+/// An existing error or warning on such a line gets a note. A line with no diagnostic gets a
+/// synthesised warning: rust-analyzer does not report a plain call to a function that no
+/// longer exists (that is rustc's E0425), so without this the report would say "0 errors"
+/// for a caller the edit just broke. The file the symbol vanished from is skipped: mentions
+/// of the old name there are its own doc comments.
+fn annotate_missing_symbols(
+    reports: &mut [DiagnosticsReport],
+    sources: &HashMap<String, String>,
+    missing: &[(String, String)],
+) {
+    if missing.is_empty() {
+        return;
+    }
+    for report in reports.iter_mut() {
+        let Some(text) = sources.get(&report.file) else {
+            continue;
+        };
+        let relevant: Vec<&(String, String)> = missing
+            .iter()
+            .filter(|(_, from)| *from != report.file)
+            .collect();
+        if relevant.is_empty() {
+            continue;
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        let note_for = |name: &str, from: &str| {
+            format!(
+                "this line uses `{name}`, which the proposed edit to {from} removed or renamed; update the caller or keep the symbol"
+            )
+        };
+        let mut flagged: BTreeSet<u32> = BTreeSet::new();
+        for item in report.items.iter_mut() {
+            if item.severity != "error" && item.severity != "warning" {
+                continue;
+            }
+            let Some(line) = lines.get(item.line.saturating_sub(1) as usize) else {
+                continue;
+            };
+            if let Some((name, from)) = relevant
+                .iter()
+                .find(|(name, _)| mentions_identifier(line, name))
+            {
+                item.note = Some(note_for(name, from));
+                flagged.insert(item.line);
+            }
+        }
+        for (idx, line) in lines.iter().enumerate() {
+            let line_no = idx as u32 + 1;
+            if flagged.contains(&line_no) {
+                continue;
+            }
+            let Some((name, from)) = relevant
+                .iter()
+                .find(|(name, _)| mentions_identifier(line, name))
+            else {
+                continue;
+            };
+            let col = line.find(name.as_str()).unwrap_or(0) as u32 + 1;
+            report.items.push(DocDiagnostic {
+                severity: "warning".to_string(),
+                code: Some(STALE_REFERENCE.to_string()),
+                message: format!(
+                    "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                ),
+                line: line_no,
+                col,
+                source: Some("prod-code".to_string()),
+                note: Some(note_for(name, from)),
+            });
+            report.warnings += 1;
+        }
+        report.items.sort_by_key(|d| (d.line, d.col));
     }
 }
 
@@ -69,6 +199,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
                         _ => "error",
                     };
                     DocDiagnostic {
+                        note: None,
                         severity: severity.to_string(),
                         code: d.get("code").map(|c| match c {
                             serde_json::Value::String(s) => s.clone(),
@@ -165,8 +296,35 @@ pub async fn validate_texts(
         .or_else(|| also_check.first().map(|p| p.as_path()));
     let mut session = LspSession::open(remote, root, hint).await?;
     let mut uris = Vec::with_capacity(edits.len());
+    // Symbols that the proposed texts remove or rename, with the file they vanish from: an
+    // error on a line that still uses one of them gets an explaining note, because the
+    // analyzer itself reports such a call as "type annotations needed" or "cannot find".
+    let mut missing: Vec<(String, String)> = Vec::new();
+    let mut sources: HashMap<String, String> = HashMap::new();
     for (file, text) in edits {
-        uris.push((file.clone(), session.open_text(file, text).await?));
+        let uri = session.uri_for(file)?;
+        let symbols_params = serde_json::json!({ "textDocument": { "uri": uri } });
+        let before = if root.join(file).is_file() || file.is_file() {
+            session
+                .query(file, "textDocument/documentSymbol", symbols_params.clone())
+                .await
+                .map(|r| symbol_names(&r))
+                .unwrap_or_default()
+        } else {
+            BTreeSet::new()
+        };
+        let uri = session.open_text(file, text).await?;
+        let after = session
+            .request("textDocument/documentSymbol", symbols_params)
+            .await
+            .map(|r| symbol_names(&r))
+            .unwrap_or_default();
+        let shown = display(root, file);
+        for name in before.difference(&after) {
+            missing.push((name.clone(), shown.clone()));
+        }
+        sources.insert(shown, text.clone());
+        uris.push((file.clone(), uri));
     }
     let mut reports = Vec::with_capacity(edits.len() + also_check.len());
     for (file, uri) in &uris {
@@ -187,9 +345,19 @@ pub async fn validate_texts(
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
             .await?;
-        reports.push(parse_items(&display(root, file), &result));
+        let shown = display(root, file);
+        let abs = if file.is_absolute() {
+            file.clone()
+        } else {
+            root.join(file)
+        };
+        if let Ok(text) = std::fs::read_to_string(&abs) {
+            sources.insert(shown.clone(), text);
+        }
+        reports.push(parse_items(&shown, &result));
     }
     session.close().await;
+    annotate_missing_symbols(&mut reports, &sources, &missing);
     Ok(reports)
 }
 
@@ -232,5 +400,140 @@ mod tests {
         );
         assert_eq!(report.items[0].line, 11);
         assert_eq!(report.items[0].col, 9);
+    }
+
+    #[test]
+    fn symbol_names_walks_flat_and_hierarchical_results() {
+        let flat = serde_json::json!([
+            { "name": "shared_target_dir", "kind": 12 },
+            { "name": "Tracked", "kind": 23 }
+        ]);
+        assert_eq!(
+            symbol_names(&flat).into_iter().collect::<Vec<_>>(),
+            vec!["Tracked".to_string(), "shared_target_dir".to_string()]
+        );
+        let tree = serde_json::json!([
+            { "name": "Outer", "kind": 23, "children": [ { "name": "inner", "kind": 6 } ] }
+        ]);
+        assert!(symbol_names(&tree).contains("inner"));
+    }
+
+    #[test]
+    fn mentions_identifier_matches_whole_words_only() {
+        assert!(mentions_identifier(
+            "    let d = workspace::shared_target_dir(&ws);",
+            "shared_target_dir"
+        ));
+        assert!(!mentions_identifier(
+            "    let d = shared_target_dir_renamed(&ws);",
+            "shared_target_dir"
+        ));
+        assert!(!mentions_identifier(
+            "    let x = my_shared_target_dir;",
+            "shared_target_dir"
+        ));
+    }
+
+    #[test]
+    fn errors_on_lines_using_a_removed_symbol_get_a_note() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/main.rs".to_string(),
+            errors: 1,
+            warnings: 0,
+            items: vec![
+                DocDiagnostic {
+                    severity: "error".to_string(),
+                    code: Some("E0282".to_string()),
+                    message: "type annotations needed".to_string(),
+                    line: 2,
+                    col: 16,
+                    source: None,
+                    note: None,
+                },
+                DocDiagnostic {
+                    severity: "hint".to_string(),
+                    code: None,
+                    message: "unused".to_string(),
+                    line: 3,
+                    col: 1,
+                    source: None,
+                    note: None,
+                },
+            ],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/main.rs".to_string(),
+            "fn run() {\n    if let Some(s) = workspace::shared_target_dir(&ws) {}\n    let unused = 1;\n}\n".to_string(),
+        );
+        let missing = vec![(
+            "shared_target_dir".to_string(),
+            "crates/gateway/src/workspace.rs".to_string(),
+        )];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        let note = reports[0].items[0].note.as_deref().unwrap();
+        assert!(
+            note.contains("`shared_target_dir`")
+                && note.contains("crates/gateway/src/workspace.rs"),
+            "{note}"
+        );
+        assert!(reports[0].items[1].note.is_none(), "hints are left alone");
+        assert_eq!(
+            reports[0].items.len(),
+            2,
+            "a line that already has an error gets no extra warning"
+        );
+        assert!(
+            reports[0]
+                .render()
+                .contains("note: this line uses `shared_target_dir`")
+        );
+    }
+
+    #[test]
+    fn silent_lines_using_a_removed_symbol_get_a_synthesised_warning() {
+        let mut reports = vec![
+            DiagnosticsReport {
+                file: "crates/gateway/src/main.rs".to_string(),
+                errors: 0,
+                warnings: 0,
+                items: vec![],
+            },
+            DiagnosticsReport {
+                file: "crates/gateway/src/workspace.rs".to_string(),
+                errors: 0,
+                warnings: 0,
+                items: vec![],
+            },
+        ];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/main.rs".to_string(),
+            "fn run() {\n    workspace::touch_last_used(&server_workspace);\n}\n".to_string(),
+        );
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "/// touch_last_used used to live here\npub fn record_last_used() {}\n".to_string(),
+        );
+        let missing = vec![(
+            "touch_last_used".to_string(),
+            "crates/gateway/src/workspace.rs".to_string(),
+        )];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 1);
+        assert_eq!(reports[0].items.len(), 1);
+        let item = &reports[0].items[0];
+        assert_eq!((item.line, item.col), (2, 16));
+        assert_eq!(item.code.as_deref(), Some(STALE_REFERENCE));
+        assert!(
+            item.note
+                .as_deref()
+                .unwrap()
+                .contains("crates/gateway/src/workspace.rs")
+        );
+        assert!(
+            reports[1].items.is_empty(),
+            "the file the symbol vanished from is not flagged"
+        );
     }
 }
