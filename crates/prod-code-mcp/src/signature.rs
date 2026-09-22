@@ -734,7 +734,7 @@ pub async fn change(
 
 /// A workspace edit that replaces each file wholesale, the shape the gateway answers a
 /// structural rewrite with.
-fn whole_file_edit(files: &BTreeMap<PathBuf, String>) -> serde_json::Value {
+pub(crate) fn whole_file_edit(files: &BTreeMap<PathBuf, String>) -> serde_json::Value {
     let changes: Vec<serde_json::Value> = files
         .iter()
         .map(|(path, new_text)| {
@@ -787,7 +787,7 @@ async fn structural_replace(
 
 /// Every reference to the symbol at `file:line:col`, as (file, line, column), without the
 /// declaration itself.
-async fn references(
+pub(crate) async fn references(
     remote: SocketAddr,
     root: &Path,
     file: &Path,

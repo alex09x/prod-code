@@ -536,3 +536,158 @@ async fn a_fixture_is_built_from_the_declaration_and_verified() {
             .contains("the analyzer accepts it: 0 errors")
     );
 }
+
+/// The move's own orchestration: the item travels with its doc comment and the imports it
+/// spells, the file it left gets one for it, and the positions the analyzer reported against
+/// the file *before* the cut are adjusted for the hole the cut leaves. That last one is the
+/// bug this test was written for: without the adjustment every reference below the item is
+/// looked for one line too low, nothing matches, and the tool reports a move with no imports
+/// at all — which compiles nowhere.
+#[tokio::test]
+async fn a_moved_item_takes_its_imports_and_leaves_one_behind() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "use std::path::Path;\nuse std::collections::BTreeMap;\n\n\
+                  /// Says the name.\n\
+                  pub fn describe(p: &Path) -> String {\n    p.display().to_string()\n}\n\n\
+                  pub fn caller(p: &Path) -> String {\n    describe(p)\n}\n";
+    let lib = write(&ws, "src/lib.rs", source);
+    let home = write(&ws, "src/home.rs", "//! The new home.\n");
+    commit(&ws);
+
+    let lib_for_script = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("describe", 12, 5, 7, 8),
+            answers::document_symbol("caller", 12, 9, 11, 8),
+        ]),
+        // `describe(p)` on line 10, as the file is before the cut.
+        "textDocument/references" => answers::locations(&lib_for_script, &[(10, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let moved =
+        match prod_code_mcp::move_item::move_item(remote, &root, &lib, 5, 8, &home, false, false)
+            .await
+        {
+            Ok(moved) => moved,
+            Err(err) => panic!("the move runs: {err:#}"),
+        };
+
+    assert_eq!(moved.symbol, "describe");
+    assert_eq!(moved.new_path, "t::home::describe");
+    assert!(!moved.applied, "a move without `apply` writes nothing");
+    assert_eq!(
+        ws.read("src/home.rs"),
+        "//! The new home.\n",
+        "still on disk"
+    );
+
+    let new_home = moved
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("home.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the target was rewritten");
+    assert!(
+        new_home.contains("/// Says the name."),
+        "the doc comment travels with the item: {new_home}"
+    );
+    assert!(
+        new_home.contains("use std::path::Path;"),
+        "the import the item spells is carried: {new_home}"
+    );
+    assert!(
+        !new_home.contains("BTreeMap"),
+        "an import the item does not spell is not: {new_home}"
+    );
+
+    let left = moved
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("lib.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the source was rewritten");
+    assert!(
+        !left.contains("pub fn describe"),
+        "the item is gone from where it was: {left}"
+    );
+    assert!(
+        left.contains("use crate::home::describe;"),
+        "and the file that still calls it imports it: {left}"
+    );
+    assert_eq!(
+        moved.imports.len(),
+        2,
+        "one import carried, one added: {:?}",
+        moved.imports
+    );
+}
+
+/// A move that would not compile is reported, not written — and the report says the thing the
+/// reader needs next, which is that the item is reaching for something it can no longer see.
+#[tokio::test]
+async fn a_move_that_does_not_compile_is_refused_with_the_reason() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "fn secret() -> u8 {\n    1\n}\n\npub fn shown() -> u8 {\n    secret()\n}\n",
+    );
+    let home = write(&ws, "src/home.rs", "//! The new home.\n");
+    commit(&ws);
+
+    let home_for_script = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("secret", 12, 1, 3, 4),
+            answers::document_symbol("shown", 12, 5, 7, 8),
+        ]),
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" if uri_of(params).ends_with("home.rs") => {
+            answers::error_at(3, 5, "E0425", "cannot find function `secret` in this scope")
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => {
+            let _ = &home_for_script;
+            serde_json::Value::Null
+        }
+    }))
+    .await;
+
+    let moved = prod_code_mcp::move_item::move_item(remote, &root, &lib, 5, 8, &home, false, false)
+        .await
+        .expect("the move runs");
+    assert_eq!(moved.diagnostics.len(), 1, "{:?}", moved.diagnostics);
+    let report = moved.render(4000);
+    assert!(
+        report.contains("the analyzer rejects the result"),
+        "{report}"
+    );
+    assert!(
+        report.contains("something private to `t`"),
+        "the report explains the usual cause: {report}"
+    );
+
+    let err = prod_code_mcp::move_item::move_item(remote, &root, &lib, 5, 8, &home, true, false)
+        .await
+        .expect_err("apply refuses a move that does not compile");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/home.rs"), "//! The new home.\n");
+}

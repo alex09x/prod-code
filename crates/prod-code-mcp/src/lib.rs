@@ -9,6 +9,7 @@ pub mod fixture;
 pub mod hot_reload;
 pub mod impact;
 pub mod lang;
+pub mod move_item;
 pub mod protocol;
 pub mod refactor;
 pub mod remote_fs;
