@@ -199,6 +199,29 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_introduce_parameter_object".to_string(),
+            description: "Bundle several of a function's parameters into a struct, with the body and every call site. `params` names the parameters to bundle (two or more, by the names the declaration gives them); they become fields of a new `pub struct` written directly above the function, in declaration order and with the types the declaration gave — a single lifetime is introduced when any of those types borrows. The declaration takes one parameter in place of them, every use of them in the body is rewritten to reach through it (at the positions the analyzer reports, not by text search), and the call sites are rewritten by a structural rule built from the declaration's own arity, so an argument that is a method chain or a closure survives and the unbundled arguments stay where they were. References the rule did not match are named. The whole change is type-checked in one overlay before anything is written, and `apply` is what writes it. Rust only; re-run your formatter afterwards."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line of the declaration" },
+                    "character": { "type": "integer", "description": "1-based column of the declaration" },
+                    "params": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The parameters to bundle, by name; two or more. Order does not matter — the struct keeps the declaration's order."
+                    },
+                    "name": { "type": "string", "description": "The struct's name, UpperCamelCase (`Opts`, `SyncRequest`)" },
+                    "binding": { "type": "string", "description": "What the new parameter is called in the body (default: the struct name in snake_case)" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["params", "name"]
+            }),
+        },
+        McpTool {
             name: "code_move".to_string(),
             description: "Move a declaration (function, struct, enum, trait, const) into another module, with the imports that keep every user of it compiling. The item travels whole — signature, body, doc comment, attributes — is cut from its file and appended to the target; every file the analyzer lists as using it has its `use` rewritten (a grouped import keeps its other names) and any path-qualified reference requalified. The target module must already exist and be declared by its parent: this does not create modules. Only the ordinary crate layout is understood (src/a.rs, src/a/mod.rs); a file reached through #[path] is named and left alone. The whole change is type-checked in one overlay first, so a move that would not compile — the item uses something private to the module it left, the target already has that name — is reported rather than written. Nothing is written without `apply`. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1549,6 +1572,64 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_introduce_parameter_object" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or `symbol`)")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument (or `symbol`)")? as u32;
+            let character =
+                args.get("character")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'character' argument (or `symbol`)")? as u32;
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .context("Missing 'name' argument: what the new struct is called")?;
+            let specs = args
+                .get("params")
+                .and_then(|v| v.as_array())
+                .context("Missing 'params' argument: the parameters to bundle, by name")?;
+            let mut params = Vec::with_capacity(specs.len());
+            for spec in specs {
+                params.push(
+                    spec.as_str()
+                        .context("every entry of `params` is a parameter name")?
+                        .to_string(),
+                );
+            }
+            let binding = args
+                .get("binding")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::fixture::snake_case(name));
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let done = crate::parameter_object::introduce(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                &params,
+                name,
+                &binding,
+                apply,
+                force,
+            )
+            .await?;
+            let clean = done.diagnostics.is_empty();
+            let text = done.render(6000);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_move" => {
             let path_str = args
                 .get("path")
@@ -2049,6 +2130,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_slice",
     "code_change_signature",
     "code_move",
+    "code_introduce_parameter_object",
     "code_definition",
     "code_references",
     "code_hover",

@@ -691,3 +691,165 @@ async fn a_move_that_does_not_compile_is_refused_with_the_reason() {
     );
     assert_eq!(ws.read("src/home.rs"), "//! The new home.\n");
 }
+
+const HOME: &str = "pub fn build(name: &str, width: u32, height: u32) -> String {\n    let area = width * height;\n    format!(\"{name} {area}\")\n}\n\npub fn twice(name: &str) -> String {\n    build(name, 1, 2)\n}\n";
+const OTHER: &str = "pub fn call_it() -> String {\n    crate::home::build(\"a\", 3, 4)\n}\n";
+
+/// The whole shape of bundling: a struct with the declared types, a declaration that takes it,
+/// a body that reaches the fields through the new binding, call sites rewritten in place, and
+/// the import a caller in another module needs — which the overlay check cannot catch, because
+/// the analyzer does not report an unresolved struct literal.
+#[tokio::test]
+async fn bundling_rewrites_the_declaration_the_body_and_every_call_site() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\npub mod other;\n");
+    let home = write(&ws, "src/home.rs", HOME);
+    let other = write(&ws, "src/other.rs", OTHER);
+    commit(&ws);
+
+    let (h, o) = (home.clone(), other.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/references" => {
+            let line = params.pointer("/position/line").and_then(|v| v.as_u64()).unwrap_or(0);
+            let ch = params
+                .pointer("/position/character")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match (line, ch) {
+                // `build` itself: called once in its own file and once from the other module.
+                (0, 7) => serde_json::json!([
+                    { "uri": format!("file://{}", h.display()),
+                      "range": { "start": { "line": 6, "character": 4 }, "end": { "line": 6, "character": 9 } } },
+                    { "uri": format!("file://{}", o.display()),
+                      "range": { "start": { "line": 1, "character": 17 }, "end": { "line": 1, "character": 22 } } }
+                ]),
+                // `width`, then `height`, each used once in the body.
+                (0, 25) => answers::locations(&h, &[(2, 16)]),
+                (0, 37) => answers::locations(&h, &[(2, 24)]),
+                _ => serde_json::json!([]),
+            }
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let params = ["width".to_string(), "height".to_string()];
+    let done = match prod_code_mcp::parameter_object::introduce(
+        remote, &root, &home, 1, 8, &params, "Size", "size", false, false,
+    )
+    .await
+    {
+        Ok(done) => done,
+        Err(err) => panic!("bundling runs: {err:#}"),
+    };
+
+    assert_eq!(done.symbol, "build");
+    assert_eq!(done.now, "name: &str, size: Size");
+    assert_eq!(done.call_sites, 2);
+    assert_eq!(done.body_uses, 2);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    assert_eq!(
+        done.struct_text,
+        "/// The parameters `build` takes together.\npub struct Size {\n    pub width: u32,\n    pub height: u32,\n}\n",
+        "the struct keeps the declared types and needs no lifetime"
+    );
+
+    let new_home = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("home.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the declaring file was rewritten");
+    assert!(new_home.contains("pub struct Size {"), "{new_home}");
+    assert!(
+        new_home.contains("pub fn build(name: &str, size: Size)"),
+        "{new_home}"
+    );
+    assert!(
+        new_home.contains("let area = size.width * size.height;"),
+        "the body reaches the fields through the binding: {new_home}"
+    );
+    assert!(
+        new_home.contains("build(name, Size { width: 1, height: 2 })"),
+        "the call in the same file is rewritten: {new_home}"
+    );
+
+    let new_other = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("other.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the other module was rewritten");
+    assert!(
+        new_other.contains("crate::home::build(\"a\", Size { width: 3, height: 4 })"),
+        "{new_other}"
+    );
+    assert!(
+        new_other.contains("use crate::home::Size;"),
+        "a caller in another module has to import the type: {new_other}"
+    );
+    assert!(!done.applied, "a run without `apply` writes nothing");
+    assert_eq!(ws.read("src/home.rs"), HOME, "still on disk unchanged");
+}
+
+/// A use that is not a call cannot be rewritten into one, and is named rather than mangled.
+#[tokio::test]
+async fn a_use_that_is_not_a_call_is_reported_not_rewritten() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    let home = write(
+        &ws,
+        "src/home.rs",
+        "pub fn build(name: &str, width: u32, height: u32) -> String {\n    let area = width * height;\n    format!(\"{name} {area}\")\n}\n\npub fn as_a_value() -> fn(&str, u32, u32) -> String {\n    build\n}\n",
+    );
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/references" => {
+            let ch = params
+                .pointer("/position/character")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match ch {
+                7 => answers::locations(&h, &[(7, 5)]), // `build` as a value, not a call
+                25 => answers::locations(&h, &[(2, 16)]),
+                37 => answers::locations(&h, &[(2, 24)]),
+                _ => serde_json::json!([]),
+            }
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let params = ["width".to_string(), "height".to_string()];
+    let done = prod_code_mcp::parameter_object::introduce(
+        remote, &root, &home, 1, 8, &params, "Size", "size", false, false,
+    )
+    .await
+    .expect("bundling runs");
+
+    assert_eq!(done.call_sites, 0);
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(
+        done.unmatched[0].contains("home.rs:7:5"),
+        "{:?}",
+        done.unmatched
+    );
+    let report = done.render(4000);
+    assert!(report.contains("not rewritten"), "{report}");
+}

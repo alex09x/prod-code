@@ -39,11 +39,11 @@ type Reference = (PathBuf, u32, u32);
 
 /// A parameter as the declaration writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Declared {
+pub(crate) struct Declared {
     /// The whole parameter, `name: Type` with any `mut` or pattern kept verbatim.
-    raw: String,
+    pub(crate) raw: String,
     /// What the parameter is called, for matching against the request.
-    name: String,
+    pub(crate) name: String,
 }
 
 /// What a change did, or would do.
@@ -231,7 +231,7 @@ fn split_at_top_level(text: &str, sep: char) -> Option<(&str, &str)> {
 }
 
 /// Byte offset of a 1-based line and column.
-fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
+pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
     let mut offset = 0usize;
     for (n, l) in text.lines().enumerate() {
         if n as u32 + 1 == line {
@@ -249,7 +249,7 @@ fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
 
 /// The span between the parentheses of the parameter list of the function whose name starts at
 /// `name_offset`, and the name itself.
-fn param_span(text: &str, name_offset: usize) -> Option<(String, usize, usize)> {
+pub(crate) fn param_span(text: &str, name_offset: usize) -> Option<(String, usize, usize)> {
     let rest = text.get(name_offset..)?;
     let name: String = rest
         .chars()
@@ -309,7 +309,7 @@ fn param_span(text: &str, name_offset: usize) -> Option<(String, usize, usize)> 
 
 /// Splits a parameter list, respecting nesting; comments and attributes stay attached to the
 /// parameter they precede.
-fn split_params(list: &str) -> Vec<String> {
+pub(crate) fn split_params(list: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
@@ -340,7 +340,7 @@ fn split_params(list: &str) -> Vec<String> {
 }
 
 /// The receiver (`&self` and friends, kept verbatim) and the parameters of a parameter list.
-fn parse_declared(list: &str) -> (Option<String>, Vec<Declared>) {
+pub(crate) fn parse_declared(list: &str) -> (Option<String>, Vec<Declared>) {
     let mut receiver = None;
     let mut params = Vec::new();
     for raw in split_params(list) {
@@ -761,7 +761,7 @@ pub(crate) fn whole_file_edit(files: &BTreeMap<PathBuf, String>) -> serde_json::
 /// The position is deliberately (0, 0): the engine then resolves the rule in the body of that
 /// file's first function, which is the module the declaration lives in, so the bare name
 /// resolves. A position on the declaration itself is an item position, where it may not.
-async fn structural_replace(
+pub(crate) async fn structural_replace(
     remote: SocketAddr,
     root: &Path,
     context: &Path,
@@ -830,7 +830,7 @@ pub(crate) async fn references(
     Ok(out)
 }
 
-fn line_col_at(text: &str, offset: usize) -> (u32, u32) {
+pub(crate) fn line_col_at(text: &str, offset: usize) -> (u32, u32) {
     let before = &text[..offset.min(text.len())];
     let line = before.matches('\n').count() as u32 + 1;
     let col = before

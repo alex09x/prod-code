@@ -267,7 +267,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Promotes local variables or initialization logic to a struct/class field, adjusting constructor/initialization blocks.
     - `refactor.extract_parameter(path, range, param_name)`:
       - Promotes an internal expression to a function parameter, automatically passing the original expression at all existing call sites.
-    - `refactor.introduce_parameter_object(path, symbol, param_indices, struct_name)`:
+    - [~] `refactor.introduce_parameter_object(path, symbol, param_indices, struct_name)` — shipped 2026-09-22 for Rust: `code_introduce_parameter_object` / `prod-code parameter-object <symbol> --param … --name Opts` generate the struct above the declaration with the declared types (one lifetime when any of them borrows), rewrite the declaration and the body uses at the analyzer's positions, and rewrite every call site in place — the bundled arguments become one literal where the first of them was, and a caller in another module gets the import it needs. A use that is not a call with this arity is reported, not mangled.
       - Solves parameter bloat (> 3-4 arguments) by bundling related parameters into a typed DTO/struct/record, rewriting definition and all call sites.
     - [~] `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)` — via `code_assists` at an `impl` block: `generate_trait_from_impl`. It takes the whole impl rather than a chosen subset of methods.
       - Extracts selected public method contracts into a new trait/interface, marks the original struct as implementing it, and updates caller type annotations to use the trait where applicable.
