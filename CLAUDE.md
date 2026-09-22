@@ -17,6 +17,25 @@ full version; this is the part that is not optional.
   kind. Performance and correctness claims come with before/after numbers.
 - Merge only with recorded checks; squash-merge, delete the branch.
 
+## Use prod-code on prod-code
+
+This repository is worked on with the tool it builds, and only with it. That is how the tool
+gets tested on real work, and how its bugs are found before a user finds them.
+
+- **Navigate** with `code_definition`, `code_references`, `code_callers`, `code_callees`,
+  `code_outline`, `code_symbols` and `code_hover` (or `prod-code def|refs|callers|outline|
+  symbols|hover`). Do not grep for code structure or line numbers; grep is for prose.
+- **Change code** with the refactoring tools where one fits: `code_rename`, `code_move`,
+  `code_change_signature`, `code_extract_parameter`, `code_extract_field`,
+  `code_encapsulate_field`, `code_introduce_parameter_object`, `code_assist`. Hand-written code
+  goes through `code_validate_edit` / `code_validate_edits` with the complete new text before
+  it is written. No scripted text surgery (sed, python) on source files.
+- **Build, test and lint** with `code_check`, `code_test`, `code_lint` and `code_exec`, which
+  run on a build node.
+- **When the tool is wrong, slow, confusing or missing something**, that is an issue. Open it
+  with the command that shows the problem and its output, then fix it like any other change.
+  A workaround is not the fix.
+
 ## Privacy
 
 This repository is public. Never write private IP addresses, host names, home
