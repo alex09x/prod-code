@@ -224,9 +224,9 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     by asking the running analyzer for its actions at that kind of position; the assist id named
     is what it answered. What is left to build is four items, listed under **Still to build**,
     plus the ones marked *not applicable to Rust*.
-  - **Still to build**, in the order they are worth building: `introduce_parameter_object`,
-    `type_migration`, `extract_parameter`, `extract_field`, and the workspace-wide half of
-    `encapsulate_field` (rewriting every direct field access). Nothing in rust-analyzer offers
+  - **Still to build**, in the order they are worth building: `type_migration`, `extract_field`,
+    and the workspace-wide half of `encapsulate_field` (rewriting every direct field access).
+    `introduce_parameter_object` and `extract_parameter` shipped 2026-09-22. Nothing in rust-analyzer offers
     these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
     the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
     overlay before writing.
@@ -265,7 +265,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Promotes magic numbers, string literals, or complex expressions to module-level or struct-level typed `const`/`static`.
     - `refactor.extract_field(path, range, field_name)`:
       - Promotes local variables or initialization logic to a struct/class field, adjusting constructor/initialization blocks.
-    - `refactor.extract_parameter(path, range, param_name)`:
+    - [~] `refactor.extract_parameter(path, range, param_name)` — shipped 2026-09-22 for Rust: `code_extract_parameter` / `prod-code extract-parameter <file> <line> <col> --to <line>:<col> --name …` add the parameter at the end of the list keeping its shape, replace the selection (or every identical occurrence with `replace_all`) in the body, and pass the original expression at every call site so no existing caller changes behaviour. An expression that names a local is refused with that as the reason.
       - Promotes an internal expression to a function parameter, automatically passing the original expression at all existing call sites.
     - [~] `refactor.introduce_parameter_object(path, symbol, param_indices, struct_name)` — shipped 2026-09-22 for Rust: `code_introduce_parameter_object` / `prod-code parameter-object <symbol> --param … --name Opts` generate the struct above the declaration with the declared types (one lifetime when any of them borrows), rewrite the declaration and the body uses at the analyzer's positions, and rewrite every call site in place — the bundled arguments become one literal where the first of them was, and a caller in another module gets the import it needs. A use that is not a call with this arity is reported, not mangled.
       - Solves parameter bloat (> 3-4 arguments) by bundling related parameters into a typed DTO/struct/record, rewriting definition and all call sites.

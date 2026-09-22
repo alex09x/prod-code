@@ -1242,3 +1242,173 @@ async fn cli_rejects_divergent_bench_with_too_few_workers() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr_of(&out).contains("at least 10 concurrent workers"));
 }
+
+/// The three refactorings that write whole files: each one reports a diff and, without
+/// `--apply`, leaves the checkout alone.
+#[tokio::test]
+async fn cli_extracts_a_parameter_and_gives_every_caller_the_argument() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn render(text: &str) -> String {\n    let width = 80;\n    format!(\"{text}{width}\")\n}\n\npub fn caller() -> String {\n    render(\"x\")\n}\n",
+        ),
+    ]);
+    let path = ws.path("src/lib.rs");
+    let p = path.clone();
+
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 4, 8),
+            answers::document_symbol("caller", 12, 6, 8, 8),
+        ]),
+        "textDocument/references" => answers::locations(&p, &[(7, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "extract-parameter",
+            "src/lib.rs",
+            "2",
+            "17",
+            "--to",
+            "2:19",
+            "--name",
+            "width_limit",
+            "--type",
+            "usize",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("width_limit: usize"), "{text}");
+    assert!(text.contains("render(\"x\", 80)"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+    assert!(
+        ws.read("src/lib.rs").contains("let width = 80;"),
+        "the checkout is untouched without --apply"
+    );
+
+    // A malformed selection is rejected before anything is asked of the gateway.
+    let bad = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "extract-parameter",
+            "src/lib.rs",
+            "2",
+            "17",
+            "--to",
+            "nonsense",
+            "--name",
+            "x",
+        ],
+    )
+    .await;
+    assert!(!bad.status.success());
+    assert!(stderr_of(&bad).contains("LINE:COL"), "{}", stderr_of(&bad));
+}
+
+#[tokio::test]
+async fn cli_bundles_parameters_into_a_struct() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn build(name: &str, width: u32, height: u32) -> String {\n    let area = width * height;\n    format!(\"{name}{area}\")\n}\n\npub fn caller() -> String {\n    build(\"a\", 3, 4)\n}\n",
+        ),
+    ]);
+    let path = ws.path("src/lib.rs");
+    let p = path.clone();
+
+    let gw = MockGateway::start(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([answers::symbol("build", 12, &p, 1, 8)]),
+        "textDocument/references" => {
+            let ch = params
+                .pointer("/position/character")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match ch {
+                7 => answers::locations(&p, &[(7, 5)]),
+                25 => answers::locations(&p, &[(2, 16)]),
+                37 => answers::locations(&p, &[(2, 24)]),
+                _ => serde_json::json!([]),
+            }
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "parameter-object",
+            "build",
+            "--param",
+            "width",
+            "--param",
+            "height",
+            "--name",
+            "Size",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("pub struct Size"), "{text}");
+    assert!(text.contains("Size { width: 3, height: 4 }"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+}
+
+#[tokio::test]
+async fn cli_moves_a_declaration_to_another_module() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod home;\npub mod other;\n"),
+        (
+            "src/home.rs",
+            "/// Says the name.\npub fn describe(p: &str) -> String {\n    p.to_string()\n}\n",
+        ),
+        ("src/other.rs", "//! The new home.\n"),
+    ]);
+    let home = ws.path("src/home.rs");
+    let h = home.clone();
+
+    let gw = MockGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([answers::symbol("describe", 12, &h, 2, 8)]),
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("describe", 12, 2, 4, 8)])
+        }
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(&ws, gw.addr, &["move", "describe", "--to", "src/other.rs"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("`describe` moved"), "{text}");
+    assert!(
+        text.contains("/// Says the name."),
+        "the doc comment travels: {text}"
+    );
+    assert!(text.contains("nothing was written"), "{text}");
+}
