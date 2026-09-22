@@ -64,14 +64,28 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Encapsulate a field across the workspace (roadmap 7.1.3): `code_encapsulate_field` (MCP) and
+  `prod-code encapsulate-field <file> --line N --character C` make a public field private and
+  rewrite every access to it outside its declaring file — a read into `x.field()`, a plain
+  write into `x.set_field(v)`. The getter returns the value for a primitive `Copy` type and a
+  shared reference otherwise (`by_value` overrides); the setter is generated only when
+  something writes the field; both go into the struct's first inherent `impl` with the field's
+  old visibility, or a new `impl` after a non-generic struct. Accesses inside the declaring file
+  stay direct. A use that cannot become a method call — a struct literal or pattern outside the
+  file, a compound assignment, `&mut x.field` — is reported with its source line, and nothing
+  is written while one remains; a position that does not hold the field's name is reported and
+  left alone. The whole change is type-checked in one overlay, and `verify: "compile"` adds
+  `cargo check` in a shadow, which is the only check that sees a borrow the getter no longer
+  allows. The bracket matcher the write tools share now skips comments, so an apostrophe or a
+  brace in a comment inside an `impl` does not end the block early.
 - Change a declared type and see the whole job first (roadmap 7.1.4): `code_migrate_type` (MCP)
   and `prod-code migrate-type <file> --line N --character C --to <Type>` rewrite the declaration
   in memory — a struct field, a parameter, a return type or an annotated `let` — type-check the
   workspace in one overlay, and report every site the new type does not fit, grouped by file
   with the line of source at each. Where an error is exactly the old type meeting the new one,
   the report says what conversion would fix that site; it does not write it. Diagnostics that
-  land on a `#[derive(…)]` line are counted separately, because the analyzer reports inside a
-  derive it cannot expand and there is nothing at those positions to edit. `apply` writes the
+  land on a `#[derive(…)]` line are counted separately, because an error inside what a derive
+  generates is reported at the derive and there is nothing at that position to edit. `apply` writes the
   declaration alone and refuses while any site remains. This is the first half of a migration,
   not an automatic one, and says so.
 - Promote an expression to a parameter (roadmap 7.1.2): `code_extract_parameter` (MCP) and

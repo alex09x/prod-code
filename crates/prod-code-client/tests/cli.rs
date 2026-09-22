@@ -1475,3 +1475,56 @@ async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
         "nothing is written without --apply"
     );
 }
+
+#[tokio::test]
+async fn cli_encapsulates_a_field_and_rewrites_the_accesses_outside_its_file() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod app;\npub mod config;\n"),
+        (
+            "src/config.rs",
+            "pub struct Config {\n    pub name: String,\n}\n",
+        ),
+        (
+            "src/app.rs",
+            "use crate::config::Config;\n\npub fn shout(c: &Config) -> String {\n    c.name.to_uppercase()\n}\n",
+        ),
+    ]);
+    let app = ws.path("src/app.rs");
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/references" => answers::locations(&app, &[(4, 7)]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "encapsulate-field",
+            "src/config.rs",
+            "--line",
+            "2",
+            "--character",
+            "9",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(
+        text.contains("getter: `fn name(&self) -> &String`"),
+        "{text}"
+    );
+    assert!(text.contains("+    c.name().to_uppercase()"), "{text}");
+    assert!(
+        text.contains("1 read(s) call a method on the field"),
+        "a method call through a shared reference is flagged: {text}"
+    );
+    assert!(text.contains("nothing was written"), "{text}");
+    assert!(ws.read("src/config.rs").contains("pub name: String"));
+}

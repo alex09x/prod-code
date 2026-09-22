@@ -703,6 +703,23 @@ mod tests {
     }
 
     #[test]
+    fn a_bracket_in_a_comment_or_a_literal_does_not_close_the_block() {
+        let block = "impl A {\n    // don't stop at } here\n    /* nor } here */\n    fn f() -> &'static str { \"}\" }\n    fn g() -> char { '}' }\n}\ntail";
+        let close = matching_bracket(block, block.find('{').unwrap()).expect("it closes");
+        assert_eq!(&block[close..], "}\ntail");
+        assert_eq!(
+            matching_bracket("(a, [b)", 0),
+            None,
+            "an unclosed list has no end"
+        );
+        assert_eq!(
+            matching_bracket("x", 0),
+            None,
+            "only a bracket opens a block"
+        );
+    }
+
+    #[test]
     fn an_argument_list_survives_closures_strings_and_chains() {
         let call = "f(a, |x, y| x + y, \"one, two\", b.iter().map(|v| v).collect())";
         let (start, end) = call_args_span(call, 1).expect("a call");
