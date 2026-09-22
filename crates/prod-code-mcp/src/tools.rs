@@ -200,6 +200,23 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_encapsulate_field".to_string(),
+            description: "Make a public field private and turn every access to it outside its declaring file into a method call: reads become `x.field()`, plain writes become `x.set_field(v)`. Give the field's position in its struct (or `symbol`). The getter returns the value for a primitive `Copy` type, a shared reference otherwise (override with `by_value`); the setter is generated only when something writes the field. Both go into the struct's first inherent `impl` in that file, or a new one after the struct, with the field's old visibility. Accesses inside the declaring file stay direct, because a private field is still visible there. A use that cannot become a method call — a struct literal or pattern outside the file, a compound assignment, `&mut x.field` — is reported with its source line, and nothing is written while one remains. The whole change is type-checked in one overlay before anything is written; the analyzer does not check borrows, so where a read goes on to call a method on the field, ask for `verify: \"compile\"`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the struct" },
+                    "line": { "type": "integer", "description": "1-based line of the field's name" },
+                    "character": { "type": "integer", "description": "1-based column of the field's name" },
+                    "by_value": { "type": "boolean", "description": "Return the field by value (it must be `Copy`) or by shared reference; default: by value for primitive `Copy` types only" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a borrow the getter no longer allows" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when a use cannot be rewritten or the result does not compile" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_migrate_type".to_string(),
             description: "Change a declared type and report the whole shape of what that breaks, before any of it is done. Give the declaration's position (a struct field, a function parameter, a return type, or an annotated `let`) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. The errors that come back are not a failure, they are the work list: each is reported with its file, line and the source at that line, grouped by file. Where an error is exactly the old type meeting the new one, the report says what conversion would fix that site — it says it and does not write it, because a wrong conversion inserted at every site is worse than none. `apply` writes the declaration alone and refuses while any site remains, so a half-migrated type is never written by accident. This is the first half of a migration, not an automatic one. Rust only."
                 .to_string(),
@@ -1642,6 +1659,67 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_encapsulate_field" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or `symbol`)")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument (or `symbol`)")? as u32;
+            let character =
+                args.get("character")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'character' argument (or `symbol`)")? as u32;
+            let by_value = args.get("by_value").and_then(|v| v.as_bool());
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let mut done = crate::encapsulate_field::encapsulate(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                by_value,
+                apply && !verify,
+                force,
+            )
+            .await?;
+            let gate = if verify && (done.blocked.is_empty() || force) {
+                let files = done.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        done.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                done.applied = true;
+            }
+            let clean = done.diagnostics.is_empty()
+                && done.blocked.is_empty()
+                && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = done.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_migrate_type" => {
             let path_str = args
                 .get("path")
@@ -2430,6 +2508,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_move",
     "code_introduce_parameter_object",
     "code_migrate_type",
+    "code_encapsulate_field",
     "code_definition",
     "code_references",
     "code_hover",
