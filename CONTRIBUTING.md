@@ -70,3 +70,22 @@ journalctl --user -u prod-code-gateway -o short-precise --since "-10min"
 - Errors carry context (`anyhow::Context`); logs use `tracing` with structured fields.
 - A change that alters behaviour comes with a test that fails without it.
 - Comments explain why, not what; keep them short.
+
+## Coverage
+
+Every file is at or above 80% of regions, and the gate that says so runs on a build node like
+everything else:
+
+```sh
+prod-code exec --timeout-secs 1800 --no-pull -- python3 scripts/coverage.py --min 80
+```
+
+It names each file under the bar and how many regions it is short. There are no exemptions;
+if a new file cannot reach the bar, that is worth a sentence in the pull request rather than an
+entry in `EXEMPT`.
+
+Tests do not need an analyzer or a node: `crates/prod-code-testkit` stands up a gateway that
+answers each LSP method from a closure, and `crates/prod-code-mcp/tests/orchestration.rs` is
+the worked example. The exception is `crates/prod-code-gateway/tests/live.rs`, which starts the
+real daemon and drives it against real language servers — it is the slowest thing here (about
+four minutes) and the only thing that proves a workspace loads.

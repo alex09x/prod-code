@@ -31,11 +31,9 @@ import tempfile
 
 # Files nothing is expected to cover: generated code, or a binary's entry point that only wires
 # arguments into functions that are tested. Keep this list short and say why.
-EXEMPT: dict[str, str] = {
-    # Test-only harness. It is exercised by the suites that use it, and the helpers no suite
-    # has needed yet are there for the next one rather than for this bar.
-    "crates/prod-code-testkit/src/lib.rs": "test-only harness",
-}
+# Files nothing is expected to cover. Empty, and worth keeping that way: an exemption is a
+# file nobody has to think about again.
+EXEMPT: dict[str, str] = {}
 
 
 def repo_root() -> str:

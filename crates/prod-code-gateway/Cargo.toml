@@ -6,6 +6,10 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 
+[lib]
+name = "prod_code_gateway"
+path = "src/lib.rs"
+
 [[bin]]
 name = "prod-code-server"
 path = "src/main.rs"
@@ -29,5 +33,9 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile.workspace = true
+# The client side, so the live test drives the gateway the way an agent does. No cycle: the
+# MCP crate knows nothing about the gateway.
+prod-code-mcp = { path = "../prod-code-mcp" }
+libc = "0.2"
 
 
