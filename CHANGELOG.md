@@ -76,6 +76,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Extract a field (roadmap 7.1.2): `code_extract_field` (MCP) and `prod-code extract-field
+  <file> <line> <col> --to LINE:COL --name <field> --type <T>` promote an expression inside a
+  method into a field of the type the method belongs to. The method reads `self.<field>`
+  (`replace_all` for every identical occurrence), the struct declares the field last, and every
+  place that builds the struct — `Type { … }` anywhere in the workspace and `Self { … }` in its
+  `impl` blocks — initialises it, by default with the expression itself and otherwise with
+  `init`, which is required when the expression reads `self`. A return type, an import or an
+  `impl` header that names the type is not a construction site; a pattern ending in `..` is
+  left alone; a pattern that lists every field is reported with its line and blocks the write.
+  The change is type-checked in one overlay, and `verify: "compile"` adds `cargo check`.
 - Encapsulate a field across the workspace (roadmap 7.1.3): `code_encapsulate_field` (MCP) and
   `prod-code encapsulate-field <file> --line N --character C` make a public field private and
   rewrite every access to it outside its declaring file — a read into `x.field()`, a plain
