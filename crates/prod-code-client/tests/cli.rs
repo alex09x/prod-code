@@ -1528,3 +1528,54 @@ async fn cli_encapsulates_a_field_and_rewrites_the_accesses_outside_its_file() {
     assert!(text.contains("nothing was written"), "{text}");
     assert!(ws.read("src/config.rs").contains("pub name: String"));
 }
+
+#[tokio::test]
+async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct Store {\n    entries: Vec<u32>,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self { entries: Vec::new() }\n    }\n\n    pub fn limit(&self) -> usize {\n        let cap = 64 * 1024;\n        cap.min(self.entries.len())\n    }\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let def = lib.clone();
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/definition" => answers::locations(&def, &[(1, 12)]),
+        "textDocument/references" => answers::locations(&lib, &[(5, 6), (7, 9)]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "extract-field",
+            "src/lib.rs",
+            "11",
+            "19",
+            "--to",
+            "11:28",
+            "--name",
+            "cap",
+            "--type",
+            "usize",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("new field: `cap: usize`"), "{text}");
+    assert!(
+        text.contains("+        Self { cap: 64 * 1024, entries: Vec::new() }"),
+        "{text}"
+    );
+    assert!(text.contains("+        let cap = self.cap;"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+    assert!(ws.read("src/lib.rs").contains("let cap = 64 * 1024;"));
+}

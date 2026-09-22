@@ -1654,3 +1654,206 @@ async fn a_field_that_cannot_be_encapsulated_is_refused_with_the_reason() {
         assert!(format!("{err:#}").contains(expected), "{expected}: {err:#}");
     }
 }
+
+const STORE_WITH_LIMIT: &str = "pub struct Store {\n    pub entries: Vec<u32>,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self { entries: Vec::new() }\n    }\n\n    pub fn limit(&self) -> usize {\n        let cap = 64 * 1024;\n        cap.min(self.entries.len())\n    }\n}\n";
+
+/// A field extracted end to end: the method reads `self.cap`, the struct declares it last,
+/// and both places that build a `Store` — `Self { … }` in its own `impl` and `Store { … }`
+/// in another file, written one field per line — initialise it with the expression. A pattern
+/// that ends in `..` still matches and is left alone; a return type and an import that name
+/// the type are not construction sites.
+#[tokio::test]
+async fn extracting_a_field_initialises_it_everywhere_the_struct_is_built() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod app;\npub mod store;\n");
+    let store = write(&ws, "src/store.rs", STORE_WITH_LIMIT);
+    let app = write(
+        &ws,
+        "src/app.rs",
+        "use crate::store::Store;\n\npub fn make() -> Store {\n    Store {\n        entries: vec![1],\n    }\n}\n\npub fn count(s: &Store) -> usize {\n    match s {\n        Store { entries, .. } => entries.len(),\n    }\n}\n",
+    );
+    commit(&ws);
+
+    let (s, a) = (store.clone(), app.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/definition" => answers::locations(&s, &[(1, 12)]),
+        "textDocument/references" => locations_in(&[
+            (&s, &[(5, 6), (6, 21), (7, 9)]),
+            (&a, &[(1, 19), (3, 18), (4, 5), (9, 18), (11, 9)]),
+        ]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::extract_field::extract(
+        remote,
+        &root,
+        &store,
+        (11, 19),
+        (11, 28),
+        "cap",
+        Some("usize"),
+        None,
+        false,
+        true,
+        false,
+    )
+    .await
+    .expect("the extraction runs");
+
+    assert_eq!(
+        (done.owner.as_str(), done.method.as_str()),
+        ("Store", "limit")
+    );
+    assert_eq!((done.replaced, done.constructors), (1, 2));
+    assert!(done.blocked.is_empty(), "{:?}", done.blocked);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    assert!(done.applied);
+    assert_eq!(
+        ws.read("src/store.rs"),
+        "pub struct Store {\n    pub entries: Vec<u32>,\n    cap: usize,\n}\n\nimpl Store {\n    pub fn new() -> Self {\n        Self { cap: 64 * 1024, entries: Vec::new() }\n    }\n\n    pub fn limit(&self) -> usize {\n        let cap = self.cap;\n        cap.min(self.entries.len())\n    }\n}\n"
+    );
+    assert_eq!(
+        ws.read("src/app.rs"),
+        "use crate::store::Store;\n\npub fn make() -> Store {\n    Store {\n        cap: 64 * 1024,\n        entries: vec![1],\n    }\n}\n\npub fn count(s: &Store) -> usize {\n    match s {\n        Store { entries, .. } => entries.len(),\n    }\n}\n"
+    );
+}
+
+/// What cannot be extracted is refused with the reason: a selection outside any `impl`, a
+/// method without `self`, an expression that reads `self` with no `init` to start from, a
+/// field that already exists, and a tuple struct. A pattern that lists every field is named
+/// with its line, and `apply` writes nothing while it remains.
+#[tokio::test]
+async fn a_field_that_cannot_be_extracted_is_refused_and_a_full_pattern_blocks_the_write() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &ws,
+        "src/lib.rs",
+        "pub mod app;\npub mod store;\npub mod pair;\n",
+    );
+    let store = write(&ws, "src/store.rs", STORE_WITH_LIMIT);
+    let source = "use crate::store::Store;\n\npub fn size(s: &Store) -> usize {\n    let Store { entries } = s;\n    entries.len()\n}\n\npub fn free() -> usize {\n    64 * 1024\n}\n";
+    let app = write(&ws, "src/app.rs", source);
+    let pair = write(
+        &ws,
+        "src/pair.rs",
+        "pub struct Pair(u8, u8);\n\nimpl Pair {\n    pub fn sum(&self) -> u8 {\n        self.0 + 1\n    }\n}\n",
+    );
+    commit(&ws);
+
+    let (s, a, p) = (store.clone(), app.clone(), pair.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/definition" if uri_of(params).ends_with("pair.rs") => {
+            answers::locations(&p, &[(1, 12)])
+        }
+        "textDocument/definition" => answers::locations(&s, &[(1, 12)]),
+        "textDocument/references" => locations_in(&[(&s, &[(5, 6)]), (&a, &[(4, 9)])]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let refused = |file: PathBuf, from: (u32, u32), to: (u32, u32), name: &'static str| {
+        let root = root.clone();
+        async move {
+            let err = prod_code_mcp::extract_field::extract(
+                remote,
+                &root,
+                &file,
+                from,
+                to,
+                name,
+                Some("usize"),
+                None,
+                false,
+                false,
+                false,
+            )
+            .await
+            .expect_err("refused");
+            format!("{err:#}")
+        }
+    };
+    assert!(
+        refused(app.clone(), (9, 5), (9, 14), "cap")
+            .await
+            .contains("not inside an `impl` block")
+    );
+    assert!(
+        refused(store.clone(), (7, 25), (7, 35), "cap")
+            .await
+            .contains("takes no `self`")
+    );
+    assert!(
+        refused(store.clone(), (12, 17), (12, 36), "cap")
+            .await
+            .contains("reads `self`")
+    );
+    assert!(
+        refused(store.clone(), (11, 19), (11, 28), "entries")
+            .await
+            .contains("already has a field `entries`")
+    );
+    assert!(
+        refused(pair.clone(), (5, 18), (5, 19), "one")
+            .await
+            .contains("not a struct with named fields")
+    );
+
+    let done = prod_code_mcp::extract_field::extract(
+        remote,
+        &root,
+        &store,
+        (11, 19),
+        (11, 28),
+        "cap",
+        Some("usize"),
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect("the dry run reports");
+    assert_eq!(done.blocked.len(), 1, "{:?}", done.blocked);
+    assert!(
+        done.blocked[0].contains("src/app.rs:4:15")
+            && done.blocked[0].contains("let Store { entries } = s;"),
+        "{:?}",
+        done.blocked
+    );
+    let err = prod_code_mcp::extract_field::extract(
+        remote,
+        &root,
+        &store,
+        (11, 19),
+        (11, 28),
+        "cap",
+        Some("usize"),
+        None,
+        false,
+        true,
+        false,
+    )
+    .await
+    .expect_err("apply refuses while a pattern would break");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/app.rs"), source);
+    assert_eq!(ws.read("src/store.rs"), STORE_WITH_LIMIT);
+}

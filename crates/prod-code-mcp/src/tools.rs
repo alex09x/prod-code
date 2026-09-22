@@ -234,6 +234,29 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_field".to_string(),
+            description: "Promote an expression inside a method into a field of the type the method belongs to. Give the selection (path plus 1-based start and end line/character), the field's name and its `type`. The method then reads `self.<name>`, the struct declares the field last, and every place that builds the struct — `Type { … }` and `Self { … }` anywhere in the workspace — initialises it, by default with the expression itself; pass `init` for a different starting value, which is required when the expression reads `self`. A pattern that lists every field no longer matches a struct with one more and is reported, not rewritten; nothing is written while one remains. `replace_all` reads the field at every identical occurrence in the method. The whole change is type-checked in one overlay before anything is written; the analyzer does not check borrows, so for a type that is not `Copy`, ask for `verify: \"compile\"`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File the selection is in" },
+                    "line": { "type": "integer", "description": "1-based line where the expression starts" },
+                    "character": { "type": "integer", "description": "1-based column where it starts" },
+                    "end_line": { "type": "integer", "description": "1-based line where it ends" },
+                    "end_character": { "type": "integer", "description": "1-based column where it ends (exclusive)" },
+                    "name": { "type": "string", "description": "What the new field is called" },
+                    "type": { "type": "string", "description": "The field's type" },
+                    "init": { "type": "string", "description": "What every construction site initialises the field with (default: the expression itself)" },
+                    "replace_all": { "type": "boolean", "description": "Read the field at every identical occurrence in the method (default false: only the selection)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a move out of `self`" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when a pattern would break or the result does not compile" }
+                },
+                "required": ["path", "line", "character", "end_line", "end_character", "name", "type"]
+            }),
+        },
+        McpTool {
             name: "code_extract_parameter".to_string(),
             description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the analyzer when it gives one in a shape this can read, otherwise pass `type`. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports. Rust only."
                 .to_string(),
@@ -1753,6 +1776,77 @@ pub async fn execute_tool(
             .await?;
             let clean = done.sites.is_empty();
             let text = done.render(40);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
+        "code_extract_field" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let num = |key: &str| -> Result<u32> {
+                args.get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .context("Missing 'name' argument: what the new field is called")?;
+            let ty = args.get("type").and_then(|v| v.as_str());
+            let init = args.get("init").and_then(|v| v.as_str());
+            let replace_all = args
+                .get("replace_all")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let mut done = crate::extract_field::extract(
+                remote,
+                workspace_root,
+                &file_path,
+                (num("line")?, num("character")?),
+                (num("end_line")?, num("end_character")?),
+                name,
+                ty,
+                init,
+                replace_all,
+                apply && !verify,
+                force,
+            )
+            .await?;
+            let gate = if verify && (done.blocked.is_empty() || force) {
+                let files = done.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        done.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                done.applied = true;
+            }
+            let clean = done.diagnostics.is_empty()
+                && done.blocked.is_empty()
+                && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = done.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {

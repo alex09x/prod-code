@@ -291,6 +291,41 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Promote an expression in a method into a field of its type, initialised wherever the
+    /// type is built.
+    ExtractField {
+        /// The file the selection is in.
+        file: PathBuf,
+        /// 1-based line where the expression starts.
+        line: u32,
+        /// 1-based column where it starts.
+        character: u32,
+        /// Where it ends, as `LINE:COL` (the column is exclusive).
+        #[arg(long = "to")]
+        to: String,
+        /// What the new field is called.
+        #[arg(long)]
+        name: String,
+        /// The field's type.
+        #[arg(long = "type")]
+        ty: String,
+        /// What every construction site initialises it with (default: the expression).
+        #[arg(long)]
+        init: Option<String>,
+        /// Read the field at every identical occurrence in the method, not only the selection.
+        #[arg(long, default_value_t = false)]
+        replace_all: bool,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when a pattern would break or the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a function body into a parameter, passed at every call site.
     ExtractParameter {
         /// The file the selection is in.
@@ -681,6 +716,55 @@ async fn main() -> Result<()> {
                 remote, symbol, line, character, path, by_value, verify, apply, force,
             )
             .await
+        }
+        Commands::ExtractField {
+            file,
+            line,
+            character,
+            to,
+            name,
+            ty,
+            init,
+            replace_all,
+            verify,
+            apply,
+            force,
+        } => {
+            let (end_line, end_character): (u32, u32) = to
+                .split_once(':')
+                .and_then(|(l, c)| Some((l.trim().parse().ok()?, c.trim().parse().ok()?)))
+                .context("--to takes LINE:COL, for example --to 42:31")?;
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "line": line,
+                "character": character,
+                "end_line": end_line,
+                "end_character": end_character,
+                "name": name,
+                "type": ty,
+                "replace_all": replace_all,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(init) = init {
+                args["init"] = serde_json::Value::String(init);
+            }
+            if let Some(verify) = verify {
+                args["verify"] = serde_json::Value::String(verify);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_extract_field", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Commands::ExtractParameter {
             file,
