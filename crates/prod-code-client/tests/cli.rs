@@ -1432,7 +1432,9 @@ async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
     let gw = MockGateway::start(move |method, _| match method {
         "textDocument/references" => serde_json::json!([]),
         "textDocument/diagnostic"
-            if pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 0 =>
+            if pulls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2) =>
         {
             serde_json::json!({ "kind": "full", "items": [] })
         }
