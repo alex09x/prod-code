@@ -39,8 +39,9 @@ pub struct Migration {
     pub rewritten: Vec<(String, String)>,
     /// Every site the new type does not fit, in file order.
     pub sites: Vec<Site>,
-    /// How many diagnostics landed on an attribute rather than on code: the analyzer reports
-    /// inside a derive it did not expand, and none of them is a place anyone can edit.
+    /// How many diagnostics the change caused on an attribute rather than on code: an error
+    /// inside what a derive generates is reported at the derive, and none of them is a place
+    /// anyone can edit. Ones the file already had are not counted at all (#79).
     pub in_attributes: usize,
     pub applied: bool,
 }
@@ -102,8 +103,8 @@ impl Migration {
         if self.in_attributes > 0 {
             out.push_str(&format!(
                 "\n{} further diagnostic(s) landed on a `#[derive(…)]` line rather than on code. \
-                 The analyzer reports inside a derive it cannot expand here, and there is nothing \
-                 at those positions to edit; they are left out of the list above.\n",
+                 An error inside what a derive generates is reported at the derive, and there \
+                 is nothing at those positions to edit; they are left out of the list above.\n",
                 self.in_attributes
             ));
         }
