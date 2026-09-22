@@ -581,6 +581,110 @@ mod tests {
     }
 
     #[test]
+    fn relative_edit_path_resolves_and_rejects_paths_outside_the_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+
+        assert_eq!(
+            relative_edit_path(root.path(), Path::new("src/a.rs")).unwrap(),
+            "src/a.rs"
+        );
+        let abs = root.path().join("src/b.rs");
+        assert_eq!(relative_edit_path(root.path(), &abs).unwrap(), "src/b.rs");
+
+        let err = relative_edit_path(root.path(), Path::new("/etc/passwd")).unwrap_err();
+        assert!(format!("{err:#}").contains("outside the workspace"));
+
+        let err = relative_edit_path(root.path(), root.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("needs a file path"));
+    }
+
+    #[test]
+    fn parse_specs_builds_edits_from_inline_text_files_and_deletes_with_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let content_dir = tempfile::tempdir().unwrap();
+        std::fs::write(content_dir.path().join("body.rs"), "fn a() {}\n").unwrap();
+
+        let json = serde_json::json!({
+            "hypotheses": [
+                {
+                    "edits": [
+                        { "path": "src/a.rs", "new_text": "fn a() {}\n" },
+                        { "path": "src/b.rs", "file": "body.rs" }
+                    ]
+                },
+                {
+                    "name": "  named  ",
+                    "edits": [ { "path": "src/c.rs", "new_text": "x\n" } ],
+                    "delete": [ "src/old.rs" ]
+                }
+            ]
+        });
+        let specs = parse_specs(root.path(), &json, Some(content_dir.path())).unwrap();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "h1", "an unnamed hypothesis gets a default name");
+        assert_eq!(specs[0].edits[0].relative_path, "src/a.rs");
+        assert_eq!(specs[0].edits[0].text.as_deref(), Some("fn a() {}\n"));
+        assert_eq!(specs[0].edits[1].relative_path, "src/b.rs");
+        assert_eq!(
+            specs[0].edits[1].text.as_deref(),
+            Some("fn a() {}\n"),
+            "the file's content is read relative to file_base"
+        );
+        assert_eq!(specs[1].name, "named", "the given name is trimmed");
+        assert_eq!(specs[1].edits.len(), 2);
+        assert_eq!(specs[1].edits[1].relative_path, "src/old.rs");
+        assert_eq!(specs[1].edits[1].text, None, "a delete has no text");
+
+        assert!(parse_specs(root.path(), &serde_json::json!({}), None).is_err());
+        assert!(
+            parse_specs(root.path(), &serde_json::json!({"hypotheses": []}), None).is_err()
+        );
+        let no_path = serde_json::json!({"hypotheses":[{"edits":[{"new_text":"x"}]}]});
+        assert!(parse_specs(root.path(), &no_path, None).is_err());
+        let no_text = serde_json::json!({"hypotheses":[{"edits":[{"path":"a.rs"}]}]});
+        let err = parse_specs(root.path(), &no_text, None).unwrap_err();
+        assert!(format!("{err:#}").contains("needs 'new_text' or 'file'"));
+    }
+
+    #[test]
+    fn render_report_shows_applied_files_and_the_closest_hypothesis_when_none_passed() {
+        let mut results = vec![outcome("ok", Some(0), Some((1, 0)), 0)];
+        results[0].diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n".to_string();
+        let ranking = rank(&results);
+        let winner = Some(ranking[0]);
+        let shadow = ShadowOutcome {
+            mode: "in-place".to_string(),
+            server_workspace_root: "/srv/ws".to_string(),
+            results,
+            ranking,
+            winner,
+        };
+        let text = render_report(
+            &shadow,
+            &["cargo".to_string(), "test".to_string()],
+            Some(&["src/a.rs".to_string()]),
+            100,
+        );
+        assert!(
+            text.contains("[applied 1 file(s) to the checkout: src/a.rs]"),
+            "{text}"
+        );
+
+        let results2 = vec![outcome("a", Some(1), None, 3), outcome("b", Some(1), None, 1)];
+        let ranking2 = rank(&results2);
+        let shadow2 = ShadowOutcome {
+            mode: "overlay".to_string(),
+            server_workspace_root: "/srv".to_string(),
+            results: results2,
+            ranking: ranking2,
+            winner: None,
+        };
+        let text2 = render_report(&shadow2, &["go".to_string(), "test".to_string()], None, 100);
+        assert!(text2.contains("no hypothesis passed; closest:"), "{text2}");
+    }
+
+    #[test]
     fn report_names_the_winner_and_shows_failing_output() {
         let mut results = vec![
             outcome("ok", Some(0), Some((3, 0)), 2),
