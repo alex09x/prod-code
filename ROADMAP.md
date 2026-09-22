@@ -224,10 +224,10 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     by asking the running analyzer for its actions at that kind of position; the assist id named
     is what it answered. What is left to build is four items, listed under **Still to build**,
     plus the ones marked *not applicable to Rust*.
-  - **Still to build**: `extract_field`, the workspace-wide half of `encapsulate_field`
-    (rewriting every direct field access), and the automatic half of `type_migration` (the
+  - **Still to build**: `extract_field` and the automatic half of `type_migration` (the
     constraint graph and conversion injection). `introduce_parameter_object`,
-    `extract_parameter` and the reporting half of `type_migration` shipped 2026-09-22. Nothing in rust-analyzer offers
+    `extract_parameter`, the reporting half of `type_migration` and the workspace half of
+    `encapsulate_field` shipped 2026-09-22. Nothing in rust-analyzer offers
     these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
     the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
     overlay before writing.
@@ -278,7 +278,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
   - **7.1.3. Hierarchy, Trait & Compositional Transformations**:
     - *Not applicable to Rust.* `refactor.pull_up / push_down(path, member_symbols, target_level)`:
       - Moves methods, fields, and constants up to superclasses/traits or down to specific subclasses/implementations.
-    - [~] `refactor.encapsulate_field(path, struct_name, field_name)` — half of it, via `code_assists` at a field of a struct that has an `impl`: `generate_getter`, `generate_getter_mut`, `generate_setter`, and `change_visibility` to make the field private. Rewriting every direct field access across the workspace is the missing half and needs a tool.
+    - [x] `refactor.encapsulate_field(path, struct_name, field_name)` — shipped 2026-09-22 for Rust as `code_encapsulate_field` / `prod-code encapsulate-field`: the field becomes private, a getter (by value for primitive `Copy` types, by reference otherwise) and, when anything writes it, a setter are added to the struct's `impl`, and every access outside the declaring file is rewritten — reads to `x.f()`, plain writes to `x.set_f(v)`. Uses that cannot be a method call (a struct literal or pattern outside the file, `+=`, `&mut x.f`) are reported and block the write; the change is type-checked in one overlay, with `verify: "compile"` for the borrows the analyzer does not check. The single-field assists (`generate_getter`, `generate_setter`, `change_visibility`) remain available through `code_assists`.
       - Converts public fields to private, generates idiomatic getters/setters/accessors, and rewrites all direct field accesses across the repository.
     - *Not applicable to Rust* — there is no inheritance to replace. `refactor.replace_inheritance_with_delegation(path, sub_type, base_type)`:
       - Enforces "Composition over Inheritance": wraps the base class in a private field and forwards inherited method calls.

@@ -223,7 +223,19 @@ pub fn call_args_span(text: &str, after_name: usize) -> Option<(usize, usize)> {
     if bytes.get(i) != Some(&b'(') {
         return None;
     }
-    let start = i + 1;
+    matching_bracket(text, i).map(|close| (i + 1, close))
+}
+
+/// The offset of the bracket that closes the one at `open`.
+///
+/// Brackets of every kind nest; string and character literals and comments are skipped, so a
+/// `}` in a string or an apostrophe in a comment does not end the block early.
+pub fn matching_bracket(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if !matches!(bytes.get(open), Some(b'(' | b'[' | b'{')) {
+        return None;
+    }
+    let mut i = open;
     let mut depth = 0i32;
     let mut in_str: Option<u8> = None;
     let mut escaped = false;
@@ -241,6 +253,16 @@ pub fn call_args_span(text: &str, after_name: usize) -> Option<(usize, usize)> {
             continue;
         }
         match c {
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                i = text[i..].find('\n').map_or(bytes.len(), |n| i + n);
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = text[i + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |n| i + 2 + n + 2);
+                continue;
+            }
             b'"' => in_str = Some(b'"'),
             // A lifetime is not the start of a character literal.
             b'\''
@@ -255,7 +277,7 @@ pub fn call_args_span(text: &str, after_name: usize) -> Option<(usize, usize)> {
             b')' | b']' | b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some((start, i));
+                    return Some(i);
                 }
             }
             _ => {}
@@ -678,6 +700,23 @@ mod tests {
             "pub struct Opts {\n    pub count: usize,\n}\n"
         );
         assert_eq!(parameter_text("opts", "Opts", &owned), "opts: Opts");
+    }
+
+    #[test]
+    fn a_bracket_in_a_comment_or_a_literal_does_not_close_the_block() {
+        let block = "impl A {\n    // don't stop at } here\n    /* nor } here */\n    fn f() -> &'static str { \"}\" }\n    fn g() -> char { '}' }\n}\ntail";
+        let close = matching_bracket(block, block.find('{').unwrap()).expect("it closes");
+        assert_eq!(&block[close..], "}\ntail");
+        assert_eq!(
+            matching_bracket("(a, [b)", 0),
+            None,
+            "an unclosed list has no end"
+        );
+        assert_eq!(
+            matching_bracket("x", 0),
+            None,
+            "only a bracket opens a block"
+        );
     }
 
     #[test]

@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 468 tests | 5 min |
+| `cargo test --workspace` — 488 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
@@ -102,6 +102,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done |
+| `code_encapsulate_field` | a public field made private, every read and write outside its file turned into a getter or setter call |
 | `code_schema_rename` | one schema field renamed across every language that spells it differently, semantically per project |
 | `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
 | `code_codemod` | structural search and replace on the syntax tree (`pattern ==>> replacement`), as a diff or applied |

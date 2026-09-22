@@ -263,6 +263,34 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Make a public field private and turn every access to it outside its file into a getter or
+    /// setter call.
+    EncapsulateField {
+        /// The field by name (`Type::field`), or a file with `--line`.
+        symbol: String,
+        /// 1-based line, when the first argument is a file path.
+        #[arg(long)]
+        line: Option<u32>,
+        /// 1-based column of the field's name, with `--line`.
+        #[arg(long, default_value_t = 1)]
+        character: u32,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Return the field by value (`true`, it must be `Copy`) or by reference (`false`).
+        #[arg(long)]
+        by_value: Option<bool>,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when a use cannot be rewritten or the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a function body into a parameter, passed at every call site.
     ExtractParameter {
         /// The file the selection is in.
@@ -639,6 +667,21 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_migrate_type_cli(remote, symbol, to, line, character, path, apply, force).await,
+        Commands::EncapsulateField {
+            symbol,
+            line,
+            character,
+            path,
+            by_value,
+            verify,
+            apply,
+            force,
+        } => {
+            run_encapsulate_field_cli(
+                remote, symbol, line, character, path, by_value, verify, apply, force,
+            )
+            .await
+        }
         Commands::ExtractParameter {
             file,
             line,
@@ -2283,6 +2326,51 @@ async fn run_migrate_type_cli(
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_migrate_type", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_encapsulate_field_cli(
+    remote: SocketAddr,
+    symbol: String,
+    line: Option<u32>,
+    character: u32,
+    path: Option<String>,
+    by_value: Option<bool>,
+    verify: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({ "apply": apply, "force": force });
+    match line {
+        // A position: the first argument is the file, not a name to resolve.
+        Some(line) => {
+            args["path"] = serde_json::Value::String(symbol);
+            args["line"] = serde_json::Value::from(line);
+            args["character"] = serde_json::Value::from(character);
+        }
+        None => args["symbol"] = serde_json::Value::String(symbol),
+    }
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(by_value) = by_value {
+        args["by_value"] = serde_json::Value::Bool(by_value);
+    }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_encapsulate_field", args).await?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");

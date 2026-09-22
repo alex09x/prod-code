@@ -1464,3 +1464,193 @@ async fn a_position_that_does_not_hold_the_name_is_reported_not_rewritten() {
         done.unmatched
     );
 }
+
+const CONFIG: &str = "pub struct Config {\n    pub retries: u32,\n}\n\nimpl Config {\n    pub fn new() -> Self {\n        Config { retries: 3 }\n    }\n}\n";
+
+/// Both lists of positions in one `references` answer.
+fn locations_in(files: &[(&PathBuf, &[(u32, u32)])]) -> serde_json::Value {
+    serde_json::Value::Array(
+        files
+            .iter()
+            .flat_map(|(path, spots)| {
+                answers::locations(path, spots)
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect(),
+    )
+}
+
+/// Encapsulation end to end: outside the declaring file a read becomes a getter call and a
+/// plain write a setter call; inside it the struct literal stays as it is, because a private
+/// field is still visible there. The accessors go into the struct's own `impl`, with the
+/// field's old visibility, and `apply` writes all of it.
+#[tokio::test]
+async fn encapsulating_a_field_rewrites_every_read_and_write_outside_its_file() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod app;\npub mod config;\n");
+    let config = write(&ws, "src/config.rs", CONFIG);
+    let app = write(
+        &ws,
+        "src/app.rs",
+        "use crate::config::Config;\n\npub fn run(cfg: &mut Config) -> u32 {\n    if cfg.retries == 0 {\n        cfg.retries = 1;\n    }\n    cfg.retries * 2\n}\n",
+    );
+    commit(&ws);
+
+    let (c, a) = (config.clone(), app.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => {
+            locations_in(&[(&c, &[(7, 18)]), (&a, &[(4, 12), (5, 13), (7, 9)])])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::encapsulate_field::encapsulate(
+        remote, &root, &config, 2, 9, None, true, false,
+    )
+    .await
+    .expect("the encapsulation runs");
+
+    assert_eq!(done.owner, "Config");
+    assert_eq!(done.ty, "u32");
+    assert!(done.by_value, "a `u32` is returned by value");
+    assert_eq!((done.reads, done.writes, done.left_in_file), (2, 1, 1));
+    assert!(done.blocked.is_empty() && done.unmatched.is_empty());
+    assert!(done.applied);
+    assert_eq!(
+        ws.read("src/app.rs"),
+        "use crate::config::Config;\n\npub fn run(cfg: &mut Config) -> u32 {\n    if cfg.retries() == 0 {\n        cfg.set_retries(1);\n    }\n    cfg.retries() * 2\n}\n"
+    );
+    assert_eq!(
+        ws.read("src/config.rs"),
+        "pub struct Config {\n    retries: u32,\n}\n\nimpl Config {\n    pub fn new() -> Self {\n        Config { retries: 3 }\n    }\n\n    pub fn retries(&self) -> u32 {\n        self.retries\n    }\n\n    pub fn set_retries(&mut self, retries: u32) {\n        self.retries = retries;\n    }\n}\n"
+    );
+    let text = done.render(6000);
+    assert!(text.contains("[applied to 2 file(s)]"), "{text}");
+}
+
+/// A use that cannot become a method call — a struct literal outside the declaring file, a
+/// compound assignment, a mutable borrow — is named with its source line, and `apply` writes
+/// nothing while one remains, because a private field would not compile there. A position
+/// that does not hold the field's name is not touched at all.
+#[tokio::test]
+async fn uses_that_cannot_become_a_method_call_are_reported_and_nothing_is_written() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod app;\npub mod config;\n");
+    let config = write(
+        &ws,
+        "src/config.rs",
+        "pub struct Config {\n    pub(crate) retries: u32,\n}\n",
+    );
+    let source = "use crate::config::Config;\n\npub fn make() -> Config {\n    Config { retries: 5 }\n}\n\npub fn bump(cfg: &mut Config) -> u32 {\n    cfg.retries += 1;\n    grow(&mut cfg.retries);\n    cfg.retries\n}\n\nfn grow(n: &mut u32) {\n    *n += 1;\n}\n";
+    let app = write(&ws, "src/app.rs", source);
+    commit(&ws);
+
+    let a = app.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        // (1, 5) is stale: `crate`, not `retries`.
+        "textDocument/references" => {
+            answers::locations(&a, &[(1, 5), (4, 14), (8, 9), (9, 19), (10, 9)])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::encapsulate_field::encapsulate(
+        remote, &root, &config, 2, 16, None, false, false,
+    )
+    .await
+    .expect("the dry run reports");
+    assert_eq!(done.blocked.len(), 3, "{:?}", done.blocked);
+    assert!(
+        done.blocked[0].contains("struct literal")
+            && done.blocked[0].contains("Config { retries: 5 }")
+    );
+    assert!(done.blocked[1].contains("compound assignment"));
+    assert!(done.blocked[2].contains("mutable borrow"));
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(done.unmatched[0].contains("the file says otherwise"));
+    assert_eq!(
+        done.reads, 1,
+        "the plain read is still rewritten in the plan"
+    );
+    let new_config = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("config.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the declaring file is planned");
+    assert_eq!(
+        new_config,
+        "pub struct Config {\n    retries: u32,\n}\n\nimpl Config {\n    pub(crate) fn retries(&self) -> u32 {\n        self.retries\n    }\n}\n",
+        "a struct without an `impl` gets one, and the accessor keeps the field's visibility"
+    );
+    let text = done.render(6000);
+    assert!(
+        text.contains("3 use(s) outside the declaring file cannot become a method call"),
+        "{text}"
+    );
+
+    let err = prod_code_mcp::encapsulate_field::encapsulate(
+        remote, &root, &config, 2, 16, None, true, false,
+    )
+    .await
+    .expect_err("apply refuses while a use cannot be rewritten");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/app.rs"), source);
+    assert!(ws.read("src/config.rs").contains("pub(crate) retries"));
+}
+
+/// What cannot be encapsulated is refused with the reason, before anything is planned: a
+/// field that is already private, a position that is not a field, a generic struct with no
+/// `impl` to put the accessors in, and a type that already has a method of the getter's name.
+#[tokio::test]
+async fn a_field_that_cannot_be_encapsulated_is_refused_with_the_reason() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub struct Hidden {\n    count: u32,\n}\n\npub struct Page<T> {\n    pub rows: Vec<T>,\n}\n\npub struct Named {\n    pub label: String,\n}\n\nimpl Named {\n    pub fn label(&self) -> &str {\n        &self.label\n    }\n}\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    for ((line, col), expected) in [
+        ((2, 5), "already private"),
+        ((1, 12), "not a field declaration"),
+        ((6, 9), "is generic and has no inherent `impl`"),
+        ((10, 9), "already has a `fn label`"),
+    ] {
+        let err = prod_code_mcp::encapsulate_field::encapsulate(
+            remote, &root, &lib, line, col, None, false, false,
+        )
+        .await
+        .expect_err(expected);
+        assert!(format!("{err:#}").contains(expected), "{expected}: {err:#}");
+    }
+}

@@ -5,6 +5,7 @@ pub mod compile_check;
 pub mod dead_code;
 pub mod diagnostics;
 pub mod dossier;
+pub mod encapsulate_field;
 pub mod exec;
 pub mod extract_parameter;
 pub mod fixture;
