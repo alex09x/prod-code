@@ -227,6 +227,10 @@ enum Commands {
         /// Only look under this directory.
         #[arg(long)]
         path: Option<String>,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the rename instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -279,6 +283,10 @@ enum Commands {
         /// Replace every identical occurrence in the body, not only the selection.
         #[arg(long, default_value_t = false)]
         replace_all: bool,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -302,6 +310,10 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -319,6 +331,10 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the move instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -336,6 +352,10 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -606,9 +626,10 @@ async fn main() -> Result<()> {
             field,
             to,
             path,
+            verify,
             apply,
             force,
-        } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
+        } => run_schema_rename_cli(remote, field, to, path, verify, apply, force).await,
         Commands::MigrateType {
             symbol,
             to,
@@ -626,6 +647,7 @@ async fn main() -> Result<()> {
             name,
             ty,
             replace_all,
+            verify,
             apply,
             force,
         } => {
@@ -638,6 +660,7 @@ async fn main() -> Result<()> {
                 name,
                 ty,
                 replace_all,
+                verify,
                 apply,
                 force,
             )
@@ -649,26 +672,31 @@ async fn main() -> Result<()> {
             name,
             binding,
             path,
+            verify,
             apply,
             force,
         } => {
-            run_parameter_object_cli(remote, symbol, params, name, binding, path, apply, force)
-                .await
+            run_parameter_object_cli(
+                remote, symbol, params, name, binding, path, verify, apply, force,
+            )
+            .await
         }
         Commands::Move {
             symbol,
             to,
             path,
+            verify,
             apply,
             force,
-        } => run_move_cli(remote, symbol, to, path, apply, force).await,
+        } => run_move_cli(remote, symbol, to, path, verify, apply, force).await,
         Commands::ChangeSignature {
             symbol,
             params,
             path,
+            verify,
             apply,
             force,
-        } => run_change_signature_cli(remote, symbol, params, path, apply, force).await,
+        } => run_change_signature_cli(remote, symbol, params, path, verify, apply, force).await,
         Commands::Codemod { rule, path, apply } => run_codemod_cli(remote, rule, path, apply).await,
         Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
@@ -2202,6 +2230,7 @@ async fn run_schema_rename_cli(
     field: String,
     to: String,
     path: Option<String>,
+    verify: Option<String>,
     apply: bool,
     force: bool,
 ) -> Result<()> {
@@ -2210,6 +2239,9 @@ async fn run_schema_rename_cli(
     let mut args = serde_json::json!({ "field": field, "to": to, "apply": apply, "force": force });
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
@@ -2271,6 +2303,7 @@ async fn run_extract_parameter_cli(
     name: String,
     ty: Option<String>,
     replace_all: bool,
+    verify: Option<String>,
     apply: bool,
     force: bool,
 ) -> Result<()> {
@@ -2298,6 +2331,9 @@ async fn run_extract_parameter_cli(
     if let Some(ty) = ty {
         args["type"] = serde_json::Value::String(ty);
     }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
+    }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_extract_parameter", args).await?;
     for content in &result.content {
@@ -2318,6 +2354,7 @@ async fn run_parameter_object_cli(
     name: String,
     binding: Option<String>,
     path: Option<String>,
+    verify: Option<String>,
     apply: bool,
     force: bool,
 ) -> Result<()> {
@@ -2331,6 +2368,9 @@ async fn run_parameter_object_cli(
     }
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_introduce_parameter_object", args)
@@ -2350,6 +2390,7 @@ async fn run_move_cli(
     symbol: String,
     to: String,
     path: Option<String>,
+    verify: Option<String>,
     apply: bool,
     force: bool,
 ) -> Result<()> {
@@ -2359,6 +2400,9 @@ async fn run_move_cli(
         serde_json::json!({ "symbol": symbol, "to": to, "apply": apply, "force": force });
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
     }
     let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_move", args).await?;
     for content in &result.content {
@@ -2376,6 +2420,7 @@ async fn run_change_signature_cli(
     symbol: String,
     params: Vec<String>,
     path: Option<String>,
+    verify: Option<String>,
     apply: bool,
     force: bool,
 ) -> Result<()> {
@@ -2385,6 +2430,9 @@ async fn run_change_signature_cli(
         serde_json::json!({ "symbol": symbol, "params": params, "apply": apply, "force": force });
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(verify) = verify {
+        args["verify"] = serde_json::Value::String(verify);
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_change_signature", args).await?;

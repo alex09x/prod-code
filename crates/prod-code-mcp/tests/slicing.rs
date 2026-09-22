@@ -1137,3 +1137,60 @@ async fn pick_node_asks_the_cluster_then_reports_when_nothing_serves_the_engine(
     assert!(text.contains("no reachable gateway serves rust"), "{text}");
     assert!(text.contains(&home.to_string()), "{text}");
 }
+
+/// `verify: "compile"`: the proposed files go to a shadow of the workspace as one hypothesis, the
+/// compiler runs there, and its error lines are read back — the check that sees what the
+/// analyzer's overlay does not (#63).
+#[tokio::test]
+async fn the_compiler_is_asked_in_a_shadow_and_its_errors_are_read_back() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() -> u32 { 1 }\n")]);
+    let root = ws.root();
+
+    let addr = shadow_gateway(|req| {
+        assert_eq!(req.hypotheses.len(), 1, "one hypothesis: the proposed files");
+        assert_eq!(
+            req.command,
+            vec![
+                "cargo",
+                "check",
+                "--workspace",
+                "--all-targets",
+                "--message-format=short"
+            ]
+        );
+        WireMessage::ShadowRunResponse(ShadowRunResponse {
+            server_workspace_root: "/srv/ws/demo".to_string(),
+            mode: "overlay".to_string(),
+            error: None,
+            results: vec![ShadowHypothesisResult {
+                name: "proposed".to_string(),
+                exit_code: Some(101),
+                duration_ms: 2100,
+                timed_out: false,
+                error: None,
+                output_tail: Some(
+                    b"    Checking t v0.1.0\nsrc/lib.rs:1:21: error[E0422]: cannot find struct `Opts` in this scope\nsrc/lib.rs:1:1: warning: unused\nerror: could not compile `t` (lib) due to 1 previous error\n"
+                        .to_vec(),
+                ),
+                output_len: 160,
+            }],
+        })
+    })
+    .await;
+
+    let files = vec![(
+        root.join("src/lib.rs").to_string_lossy().into_owned(),
+        "pub fn a() -> u32 { Opts { a: 1 }; 1 }\n".to_string(),
+    )];
+    let verdict = prod_code_mcp::compile_check::check(addr, &root, &files)
+        .await
+        .expect("the check runs");
+    assert!(!verdict.passed);
+    assert_eq!(
+        verdict.errors,
+        vec!["src/lib.rs:1:21: error[E0422]: cannot find struct `Opts` in this scope"],
+        "the error is kept, the warning and the summary line are not"
+    );
+    assert_eq!(verdict.duration_ms, 2100);
+    assert!(verdict.render().contains("the compiler rejects the result"));
+}

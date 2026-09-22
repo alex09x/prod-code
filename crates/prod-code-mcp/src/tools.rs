@@ -192,6 +192,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "field": { "type": "string", "description": "The field as the schema spells it (`order_id`)" },
                     "to": { "type": "string", "description": "What it becomes (`trade_id`); spelled per language automatically" },
                     "path": { "type": "string", "description": "Only look under this directory (default: the whole workspace)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the rename (default false: report the diff and the checks only)" },
                     "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" }
                 },
@@ -230,6 +231,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "name": { "type": "string", "description": "What the new parameter is called" },
                     "type": { "type": "string", "description": "The parameter's type, when the analyzer gives none" },
                     "replace_all": { "type": "boolean", "description": "Replace every identical occurrence in the body (default false: only the selection)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -253,6 +255,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     },
                     "name": { "type": "string", "description": "The struct's name, UpperCamelCase (`Opts`, `SyncRequest`)" },
                     "binding": { "type": "string", "description": "What the new parameter is called in the body (default: the struct name in snake_case)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -270,6 +273,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the declaration" },
                     "character": { "type": "integer", "description": "1-based column of the declaration" },
                     "to": { "type": "string", "description": "The target module's file, e.g. `crates/x/src/fixture.rs`" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the move (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -291,6 +295,7 @@ pub fn list_tools() -> Vec<McpTool> {
                         "items": { "type": "string" },
                         "description": "The whole new parameter list, in order: `name` to keep, `name: Type = expression` to add; omit one to remove it. The receiver (`&self`) is never listed."
                     },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Drop a parameter the body still uses, and write even when the result does not compile" }
                 },
@@ -1592,18 +1597,45 @@ pub async fn execute_tool(
                 .get("path")
                 .and_then(|v| v.as_str())
                 .map(|p| resolve_file_path(workspace_root, p));
-            let done = crate::schema::rename(
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let mut done = crate::schema::rename(
                 remote,
                 workspace_root,
                 field,
                 to,
-                apply,
+                apply && !verify,
                 force,
                 scope.as_deref(),
             )
             .await?;
-            let clean = done.diagnostics.is_empty();
-            let text = done.render(6000);
+            let gate = if verify {
+                let files = done
+                    .rewritten
+                    .iter()
+                    .map(|(p, t)| (p.to_string_lossy().into_owned(), t.clone()))
+                    .collect::<Vec<_>>();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        done.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                done.applied = true;
+            }
+            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = done.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {
@@ -1672,7 +1704,8 @@ pub async fn execute_tool(
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::extract_parameter::extract(
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let mut done = crate::extract_parameter::extract(
                 remote,
                 workspace_root,
                 &file_path,
@@ -1681,12 +1714,34 @@ pub async fn execute_tool(
                 name,
                 ty,
                 replace_all,
-                apply,
+                apply && !verify,
                 force,
             )
             .await?;
-            let clean = done.diagnostics.is_empty();
-            let text = done.render(6000);
+            let gate = if verify {
+                let files = done.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        done.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                done.applied = true;
+            }
+            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = done.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {
@@ -1730,7 +1785,8 @@ pub async fn execute_tool(
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::parameter_object::introduce(
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let mut done = crate::parameter_object::introduce(
                 remote,
                 workspace_root,
                 &file_path,
@@ -1739,12 +1795,34 @@ pub async fn execute_tool(
                 &params,
                 name,
                 &binding,
-                apply,
+                apply && !verify,
                 force,
             )
             .await?;
-            let clean = done.diagnostics.is_empty();
-            let text = done.render(6000);
+            let gate = if verify {
+                let files = done.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        done.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                done.applied = true;
+            }
+            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = done.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {
@@ -1772,19 +1850,42 @@ pub async fn execute_tool(
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let file_path = resolve_file_path(workspace_root, path_str);
             let target = resolve_file_path(workspace_root, to);
-            let moved = crate::move_item::move_item(
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let mut moved = crate::move_item::move_item(
                 remote,
                 workspace_root,
                 &file_path,
                 line,
                 character,
                 &target,
-                apply,
+                apply && !verify,
                 force,
             )
             .await?;
-            let clean = moved.diagnostics.is_empty();
-            let text = moved.render(6000);
+            let gate = if verify {
+                let files = moved.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        moved.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                moved.applied = true;
+            }
+            let clean = moved.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = moved.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {
@@ -1817,19 +1918,42 @@ pub async fn execute_tool(
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let file_path = resolve_file_path(workspace_root, path_str);
-            let change = crate::signature::change(
+            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+            let mut change = crate::signature::change(
                 remote,
                 workspace_root,
                 &file_path,
                 line,
                 character,
                 &params,
-                apply,
+                apply && !verify,
                 force,
             )
             .await?;
-            let clean = change.diagnostics.is_empty();
-            let text = change.render(6000);
+            let gate = if verify {
+                let files = change.rewritten.clone();
+                Some(
+                    compile_gate(
+                        remote,
+                        workspace_root,
+                        &files,
+                        change.diagnostics.is_empty(),
+                        apply,
+                        force,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
+            if gate.as_ref().is_some_and(|g| g.applied) {
+                change.applied = true;
+            }
+            let clean = change.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+            let mut text = change.render(6000);
+            if let Some(gate) = &gate {
+                text.push_str(&gate.text);
+            }
             Ok(if clean {
                 McpToolCallResult::text(text)
             } else {
@@ -2238,6 +2362,59 @@ pub async fn execute_lsp_query(
     // One long-lived session per checkout for the life of this process (see
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+}
+
+/// What asking the compiler added to a write tool's run.
+struct CompileGate {
+    text: String,
+    passed: bool,
+    applied: bool,
+}
+
+/// `verify: "compile"`. The tool has built its edit without writing it; the compiler judges it in
+/// a shadow of the workspace, and only a result both the analyzer and the compiler accept is
+/// written. The overlay check alone does not see an unresolved type (#63), which is precisely
+/// what a tool that creates or moves a name can produce.
+async fn compile_gate(
+    remote: SocketAddr,
+    root: &Path,
+    files: &[(String, String)],
+    analyzer_clean: bool,
+    apply: bool,
+    force: bool,
+) -> Result<CompileGate> {
+    if !analyzer_clean && !force {
+        return Ok(CompileGate {
+            text: "\nthe compiler was not asked: the analyzer already rejects the result\n".into(),
+            passed: false,
+            applied: false,
+        });
+    }
+    let verdict = crate::compile_check::check(remote, root, files).await?;
+    let mut text = verdict.render();
+    let mut applied = false;
+    if apply {
+        if verdict.passed || force {
+            let files: std::collections::BTreeMap<std::path::PathBuf, String> = files
+                .iter()
+                .map(|(p, t)| (std::path::PathBuf::from(p), t.clone()))
+                .collect();
+            crate::refactor::apply_workspace_edit(
+                root,
+                &crate::signature::whole_file_edit(&files),
+            )?;
+            applied = true;
+        } else {
+            text.push_str(
+                "\nnothing was written: the compiler rejects it. Pass `force: true` to write it anyway.\n",
+            );
+        }
+    }
+    Ok(CompileGate {
+        text,
+        passed: verdict.passed,
+        applied,
+    })
 }
 
 /// Tools whose `symbol` is the name of the thing to act on rather than a way of pointing at a

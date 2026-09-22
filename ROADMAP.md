@@ -315,7 +315,9 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     type-checks it in one overlay and refuses with the reason (a dropped parameter the body uses,
     a private sibling left behind, a local an extracted expression names) before writing, and each
     is one call. Two things are NOT done. The overlay check does not see an unresolved type or a
-    module path (#63), so pre-validation is weaker than "detects everything". The applicator is
+    module path (#63), so the default pre-validation is weaker than "detects everything"; since
+    #63 every write tool takes `verify: "compile"`, which runs `cargo check` on the proposed files
+    in a shadow of the workspace and writes only what the compiler accepts too. The applicator is
     transactional since #70: every path an edit touches is snapshotted before the first write and
     put back if any write fails, so a multi-file refactor lands whole or not at all.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
