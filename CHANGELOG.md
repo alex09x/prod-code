@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **`code_extract_field` no longer writes a field into a pattern it took for a literal** (#90).
+  Braces were a pattern only when `=>`, `=`, `|` or `:` followed them directly, so
+  `for Store { a } in all`, `Store { a } if … =>`, `Some(Store { a }) =>` and
+  `matches!(s, Store { a, .. })` were read as values to initialise. `in` and a match guard's `if`
+  now count, a `)`, `]`, `}` or `,` sends the question to the brackets around the braces, and
+  braces ending in a bare `..` are always a pattern, since a literal's update names its source.
 - **A dry run no longer slows down the next query** (#73). Validation opened proposed texts
   as overlays in the same engine every other query uses; when a proposal changed what a widely
   imported file declares, the overlay and its revert made rust-analyzer re-infer every body that
