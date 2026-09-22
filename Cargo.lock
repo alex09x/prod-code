@@ -1071,6 +1071,7 @@ dependencies = [
  "ignore",
  "prod-code-mcp",
  "prod-code-protocol",
+ "prod-code-testkit",
  "serde_json",
  "tempfile",
  "tokio",
