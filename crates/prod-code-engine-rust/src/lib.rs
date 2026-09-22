@@ -1432,8 +1432,17 @@ impl RustEngine {
     }
 
     pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
+        let started = std::time::Instant::now();
         self.infer_functions_in_parallel(path);
-        self.snapshot().diagnostics(path)
+        let primed = started.elapsed();
+        let result = self.snapshot().diagnostics(path);
+        tracing::warn!(
+            file = %path.display(),
+            primed_ms = primed.as_millis() as u64,
+            diagnostics_ms = (started.elapsed() - primed).as_millis() as u64,
+            "prod_code_timing diagnostics"
+        );
+        result
     }
 
     /// Type-checks the functions of `path` on several threads before its diagnostics are asked
@@ -1486,10 +1495,13 @@ impl RustEngine {
         for (i, range) in ranges.into_iter().enumerate() {
             shares[i % threads].push(range);
         }
-        std::thread::scope(|scope| {
-            for share in shares {
+        // Each thread owns its snapshot; all of them are joined, and so dropped, before this
+        // returns.
+        let workers: Vec<_> = shares
+            .into_iter()
+            .map(|share| {
                 let analysis = self.host.analysis();
-                scope.spawn(move || {
+                std::thread::spawn(move || {
                     for range in share {
                         let config = HighlightConfig {
                             strings: false,
@@ -1510,9 +1522,12 @@ impl RustEngine {
                             return;
                         }
                     }
-                });
-            }
-        });
+                })
+            })
+            .collect();
+        for worker in workers {
+            let _ = worker.join();
+        }
     }
 
     pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
