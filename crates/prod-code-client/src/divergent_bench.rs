@@ -968,6 +968,7 @@ async fn open_session(
             engine_subpath: None,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
+            purpose: None,
         }))
         .await?;
 

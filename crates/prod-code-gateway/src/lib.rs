@@ -528,14 +528,13 @@ pub async fn apply_sync_probe(
             .unwrap_or_default();
 
     if !deleted.is_empty()
-        && let Some(engine_lock) = workspace_manager
-            .get_loaded(&target)
-            .await
-            .and_then(|ws| ws.rust_engine.clone())
+        && let Some(ws) = workspace_manager.get_loaded(&target).await
     {
-        let mut engine = engine_lock.lock().await;
-        for rel in &deleted {
-            let _ = engine.update_base(&target.join(rel), None);
+        for engine_lock in ws.mirrored_rust_engines() {
+            let mut engine = engine_lock.lock().await;
+            for rel in &deleted {
+                let _ = engine.update_base(&target.join(rel), None);
+            }
         }
     }
 
@@ -1225,13 +1224,11 @@ async fn refresh_engines(
     let loaded_rust = workspace_manager
         .get_loaded(server_workspace)
         .await
-        .and_then(|ws| ws.rust_engine.clone());
+        .map(|ws| ws.mirrored_rust_engines())
+        .unwrap_or_default();
     let mut project_config_changed = false;
     for delta in files {
         project_config_changed |= is_project_config_file(&delta.relative_path);
-        let Some(engine_lock) = &loaded_rust else {
-            continue;
-        };
         let text = match &delta.content {
             Some(bytes) => match std::str::from_utf8(bytes) {
                 Ok(text) => Some(text.to_string()),
@@ -1240,9 +1237,11 @@ async fn refresh_engines(
             None => None,
         };
         let target = server_workspace.join(&delta.relative_path);
-        let mut engine = engine_lock.lock().await;
-        if let Err(e) = engine.update_base(&target, text) {
-            tracing::warn!(error = %e, file = %target.display(), "engine update after a command failed");
+        for engine_lock in &loaded_rust {
+            let mut engine = engine_lock.lock().await;
+            if let Err(e) = engine.update_base(&target, text.clone()) {
+                tracing::warn!(error = %e, file = %target.display(), "engine update after a command failed");
+            }
         }
     }
     if project_config_changed {
@@ -1536,7 +1535,8 @@ pub async fn apply_sync_with_metrics(
     let loaded_rust = workspace_manager
         .get_loaded(&server_workspace)
         .await
-        .and_then(|ws| ws.rust_engine.clone());
+        .map(|ws| ws.mirrored_rust_engines())
+        .unwrap_or_default();
 
     let mut files_updated = 0;
     let mut files_deleted = 0;
@@ -1564,12 +1564,12 @@ pub async fn apply_sync_with_metrics(
                         .await;
                     }
                 }
-                if let (Some(engine_lock), Ok(text)) =
-                    (&loaded_rust, std::str::from_utf8(&content_bytes))
-                {
-                    let mut engine = engine_lock.lock().await;
-                    if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
-                        tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                if let Ok(text) = std::str::from_utf8(&content_bytes) {
+                    for engine_lock in &loaded_rust {
+                        let mut engine = engine_lock.lock().await;
+                        if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
+                            tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                        }
                     }
                 }
             }
@@ -1577,7 +1577,7 @@ pub async fn apply_sync_with_metrics(
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
                     files_deleted += 1;
                 }
-                if let Some(engine_lock) = &loaded_rust {
+                for engine_lock in &loaded_rust {
                     let mut engine = engine_lock.lock().await;
                     if let Err(e) = engine.update_base(&target_path, None) {
                         tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
@@ -1775,10 +1775,15 @@ pub async fn handle_client(
                     .get_or_load(&engine_root, engine)
                     .await?;
 
-                let session_view = state
+                let mut session_view = state
                     .workspace_manager
                     .register_session_view(session_id, client_root_path.clone(), shared_ws)
                     .await;
+                // A session that only validates proposed texts runs on the workspace's second
+                // engine, so its overlays never invalidate the main one (#73).
+                if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION) {
+                    session_view.workspace = session_view.accounted.validation_view().await;
+                }
 
                 tracing::info!(
                     session_id,
@@ -3250,12 +3255,12 @@ async fn run_session_loop(
                                     // The workspace is this worktree's own: synced files are its
                                     // new base, visible to every session except one that still
                                     // holds an unsaved buffer for the same path.
-                                    if let (Some(engine_lock), Ok(text)) =
-                                        (&view.workspace.rust_engine, std::str::from_utf8(content_bytes))
-                                    {
-                                        let mut engine = engine_lock.lock().await;
-                                        if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
-                                            tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                    if let Ok(text) = std::str::from_utf8(content_bytes) {
+                                        for engine_lock in view.workspace.mirrored_rust_engines() {
+                                            let mut engine = engine_lock.lock().await;
+                                            if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
+                                                tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                            }
                                         }
                                     }
                                 }
@@ -3265,7 +3270,7 @@ async fn run_session_loop(
                                     {
                                         files_deleted += 1;
                                     }
-                                    if let Some(engine_lock) = &view.workspace.rust_engine {
+                                    for engine_lock in view.workspace.mirrored_rust_engines() {
                                         let mut engine = engine_lock.lock().await;
                                         if let Err(e) = engine.update_base(&target_path, None) {
                                             tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");

@@ -12,6 +12,12 @@ use tokio::sync::{Mutex, RwLock, broadcast};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WorkspaceKey(pub PathBuf);
 
+/// Every in-memory Rust engine that answers for one workspace root: the main one, and the
+/// validation engine once a validation session has loaded it. A file that changes on disk must
+/// reach all of them, and the sync paths only ever see one [`SharedWorkspace`], so the list is
+/// shared between the workspace and the validation view derived from it.
+pub type RustEngines = Arc<std::sync::Mutex<Vec<Arc<Mutex<prod_code_engine_rust::RustEngine>>>>>;
+
 /// A loaded base workspace shared across multiple sessions/worktrees.
 pub struct SharedWorkspace {
     pub key: WorkspaceKey,
@@ -25,6 +31,11 @@ pub struct SharedWorkspace {
     pub go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
     pub generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
     pub backend: Option<Arc<crate::backend::BackendWorker>>,
+    /// All the Rust engines for this root, `rust_engine` first; see [`RustEngines`].
+    pub rust_engines: RustEngines,
+    /// The second engine validation sessions run on, loaded by the first of them (#73).
+    /// `None` inside once a load failed: validation then falls back to the main engine.
+    validation: tokio::sync::OnceCell<Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>>,
 }
 
 impl SharedWorkspace {
@@ -36,6 +47,7 @@ impl SharedWorkspace {
         generic_engine: Option<Arc<prod_code_engine_generic::GenericLspEngine>>,
         backend: Option<Arc<crate::backend::BackendWorker>>,
     ) -> Self {
+        let rust_engines = Arc::new(std::sync::Mutex::new(rust_engine.iter().cloned().collect()));
         Self {
             key: WorkspaceKey(root.clone()),
             root,
@@ -47,7 +59,81 @@ impl SharedWorkspace {
             go_engine,
             generic_engine,
             backend,
+            rust_engines,
+            validation: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Every Rust engine a change to a file under this root must reach.
+    pub fn mirrored_rust_engines(&self) -> Vec<Arc<Mutex<prod_code_engine_rust::RustEngine>>> {
+        self.rust_engines
+            .lock()
+            .map(|engines| engines.clone())
+            .unwrap_or_default()
+    }
+
+    /// The view a validation session runs in: this workspace, answered by a second Rust
+    /// engine that nothing but validation touches.
+    ///
+    /// A validation session opens proposed texts, pulls diagnostics and closes them. When the
+    /// texts change what a widely imported file declares, both the overlay and its revert make
+    /// rust-analyzer re-resolve the crates that import it, and that bill lands on the next
+    /// query, whoever asks it — twenty seconds for a `references` after a dry run on this
+    /// repository. On a second engine the bill stays there: the main engine never sees the
+    /// overlay. The second engine is loaded by the first validation session, costs the memory
+    /// of one more database, and is dropped with this workspace. If it cannot be loaded,
+    /// validation runs on the main engine as before.
+    pub async fn validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+        if self.rust_engine.is_none() {
+            return Arc::clone(self);
+        }
+        let engines = Arc::clone(&self.rust_engines);
+        let root = self.root.clone();
+        let validation = self
+            .validation
+            .get_or_init(|| async move {
+                let load_root = root.clone();
+                let loaded = tokio::task::spawn_blocking(move || {
+                    prod_code_engine_rust::RustEngine::load(&load_root)
+                })
+                .await;
+                match loaded {
+                    Ok(Ok(engine)) => {
+                        let engine = Arc::new(Mutex::new(engine));
+                        if let Ok(mut all) = engines.lock() {
+                            all.push(Arc::clone(&engine));
+                        }
+                        tracing::info!(workspace = ?root, "validation engine loaded");
+                        Some(engine)
+                    }
+                    Ok(Err(err)) => {
+                        tracing::warn!(error = %err, workspace = ?root, "validation engine failed to load; validating on the main engine");
+                        None
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?root, "validation engine load panicked; validating on the main engine");
+                        None
+                    }
+                }
+            })
+            .await;
+        let Some(engine) = validation.clone() else {
+            return Arc::clone(self);
+        };
+        Arc::new(SharedWorkspace {
+            key: self.key.clone(),
+            root: self.root.clone(),
+            engine: self.engine.clone(),
+            active_sessions: AtomicUsize::new(0),
+            last_used: AtomicU64::new(unix_now()),
+            direct_edit_eligible: AtomicBool::new(false),
+            rust_engine: Some(engine),
+            go_engine: None,
+            generic_engine: None,
+            backend: None,
+            rust_engines: Arc::clone(&self.rust_engines),
+            validation: tokio::sync::OnceCell::new(),
+        })
     }
 }
 
@@ -68,7 +154,11 @@ pub fn unix_now() -> u64 {
 pub struct SessionView {
     pub session_id: u64,
     pub worktree_root: PathBuf,
+    /// The workspace the session's queries run against: the loaded one, or the validation view
+    /// derived from it.
     pub workspace: Arc<SharedWorkspace>,
+    /// The loaded workspace the session is counted against, for idle eviction.
+    pub accounted: Arc<SharedWorkspace>,
     pub is_single_owner: bool,
 }
 
@@ -458,6 +548,7 @@ impl WorkspaceManager {
         SessionView {
             session_id,
             worktree_root,
+            accounted: Arc::clone(&workspace),
             workspace,
             is_single_owner,
         }
@@ -465,8 +556,8 @@ impl WorkspaceManager {
 
     /// Release a session's view on disconnect.
     pub async fn unregister_session_view(&self, view: &SessionView) {
-        view.workspace.touch();
-        view.workspace
+        view.accounted.touch();
+        view.accounted
             .active_sessions
             .fetch_sub(1, Ordering::Relaxed);
         let mut owners = self.worktree_owners.lock().await;

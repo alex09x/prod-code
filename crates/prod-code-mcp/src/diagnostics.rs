@@ -350,7 +350,7 @@ pub async fn validate_text(
     file: &Path,
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
-    let mut session = LspSession::open(remote, root, Some(file)).await?;
+    let mut session = LspSession::open_for_validation(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
     let params = serde_json::json!({ "textDocument": { "uri": uri } });
     let shown = display(root, file);
@@ -409,7 +409,7 @@ pub async fn validate_texts(
         .first()
         .map(|(file, _)| file.as_path())
         .or_else(|| also_check.first().map(|p| p.as_path()));
-    let mut session = LspSession::open(remote, root, hint).await?;
+    let mut session = LspSession::open_for_validation(remote, root, hint).await?;
     // What every file says before any proposed text is in place: an error the checkout already
     // has is not the edit's, and a report that counts it refuses every edit to that file.
     let mut baselines: HashMap<String, (DiagnosticsReport, String)> = HashMap::new();
