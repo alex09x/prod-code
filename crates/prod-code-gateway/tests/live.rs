@@ -31,22 +31,26 @@ impl Gateway {
     }
 
     /// The same, with extra environment for the settings a test wants to change.
+    ///
+    /// The port comes from the daemon rather than from a probe: binding a socket to find a free
+    /// port and then dropping it leaves a window in which another test takes it, and eleven
+    /// gateways starting at once find that window. Here the server binds port 0 and says what
+    /// it got, which is why it logs the address it actually bound.
     fn start_with(extra: &[(&str, &str)]) -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
-        let addr = free_port();
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
-            .env("PROD_CODE_BIND", addr.to_string())
+            .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env("PROD_CODE_STORAGE", storage.path())
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", "info")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-        let mut addr = addr;
+            .stderr(std::process::Stdio::piped());
+        let mut wanted: Option<SocketAddr> = None;
         for (key, value) in extra {
             if *key == "PROD_CODE_BIND" {
-                addr = value.parse().expect("an address to bind");
+                wanted = Some(value.parse().expect("an address to bind"));
             }
             // An empty value means "leave it unset", which is how a test reaches the defaults
             // the daemon falls back to when the environment says nothing.
@@ -56,8 +60,11 @@ impl Gateway {
                 command.env(key, value);
             }
         }
+        let mut child = command.spawn().expect("the server binary starts");
+        let stderr = child.stderr.take().expect("stderr is piped");
+        let addr = wanted.unwrap_or_else(|| read_bound_address(stderr));
         let gateway = Self {
-            child: command.spawn().expect("the server binary starts"),
+            child,
             addr,
             _storage: storage,
         };
@@ -100,8 +107,40 @@ impl Drop for Gateway {
     }
 }
 
-/// A port nothing is listening on. Between the probe and the server's bind there is a window;
-/// it is small, and the alternative is a fixed port that collides with a parallel test.
+/// Reads the daemon's own report of where it is listening, then keeps draining its log so a
+/// full pipe never blocks it.
+fn read_bound_address(stderr: std::process::ChildStderr) -> SocketAddr {
+    use std::io::BufRead;
+    let mut reader = std::io::BufReader::new(stderr);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut line = String::new();
+    while Instant::now() < deadline {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => panic!("the gateway exited before it said where it was listening"),
+            Ok(_) => {
+                if let Some(rest) = line.split("listening on ").nth(1)
+                    && let Ok(addr) = rest.trim().parse::<SocketAddr>()
+                {
+                    // Whatever it logs from here on goes nowhere, but it has to go somewhere:
+                    // a child that fills its stderr pipe stops.
+                    std::thread::spawn(move || {
+                        let mut sink = String::new();
+                        while reader.read_line(&mut sink).unwrap_or(0) > 0 {
+                            sink.clear();
+                        }
+                    });
+                    return addr;
+                }
+            }
+            Err(err) => panic!("cannot read the gateway's log: {err}"),
+        }
+    }
+    panic!("the gateway never said where it was listening");
+}
+
+/// A port nothing is listening on, for the tests that have to name one in advance (the two
+/// gateways that must know each other's address before either starts).
 fn free_port() -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -829,6 +868,11 @@ async fn the_gateway_supervises_a_generic_language_server() {
     )
     .expect("quantity.ts");
     std::fs::write(
+        root.join("src/fixable.ts"),
+        "import { Quantity, total } from \"./quantity\";\n\nexport const wrong: string = 1;\n\nexport function unused(all: Quantity[]): number {\n  return total(all);\n}\n",
+    )
+    .expect("fixable.ts");
+    std::fs::write(
         root.join("src/use.ts"),
         "import { Quantity, total } from \"./quantity\";\n\nexport function describe(all: Quantity[]): string {\n  return `${total(all)} units`;\n}\n",
     )
@@ -892,19 +936,50 @@ async fn the_gateway_supervises_a_generic_language_server() {
         !callers.trim().is_empty(),
         "the hierarchy query answers: {callers}"
     );
+    // A line with an obvious mistake, so the server has a fix to offer and the gateway has to
+    // give it an identifier the client can hand back.
     let assists = text_of(
         &tool(
             gateway.addr,
             &root,
             "code_assists",
-            serde_json::json!({ "path": "src/use.ts", "line": 4, "character": 10 }),
+            serde_json::json!({ "path": "src/fixable.ts", "line": 3, "character": 14 }),
         )
         .await,
     );
     assert!(
         !assists.trim().is_empty(),
-        "the server offers something at a call: {assists}"
+        "the server offers something where the types do not line up: {assists}"
     );
+    if let Some(id) = assists
+        .lines()
+        .find_map(|line| line.split_whitespace().next().filter(|w| !w.is_empty()))
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.').to_string())
+        .filter(|id| !id.is_empty())
+    {
+        // Applying one goes back through the same identifier, which is the half of this path
+        // that listing it does not reach.
+        let applied = prod_code_mcp::tools::execute_tool(
+            gateway.addr,
+            &root,
+            "code_assist",
+            serde_json::json!({ "path": "src/fixable.ts", "line": 3, "character": 14, "id": id }),
+        )
+        .await;
+        match applied {
+            Ok(result) => assert!(
+                !text_of(&result).trim().is_empty(),
+                "applying an action says what it did"
+            ),
+            Err(err) => {
+                let text = format!("{err:#}");
+                assert!(
+                    !text.is_empty(),
+                    "and a refusal says why rather than nothing"
+                );
+            }
+        }
+    }
     let diagnostics = text_of(
         &tool(
             gateway.addr,
@@ -1188,6 +1263,23 @@ async fn the_gateway_runs_commands_and_hypotheses() {
     assert!(
         failed.contains("out"),
         "and so is what it printed: {failed}"
+    );
+
+    // A command that outstays its timeout is killed, and the tree it started with it.
+    let timed_out = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_exec",
+        serde_json::json!({ "argv": ["sh", "-c", "sleep 120 & sleep 120"], "timeout_secs": 2 }),
+    )
+    .await;
+    let timed_out = match timed_out {
+        Ok(result) => text_of(&result),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        timed_out.to_lowercase().contains("time") || timed_out.contains("exit"),
+        "the timeout is reported rather than hung on: {timed_out}"
     );
 
     // The test runner parses cargo's output into results.

@@ -3494,7 +3494,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     }
     let state = Arc::new(state);
     let listener = TcpListener::bind(cli.bind).await?;
-    tracing::info!("prod-code gateway listening on {}", cli.bind);
+    // The address it actually bound, not the one it was asked for: with a port of 0, or an
+    // interface that resolves to something else, those differ and only this one is reachable.
+    let bound = listener.local_addr().unwrap_or(cli.bind);
+    tracing::info!("prod-code gateway listening on {bound}");
 
     let peers: Vec<String> = cli
         .peers

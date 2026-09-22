@@ -713,3 +713,55 @@ pub struct SearchResponse {
     #[serde(default)]
     pub error: Option<String>,
 }
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+
+    /// Every message that crosses the wire has to survive the trip. A field added on one side
+    /// and missing on the other is the failure this catches: `#[serde(default)]` makes an old
+    /// message readable by a new binary, and that only holds while somebody checks.
+    #[test]
+    fn a_message_without_its_optional_fields_still_decodes() {
+        let minimal = r#"{"client_workspace_root":"/w","files":[],"clean_others":false}"#;
+        let request: SyncRequest = serde_json::from_str(minimal).expect("an older client's sync");
+        assert_eq!(request.client_workspace_root, "/w");
+        assert!(request.base_workspace_name.is_none());
+
+        let delta = r#"{"relative_path":"a.rs"}"#;
+        let file: FileDelta = serde_json::from_str(delta).expect("a deletion");
+        assert!(
+            file.content.is_none(),
+            "no content is how a deletion is spelled"
+        );
+        assert!(!file.is_executable);
+    }
+
+    #[test]
+    fn a_wire_message_keeps_its_kind_through_a_round_trip() {
+        let original = WireMessage::SyncResponse(SyncResponse {
+            server_workspace_root: "/srv/w".to_string(),
+            files_updated: 3,
+            files_deleted: 1,
+            bytes_transferred: 4096,
+            duration_ms: 12,
+            workspace_was_fresh: true,
+        });
+        let json = serde_json::to_string(&original).expect("encode");
+        let back: WireMessage = serde_json::from_str(&json).expect("decode");
+        match back {
+            WireMessage::SyncResponse(response) => {
+                assert_eq!(response.files_updated, 3);
+                assert!(response.workspace_was_fresh);
+            }
+            other => panic!("a sync response came back as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_content_hash_depends_on_the_content_and_nothing_else() {
+        assert_eq!(content_hash(b"abc"), content_hash(b"abc"));
+        assert_ne!(content_hash(b"abc"), content_hash(b"abd"));
+        assert_ne!(content_hash(b""), content_hash(b"\0"));
+    }
+}

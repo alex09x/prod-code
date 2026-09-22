@@ -64,6 +64,21 @@ while True:
                 "message": "something the fake server disliked"
             }]
         }})
+    elif method == "workspace/executeCommand":
+        command = message["params"].get("command", "")
+        if command == "prodCode/edit":
+            # A server that asks the client to apply an edit while the command runs.
+            send({"jsonrpc": "2.0", "id": 9001, "method": "workspace/applyEdit", "params": {
+                "edit": {"changes": {"file:///wherever/a.txt": [{
+                    "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}},
+                    "newText": "edited"
+                }]}}
+            }})
+            send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+        elif command == "prodCode/refuse":
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32000, "message": "the command was refused"}})
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "result": None})
     elif method == "prodCode/silence":
         # Answer nothing at all, so the caller's timeout is the only way out.
         pass
@@ -383,4 +398,114 @@ fn settings_are_read_from_the_project_for_the_section_that_asks() {
         empty.is_object() || empty.is_null(),
         "a project with no settings gives something harmless: {empty}"
     );
+}
+
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_that_asks_for_an_edit_hands_the_edit_back() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    engine.initialize().await.expect("initialize");
+
+    // A server runs a command and, while it runs, asks the client to apply an edit. The
+    // adapter's job is to catch that request and return the edit rather than let it vanish.
+    let edit = engine
+        .execute_command_capturing_edit(serde_json::json!({
+            "command": "prodCode/edit",
+            "arguments": []
+        }))
+        .await
+        .expect("the command runs")
+        .expect("an edit was captured");
+    assert!(
+        edit.to_string().contains("edited"),
+        "the edit the server asked for: {edit}"
+    );
+
+    // A command that answers with an error is an error here, not an empty edit.
+    let err = engine
+        .execute_command_capturing_edit(serde_json::json!({
+            "command": "prodCode/refuse",
+            "arguments": []
+        }))
+        .await
+        .expect_err("the server refused");
+    assert!(
+        format!("{err:#}").contains("refused"),
+        "the server's own message comes through: {err:#}"
+    );
+
+    // And one that neither errors nor asks for anything comes back as no edit.
+    let nothing = engine
+        .execute_command_capturing_edit(serde_json::json!({
+            "command": "prodCode/quiet",
+            "arguments": []
+        }))
+        .await
+        .expect("the command runs");
+    assert!(nothing.is_none(), "no edit was asked for: {nothing:?}");
+}
+
+#[test]
+fn an_engine_reports_its_server_only_when_one_is_installed() {
+    // A language nobody has a server for is never reported as ready.
+    assert_eq!(GenericLspConfig::installed_server("cobol"), None);
+
+    // For the ones this machine has, the label names the binary that would run.
+    for engine in ["cpp", "python", "typescript", "swift"] {
+        if let Some(label) = GenericLspConfig::installed_server(engine) {
+            assert!(
+                !label.trim().is_empty(),
+                "{engine} reports a label when it is installed"
+            );
+        }
+    }
+}
+
+#[test]
+fn python_settings_follow_the_project_into_its_virtual_environment() {
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    // The analysis section is the same wherever it is asked for.
+    let analysis = prod_code_engine_generic::settings_for_section(dir.path(), "python.analysis");
+    assert_eq!(
+        analysis.get("diagnosticMode").and_then(|m| m.as_str()),
+        Some("workspace"),
+        "the analysis settings are handed over whole: {analysis}"
+    );
+
+    // Without a virtual environment, the interpreter is left to the server to find.
+    let plain = prod_code_engine_generic::settings_for_section(dir.path(), "python");
+    assert!(
+        plain.get("pythonPath").is_none(),
+        "nothing to point at yet: {plain}"
+    );
+
+    let bin = dir.path().join(".venv").join("bin");
+    std::fs::create_dir_all(&bin).expect("venv dir");
+    std::fs::write(bin.join("python"), "#!/bin/sh\nexit 0\n").expect("python");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("python"), std::fs::Permissions::from_mode(0o755))
+            .expect("chmod");
+    }
+    let with_venv = prod_code_engine_generic::settings_for_section(dir.path(), "basedpyright");
+    assert!(
+        with_venv
+            .get("pythonPath")
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.contains(".venv")),
+        "the project's own interpreter is pointed at: {with_venv}"
+    );
+    assert_eq!(
+        with_venv.get("venv").and_then(|v| v.as_str()),
+        Some(".venv")
+    );
+
+    // A section nothing knows about gets an empty object rather than a guess.
+    let unknown = prod_code_engine_generic::settings_for_section(dir.path(), "ruby");
+    assert_eq!(unknown, serde_json::json!({}));
 }

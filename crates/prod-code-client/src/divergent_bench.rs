@@ -1675,3 +1675,73 @@ mod tests {
         assert!(err.to_string().contains("at least"));
     }
 }
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    #[test]
+    fn every_language_names_its_manifest_its_extension_and_its_marker() {
+        for language in [Language::Rust, Language::Go] {
+            assert!(!language.label().is_empty(), "a label");
+            assert!(
+                language.manifest().contains('.') || !language.manifest().is_empty(),
+                "{} names the file that makes a project: {}",
+                language.label(),
+                language.manifest()
+            );
+            assert!(
+                language.extension().starts_with('.') || !language.extension().is_empty(),
+                "{} names its source extension",
+                language.label()
+            );
+            assert!(
+                language.marker().contains("divergent") || !language.marker().is_empty(),
+                "{} names the marker the benchmark looks for",
+                language.label()
+            );
+            assert!(
+                !language.untracked_symbol().is_empty(),
+                "{} names the symbol that exists only in the worktree",
+                language.label()
+            );
+        }
+    }
+
+    #[test]
+    fn a_worktree_kind_has_a_label_and_a_directory() {
+        for kind in [
+            WorktreeKind::Master,
+            WorktreeKind::SignatureChange,
+            WorktreeKind::DependencyChange,
+            WorktreeKind::UntrackedFile,
+        ] {
+            assert!(!kind.label().is_empty(), "{kind:?} has a label");
+            assert!(!kind.dir_name().is_empty(), "{kind:?} has a directory");
+        }
+    }
+
+    #[test]
+    fn the_workspace_name_follows_the_repository_it_benchmarks() {
+        let named = bench_workspace_name(Some(Path::new("/somewhere/my-repo")));
+        assert!(
+            named.contains("my-repo"),
+            "the repository's name is in it: {named}"
+        );
+        let anonymous = bench_workspace_name(None);
+        assert!(
+            !anonymous.trim().is_empty(),
+            "and there is still a name without one: {anonymous}"
+        );
+    }
+
+    #[test]
+    fn a_go_package_is_read_from_its_first_line_and_nothing_else() {
+        assert_eq!(
+            go_package_name("package signal\n\nfunc A() {}\n").as_deref(),
+            Some("signal")
+        );
+        assert_eq!(go_package_name("// only a comment\n"), None);
+        assert_eq!(go_package_name(""), None);
+    }
+}
