@@ -1208,6 +1208,54 @@ fn changed_since(
     out
 }
 
+/// Tells a warm engine that the files a command just wrote are its new base, and drops every
+/// engine under the workspace when one of them is a project manifest — what a sync does, for a
+/// change that did not arrive as a sync.
+///
+/// A formatter or a generator rewrites files in the workspace copy; the client is sent the new
+/// contents and records them as synced, so no later sync ever carries them here. An engine that
+/// is not told keeps answering from the text it had before the command, and every position in a
+/// file the command moved is off by however many lines it moved — silently, because the file it
+/// is asked about is opened fresh by the client and only the *other* files come from its copy.
+async fn refresh_engines(
+    workspace_manager: &WorkspaceManager,
+    server_workspace: &std::path::Path,
+    files: &[FileDelta],
+) {
+    let loaded_rust = workspace_manager
+        .get_loaded(server_workspace)
+        .await
+        .and_then(|ws| ws.rust_engine.clone());
+    let mut project_config_changed = false;
+    for delta in files {
+        project_config_changed |= is_project_config_file(&delta.relative_path);
+        let Some(engine_lock) = &loaded_rust else {
+            continue;
+        };
+        let text = match &delta.content {
+            Some(bytes) => match std::str::from_utf8(bytes) {
+                Ok(text) => Some(text.to_string()),
+                Err(_) => continue,
+            },
+            None => None,
+        };
+        let target = server_workspace.join(&delta.relative_path);
+        let mut engine = engine_lock.lock().await;
+        if let Err(e) = engine.update_base(&target, text) {
+            tracing::warn!(error = %e, file = %target.display(), "engine update after a command failed");
+        }
+    }
+    if project_config_changed {
+        let dropped = workspace_manager.unload_under(server_workspace).await;
+        if dropped > 0 {
+            tracing::info!(
+                dropped,
+                "a command changed the project configuration; engines reload on next session"
+            );
+        }
+    }
+}
+
 /// Kills the command and everything it spawned (its process group), then the child itself.
 fn kill_exec_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
@@ -1225,6 +1273,7 @@ fn kill_exec_tree(child: &mut tokio::process::Child) {
 pub async fn run_exec(
     storage_root: &std::path::Path,
     metrics: &metrics::Metrics,
+    workspace_manager: &WorkspaceManager,
     framed: &mut Framed<TcpStream, ProdCodeCodec>,
     req: ExecRequest,
 ) -> Result<()> {
@@ -1434,6 +1483,7 @@ pub async fn run_exec(
                 files = files.len(),
                 "🛠️ [EXEC] sending back files the command changed"
             );
+            refresh_engines(workspace_manager, &workspace, &files).await;
             framed
                 .send(WireMessage::ExecChanges(ExecChanges { files }))
                 .await?;
@@ -1639,7 +1689,14 @@ pub async fn handle_client(
                 framed.send(WireMessage::SyncProbeResponse(resp)).await?;
             }
             WireMessage::ExecRequest(req) => {
-                run_exec(&state.storage_root, &state.metrics, &mut framed, req).await?;
+                run_exec(
+                    &state.storage_root,
+                    &state.metrics,
+                    &state.workspace_manager,
+                    &mut framed,
+                    req,
+                )
+                .await?;
             }
             WireMessage::ShadowRunRequest(req) => {
                 shadow::run_shadow(&state, &mut framed, req).await?;

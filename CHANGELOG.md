@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Fixed
+- **A command that rewrites files no longer leaves the analyzer on the old text** (#75).
+  `code_exec` sends the files a command changed back to the client, which records them as synced,
+  so no later sync carried them to the node — and the warm engine was never told. It kept
+  answering from the text it had before the command, and because the file a query is about is
+  always opened fresh, the drift only showed in *other* files: references, definitions and every
+  write tool's call-site rewrite, off by however many lines a formatter moved them. A command's
+  changes now reach the engine the way a sync does, and a changed manifest reloads it. The
+  gateway has to be redeployed for this.
 - **A write tool can ask the compiler before writing** (#63). The overlay check every write tool
   runs does not report an unresolved type or a module path that does not resolve, so "the
   analyzer accepts the result" was weaker than it read. `code_move`,
