@@ -386,10 +386,11 @@ mod tests {
     #[tokio::test]
     async fn test_mcp_tools_call_reports_a_failed_tool_as_a_normal_response() {
         // A closed port: the tool's own connection attempt fails, and that failure is
-        // reported as a normal (non-transport) JSON-RPC response, not a handler error.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let dummy_addr = listener.local_addr().unwrap();
-        drop(listener);
+        // reported as a normal (non-transport) JSON-RPC response, not a handler error. Port 1,
+        // not a port bound and dropped: with the whole suite running in parallel, a freed
+        // ephemeral port is taken by another test's listener often enough that the connection
+        // succeeds and is reset instead of refused.
+        let dummy_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
         let root = PathBuf::from("/tmp");
 
         let req = serde_json::json!({

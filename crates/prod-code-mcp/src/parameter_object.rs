@@ -466,6 +466,16 @@ pub async fn introduce(
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
             continue;
         };
+        // The analyzer's position is trusted only when the name is actually there. If the file
+        // changed since it was analysed, the position points at something else, and appending
+        // an argument to whatever call follows it is the one mistake this must never make (#75).
+        if !body[at..].starts_with(callee.as_str()) {
+            unmatched.push(format!(
+                "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
+                display(root, &path)
+            ));
+            continue;
+        }
         let after_name = at + callee.len();
         let Some((args_start, args_end)) = call_args_span(&body, after_name) else {
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
