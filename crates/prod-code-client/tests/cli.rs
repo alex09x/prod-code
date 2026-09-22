@@ -275,7 +275,10 @@ async fn handle_client(
                     continue; // notification: initialized, didOpen, etc.
                 };
                 let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
+                let params = value
+                    .get("params")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 let result = if method == "initialize" {
                     serde_json::json!({
                         "capabilities": {
@@ -739,9 +742,9 @@ async fn cli_validates_proposed_content_from_file_and_stdin() {
 async fn cli_scans_for_dead_code_reporting_unreferenced_items() {
     let ws = make_workspace();
     let gw = MockGateway::start(|method, _| match method {
-        "textDocument/documentSymbol" => serde_json::json!([
-            answers::document_symbol("unused_item", 12, 1, 2, 8)
-        ]),
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("unused_item", 12, 1, 2, 8)])
+        }
         "textDocument/references" => serde_json::json!([]),
         _ => serde_json::Value::Null,
     })
@@ -805,7 +808,9 @@ async fn cli_lists_assists_and_applies_assist_with_edits() {
 
     let out_list = run_cli(&ws, gw.addr, &["assists", "src/lib.rs", "5", "8"]).await;
     assert!(out_list.status.success());
-    assert!(stdout_of(&out_list).contains("inline_fn --subtype 1  [refactor.inline]  Inline function"));
+    assert!(
+        stdout_of(&out_list).contains("inline_fn --subtype 1  [refactor.inline]  Inline function")
+    );
 
     let out_apply = run_cli(
         &ws,
@@ -863,12 +868,7 @@ async fn cli_renames_symbol_across_workspace_and_applies_edits() {
     })
     .await;
 
-    let out = run_cli(
-        &ws,
-        gw.addr,
-        &["rename", "src/lib.rs", "1", "12", "Trade"],
-    )
-    .await;
+    let out = run_cli(&ws, gw.addr, &["rename", "src/lib.rs", "1", "12", "Trade"]).await;
     assert!(out.status.success());
     assert!(stdout_of(&out).contains("renamed to `Trade`"));
     assert!(ws.read("src/lib.rs").contains("pub struct Trade"));
@@ -955,12 +955,10 @@ async fn cli_generates_fixture_for_named_type() {
     let p = path.clone();
 
     let gw = MockGateway::start(move |method, _| match method {
-        "workspace/symbol" => serde_json::json!([
-            answers::symbol("Order", 23, &p, 1, 1)
-        ]),
-        "textDocument/documentSymbol" => serde_json::json!([
-            answers::document_symbol("Order", 23, 1, 3, 5)
-        ]),
+        "workspace/symbol" => serde_json::json!([answers::symbol("Order", 23, &p, 1, 1)]),
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("Order", 23, 1, 3, 5)])
+        }
         _ => serde_json::Value::Null,
     })
     .await;
@@ -995,9 +993,7 @@ async fn cli_changes_function_signature() {
     let p = path.clone();
 
     let gw = MockGateway::start(move |method, _| match method {
-        "workspace/symbol" => serde_json::json!([
-            answers::symbol("calculate", 12, &p, 5, 8)
-        ]),
+        "workspace/symbol" => serde_json::json!([answers::symbol("calculate", 12, &p, 5, 8)]),
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     })
@@ -1006,12 +1002,7 @@ async fn cli_changes_function_signature() {
     let out = run_cli(
         &ws,
         gw.addr,
-        &[
-            "change-signature",
-            "calculate",
-            "--param",
-            "x: i32 = 0",
-        ],
+        &["change-signature", "calculate", "--param", "x: i32 = 0"],
     )
     .await;
     assert!(out.status.success());
@@ -1029,7 +1020,12 @@ async fn cli_applies_structural_codemod_rule() {
     let out = run_cli(
         &ws,
         gw.addr,
-        &["codemod", "$a.unwrap() ==>> $a.expect(\"invariant\")", "--path", "src/lib.rs"],
+        &[
+            "codemod",
+            "$a.unwrap() ==>> $a.expect(\"invariant\")",
+            "--path",
+            "src/lib.rs",
+        ],
     )
     .await;
     assert!(out.status.success());
@@ -1053,12 +1049,10 @@ async fn cli_slices_symbol_dependencies() {
     let p = path.clone();
 
     let gw = MockGateway::start(move |method, _| match method {
-        "workspace/symbol" => serde_json::json!([
-            answers::symbol("calculate", 12, &p, 5, 8)
-        ]),
-        "textDocument/documentSymbol" => serde_json::json!([
-            answers::document_symbol("calculate", 12, 5, 7, 8)
-        ]),
+        "workspace/symbol" => serde_json::json!([answers::symbol("calculate", 12, &p, 5, 8)]),
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("calculate", 12, 5, 7, 8)])
+        }
         "callHierarchy/outgoingCalls" => serde_json::json!([]),
         _ => serde_json::Value::Null,
     })
@@ -1178,8 +1172,13 @@ async fn cli_bridges_lsp_protocol_over_stdio() {
         .spawn()
         .expect("spawn lsp");
 
-    let init_payload = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}";
-    let msg = format!("Content-Length: {}\r\n\r\n{}", init_payload.len(), init_payload);
+    let init_payload =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}";
+    let msg = format!(
+        "Content-Length: {}\r\n\r\n{}",
+        init_payload.len(),
+        init_payload
+    );
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
