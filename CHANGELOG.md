@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.2.2 — 2026-09-22
+
+Seven new tools since 0.2.1 — search by intent, slice a symbol's dependencies, try several
+fixes at once, rewrite code structurally, build a fixture, change a signature with its call
+sites, rename a schema field across languages — and the test suite that holds them: every file
+in the workspace is at or above 80% of regions, up from 53%.
+
 ### Added
 - Cross-language schema rename (roadmap 7.6): `code_schema_rename` (MCP) and
   `prod-code schema-rename <field> --to <new>` rename a schema field across every language
