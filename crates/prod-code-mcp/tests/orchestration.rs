@@ -6,11 +6,13 @@
 //! disagree. That needs a gateway, and a real one needs an analyzer, so here is a fake one:
 //! it speaks the wire protocol and answers each LSP method from a closure the test provides.
 //!
-//! The scripted answers are the shapes the real engines return, including the one that matters
-//! most: rust-analyzer replies to a rename with the file's whole new text, while gopls and the
-//! TypeScript server reply with one edit per occurrence. Merging those two shapes is what
-//! corrupted a file before `replaces_whole_file` existed, and `a_whole_file_rename_is_not_
-//! merged_with_text_edits` is that bug, frozen.
+//! The scripted answers are the shapes the real engines return, including the two that must
+//! not be mixed: rust-analyzer replies to a rename with the file's whole new text, while gopls
+//! and the TypeScript server reply with one edit per occurrence. An early version of
+//! `schema::rename` put the second phase's text edits into the same list as the first phase's
+//! answer and applied them together, which turned a Rust file into duplicated fragments; the
+//! two phases are separate now, and `a_whole_file_rename_is_not_merged_with_text_edits` is
+//! what holds them apart.
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
@@ -281,6 +283,66 @@ async fn a_whole_file_rename_is_not_merged_with_text_edits() {
         "nothing on disk changed"
     );
     assert_eq!(std::fs::read_to_string(&go).unwrap(), GO);
+}
+
+/// A file another rename replaced wholesale cannot also take a ranged edit: the ranged one was
+/// computed against the file as it was, and the whole new text no longer has those positions.
+#[tokio::test]
+async fn a_ranged_rename_is_not_added_to_a_file_that_was_replaced_wholesale() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    write(
+        &root,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "pub struct A {\n    pub order_id: String,\n}\n\npub struct B {\n    pub order_id: String,\n}\n";
+    let lib = write(&root, "src/lib.rs", source);
+    commit(&root);
+
+    // Two structs, two different symbols: rust-analyzer answers the first with the file's
+    // whole new text, and would answer the second with one too — but the first already owns
+    // the file, so the second must be reported rather than applied on top.
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/rename" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0);
+            if line == 1 {
+                whole_file(
+                    &path,
+                    source,
+                    "pub struct A {\n    pub trade_id: String,\n}\n\npub struct B {\n    pub order_id: String,\n}\n",
+                )
+            } else {
+                ranged(&path, &[(6, 9, 8, "trade_id")])
+            }
+        }
+        "textDocument/diagnostic" => no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done =
+        prod_code_mcp::schema::rename(remote, &root, "order_id", "trade_id", false, false, None)
+            .await
+            .expect("the rename runs");
+
+    let text = &done.rewritten.first().expect("one file").1;
+    assert_eq!(
+        text,
+        "pub struct A {\n    pub trade_id: String,\n}\n\npub struct B {\n    pub order_id: String,\n}\n",
+        "the second rename was not applied on top of the first one's text"
+    );
+    assert!(
+        done.left
+            .iter()
+            .any(|l| l.contains("already changes these characters")),
+        "the second is reported: {:?}",
+        done.left
+    );
 }
 
 /// Two renames that want the same characters are not merged: the second is skipped and said

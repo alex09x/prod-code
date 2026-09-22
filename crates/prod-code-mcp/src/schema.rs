@@ -537,19 +537,22 @@ pub async fn rename(
                     .and_then(|t| t.as_str())
                     .unwrap_or_default()
                     .to_string();
+                // Which occurrences the new text covered can only be seen by looking at it:
+                // the ones whose spelling is gone are done, and one still in place belongs to
+                // another symbol, which needs a rename of its own on a later run.
+                done.extend(
+                    found
+                        .iter()
+                        .filter(|o| {
+                            o.file == path && !still_spelled(&text, o, &variants[o.variant])
+                        })
+                        .map(|o| (o.file.clone(), o.line, o.col)),
+                );
                 whole.insert(path.clone(), text);
                 claimed
                     .entry(path.clone())
                     .or_default()
                     .push((0, 0, u32::MAX, 0));
-                // The new text is all there is: which occurrences it covered is a question for
-                // the re-scan in phase two, so none of this file is asked about again.
-                done.extend(
-                    found
-                        .iter()
-                        .filter(|o| o.file == path)
-                        .map(|o| (o.file.clone(), o.line, o.col)),
-                );
             } else {
                 for e in &edits {
                     let span = span_of(e);
@@ -735,6 +738,21 @@ pub async fn rename(
         diagnostics,
         applied,
     })
+}
+
+/// Is the occurrence still spelled the old way in this text, at the position it was found?
+fn still_spelled(text: &str, occurrence: &Occurrence, variant: &Variant) -> bool {
+    text.lines()
+        .nth(occurrence.line as usize - 1)
+        .map(|line| {
+            let at: String = line
+                .chars()
+                .skip(occurrence.col as usize - 1)
+                .take(occurrence.len)
+                .collect();
+            at == variant.from
+        })
+        .unwrap_or(false)
 }
 
 /// Do two edit ranges want any of the same characters?
