@@ -166,7 +166,10 @@ mod tests {
             "free function",
         );
         // No `Container::` prefix, and no doc line under the signature.
-        assert!(text.contains(" 1. [function] free_fn  src/free.rs:3\n"), "{text}");
+        assert!(
+            text.contains(" 1. [function] free_fn  src/free.rs:3\n"),
+            "{text}"
+        );
         assert!(text.trim_end().ends_with("pub fn free_fn()"), "{text}");
     }
 

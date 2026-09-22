@@ -410,10 +410,7 @@ mod tests {
     /// as EOF.
     fn spawn_server(
         resumed: bool,
-    ) -> (
-        tokio::io::DuplexStream,
-        tokio::task::JoinHandle<Result<()>>,
-    ) {
+    ) -> (tokio::io::DuplexStream, tokio::task::JoinHandle<Result<()>>) {
         let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
         let root = PathBuf::from("/tmp");
         let (client, server) = tokio::io::duplex(64 * 1024);
@@ -453,7 +450,9 @@ mod tests {
     async fn serve_mcp_requests_skips_blank_lines_and_invalid_json() {
         let (mut client, handle) = spawn_server(false);
         client
-            .write_all(b"\n   \nnot json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+            .write_all(
+                b"\n   \nnot json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n",
+            )
             .await
             .unwrap();
 

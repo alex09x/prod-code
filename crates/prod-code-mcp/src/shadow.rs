@@ -622,7 +622,10 @@ mod tests {
         });
         let specs = parse_specs(root.path(), &json, Some(content_dir.path())).unwrap();
         assert_eq!(specs.len(), 2);
-        assert_eq!(specs[0].name, "h1", "an unnamed hypothesis gets a default name");
+        assert_eq!(
+            specs[0].name, "h1",
+            "an unnamed hypothesis gets a default name"
+        );
         assert_eq!(specs[0].edits[0].relative_path, "src/a.rs");
         assert_eq!(specs[0].edits[0].text.as_deref(), Some("fn a() {}\n"));
         assert_eq!(specs[0].edits[1].relative_path, "src/b.rs");
@@ -637,9 +640,7 @@ mod tests {
         assert_eq!(specs[1].edits[1].text, None, "a delete has no text");
 
         assert!(parse_specs(root.path(), &serde_json::json!({}), None).is_err());
-        assert!(
-            parse_specs(root.path(), &serde_json::json!({"hypotheses": []}), None).is_err()
-        );
+        assert!(parse_specs(root.path(), &serde_json::json!({"hypotheses": []}), None).is_err());
         let no_path = serde_json::json!({"hypotheses":[{"edits":[{"new_text":"x"}]}]});
         assert!(parse_specs(root.path(), &no_path, None).is_err());
         let no_text = serde_json::json!({"hypotheses":[{"edits":[{"path":"a.rs"}]}]});
@@ -671,7 +672,10 @@ mod tests {
             "{text}"
         );
 
-        let results2 = vec![outcome("a", Some(1), None, 3), outcome("b", Some(1), None, 1)];
+        let results2 = vec![
+            outcome("a", Some(1), None, 3),
+            outcome("b", Some(1), None, 1),
+        ];
         let ranking2 = rank(&results2);
         let shadow2 = ShadowOutcome {
             mode: "overlay".to_string(),

@@ -166,9 +166,18 @@ async fn run_remote_refuses_an_empty_command_without_connecting() {
     // Never dialed: an empty command is refused before the gateway is contacted.
     let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
-    let err = prod_code_mcp::exec::run_remote(addr, &root, None, Vec::new(), Vec::new(), 0, false, |_, _| {})
-        .await
-        .expect_err("an empty command is refused");
+    let err = prod_code_mcp::exec::run_remote(
+        addr,
+        &root,
+        None,
+        Vec::new(),
+        Vec::new(),
+        0,
+        false,
+        |_, _| {},
+    )
+    .await
+    .expect_err("an empty command is refused");
     let text = format!("{err:#}");
     assert!(text.contains("empty command"), "{text}");
 }
@@ -253,7 +262,10 @@ async fn run_remote_fails_to_connect_to_an_unreachable_gateway() {
     .await
     .expect_err("connecting to a closed port fails");
     let text = format!("{err:#}");
-    assert!(text.contains("failed to connect to remote gateway"), "{text}");
+    assert!(
+        text.contains("failed to connect to remote gateway"),
+        "{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -409,9 +421,10 @@ async fn read_remote_file_returns_the_bytes() {
             .unwrap();
     });
 
-    let (bytes, truncated) = prod_code_mcp::remote_fs::read_remote_file(addr, "/usr/include/stdlib.h", 4096)
-        .await
-        .expect("the file reads");
+    let (bytes, truncated) =
+        prod_code_mcp::remote_fs::read_remote_file(addr, "/usr/include/stdlib.h", 4096)
+            .await
+            .expect("the file reads");
     assert_eq!(bytes, b"content");
     assert!(!truncated);
 }
@@ -648,7 +661,8 @@ impl RecordingGateway {
                     } else {
                         answer(method, &params)
                     };
-                    let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                    let response =
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
                     framed
                         .send(WireMessage::LspPayload(response.to_string()))
                         .await?;
@@ -720,7 +734,10 @@ async fn query_opens_the_document_once_for_repeated_queries() {
 
     let methods = gateway.methods();
     assert_eq!(
-        methods.iter().filter(|m| *m == "textDocument/didOpen").count(),
+        methods
+            .iter()
+            .filter(|m| *m == "textDocument/didOpen")
+            .count(),
         1,
         "{methods:?}"
     );
@@ -822,7 +839,10 @@ async fn open_text_opens_a_document_that_was_never_queried() {
 
     let opens = gateway.events_for("textDocument/didOpen");
     assert_eq!(opens.len(), 1, "{opens:?}");
-    assert_eq!(opens[0]["params"]["textDocument"]["text"], "pub fn fresh() {}\n");
+    assert_eq!(
+        opens[0]["params"]["textDocument"]["text"],
+        "pub fn fresh() {}\n"
+    );
     assert!(gateway.events_for("textDocument/didChange").is_empty());
 }
 
@@ -978,8 +998,7 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
                                 .await;
                         }
                         WireMessage::LspPayload(json) => {
-                            let Ok(value) = serde_json::from_str::<serde_json::Value>(&json)
-                            else {
+                            let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
                                 continue;
                             };
                             let Some(id) = value.get("id").cloned() else {
@@ -1006,10 +1025,12 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
         }
     });
 
-    let params = serde_json::json!({ "textDocument": { "uri": format!("file://{}", file.display()) } });
-    let result = prod_code_mcp::session::pooled_query(addr, &root, &file, "textDocument/hover", params)
-        .await
-        .expect("the retry after a dead connection succeeds");
+    let params =
+        serde_json::json!({ "textDocument": { "uri": format!("file://{}", file.display()) } });
+    let result =
+        prod_code_mcp::session::pooled_query(addr, &root, &file, "textDocument/hover", params)
+            .await
+            .expect("the retry after a dead connection succeeds");
     assert_eq!(result["contents"]["value"], "ok");
     assert_eq!(
         attempts.load(Ordering::SeqCst),
