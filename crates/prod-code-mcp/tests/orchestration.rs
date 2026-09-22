@@ -1220,7 +1220,9 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
         "textDocument/references" => serde_json::json!([]),
         "textDocument/diagnostic"
-            if pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 0 =>
+            if pulls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2) =>
         {
             serde_json::json!({ "kind": "full", "items": [
                 { "severity": 1, "code": "E0282", "message": "type annotations needed",
