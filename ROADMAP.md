@@ -218,6 +218,22 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
 
 - [ ] **7.1. Full-Spectrum AST Refactoring Engine (IDE-Grade Parity Catalog)**
   - Implement a compiler-grade distributed refactoring engine providing full behavioral parity with modern IDE refactoring suites. Remote language servers (`rust-analyzer`, `clangd`, `gopls`, `vtsls`, `basedpyright`) compute mathematically sound, AST-level code transformations, resolving all symbol references across the monorepo and returning structured, atomic `WorkspaceEdit` payloads:
+  - **Reconciled against the analyzer 2026-09-22.** This catalog was written from IntelliJ's
+    refactoring menu and never checked against what rust-analyzer already offers, which made it
+    read as far more outstanding work than it is. Every `[~] via code_assists` below was verified
+    by asking the running analyzer for its actions at that kind of position; the assist id named
+    is what it answered. What is left to build is four items, listed under **Still to build**,
+    plus the ones marked *not applicable to Rust*.
+  - **Still to build**, in the order they are worth building: `introduce_parameter_object`,
+    `type_migration`, `extract_parameter`, `extract_field`, and the workspace-wide half of
+    `encapsulate_field` (rewriting every direct field access). Nothing in rust-analyzer offers
+    these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
+    the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
+    overlay before writing.
+  - **Probed and not offered** on 2026-09-22, so also to-build but low priority:
+    `invert_if_to_guard`, `generify`, `wrap_return_value`, `invert_boolean`, `make_static`.
+    rust-analyzer may have an assist for some of these behind a trigger the probe did not hit;
+    what is certain is that an agent pointed at the obvious position is offered nothing.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -233,19 +249,19 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Moves structs, functions, classes, or files to new modules, packages, or namespaces.
       - Moves static members to another type; moves instance methods to a target parameter type (e.g. `fn foo(bar: &Bar)` -> `Bar::foo()`).
       - Automatically rewrites and cleans all `use` / `import` statements and qualified path references throughout the workspace.
-    - `refactor.inline(path, symbol)`:
+    - [~] `refactor.inline(path, symbol)` — via `code_assists`: `inline_local_variable` and `promote_local_to_const` at a local, `inline_into_callers` and `inline_call` at a function. Inline Parameter has no assist and is part of `change_signature`'s job.
       - Inline Function/Method: substitutes call sites with the function body, rebinding parameters and handling early returns.
       - Inline Variable/Constant: inlines computed expressions into usage sites and eliminates redundant bindings.
       - Inline Parameter: eliminates parameter by inlining constant values across all callers.
 
   - [~] Code actions: `prod-code assists <file> <line> <col> [--to LINE:COL]` lists what rust-analyzer offers at a position or selection and `prod-code assist … <id>` applies it (MCP `code_assists` / `code_assist`). This covers `inline_local_variable`, `inline_call`, `extract_function`, `extract_variable`, `extract_constant`, `extract_static`, `promote_local_to_const`, `add_explicit_type`, generate/rewrite assists and quick fixes in one mechanism (2026-09-19).
   - **7.1.2. The Extract & Introduce Family**:
-    - `refactor.extract_function(path, range, fn_name)`:
+    - [~] `refactor.extract_function(path, range, fn_name)` — via `code_assists` over a selection: `extract_function`. Duplicate detection across the workspace is not offered and is not planned separately; `code_codemod` finds structural duplicates.
       - Remote compiler analyzes variable captures, borrow checker constraints, and lifetimes, returning the extracted signature and replacement call site.
       - **Automated Duplicate Code Detection**: automatically scans the entire file and workspace for duplicate or structurally identical AST patterns, offering to parameterize and replace all instances in one operation.
-    - `refactor.introduce_variable(path, range, var_name, replace_all)`:
+    - [~] `refactor.introduce_variable(path, range, var_name, replace_all)` — via `code_assists` over a selection: `extract_variable`.
       - Replaces selected expression with a local binding, with toggle to replace the single occurrence or all identical expressions.
-    - `refactor.extract_constant(path, range, const_name)`:
+    - [~] `refactor.extract_constant(path, range, const_name)` — via `code_assists` over a selection: `extract_constant` and `extract_static`.
       - Promotes magic numbers, string literals, or complex expressions to module-level or struct-level typed `const`/`static`.
     - `refactor.extract_field(path, range, field_name)`:
       - Promotes local variables or initialization logic to a struct/class field, adjusting constructor/initialization blocks.
@@ -253,19 +269,19 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Promotes an internal expression to a function parameter, automatically passing the original expression at all existing call sites.
     - `refactor.introduce_parameter_object(path, symbol, param_indices, struct_name)`:
       - Solves parameter bloat (> 3-4 arguments) by bundling related parameters into a typed DTO/struct/record, rewriting definition and all call sites.
-    - `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)`:
+    - [~] `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)` — via `code_assists` at an `impl` block: `generate_trait_from_impl`. It takes the whole impl rather than a chosen subset of methods.
       - Extracts selected public method contracts into a new trait/interface, marks the original struct as implementing it, and updates caller type annotations to use the trait where applicable.
-    - `refactor.extract_delegate(path, symbol, delegate_methods, delegate_name)`:
+    - [~] `refactor.extract_delegate(path, symbol, delegate_methods, delegate_name)` — partly, via `code_assists` at a field: `generate_delegate_trait` forwards a trait to the field. Extracting a set of responsibilities into a new helper type is not offered.
       - Extracts selected responsibilities into a separate helper class/struct, replacing direct implementations with an encapsulated delegate field.
 
   - **7.1.3. Hierarchy, Trait & Compositional Transformations**:
-    - `refactor.pull_up / push_down(path, member_symbols, target_level)`:
+    - *Not applicable to Rust.* `refactor.pull_up / push_down(path, member_symbols, target_level)`:
       - Moves methods, fields, and constants up to superclasses/traits or down to specific subclasses/implementations.
-    - `refactor.encapsulate_field(path, struct_name, field_name)`:
+    - [~] `refactor.encapsulate_field(path, struct_name, field_name)` — half of it, via `code_assists` at a field of a struct that has an `impl`: `generate_getter`, `generate_getter_mut`, `generate_setter`, and `change_visibility` to make the field private. Rewriting every direct field access across the workspace is the missing half and needs a tool.
       - Converts public fields to private, generates idiomatic getters/setters/accessors, and rewrites all direct field accesses across the repository.
-    - `refactor.replace_inheritance_with_delegation(path, sub_type, base_type)`:
+    - *Not applicable to Rust* — there is no inheritance to replace. `refactor.replace_inheritance_with_delegation(path, sub_type, base_type)`:
       - Enforces "Composition over Inheritance": wraps the base class in a private field and forwards inherited method calls.
-    - `refactor.replace_constructor_with_factory / builder(path, type_name)`:
+    - *Not applicable as written* — Rust has no constructors; the useful half is generating a builder, which belongs with the generate assists. `refactor.replace_constructor_with_factory / builder(path, type_name)`:
       - Replaces raw struct instantiations with named static factory methods or a fluent builder pattern.
     - `refactor.make_static / convert_to_method(path, function_name)`:
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
@@ -286,11 +302,11 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
   - **7.1.5. Modernization & Control Flow Transformations**:
     - `refactor.invert_if_to_guard(path, range)`:
       - Flips conditional branches to early returns (`guard clauses`), reducing nested block indentation depth from 5+ levels to 1.
-    - `refactor.replace_conditional_with_polymorphism(path, range)`:
+    - *Not applicable to Rust* — a `match` on an enum is the idiom, not a smell to remove. `refactor.replace_conditional_with_polymorphism(path, range)`:
       - Replaces large `match`/`switch`/`if-else` cascades on enum/type tags with polymorphic trait/interface method dispatch.
-    - `refactor.loop_to_iterator(path, range)`:
+    - [~] `refactor.loop_to_iterator(path, range)` — via `code_assists` at a loop: `convert_for_loop_with_for_each` and `convert_for_loop_to_while_let`.
       - Converts imperative `for`/`while` loops with mutable accumulators into idiomatic functional iterator chains (`.map().filter().fold()`).
-    - `refactor.structural_replace(path_pattern, search_template, replace_template)`:
+    - [~] `refactor.structural_replace(path_pattern, search_template, replace_template)` — shipped 2026-09-21 as `code_codemod` / `prod-code codemod` (roadmap 8.7), on rust-analyzer's SSR. Listed here as well because the catalog was written before it existed.
       - Structural Search and Replace (SSR) engine: AST pattern templates with typed meta-variables (e.g. `$expr$.then($cb$)` -> `await $expr$`), transforming code across thousands of files irrespective of whitespace or variable naming.
 
   - **7.1.6. Proactive Conflict Resolution & Transactional Applicator**:
