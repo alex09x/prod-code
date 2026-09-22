@@ -108,4 +108,32 @@ mod tests {
         );
         assert!(is_external(Path::new("/tmp"), "/usr/include/x.h"));
     }
+
+    #[test]
+    fn snippet_of_an_empty_file_is_empty() {
+        assert_eq!(snippet("", 1, 2), "");
+    }
+
+    #[test]
+    fn uri_to_path_accepts_a_plain_path_without_the_file_prefix() {
+        assert_eq!(uri_to_path("/already/a/path.rs"), "/already/a/path.rs");
+    }
+
+    #[test]
+    fn percent_decode_leaves_an_invalid_escape_untouched() {
+        // Not valid hex after `%`: kept as literal characters rather than decoded.
+        assert_eq!(uri_to_path("file:///tmp/100%zz"), "/tmp/100%zz");
+        // A `%` too close to the end to have two hex digits after it is also left alone.
+        assert_eq!(uri_to_path("file:///tmp/x%2"), "/tmp/x%2");
+    }
+
+    #[test]
+    fn is_external_is_false_for_a_path_inside_the_root() {
+        // Canonicalized first: `is_external` canonicalizes the root itself, and on macOS a
+        // temporary directory is reached through a symlink, so an uncanonicalized join here
+        // would not share a prefix with it.
+        let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let inside = root.join("src").join("lib.rs");
+        assert!(!is_external(&root, &inside.to_string_lossy()));
+    }
 }

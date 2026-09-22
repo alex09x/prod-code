@@ -126,22 +126,48 @@ pub async fn handle_mcp_request(
 
 /// Run full stdio MCP server loop.
 pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -> Result<()> {
+    let resumed = std::env::var_os(hot_reload::RESUMED_ENV).is_some();
     tracing::info!(
         server = SERVER_NAME,
         version = SERVER_VERSION,
         gateway = %remote,
         workspace = %workspace_root.display(),
-        resumed = std::env::var_os(hot_reload::RESUMED_ENV).is_some(),
+        resumed,
         "Starting prod-code stdio MCP server"
     );
 
-    let mut stdout = tokio::io::stdout();
-
     // Hot reload: watch our own executable and swap to a newly installed one between
     // requests (see `hot_reload`).
+    let exe = std::env::current_exe().ok();
+    serve_mcp_requests(
+        remote,
+        workspace_root,
+        exe,
+        resumed,
+        BufReader::new(tokio::io::stdin()),
+        tokio::io::stdout(),
+    )
+    .await
+}
+
+/// The request/response loop, generic over its transport so it can be driven by a test without
+/// touching the process's real stdio. `run_stdio_mcp_server` is a thin wrapper around this with
+/// the real standard streams; `exe` is `None` there only when the running binary's own path
+/// could not be resolved, in which case hot reload is simply not offered.
+async fn serve_mcp_requests<R, W>(
+    remote: SocketAddr,
+    workspace_root: PathBuf,
+    exe: Option<PathBuf>,
+    resumed: bool,
+    mut reader: BufReader<R>,
+    mut writer: W,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
     let reload_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reload_notify = std::sync::Arc::new(tokio::sync::Notify::new());
-    let exe = std::env::current_exe().ok();
     if let Some(exe) = &exe
         && let Some(initial) = hot_reload::stamp(exe)
     {
@@ -152,16 +178,15 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
             std::sync::Arc::clone(&reload_notify),
         );
     }
-    if std::env::var_os(hot_reload::RESUMED_ENV).is_some() {
+    if resumed {
         // The session was initialised with the previous binary: tell the client to refresh
         // its tool list from this one.
-        stdout
+        writer
             .write_all(hot_reload::tools_list_changed().as_bytes())
             .await?;
-        stdout.flush().await?;
+        writer.flush().await?;
     }
 
-    let mut reader = BufReader::new(tokio::io::stdin());
     let mut pending: Vec<u8> = Vec::new();
     loop {
         if reload_flag.load(std::sync::atomic::Ordering::Acquire)
@@ -169,10 +194,10 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
             && reader.buffer().is_empty()
             && let Some(exe) = &exe
         {
-            stdout
+            writer
                 .write_all(hot_reload::tools_list_changed().as_bytes())
                 .await?;
-            stdout.flush().await?;
+            writer.flush().await?;
             tracing::info!(exe = %exe.display(), "re-executing the installed binary");
             let err = hot_reload::reexec(exe);
             tracing::error!(error = %err, "hot reload failed; continuing with the current binary");
@@ -202,8 +227,8 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
                     Ok(Some(resp_val)) => {
                         let mut out = serde_json::to_string(&resp_val)?;
                         out.push('\n');
-                        stdout.write_all(out.as_bytes()).await?;
-                        stdout.flush().await?;
+                        writer.write_all(out.as_bytes()).await?;
+                        writer.flush().await?;
                     }
                     Ok(None) => {}
                     Err(e) => {
@@ -220,6 +245,7 @@ pub async fn run_stdio_mcp_server(remote: SocketAddr, workspace_root: PathBuf) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn test_mcp_initialize() {
@@ -307,5 +333,152 @@ mod tests {
             .unwrap();
         assert_eq!(resp["id"], 4);
         assert_eq!(resp["error"]["code"], -32601);
+    }
+
+    #[tokio::test]
+    async fn test_mcp_unknown_notification_gets_no_response() {
+        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let root = PathBuf::from("/tmp");
+
+        let req = serde_json::json!({ "jsonrpc": "2.0", "method": "foo/bar" });
+
+        let resp = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+        assert!(resp.is_none(), "a notification gets no reply: {resp:?}");
+    }
+
+    #[tokio::test]
+    async fn test_mcp_initialized_notification_gets_no_response() {
+        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let root = PathBuf::from("/tmp");
+
+        for method in ["notifications/initialized", "initialized"] {
+            let req = serde_json::json!({ "jsonrpc": "2.0", "method": method });
+            let resp = handle_mcp_request(dummy_addr, &root, req).await.unwrap();
+            assert!(resp.is_none(), "{method}: {resp:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_mcp_malformed_request_is_a_parse_error() {
+        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let root = PathBuf::from("/tmp");
+
+        // Missing the required `method` field: the request itself does not deserialize.
+        let resp = handle_mcp_request(dummy_addr, &root, serde_json::json!({}))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp["error"]["code"], -32700);
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Parse error:"),
+            "{resp:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_mcp_tools_call_reports_a_failed_tool_as_a_normal_response() {
+        // A closed port: the tool's own connection attempt fails, and that failure is
+        // reported as a normal (non-transport) JSON-RPC response, not a handler error.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dummy_addr = listener.local_addr().unwrap();
+        drop(listener);
+        let root = PathBuf::from("/tmp");
+
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": { "name": "code_status", "arguments": {} }
+        });
+
+        let resp = handle_mcp_request(dummy_addr, &root, req)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(resp["id"], 5);
+        assert_eq!(resp["result"]["isError"], true);
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Failed to connect"), "{text}");
+    }
+
+    /// Wires `serve_mcp_requests` to an in-memory duplex stream: the returned handle is the
+    /// client's end (write requests into it, read responses back out of it), and the join
+    /// handle resolves once the client end (or its clone) is dropped, which the server reads
+    /// as EOF.
+    fn spawn_server(
+        resumed: bool,
+    ) -> (
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<Result<()>>,
+    ) {
+        let dummy_addr: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+        let root = PathBuf::from("/tmp");
+        let (client, server) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let handle = tokio::spawn(serve_mcp_requests(
+            dummy_addr,
+            root,
+            None, // no real executable to hot-reload from in a test
+            resumed,
+            BufReader::new(server_read),
+            server_write,
+        ));
+        (client, handle)
+    }
+
+    #[tokio::test]
+    async fn serve_mcp_requests_answers_a_request_then_stops_at_eof() {
+        let (mut client, handle) = spawn_server(false);
+        client
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 4096];
+        let n = client.read(&mut buf).await.unwrap();
+        let line = String::from_utf8_lossy(&buf[..n]);
+        let resp: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(resp["id"], 1);
+        assert_eq!(resp["result"], serde_json::json!({}));
+
+        drop(client); // EOF: the server's read half sees a closed connection
+        let result = handle.await.unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn serve_mcp_requests_skips_blank_lines_and_invalid_json() {
+        let (mut client, handle) = spawn_server(false);
+        client
+            .write_all(b"\n   \nnot json at all\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 4096];
+        let n = client.read(&mut buf).await.unwrap();
+        let line = String::from_utf8_lossy(&buf[..n]);
+        // Exactly one response line: the blank lines and the invalid JSON produced nothing.
+        assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+        let resp: serde_json::Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(resp["id"], 2);
+
+        drop(client);
+        assert!(handle.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn serve_mcp_requests_announces_a_resumed_session_before_any_request() {
+        let (mut client, handle) = spawn_server(true);
+
+        let mut buf = [0u8; 4096];
+        let n = client.read(&mut buf).await.unwrap();
+        let line = String::from_utf8_lossy(&buf[..n]);
+        assert_eq!(line, hot_reload::tools_list_changed());
+
+        drop(client);
+        assert!(handle.await.unwrap().is_ok());
     }
 }

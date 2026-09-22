@@ -150,4 +150,33 @@ mod tests {
         );
         assert!(text.contains("lexical"), "{text}");
     }
+
+    #[test]
+    fn renders_a_hit_without_a_container_or_a_doc() {
+        let text = render(
+            &resp(vec![SearchHit {
+                file: "src/free.rs".into(),
+                line: 3,
+                kind: "function".into(),
+                name: "free_fn".into(),
+                container: None,
+                signature: "pub fn free_fn()".into(),
+                doc: String::new(),
+            }]),
+            "free function",
+        );
+        // No `Container::` prefix, and no doc line under the signature.
+        assert!(text.contains(" 1. [function] free_fn  src/free.rs:3\n"), "{text}");
+        assert!(text.trim_end().ends_with("pub fn free_fn()"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn refuses_an_empty_query_without_reaching_the_network() {
+        let unreachable: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let root = std::env::temp_dir();
+        let err = search(unreachable, &root, "   ", 0, None)
+            .await
+            .expect_err("an empty query is refused");
+        assert!(format!("{err:#}").contains("empty query"));
+    }
 }

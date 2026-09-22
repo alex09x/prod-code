@@ -146,4 +146,36 @@ mod tests {
         assert_eq!(tail.text(), "456789ab");
         assert_eq!(tail.total, 12);
     }
+
+    #[test]
+    fn tail_buffer_keeps_everything_under_the_limit() {
+        let mut tail = TailBuffer::new(8);
+        tail.push(b"ab");
+        assert_eq!(tail.text(), "ab");
+        assert_eq!(tail.total, 2);
+    }
+
+    #[test]
+    fn subdir_of_is_none_for_the_root_itself() {
+        let root = std::env::temp_dir();
+        assert_eq!(subdir_of(&root, &root), None);
+    }
+
+    #[test]
+    fn subdir_of_is_the_relative_slash_separated_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let nested = root.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        assert_eq!(subdir_of(&root, &nested).as_deref(), Some("a/b"));
+    }
+
+    #[test]
+    fn subdir_of_is_none_outside_the_root() {
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(a.path()).unwrap();
+        let outside = std::fs::canonicalize(b.path()).unwrap();
+        assert_eq!(subdir_of(&root, &outside), None);
+    }
 }
