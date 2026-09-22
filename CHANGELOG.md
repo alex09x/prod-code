@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **The gateway no longer floods the journal with the analyzer's query log** (#95). The default
+  filter was `info`, and rust-analyzer's crates and salsa log every query they execute at that
+  level. One validation of a large file emitted about 1.2 million lines, the system journal kept
+  its burst of 10,000 and dropped the rest, and the gateway's own lines were dropped with them.
+  The analyzer's crates and salsa now default to `warn`; one validation writes 26 lines.
+  `RUST_LOG` still overrides the default.
 - **`code_extract_field` no longer writes a field into a pattern it took for a literal** (#90).
   Braces were a pattern only when `=>`, `=`, `|` or `:` followed them directly, so
   `for Store { a } in all`, `Store { a } if … =>`, `Some(Store { a }) =>` and
