@@ -124,7 +124,16 @@ pub struct HandshakeRequest {
     /// The client machine's hostname.
     #[serde(default)]
     pub client_host: Option<String>,
+    /// What the session is for, when that changes where it should run. [`PURPOSE_VALIDATION`]:
+    /// the session opens proposed texts only to ask what the analyzer thinks of them, so the
+    /// gateway serves it from a second engine for the same workspace, and the overlay and its
+    /// revert never invalidate what the main engine has computed (#73).
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
+
+/// [`HandshakeRequest::purpose`] of a session that only validates proposed texts.
+pub const PURPOSE_VALIDATION: &str = "validation";
 
 /// Handshake acknowledgement sent by remote gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

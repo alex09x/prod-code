@@ -28,6 +28,33 @@ impl LspSession {
     /// Opens a session on `remote` for the checkout at `root`. `hint` selects a nested
     /// project (any path inside it); the root project otherwise.
     pub async fn open(remote: SocketAddr, root: &Path, hint: Option<&Path>) -> Result<Self> {
+        Self::open_with_purpose(remote, root, hint, None).await
+    }
+
+    /// A session that opens proposed texts only to validate them. The gateway serves it from a
+    /// second engine for the workspace, so an overlay that changes what a widely imported file
+    /// declares — and the revert when the session closes — never invalidates the main engine's
+    /// work, and the next ordinary query does not pay for it (#73).
+    pub async fn open_for_validation(
+        remote: SocketAddr,
+        root: &Path,
+        hint: Option<&Path>,
+    ) -> Result<Self> {
+        Self::open_with_purpose(
+            remote,
+            root,
+            hint,
+            Some(prod_code_protocol::PURPOSE_VALIDATION),
+        )
+        .await
+    }
+
+    async fn open_with_purpose(
+        remote: SocketAddr,
+        root: &Path,
+        hint: Option<&Path>,
+        purpose: Option<&str>,
+    ) -> Result<Self> {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         let identity: WorkspaceIdentity = workspace_identity(&root);
@@ -52,6 +79,7 @@ impl LspSession {
                 engine_subpath,
                 client_agent: Some(prod_code_protocol::detect_client_agent()),
                 client_host: Some(prod_code_protocol::client_host()),
+                purpose: purpose.map(str::to_string),
             }))
             .await?;
         let handshake = match framed.next().await {

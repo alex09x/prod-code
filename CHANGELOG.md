@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Fixed
+- **A dry run no longer slows down the next query** (#73). Validation opened proposed texts
+  as overlays in the same engine every other query uses; when a proposal changed what a widely
+  imported file declares, the overlay and its revert made rust-analyzer re-infer every body that
+  resolves through that crate, and the next ordinary query paid for it — `references` took
+  21.5 s after an encapsulate dry run, 0.1 s settled. Validation sessions now say so in the
+  handshake (`purpose: "validation"`) and the gateway serves them from a second engine for the
+  same workspace, loaded by the first of them, fed by every sync and command write-back like
+  the main one. The on-disk baseline of #79 is taken from the main engine, so the validation
+  engine only ever holds proposals. Measured on a Linux build node against this repository:
+  `references` right after a dry run 21.5 s → 0.13 s; the same dry run repeated 43.7–44.5 s →
+  1.0–1.1 s. A new proposal still costs what type-checking the files it touches costs (24.5 s
+  for `move snake_case --to lang.rs`), now on the second engine alone.
 - **An error the file already had is no longer counted against an edit** (#79). The analyzer
   reports `type annotations needed [E0282]` on every `#[derive(..., Deserialize)]` in this
   workspace, with or without an edit — 124 of them in `prod-code-protocol/src/messages.rs` — and

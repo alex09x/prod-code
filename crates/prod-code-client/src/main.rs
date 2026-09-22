@@ -952,6 +952,7 @@ async fn execute_lsp_query(
                     engine_subpath,
                     client_agent: Some(prod_code_protocol::detect_client_agent()),
                     client_host: Some(prod_code_protocol::client_host()),
+                    purpose: None,
                 }))
                 .await?;
 
@@ -1809,6 +1810,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             engine_subpath: None,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
+            purpose: None,
         }))
         .await?;
 
@@ -2784,6 +2786,7 @@ async fn run_benchmark(
                 engine_subpath: None,
                 client_agent: Some(prod_code_protocol::detect_client_agent()),
                 client_host: Some(prod_code_protocol::client_host()),
+                purpose: None,
             };
 
             if framed

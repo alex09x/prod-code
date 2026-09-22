@@ -1367,6 +1367,113 @@ async fn the_gateway_runs_commands_and_hypotheses() {
     );
 }
 
+/// Validation runs on a second engine for the workspace (#73): its overlays and their reverts
+/// never touch the engine every other query uses. What a second engine must not do is fall
+/// behind — a file synced or rewritten by a command has to reach it as it reaches the main one,
+/// or a validation judges the proposal against text that no longer exists.
+///
+/// The proposal below returns `store::fresh()` where a `String` is wanted. The analyzer reports
+/// that as a mismatch only when it knows what `fresh` returns; a path to a function it has never
+/// seen is not reported at all. So each verdict says which text of `store.rs` the validation
+/// engine is looking at.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn validation_runs_on_its_own_engine_and_sees_every_change() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+    let proposal = format!("{LIB}\npub fn label() -> String {{\n    store::fresh()\n}}\n");
+    // The main engine is loaded by an ordinary query first, the validation engine by the
+    // first validation.
+    let refs = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 7, "character": 12 }),
+        )
+        .await,
+    );
+    assert!(refs.contains("store.rs:6:"), "{refs}");
+    let unknown = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_validate_edit",
+            serde_json::json!({ "path": "src/lib.rs", "new_text": proposal }),
+        )
+        .await,
+    );
+    assert!(
+        !unknown.contains("found u32") && !unknown.contains("found u64"),
+        "`fresh` does not exist yet, so nothing can be said about its type: {unknown}"
+    );
+
+    // A sync: `store.rs` gains `fresh` on disk, uncommitted, and the next call carries it.
+    checkout.write(
+        "src/store.rs",
+        &format!("{STORE}\npub fn fresh() -> u32 {{\n    1\n}}\n"),
+    );
+    let synced = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_validate_edit",
+            serde_json::json!({ "path": "src/lib.rs", "new_text": proposal }),
+        )
+        .await,
+    );
+    assert!(
+        synced.contains("u32") && synced.contains("String"),
+        "the validation engine sees the synced `fresh() -> u32`: {synced}"
+    );
+
+    // A command rewrites `store.rs` on the node; the change comes back to the checkout as
+    // already synced, so only the gateway itself can tell the validation engine.
+    let _ = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_exec",
+            serde_json::json!({
+                "argv": ["sh", "-c", "sed -i 's/pub fn fresh() -> u32/pub fn fresh() -> u64/' src/store.rs"],
+                "timeout_secs": 60
+            }),
+        )
+        .await,
+    );
+    assert!(
+        std::fs::read_to_string(checkout.path("src/store.rs"))
+            .unwrap()
+            .contains("-> u64"),
+        "the command's change came back"
+    );
+    let rewritten = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_validate_edit",
+            serde_json::json!({ "path": "src/lib.rs", "new_text": proposal }),
+        )
+        .await,
+    );
+    assert!(
+        rewritten.contains("u64") && !rewritten.contains("u32"),
+        "the validation engine sees what the command wrote: {rewritten}"
+    );
+
+    // And the ordinary engine answers as before, from the checkout, not from any proposal.
+    let after = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 7, "character": 12 }),
+        )
+        .await,
+    );
+    assert!(after.contains("store.rs:6:"), "{after}");
+}
+
 /// A workspace the gateway has not been asked about for a while is evicted, and the next
 /// query loads it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -350,11 +350,16 @@ pub async fn validate_text(
     file: &Path,
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
-    let mut session = LspSession::open(remote, root, Some(file)).await?;
+    let shown = display(root, file);
+    let before = {
+        let mut checkout = LspSession::open(remote, root, Some(file)).await?;
+        let before = on_disk(&mut checkout, root, file, &shown).await;
+        checkout.close().await;
+        before
+    };
+    let mut session = LspSession::open_for_validation(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
     let params = serde_json::json!({ "textDocument": { "uri": uri } });
-    let shown = display(root, file);
-    let before = on_disk(&mut session, root, file, &shown).await;
     let result = session
         .query_with_text(file, new_text, "textDocument/diagnostic", params)
         .await?;
@@ -367,8 +372,12 @@ pub async fn validate_text(
 }
 
 /// The diagnostics of `file` as it is on disk, and that text, or `None` for a file that does
-/// not exist yet. Asked before any proposed text is open in the session, so they are the
-/// checkout's and not the edit's.
+/// not exist yet.
+///
+/// Asked of the main engine, in a session of its own, never of the validation engine: the main
+/// engine holds the checkout's state warm, so this costs what any diagnostics query costs. The
+/// validation engine is left holding only proposals, and one that repeats the last proposal —
+/// the same dry run asked twice — finds everything it needs still computed (#73).
 async fn on_disk(
     session: &mut LspSession,
     root: &Path,
@@ -409,16 +418,20 @@ pub async fn validate_texts(
         .first()
         .map(|(file, _)| file.as_path())
         .or_else(|| also_check.first().map(|p| p.as_path()));
-    let mut session = LspSession::open(remote, root, hint).await?;
-    // What every file says before any proposed text is in place: an error the checkout already
-    // has is not the edit's, and a report that counts it refuses every edit to that file.
+    // What every file says as it is on disk: an error the checkout already has is not the
+    // edit's, and a report that counts it refuses every edit to that file.
     let mut baselines: HashMap<String, (DiagnosticsReport, String)> = HashMap::new();
-    for file in edits.iter().map(|(f, _)| f).chain(also_check) {
-        let shown = display(root, file);
-        if let Some(before) = on_disk(&mut session, root, file, &shown).await {
-            baselines.insert(shown, before);
+    {
+        let mut checkout = LspSession::open(remote, root, hint).await?;
+        for file in edits.iter().map(|(f, _)| f).chain(also_check) {
+            let shown = display(root, file);
+            if let Some(before) = on_disk(&mut checkout, root, file, &shown).await {
+                baselines.insert(shown, before);
+            }
         }
+        checkout.close().await;
     }
+    let mut session = LspSession::open_for_validation(remote, root, hint).await?;
     let mut uris = Vec::with_capacity(edits.len());
     // Symbols that the proposed texts remove or rename, with the file they vanish from: an
     // error on a line that still uses one of them gets an explaining note, because the

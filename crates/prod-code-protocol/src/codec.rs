@@ -110,6 +110,7 @@ mod tests {
             engine_subpath: None,
             client_agent: None,
             client_host: None,
+            purpose: None,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();

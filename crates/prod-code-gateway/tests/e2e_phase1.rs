@@ -182,6 +182,7 @@ async fn test_full_phase1_e2e_flow() {
                 engine_subpath: None,
                 client_agent: None,
                 client_host: None,
+                purpose: None,
             }))
             .await
             .unwrap();
