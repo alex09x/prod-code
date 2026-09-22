@@ -310,7 +310,14 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     - [~] `refactor.structural_replace(path_pattern, search_template, replace_template)` — shipped 2026-09-21 as `code_codemod` / `prod-code codemod` (roadmap 8.7), on rust-analyzer's SSR. Listed here as well because the catalog was written before it existed.
       - Structural Search and Replace (SSR) engine: AST pattern templates with typed meta-variables (e.g. `$expr$.then($cb$)` -> `await $expr$`), transforming code across thousands of files irrespective of whitespace or variable naming.
 
-  - **7.1.6. Proactive Conflict Resolution & Transactional Applicator**:
+  - [~] **7.1.6. Proactive Conflict Resolution & Transactional Applicator** — the first and third
+    halves are how every write tool already works: each computes the whole multi-file edit,
+    type-checks it in one overlay and refuses with the reason (a dropped parameter the body uses,
+    a private sibling left behind, a local an extracted expression names) before writing, and each
+    is one call. Two things are NOT done. The overlay check does not see an unresolved type or a
+    module path (#63), so pre-validation is weaker than "detects everything". And the applicator
+    is not transactional: `apply_workspace_edit` writes the files one after another, so a failed
+    write halfway leaves the checkout half-edited, with nothing to roll back to.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
     - **Zero-Prompt Agent Automation**: AI coding agents can execute complex multi-file architectural refactors with single RPC calls without hallucinating intermediate edits.
