@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Fixed
+- **Half a second off every CLI invocation** (#56). The gateway probed for installed language
+  servers on every `StatusRequest`, `Gossip`, `ClusterRequest` and placement decision, and one
+  of those probes is `npm root -g`, which spends 213 ms starting node. A CLI invocation asks
+  two such questions before it can send its query — where the cluster is, and which node holds
+  this workspace — so it paid the probe twice. The answer changes only when somebody installs a
+  language server, so it is now taken once at startup, refreshed by the janitor's existing
+  minute tick on a thread that may block, and read from memory on the request path. Measured on
+  a Linux build node over loopback: `StatusRequest` 436.8 ms → 0.2 ms (median of 7), and
+  `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
+
+### Added
+- `PROD_CODE_TIMING=1` now reports the work every invocation does *before* the query —
+  `[timing] startup total=… discover_nodes=… workspace_identity=… engine_project=…
+  pick_node=…`. The query timer started after all of it, which is why #56 could report a
+  half second that no phase accounted for.
+
 ## v0.2.2 — 2026-09-22
 
 Seven new tools since 0.2.1 — search by intent, slice a symbol's dependencies, try several

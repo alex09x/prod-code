@@ -364,15 +364,22 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Everything down to the dispatch below runs on every invocation, whatever the
+    // subcommand, and until this timer existed none of it was measured: the query timer
+    // starts after it. See the report on stderr under `PROD_CODE_TIMING=1`.
+    let mut startup = QueryTiming::labelled("startup");
     let cli = Cli::parse();
+    startup.mark("parse_args");
 
     let seeds = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
     // One seed is enough: the rest of the cluster comes from that node's gossip view.
     let remotes = prod_code_mcp::cluster::discover_nodes(&seeds).await;
+    startup.mark("discover_nodes");
 
     let cwd_root = env::current_dir()
         .ok()
         .map(|d| find_workspace_root(&d).unwrap_or(d));
+    startup.mark("workspace_root");
     // Placement follows the origin repository: every worktree lands on the node that holds
     // the origin's copy, so seeding from that copy and the shared cargo target directory
     // work. The workspace name itself stays per worktree (`<repo>--wt-<hash>`).
@@ -383,6 +390,7 @@ async fn main() -> Result<()> {
             identity.base.unwrap_or(identity.name)
         })
         .unwrap_or_default();
+    startup.mark("workspace_identity");
     // The engine a query needs is that of the nearest project of the file it names (or of
     // the current directory): a SwiftPM package inside a Rust repository must land on a
     // macOS node even though the repository root is Rust.
@@ -396,12 +404,16 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| root.to_path_buf());
         prod_code_mcp::sync::engine_project(root, &hint).1
     });
+    startup.mark("engine_project");
 
     if matches!(cli.command, Some(Commands::Cluster)) {
+        startup.report();
         return run_cluster(&remotes, &cwd_workspace, cwd_engine).await;
     }
 
     let remote = prod_code_mcp::cluster::pick_node(&remotes, &cwd_workspace, cwd_engine).await?;
+    startup.mark("pick_node");
+    startup.report();
 
     match cli.command.unwrap_or(Commands::Lsp) {
         Commands::Lsp => run_lsp_bridge(remote).await,
@@ -609,9 +621,11 @@ pub fn find_workspace_root(file_path: &Path) -> Option<PathBuf> {
 }
 
 /// Helper to connect, initialize, and execute a targeted LSP request against the remote gateway.
-/// Phase timings for one query, printed to stderr when `PROD_CODE_TIMING=1`.
+/// Phase timings for one part of an invocation, printed to stderr when `PROD_CODE_TIMING=1`.
+/// `label` says which part, so the work before a query is reported separately from the query.
 struct QueryTiming {
     enabled: bool,
+    label: &'static str,
     start: std::time::Instant,
     last: std::time::Instant,
     phases: Vec<(&'static str, f64)>,
@@ -619,9 +633,14 @@ struct QueryTiming {
 
 impl QueryTiming {
     fn new() -> Self {
+        Self::labelled("query")
+    }
+
+    fn labelled(label: &'static str) -> Self {
         let now = std::time::Instant::now();
         Self {
             enabled: env::var_os("PROD_CODE_TIMING").is_some(),
+            label,
             start: now,
             last: now,
             phases: Vec::new(),
@@ -648,7 +667,8 @@ impl QueryTiming {
             .iter()
             .map(|(name, ms)| format!("{name}={ms:.1}ms"))
             .collect();
-        eprintln!("[timing] total={total:.1}ms {}", parts.join(" "));
+        let label = self.label;
+        eprintln!("[timing] {label} total={total:.1}ms {}", parts.join(" "));
     }
 }
 
