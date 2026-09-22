@@ -199,6 +199,27 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_parameter".to_string(),
+            description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the analyzer when it gives one in a shape this can read, otherwise pass `type`. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File the selection is in" },
+                    "line": { "type": "integer", "description": "1-based line where the expression starts" },
+                    "character": { "type": "integer", "description": "1-based column where it starts" },
+                    "end_line": { "type": "integer", "description": "1-based line where it ends" },
+                    "end_character": { "type": "integer", "description": "1-based column where it ends (exclusive)" },
+                    "name": { "type": "string", "description": "What the new parameter is called" },
+                    "type": { "type": "string", "description": "The parameter's type, when the analyzer gives none" },
+                    "replace_all": { "type": "boolean", "description": "Replace every identical occurrence in the body (default false: only the selection)" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character", "end_line", "end_character", "name"]
+            }),
+        },
+        McpTool {
             name: "code_introduce_parameter_object".to_string(),
             description: "Bundle several of a function's parameters into a struct, with the body and every call site. `params` names the parameters to bundle (two or more, by the names the declaration gives them); they become fields of a new `pub struct` written directly above the function, in declaration order and with the types the declaration gave — a single lifetime is introduced when any of those types borrows. The declaration takes one parameter in place of them, every use of them in the body is rewritten to reach through it (at the positions the analyzer reports, not by text search), and the call sites are rewritten by a structural rule built from the declaration's own arity, so an argument that is a method chain or a closure survives and the unbundled arguments stay where they were. References the rule did not match are named. The whole change is type-checked in one overlay before anything is written, and `apply` is what writes it. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1562,6 +1583,50 @@ pub async fn execute_tool(
                 apply,
                 force,
                 scope.as_deref(),
+            )
+            .await?;
+            let clean = done.diagnostics.is_empty();
+            let text = done.render(6000);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
+        "code_extract_parameter" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let num = |key: &str| -> Result<u32> {
+                args.get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let name = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .context("Missing 'name' argument: what the new parameter is called")?;
+            let ty = args.get("type").and_then(|v| v.as_str());
+            let replace_all = args
+                .get("replace_all")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let done = crate::extract_parameter::extract(
+                remote,
+                workspace_root,
+                &file_path,
+                (num("line")?, num("character")?),
+                (num("end_line")?, num("end_character")?),
+                name,
+                ty,
+                replace_all,
+                apply,
+                force,
             )
             .await?;
             let clean = done.diagnostics.is_empty();

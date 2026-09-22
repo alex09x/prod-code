@@ -853,3 +853,153 @@ async fn a_use_that_is_not_a_call_is_reported_not_rewritten() {
     let report = done.render(4000);
     assert!(report.contains("not rewritten"), "{report}");
 }
+
+const RENDER: &str = "pub fn render(text: &str) -> String {\n    let width = 80;\n    format!(\"{text:width$}\")\n}\n\npub fn caller() -> String {\n    render(\"x\")\n}\n";
+
+/// Extracting a magic number: the parameter is added at the end of the list, the body reads it,
+/// and every existing call site passes what the body used to say — so no caller's behaviour
+/// changes, which is the whole point of doing it this way round.
+#[tokio::test]
+async fn an_extracted_expression_becomes_the_argument_every_caller_already_passed() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    let home = write(&ws, "src/home.rs", RENDER);
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 4, 8),
+            answers::document_symbol("caller", 12, 6, 8, 8),
+        ]),
+        "textDocument/references" => answers::locations(&h, &[(7, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = match prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (2, 17),
+        (2, 19),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    {
+        Ok(done) => done,
+        Err(err) => panic!("the extraction runs: {err:#}"),
+    };
+
+    assert_eq!(done.symbol, "render");
+    assert_eq!(done.expression, "80");
+    assert_eq!(done.replaced, 1);
+    assert_eq!(done.call_sites, 1);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+
+    let new_home = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("home.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the file was rewritten");
+    assert!(
+        new_home.contains("pub fn render(text: &str, width_limit: usize) -> String {"),
+        "{new_home}"
+    );
+    assert!(new_home.contains("let width = width_limit;"), "{new_home}");
+    assert!(
+        new_home.contains("render(\"x\", 80)"),
+        "the caller passes what the body used to say: {new_home}"
+    );
+    assert!(!done.applied);
+    assert_eq!(ws.read("src/home.rs"), RENDER, "nothing written on disk");
+}
+
+/// An expression that names something only the function can see cannot be written at a call
+/// site. The check catches it, and the report says which mistake it is rather than leaving the
+/// reader with a raw diagnostic.
+#[tokio::test]
+async fn an_expression_the_callers_cannot_see_is_refused_with_the_reason() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    let home = write(
+        &ws,
+        "src/home.rs",
+        "pub fn render(text: &str) -> String {\n    let n = text.len();\n    let width = n + 2;\n    format!(\"{text:width$}\")\n}\n\npub fn caller() -> String {\n    render(\"x\")\n}\n",
+    );
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 5, 8),
+            answers::document_symbol("caller", 12, 7, 9, 8),
+        ]),
+        "textDocument/references" => answers::locations(&h, &[(8, 5)]),
+        "textDocument/diagnostic" => {
+            answers::error_at(8, 17, "E0425", "cannot find value `n` in this scope")
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (3, 17),
+        (3, 22),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect("the extraction runs");
+
+    assert_eq!(done.expression, "n + 2");
+    assert_eq!(done.diagnostics.len(), 1, "{:?}", done.diagnostics);
+    let report = done.render(4000);
+    assert!(
+        report.contains("if it names a local"),
+        "the report names the mistake: {report}"
+    );
+
+    let err = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (3, 17),
+        (3, 22),
+        "width_limit",
+        Some("usize"),
+        false,
+        true,
+        false,
+    )
+    .await
+    .expect_err("apply refuses a change that does not compile");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+}

@@ -235,6 +235,33 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with every call site.
+    /// Promote an expression in a function body into a parameter, passed at every call site.
+    ExtractParameter {
+        /// The file the selection is in.
+        file: PathBuf,
+        /// 1-based line where the expression starts.
+        line: u32,
+        /// 1-based column where it starts.
+        character: u32,
+        /// Where it ends, as `LINE:COL` (the column is exclusive).
+        #[arg(long = "to")]
+        to: String,
+        /// What the new parameter is called.
+        #[arg(long)]
+        name: String,
+        /// The parameter's type, when the analyzer gives none.
+        #[arg(long = "type")]
+        ty: Option<String>,
+        /// Replace every identical occurrence in the body, not only the selection.
+        #[arg(long, default_value_t = false)]
+        replace_all: bool,
+        /// Write the change instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Bundle several of a function's parameters into a struct, with body and call sites.
     ParameterObject {
         /// The function, by name (`move_item`, `Session::open_text`).
@@ -558,6 +585,31 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
+        Commands::ExtractParameter {
+            file,
+            line,
+            character,
+            to,
+            name,
+            ty,
+            replace_all,
+            apply,
+            force,
+        } => {
+            run_extract_parameter_cli(
+                remote,
+                &file,
+                line,
+                character,
+                &to,
+                name,
+                ty,
+                replace_all,
+                apply,
+                force,
+            )
+            .await
+        }
         Commands::ParameterObject {
             symbol,
             params,
@@ -2128,6 +2180,55 @@ async fn run_schema_rename_cli(
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_extract_parameter_cli(
+    remote: SocketAddr,
+    file: &Path,
+    line: u32,
+    character: u32,
+    to: &str,
+    name: String,
+    ty: Option<String>,
+    replace_all: bool,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let (end_line, end_character): (u32, u32) = to
+        .split_once(':')
+        .and_then(|(l, c)| {
+            let line = l.trim().parse::<u32>().ok()?;
+            let col = c.trim().parse::<u32>().ok()?;
+            Some((line, col))
+        })
+        .context("--to takes LINE:COL, for example --to 42:31")?;
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({
+        "path": file.to_string_lossy(),
+        "line": line,
+        "character": character,
+        "end_line": end_line,
+        "end_character": end_character,
+        "name": name,
+        "replace_all": replace_all,
+        "apply": apply,
+        "force": force,
+    });
+    if let Some(ty) = ty {
+        args["type"] = serde_json::Value::String(ty);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_extract_parameter", args).await?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");

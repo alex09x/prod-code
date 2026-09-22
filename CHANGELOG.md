@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- Promote an expression to a parameter (roadmap 7.1.2): `code_extract_parameter` (MCP) and
+  `prod-code extract-parameter <file> <line> <col> --to <line>:<col> --name limit` take an
+  expression out of a function body and make it a parameter, passing what the body used to say
+  at every existing call site — so no current caller changes behaviour and the next one can
+  choose. The parameter is added at the end of the list, keeping the list's shape; the type is
+  the analyzer's where it gives one in a readable shape and the caller's otherwise;
+  `replace_all` puts the parameter in every identical occurrence inside the body. A reference
+  that is not a call with this arity is named rather than mangled, and an expression that names
+  a local or anything private to the function is refused with that as the reason rather than
+  with a raw diagnostic.
 - Bundle parameters into a struct (roadmap 7.1.2): `code_introduce_parameter_object` (MCP) and
   `prod-code parameter-object <symbol> --param a --param b --name Opts` take several of a
   function's parameters and make them fields of a new `pub struct` written directly above it,
