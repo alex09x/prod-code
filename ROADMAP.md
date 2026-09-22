@@ -229,7 +229,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     - [~] `refactor.safe_delete(path, symbol)` — shipped 2026-09-19 for Rust: `prod-code safe-delete <file> <line> <col>`, MCP `code_safe_delete`, gateway `prodCode/safeDelete`; whole-workspace usage check via rust-analyzer, refusal returns the usage dossier, deletion uses the item's structure range. Cascading parameter removal still open.
       - Whole-repository usage graph verification before deleting classes, structs, functions, fields, or parameters.
       - If active usages exist, returns a structured conflict dossier; supports safe cascading parameter removal across callers and override hierarchies.
-    - `refactor.move(path, symbol, target_destination)`:
+    - [~] `refactor.move(path, symbol, target_destination)` — shipped 2026-09-22 for Rust, items between modules: `code_move` / `prod-code move <symbol> --to <file>` cut the declaration whole (doc comment and attributes with it), carry the `use` statements the item spells narrowed to the names it needs, rewrite or add the import in every file the analyzer lists as using it, requalify the references that name a path, and type-check the result in one overlay before writing. Moving a whole file or module, and moving a method to another type, are not attempted; the target module must already exist.
       - Moves structs, functions, classes, or files to new modules, packages, or namespaces.
       - Moves static members to another type; moves instance methods to a target parameter type (e.g. `fn foo(bar: &Bar)` -> `Bar::foo()`).
       - Automatically rewrites and cleans all `use` / `import` statements and qualified path references throughout the workspace.

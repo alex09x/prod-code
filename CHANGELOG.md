@@ -14,6 +14,19 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Move a declaration to another module (roadmap 7.1.1): `code_move` (MCP) and
+  `prod-code move <symbol> --to <file>` take a function, struct, enum, trait or const out of one
+  module and put it in another, with the imports that keep every user of it compiling. The item
+  travels whole — signature, body, doc comment, attributes — and takes with it the `use`
+  statements it actually spells, narrowed to the names it needs. Every file the analyzer lists
+  as using it has its import rewritten (a grouped import keeps its other names) and any
+  path-qualified reference requalified; a file that spelled the name bare gets the new import,
+  one that only ever qualified it gets none. The positions the analyzer reported are adjusted
+  for the hole the cut leaves in the file the item left, which is what makes the source file's
+  own references find their new import. The whole change is type-checked in one overlay before
+  anything is written, so a move that reaches for something private to the module it left is
+  reported — with that explanation — rather than written. Nothing is written without `apply`.
+  Rust only; the target module must already exist.
 - `PROD_CODE_TIMING=1` now reports the work every invocation does *before* the query —
   `[timing] startup total=… discover_nodes=… workspace_identity=… engine_project=…
   pick_node=…`. The query timer started after all of it, which is why #56 could report a

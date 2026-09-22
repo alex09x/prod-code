@@ -235,6 +235,23 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with every call site.
+    /// Move a declaration into another module, with the imports that keep it compiling.
+    Move {
+        /// The item, by name (`snake_case`, `Session::open_text`).
+        symbol: String,
+        /// The target module's file, e.g. `crates/x/src/fixture.rs`. It must already exist.
+        #[arg(long = "to")]
+        to: String,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the move instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
         symbol: String,
@@ -518,6 +535,13 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
+        Commands::Move {
+            symbol,
+            to,
+            path,
+            apply,
+            force,
+        } => run_move_cli(remote, symbol, to, path, apply, force).await,
         Commands::ChangeSignature {
             symbol,
             params,
@@ -2069,6 +2093,32 @@ async fn run_schema_rename_cli(
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+async fn run_move_cli(
+    remote: SocketAddr,
+    symbol: String,
+    to: String,
+    path: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args =
+        serde_json::json!({ "symbol": symbol, "to": to, "apply": apply, "force": force });
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_move", args).await?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");

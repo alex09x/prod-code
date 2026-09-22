@@ -199,6 +199,23 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_move".to_string(),
+            description: "Move a declaration (function, struct, enum, trait, const) into another module, with the imports that keep every user of it compiling. The item travels whole — signature, body, doc comment, attributes — is cut from its file and appended to the target; every file the analyzer lists as using it has its `use` rewritten (a grouped import keeps its other names) and any path-qualified reference requalified. The target module must already exist and be declared by its parent: this does not create modules. Only the ordinary crate layout is understood (src/a.rs, src/a/mod.rs); a file reached through #[path] is named and left alone. The whole change is type-checked in one overlay first, so a move that would not compile — the item uses something private to the module it left, the target already has that name — is reported rather than written. Nothing is written without `apply`. Rust only; re-run your formatter afterwards."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the item (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line of the declaration" },
+                    "character": { "type": "integer", "description": "1-based column of the declaration" },
+                    "to": { "type": "string", "description": "The target module's file, e.g. `crates/x/src/fixture.rs`" },
+                    "apply": { "type": "boolean", "description": "Write the move (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["to"]
+            }),
+        },
+        McpTool {
             name: "code_change_signature".to_string(),
             description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`; changing the return type is not supported. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1532,6 +1549,46 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_move" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or `symbol`)")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument (or `symbol`)")? as u32;
+            let character =
+                args.get("character")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'character' argument (or `symbol`)")? as u32;
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .context("Missing 'to' argument: the target module's file")?;
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let target = resolve_file_path(workspace_root, to);
+            let moved = crate::move_item::move_item(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                &target,
+                apply,
+                force,
+            )
+            .await?;
+            let clean = moved.diagnostics.is_empty();
+            let text = moved.render(6000);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_change_signature" => {
             let path_str = args
                 .get("path")
@@ -1991,6 +2048,7 @@ const NAMES_A_SYMBOL: &[&str] = &["code_generate_fixture"];
 const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_slice",
     "code_change_signature",
+    "code_move",
     "code_definition",
     "code_references",
     "code_hover",
