@@ -25,11 +25,29 @@ pub struct GenericLspConfig {
     pub env: HashMap<String, String>,
     /// Working directory for the server.
     pub working_dir: Option<PathBuf>,
-    /// Idle timeout duration before shutting down an inactive server.
-    pub idle_timeout: Option<Duration>,
     /// `initializationOptions` sent with the LSP `initialize` request.
     pub initialization_options: Option<serde_json::Value>,
+    /// How long to wait for an answer before giving up on a request. Servers differ by more
+    /// than an order of magnitude — a formatter answers instantly, a type checker on a cold
+    /// project does not — so this is per server rather than one number for all of them.
+    pub request_timeout: Duration,
 }
+
+impl Default for GenericLspConfig {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            args: Vec::new(),
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        }
+    }
+}
+
+/// What a request waits when the configuration says nothing.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The native TypeScript 7 compiler binary, which doubles as the language server
 /// (`tsc --lsp --stdio`): `tsgo` on PATH, or the platform package under the global
@@ -126,8 +144,8 @@ impl GenericLspConfig {
             args,
             env: HashMap::new(),
             working_dir: None,
-            idle_timeout: Some(Duration::from_secs(600)),
             initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
@@ -144,8 +162,8 @@ impl GenericLspConfig {
             ],
             env: HashMap::new(),
             working_dir: None,
-            idle_timeout: Some(Duration::from_secs(600)),
             initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
@@ -164,8 +182,8 @@ impl GenericLspConfig {
             args,
             env: HashMap::new(),
             working_dir: None,
-            idle_timeout: Some(Duration::from_secs(600)),
             initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
@@ -208,8 +226,8 @@ impl GenericLspConfig {
             args,
             env: HashMap::new(),
             working_dir: None,
-            idle_timeout: Some(Duration::from_secs(600)),
             initialization_options,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 }
@@ -699,7 +717,7 @@ impl GenericLspEngine {
 
         Self::write_frame_raw(&self.stdin, &payload).await?;
 
-        match tokio::time::timeout(Duration::from_secs(30), rx).await {
+        match tokio::time::timeout(self.config.request_timeout, rx).await {
             Ok(Ok(val)) => Ok(val),
             Ok(Err(_)) => anyhow::bail!("LSP request channel dropped unexpectedly"),
             Err(_) => {

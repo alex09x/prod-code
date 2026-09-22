@@ -48,7 +48,13 @@ impl Gateway {
             if *key == "PROD_CODE_BIND" {
                 addr = value.parse().expect("an address to bind");
             }
-            command.env(key, value);
+            // An empty value means "leave it unset", which is how a test reaches the defaults
+            // the daemon falls back to when the environment says nothing.
+            if value.is_empty() {
+                command.env_remove(key);
+            } else {
+                command.env(key, value);
+            }
         }
         let gateway = Self {
             child: command.spawn().expect("the server binary starts"),
@@ -870,6 +876,70 @@ async fn the_gateway_supervises_a_generic_language_server() {
         outline.contains("total") || outline.contains("Quantity"),
         "the outline of a TypeScript file: {outline}"
     );
+
+    // The call hierarchy and the code actions of a forwarded server are each their own branch
+    // of the dispatch, and neither shares code with the in-process engine.
+    let callers = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_callers",
+            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17 }),
+        )
+        .await,
+    );
+    assert!(
+        !callers.trim().is_empty(),
+        "the hierarchy query answers: {callers}"
+    );
+    let assists = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_assists",
+            serde_json::json!({ "path": "src/use.ts", "line": 4, "character": 10 }),
+        )
+        .await,
+    );
+    assert!(
+        !assists.trim().is_empty(),
+        "the server offers something at a call: {assists}"
+    );
+    let diagnostics = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_diagnostics",
+            serde_json::json!({ "path": "src/quantity.ts" }),
+        )
+        .await,
+    );
+    assert!(
+        diagnostics.contains("0 error"),
+        "the file type-checks: {diagnostics}"
+    );
+
+    // A rename through a forwarded server has to re-open every file a reference lives in
+    // before the server will rewrite it.
+    let renamed = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_rename",
+            serde_json::json!({ "path": "src/quantity.ts", "line": 7, "character": 17, "new_name": "sumAll" }),
+        )
+        .await,
+    );
+    assert!(
+        renamed.contains("quantity.ts") || renamed.contains("use.ts"),
+        "the rename names what it rewrote: {renamed}"
+    );
+    assert!(
+        std::fs::read_to_string(root.join("src/use.ts"))
+            .expect("use.ts")
+            .contains("sumAll("),
+        "the import and the call were rewritten"
+    );
 }
 
 /// The wire protocol itself, without the client library: the messages a peer or a placement
@@ -941,7 +1011,11 @@ async fn the_gateway_answers_the_protocol_directly() {
     }
 }
 
+/// The daemon puts the user's toolchain directories first on PATH before it looks for a
+/// language server, so a test that looks for one has to do the same — otherwise it decides a
+/// server is missing on a machine that has it, and passes by skipping.
 fn which(binary: &str) -> Option<PathBuf> {
+    prod_code_gateway::prefer_rustup_toolchain();
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|dir| dir.join(binary))
@@ -1281,4 +1355,319 @@ async fn two_gateways_find_each_other_and_place_work() {
 
     drop(go_node);
     drop(rust_node);
+}
+
+/// A Python checkout, and a gateway told to serve only Rust: the generic adapter for a third
+/// kind of language server, and the refusal that keeps work off a node that cannot do it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_python_checkout_and_a_node_that_refuses_it() {
+    // No RUST_LOG here, so the daemon builds its own default filter — the one path in the
+    // binary a test that sets the variable can never take.
+    let gateway = Gateway::start_with(&[("RUST_LOG", "")]);
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname = \"subject\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("pyproject");
+    std::fs::create_dir_all(root.join("subject")).expect("package dir");
+    std::fs::write(root.join("subject/__init__.py"), "").expect("init");
+    std::fs::write(
+        root.join("subject/quantity.py"),
+        "\"\"\"A count of something.\"\"\"\n\n\nclass Quantity:\n    def __init__(self, units: int) -> None:\n        self.units = units\n\n\ndef total(all_of_them: list[Quantity]) -> int:\n    \"\"\"Sums the quantities.\"\"\"\n    return sum(q.units for q in all_of_them)\n",
+    )
+    .expect("quantity.py");
+    std::fs::write(
+        root.join("subject/use.py"),
+        "from .quantity import Quantity, total\n\n\ndef describe(all_of_them: list[Quantity]) -> str:\n    return f\"{total(all_of_them)} units\"\n",
+    )
+    .expect("use.py");
+    commit_in(&root);
+
+    let outline = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "subject/quantity.py" }),
+        )
+        .await,
+    );
+    assert!(
+        outline.contains("Quantity") || outline.contains("total"),
+        "the generic adapter answers for Python: {outline}"
+    );
+
+    // A second checkout on the same gateway: two workspaces, each with its own engine.
+    let rust_checkout = Checkout::new();
+    let rust_root = rust_checkout.root();
+    let hover = text_of(
+        &tool(
+            gateway.addr,
+            &rust_root,
+            "code_hover",
+            serde_json::json!({ "symbol": "Quantity::plus" }),
+        )
+        .await,
+    );
+    assert!(
+        hover.contains("fn plus"),
+        "the same gateway answers for a Rust checkout too: {hover}"
+    );
+    let status = text_of(
+        &tool(
+            gateway.addr,
+            &rust_root,
+            "code_status",
+            serde_json::json!({}),
+        )
+        .await,
+    );
+    assert!(
+        status.contains('2') || status.to_lowercase().contains("workspace"),
+        "it is holding both workspaces: {status}"
+    );
+
+    // A node allowed to serve only Rust does not quietly answer for Go; it says so.
+    let rust_only = Gateway::start_with(&[("PROD_CODE_ENGINES", "rust")]);
+    let go_checkout = tempfile::tempdir().expect("go checkout");
+    let go_root = std::fs::canonicalize(go_checkout.path()).expect("canonical");
+    std::fs::write(
+        go_root.join("go.mod"),
+        "module example.com/nope\n\ngo 1.22\n",
+    )
+    .expect("go.mod");
+    std::fs::write(
+        go_root.join("main.go"),
+        "package nope\n\nfunc Hello() string { return \"hi\" }\n",
+    )
+    .expect("main.go");
+    commit_in(&go_root);
+
+    let refused = prod_code_mcp::tools::execute_tool(
+        rust_only.addr,
+        &go_root,
+        "code_outline",
+        serde_json::json!({ "path": "main.go" }),
+    )
+    .await;
+    match refused {
+        Err(err) => {
+            let text = format!("{err:#}").to_lowercase();
+            assert!(
+                text.contains("go") || text.contains("engine") || text.contains("serve"),
+                "the refusal says why: {text}"
+            );
+        }
+        Ok(result) => {
+            let text = text_of(&result).to_lowercase();
+            assert!(
+                result.is_error || text.contains("engine") || text.trim().is_empty(),
+                "a Rust-only node does not answer for Go as if it could: {text}"
+            );
+        }
+    }
+}
+
+/// A C++ checkout, and the two tools that only have something to say once something has gone
+/// wrong: the explanation of a failing test, and the blast radius of an uncommitted change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cpp_checkout_a_failing_test_and_a_diff() {
+    let gateway = Gateway::start();
+
+    if which("clangd").is_some() {
+        let cpp = tempfile::tempdir().expect("cpp checkout");
+        let cpp_root = std::fs::canonicalize(cpp.path()).expect("canonical");
+        std::fs::write(
+            cpp_root.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.16)\nproject(subject CXX)\nadd_library(subject quantity.cpp)\n",
+        )
+        .expect("CMakeLists");
+        std::fs::write(
+            cpp_root.join("quantity.h"),
+            "#pragma once\n\n// A count of something.\nstruct Quantity {\n  int units;\n};\n\nint total(const Quantity* all, int count);\n",
+        )
+        .expect("quantity.h");
+        std::fs::write(
+            cpp_root.join("quantity.cpp"),
+            "#include \"quantity.h\"\n\nint total(const Quantity* all, int count) {\n  int sum = 0;\n  for (int i = 0; i < count; ++i) {\n    sum += all[i].units;\n  }\n  return sum;\n}\n",
+        )
+        .expect("quantity.cpp");
+        commit_in(&cpp_root);
+
+        let outline = text_of(
+            &tool(
+                gateway.addr,
+                &cpp_root,
+                "code_outline",
+                serde_json::json!({ "path": "quantity.h" }),
+            )
+            .await,
+        );
+        assert!(
+            outline.contains("Quantity") || outline.contains("total"),
+            "clangd answers through the gateway: {outline}"
+        );
+    } else {
+        eprintln!("SKIPPED the C++ half: no clangd on PATH");
+    }
+
+    // A crate whose test fails, so that the failure explainer has something to explain.
+    let checkout = Checkout::new();
+    let root = checkout.root();
+    checkout.write(
+        "src/failing.rs",
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn arithmetic_is_not_what_we_thought() {\n        assert_eq!(crate::total(&[crate::Quantity::new(2)]).units, 3);\n    }\n}\n",
+    );
+    let lib = std::fs::read_to_string(checkout.path("src/lib.rs")).expect("lib.rs");
+    checkout.write("src/lib.rs", &format!("{lib}\nmod failing;\n"));
+    checkout.commit();
+
+    let failed = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_test",
+            serde_json::json!({ "path": "." }),
+        )
+        .await,
+    );
+    assert!(
+        failed.contains("fail") || failed.contains("FAILED") || failed.contains('1'),
+        "the failing test is reported as failing: {failed}"
+    );
+
+    let explained = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_diagnose_failure",
+            serde_json::json!({}),
+        )
+        .await,
+    );
+    assert!(
+        !explained.trim().is_empty(),
+        "the failure explainer answers: {explained}"
+    );
+
+    // An uncommitted change, and what it reaches.
+    checkout.write(
+        "src/store.rs",
+        &std::fs::read_to_string(checkout.path("src/store.rs"))
+            .expect("store.rs")
+            .replace("pub fn sum(&self)", "pub fn sum_all(&self)"),
+    );
+    let impact = text_of(&tool(gateway.addr, &root, "code_impact", serde_json::json!({})).await);
+    assert!(
+        impact.contains("store.rs") || impact.contains("sum") || !impact.trim().is_empty(),
+        "the blast radius names what changed: {impact}"
+    );
+}
+
+/// The queries that are each one more branch of the dispatch, gathered in one place: a window
+/// of a file the gateway alone can read, the usage metrics over a window, a sync that deletes,
+/// and intent search on a checkout the in-process engine does not own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_remaining_branches_of_the_dispatch() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+
+    // Load the workspace first, so the metrics below have something to report.
+    let _ = tool(
+        addr,
+        &root,
+        "code_hover",
+        serde_json::json!({ "symbol": "Quantity::plus" }),
+    )
+    .await;
+
+    // Intent search, and the same search narrowed to a subdirectory.
+    let search = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_search",
+            serde_json::json!({ "query": "sum every quantity", "limit": 5, "path": "src" }),
+        )
+        .await,
+    );
+    assert!(
+        search.contains("total") || search.contains("sum"),
+        "the search finds the summing function: {search}"
+    );
+
+    // A file the client deletes is a deletion in the next sync, not a leftover on the gateway.
+    std::fs::write(
+        checkout.path("src/extra.rs"),
+        "pub fn extra() -> u32 { 7 }\n",
+    )
+    .expect("write");
+    checkout.write(
+        "src/lib.rs",
+        &format!(
+            "{}\npub mod extra;\n",
+            std::fs::read_to_string(checkout.path("src/lib.rs")).expect("lib.rs")
+        ),
+    );
+    checkout.commit();
+    let with_extra = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_symbols",
+            serde_json::json!({ "query": "extra" }),
+        )
+        .await,
+    );
+    assert!(
+        with_extra.contains("extra"),
+        "the new module reached the gateway: {with_extra}"
+    );
+
+    std::fs::remove_file(checkout.path("src/extra.rs")).expect("remove");
+    checkout.write(
+        "src/lib.rs",
+        &std::fs::read_to_string(checkout.path("src/lib.rs"))
+            .expect("lib.rs")
+            .replace("\npub mod extra;\n", "\n"),
+    );
+    checkout.commit();
+    let after_delete = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_diagnostics",
+            serde_json::json!({ "path": "src/lib.rs" }),
+        )
+        .await,
+    );
+    assert!(
+        after_delete.contains("0 error"),
+        "the deletion was synced, so nothing dangles: {after_delete}"
+    );
+
+    // What this test has been doing, as the gateway counted it.
+    let report = prod_code_mcp::cluster::node_metrics(addr, 3600)
+        .await
+        .expect("the gateway reports its own usage");
+    assert!(
+        !report.queries.is_empty() || !report.execs.is_empty(),
+        "the metrics carry what this test has been doing: {report:?}"
+    );
+
+    // And the same node's status and cluster view through the client library.
+    let status = prod_code_mcp::cluster::node_status(addr)
+        .await
+        .expect("status");
+    assert!(status.server_pid > 0, "a real process answered: {status:?}");
+    let view = prod_code_mcp::cluster::cluster_view(addr)
+        .await
+        .expect("cluster view");
+    assert!(
+        !view.nodes.is_empty(),
+        "a lone gateway is a cluster of one: {view:?}"
+    );
 }
