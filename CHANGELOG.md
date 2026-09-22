@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- Change a declared type and see the whole job first (roadmap 7.1.4): `code_migrate_type` (MCP)
+  and `prod-code migrate-type <file> --line N --character C --to <Type>` rewrite the declaration
+  in memory — a struct field, a parameter, a return type or an annotated `let` — type-check the
+  workspace in one overlay, and report every site the new type does not fit, grouped by file
+  with the line of source at each. Where an error is exactly the old type meeting the new one,
+  the report says what conversion would fix that site; it does not write it. Diagnostics that
+  land on a `#[derive(…)]` line are counted separately, because the analyzer reports inside a
+  derive it cannot expand and there is nothing at those positions to edit. `apply` writes the
+  declaration alone and refuses while any site remains. This is the first half of a migration,
+  not an automatic one, and says so.
 - Promote an expression to a parameter (roadmap 7.1.2): `code_extract_parameter` (MCP) and
   `prod-code extract-parameter <file> <line> <col> --to <line>:<col> --name limit` take an
   expression out of a function body and make it a parameter, passing what the body used to say

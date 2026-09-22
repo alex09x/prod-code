@@ -1412,3 +1412,56 @@ async fn cli_moves_a_declaration_to_another_module() {
     );
     assert!(text.contains("nothing was written"), "{text}");
 }
+
+#[tokio::test]
+async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct Request {\n    pub timeout_secs: u64,\n}\n\npub fn use_it(r: &Request) -> u64 {\n    r.timeout_secs\n}\n",
+        ),
+    ]);
+
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+            { "severity": 1, "code": "E0308", "message": "expected u64, found Duration",
+              "range": { "start": { "line": 5, "character": 4 }, "end": { "line": 5, "character": 18 } } }
+        ] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    // A field is rarely in the workspace symbol index, so this is the position form.
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "migrate-type",
+            "src/lib.rs",
+            "--line",
+            "2",
+            "--character",
+            "9",
+            "--to",
+            "std::time::Duration",
+        ],
+    )
+    .await;
+    // Sites that do not fit are reported as an error exit, because they are work to do.
+    assert!(!out.status.success());
+    let text = stdout_of(&out);
+    assert!(text.contains("was: `u64`"), "{text}");
+    assert!(text.contains("now: `std::time::Duration`"), "{text}");
+    assert!(text.contains("1 site(s) in 1 file(s)"), "{text}");
+    assert!(text.contains("r.timeout_secs"), "{text}");
+    assert!(text.contains("they are the migration"), "{text}");
+    assert!(
+        ws.read("src/lib.rs").contains("pub timeout_secs: u64,"),
+        "nothing is written without --apply"
+    );
+}

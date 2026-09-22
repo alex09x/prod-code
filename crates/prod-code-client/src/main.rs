@@ -235,6 +235,30 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with every call site.
+    /// Change a declared type and report every site that no longer fits.
+    MigrateType {
+        /// The declaration by name, or a file with `--line`. A struct field is rarely in the
+        /// workspace symbol index, so give it a position.
+        symbol: String,
+        /// The type it should become.
+        #[arg(long = "to")]
+        to: String,
+        /// 1-based line, when the first argument is a file path.
+        #[arg(long)]
+        line: Option<u32>,
+        /// 1-based column of the declared name, with `--line`.
+        #[arg(long, default_value_t = 1)]
+        character: u32,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the declaration instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write the declaration while sites still do not fit.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a function body into a parameter, passed at every call site.
     ExtractParameter {
         /// The file the selection is in.
@@ -585,6 +609,15 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
+        Commands::MigrateType {
+            symbol,
+            to,
+            line,
+            character,
+            path,
+            apply,
+            force,
+        } => run_migrate_type_cli(remote, symbol, to, line, character, path, apply, force).await,
         Commands::ExtractParameter {
             file,
             line,
@@ -2180,6 +2213,44 @@ async fn run_schema_rename_cli(
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_migrate_type_cli(
+    remote: SocketAddr,
+    symbol: String,
+    to: String,
+    line: Option<u32>,
+    character: u32,
+    path: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({ "to": to, "apply": apply, "force": force });
+    match line {
+        // A position: the first argument is the file, not a name to resolve.
+        Some(line) => {
+            args["path"] = serde_json::Value::String(symbol);
+            args["line"] = serde_json::Value::from(line);
+            args["character"] = serde_json::Value::from(character);
+        }
+        None => args["symbol"] = serde_json::Value::String(symbol),
+    }
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_migrate_type", args).await?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");

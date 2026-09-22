@@ -224,9 +224,10 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     by asking the running analyzer for its actions at that kind of position; the assist id named
     is what it answered. What is left to build is four items, listed under **Still to build**,
     plus the ones marked *not applicable to Rust*.
-  - **Still to build**, in the order they are worth building: `type_migration`, `extract_field`,
-    and the workspace-wide half of `encapsulate_field` (rewriting every direct field access).
-    `introduce_parameter_object` and `extract_parameter` shipped 2026-09-22. Nothing in rust-analyzer offers
+  - **Still to build**: `extract_field`, the workspace-wide half of `encapsulate_field`
+    (rewriting every direct field access), and the automatic half of `type_migration` (the
+    constraint graph and conversion injection). `introduce_parameter_object`,
+    `extract_parameter` and the reporting half of `type_migration` shipped 2026-09-22. Nothing in rust-analyzer offers
     these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
     the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
     overlay before writing.
@@ -287,7 +288,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
 
   - **7.1.4. Data Flow & Advanced Type-System Refactorings**:
-    - `refactor.type_migration(path, symbol, target_type)`:
+    - [~] `refactor.type_migration(path, symbol, target_type)` — half of it shipped 2026-09-22 for Rust: `code_migrate_type` / `prod-code migrate-type` rewrite the declared type (field, parameter, return type, annotated `let`) in memory, type-check the workspace in one overlay, and report every site that no longer fits with its source line, suggesting the conversion where the error names both types. The whole-program constraint graph and automatic conversion injection are NOT done: the report is the deliverable, and `apply` writes only the declaration, refusing while sites remain.
       - Whole-program type migration: changes a symbol's type (e.g. `u32` -> `u64`, `String` -> `Uuid`, `T` -> `Option<T>` or `Result<T, E>`).
       - Solves whole-program data-flow constraint graph: computes transitively affected variables, return signatures, function parameters, and call sites.
       - Automatically injects necessary type conversions (`.into()`, `Some(...)`, `?`) or returns a guided conflict dossier for ambiguous coercions.

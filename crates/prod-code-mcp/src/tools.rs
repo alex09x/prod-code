@@ -199,6 +199,23 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_migrate_type".to_string(),
+            description: "Change a declared type and report the whole shape of what that breaks, before any of it is done. Give the declaration's position (a struct field, a function parameter, a return type, or an annotated `let`) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. The errors that come back are not a failure, they are the work list: each is reported with its file, line and the source at that line, grouped by file. Where an error is exactly the old type meeting the new one, the report says what conversion would fix that site — it says it and does not write it, because a wrong conversion inserted at every site is worse than none. `apply` writes the declaration alone and refuses while any site remains, so a half-migrated type is never written by accident. This is the first half of a migration, not an automatic one. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the symbol" },
+                    "line": { "type": "integer", "description": "1-based line of the declared name" },
+                    "character": { "type": "integer", "description": "1-based column of the declared name" },
+                    "to": { "type": "string", "description": "The type it should become, spelled as it will be written" },
+                    "apply": { "type": "boolean", "description": "Write the declaration (default false: report only)" },
+                    "force": { "type": "boolean", "description": "Write the declaration while sites still do not fit" }
+                },
+                "required": ["to"]
+            }),
+        },
+        McpTool {
             name: "code_extract_parameter".to_string(),
             description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the analyzer when it gives one in a shape this can read, otherwise pass `type`. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports. Rust only."
                 .to_string(),
@@ -1593,6 +1610,45 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
+        "code_migrate_type" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument (or `symbol`)")?;
+            let line = args
+                .get("line")
+                .and_then(|v| v.as_u64())
+                .context("Missing 'line' argument (or `symbol`)")? as u32;
+            let character =
+                args.get("character")
+                    .and_then(|v| v.as_u64())
+                    .context("Missing 'character' argument (or `symbol`)")? as u32;
+            let to = args
+                .get("to")
+                .and_then(|v| v.as_str())
+                .context("Missing 'to' argument: the type it should become")?;
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let done = crate::type_migration::migrate(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+                to,
+                apply,
+                force,
+            )
+            .await?;
+            let clean = done.sites.is_empty();
+            let text = done.render(40);
+            Ok(if clean {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_extract_parameter" => {
             let path_str = args
                 .get("path")
@@ -2196,6 +2252,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_change_signature",
     "code_move",
     "code_introduce_parameter_object",
+    "code_migrate_type",
     "code_definition",
     "code_references",
     "code_hover",

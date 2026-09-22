@@ -1192,3 +1192,134 @@ async fn a_value_use_gets_no_argument_and_a_selection_in_the_signature_is_refuse
     .expect_err("a selection in the signature is not an expression in the body");
     assert!(format!("{err:#}").contains("in the signature"), "{err:#}");
 }
+
+/// A type migration is a report, not a rewrite: the declaration moves, everything that no
+/// longer fits is listed with the line of source at each site, and the two shapes of error
+/// that name both types get a suggestion. Nothing is written, and `apply` refuses while any
+/// site remains — a half-migrated type is worse than an unmigrated one.
+#[tokio::test]
+async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "#[derive(Debug, Clone)]\npub struct Request {\n    pub timeout_secs: u64,\n}\n\npub fn use_it(r: &Request) -> u64 {\n    r.timeout_secs\n}\n",
+    );
+    commit(&ws);
+
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+            { "severity": 1, "code": "E0308", "message": "expected u64, found Duration",
+              "range": { "start": { "line": 6, "character": 4 }, "end": { "line": 6, "character": 18 } } },
+            // The same derive, reported once per expansion, on a line nobody can edit.
+            { "severity": 1, "code": "E0282", "message": "type annotations needed",
+              "range": { "start": { "line": 0, "character": 2 }, "end": { "line": 0, "character": 3 } } },
+            { "severity": 1, "code": "E0282", "message": "type annotations needed",
+              "range": { "start": { "line": 0, "character": 2 }, "end": { "line": 0, "character": 3 } } },
+            { "severity": 2, "code": "unused", "message": "unused variable",
+              "range": { "start": { "line": 5, "character": 4 }, "end": { "line": 5, "character": 5 } } }
+        ] }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = match prod_code_mcp::type_migration::migrate(
+        remote,
+        &root,
+        &lib,
+        3,
+        9,
+        "std::time::Duration",
+        false,
+        false,
+    )
+    .await
+    {
+        Ok(done) => done,
+        Err(err) => panic!("the migration runs: {err:#}"),
+    };
+
+    assert_eq!(done.symbol, "timeout_secs");
+    assert_eq!(done.was, "u64");
+    assert_eq!(done.now, "std::time::Duration");
+    assert_eq!(
+        done.sites.len(),
+        1,
+        "warnings are not sites: {:?}",
+        done.sites
+    );
+    assert_eq!(
+        done.in_attributes, 1,
+        "the repeated derive diagnostic is one position, set aside"
+    );
+    let site = &done.sites[0];
+    assert_eq!(site.line, 7);
+    assert_eq!(site.source, "r.timeout_secs");
+    assert_eq!(
+        site.suggestion.as_deref(),
+        Some(
+            "this place still wants `u64` and is now given `Duration`; migrate it too, or convert back here"
+        )
+    );
+
+    let text = done.render(40);
+    assert!(text.contains("1 site(s) in 1 file(s)"), "{text}");
+    assert!(text.contains("they are the migration"), "{text}");
+    assert!(text.contains("landed on a `#[derive(…)]` line"), "{text}");
+
+    let new_text = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("lib.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the declaration was rewritten");
+    assert!(
+        new_text.contains("pub timeout_secs: std::time::Duration,"),
+        "{new_text}"
+    );
+    assert!(ws.read("src/lib.rs").contains("pub timeout_secs: u64,"));
+
+    let err = prod_code_mcp::type_migration::migrate(
+        remote,
+        &root,
+        &lib,
+        3,
+        9,
+        "std::time::Duration",
+        true,
+        false,
+    )
+    .await
+    .expect_err("apply refuses while a site does not fit");
+    assert!(
+        format!("{err:#}").contains("1 site(s) do not fit"),
+        "{err:#}"
+    );
+
+    let forced = prod_code_mcp::type_migration::migrate(
+        remote,
+        &root,
+        &lib,
+        3,
+        9,
+        "std::time::Duration",
+        true,
+        true,
+    )
+    .await
+    .expect("force writes the declaration alone");
+    assert!(forced.applied);
+    assert!(
+        ws.read("src/lib.rs")
+            .contains("pub timeout_secs: std::time::Duration,"),
+        "the declaration is written and the site is not"
+    );
+    assert!(ws.read("src/lib.rs").contains("r.timeout_secs"));
+}
