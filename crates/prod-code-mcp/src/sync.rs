@@ -74,7 +74,10 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     }
     while dir.starts_with(&canonical_root) && dir != canonical_root {
         if let Some(engine) = expected_engine(&dir) {
-            if Some(engine) == root_engine {
+            // Same language is not the same project. A Cargo workspace answers for its
+            // members; a crate it excludes belongs to no project the root analyzer loaded, so
+            // it needs one of its own or every query in it comes back null.
+            if Some(engine) == root_engine && !excluded_from_root_workspace(&canonical_root, &dir) {
                 break;
             }
             let rel = dir
@@ -95,6 +98,109 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
         }
     }
     (None, root_engine)
+}
+
+/// Is `dir` a Cargo crate that the workspace at `root` does not own?
+///
+/// Reads the root manifest's `[workspace]` table: a directory listed under `exclude` (by prefix)
+/// or absent from a `members` list that has no glob covering it is not part of the workspace's
+/// project model, however much it looks like one from the outside.
+fn excluded_from_root_workspace(root: &Path, dir: &Path) -> bool {
+    if !dir.join("Cargo.toml").is_file() {
+        return false;
+    }
+    let Ok(manifest) = std::fs::read_to_string(root.join("Cargo.toml")) else {
+        return false;
+    };
+    let Ok(rel) = dir.strip_prefix(root) else {
+        return false;
+    };
+    let rel = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    if rel.is_empty() {
+        return false;
+    }
+    let (members, excludes) = workspace_lists(&manifest);
+    if excludes
+        .iter()
+        .any(|e| rel == *e || rel.starts_with(&format!("{e}/")))
+    {
+        return true;
+    }
+    // No `members` at all: the manifest is a plain package, and a crate below it is its own.
+    if members.is_empty() {
+        return !manifest.contains("[workspace]");
+    }
+    !members.iter().any(|m| match m.strip_suffix("/*") {
+        Some(prefix) => {
+            rel.starts_with(&format!("{prefix}/")) && rel[prefix.len() + 1..].find('/').is_none()
+        }
+        None => rel == *m,
+    })
+}
+
+/// The `members` and `exclude` entries of a root manifest's `[workspace]` table, read without a
+/// TOML parser: both are arrays of plain strings, and this only has to recognise them.
+fn workspace_lists(manifest: &str) -> (Vec<String>, Vec<String>) {
+    let mut members = Vec::new();
+    let mut excludes = Vec::new();
+    let mut target: Option<&mut Vec<String>> = None;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            target = None;
+        }
+        let start = |key: &str| {
+            trimmed
+                .strip_prefix(key)
+                .map(|rest| rest.trim_start().starts_with('='))
+                .unwrap_or(false)
+        };
+        if start("members") {
+            members.extend(entries_on(trimmed));
+            target = if trimmed.trim_end().ends_with(']') {
+                None
+            } else {
+                Some(&mut members)
+            };
+            continue;
+        }
+        if start("exclude") {
+            excludes.extend(entries_on(trimmed));
+            target = if trimmed.trim_end().ends_with(']') {
+                None
+            } else {
+                Some(&mut excludes)
+            };
+            continue;
+        }
+        if let Some(list) = target.as_deref_mut() {
+            list.extend(entries_on(trimmed));
+            if trimmed.starts_with(']') || trimmed.ends_with(']') {
+                target = None;
+            }
+        }
+    }
+    (members, excludes)
+}
+
+/// The quoted strings on one line of a TOML array.
+fn entries_on(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('"') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('"') else { break };
+        let value = after[..close].trim_matches('/').to_string();
+        if !value.is_empty() {
+            out.push(value);
+        }
+        rest = &after[close + 1..];
+    }
+    out
 }
 
 pub fn expected_engine(root: &Path) -> Option<&'static str> {
@@ -2008,5 +2114,119 @@ mod tests {
         assert_eq!(remaining.files.len(), 1);
         assert_eq!(remaining.files[0].relative_path, "src/b.rs");
         clear_sync_cache(root);
+    }
+}
+
+#[cfg(test)]
+mod workspace_membership_tests {
+    use super::*;
+
+    const ROOT: &str = r#"[workspace]
+resolver = "2"
+members = [
+    "crates/prod-code-protocol",
+    "crates/prod-code-mcp",
+]
+# a fixture is a test bed, not a member
+exclude = ["fixtures"]
+
+[workspace.package]
+version = "0.2.2"
+"#;
+
+    #[test]
+    fn the_lists_are_read_across_lines_and_one_liners() {
+        let (members, excludes) = workspace_lists(ROOT);
+        assert_eq!(
+            members,
+            ["crates/prod-code-protocol", "crates/prod-code-mcp"]
+        );
+        assert_eq!(excludes, ["fixtures"]);
+
+        let (members, excludes) =
+            workspace_lists("[workspace]\nmembers = [\"a\", \"b/*\"]\nexclude = [\"vendor\"]\n");
+        assert_eq!(members, ["a", "b/*"]);
+        assert_eq!(excludes, ["vendor"]);
+    }
+
+    #[test]
+    fn a_member_belongs_to_the_workspace_and_an_excluded_crate_does_not() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), ROOT).expect("root manifest");
+        for rel in [
+            "crates/prod-code-mcp",
+            "fixtures/polyglot-order/core",
+            "examples/demo",
+        ] {
+            std::fs::create_dir_all(root.join(rel)).expect("dirs");
+            std::fs::write(
+                root.join(rel).join("Cargo.toml"),
+                "[package]\nname = \"x\"\n",
+            )
+            .expect("crate manifest");
+        }
+
+        assert!(
+            !excluded_from_root_workspace(root, &root.join("crates/prod-code-mcp")),
+            "a member belongs to the workspace and must stay with it"
+        );
+        assert!(
+            excluded_from_root_workspace(root, &root.join("fixtures/polyglot-order/core")),
+            "a crate under an excluded directory is its own project"
+        );
+        assert!(
+            excluded_from_root_workspace(root, &root.join("examples/demo")),
+            "and so is one the members list simply does not mention"
+        );
+        assert!(
+            !excluded_from_root_workspace(root, &root.join("crates")),
+            "a directory with no manifest of its own is not a crate at all"
+        );
+    }
+
+    #[test]
+    fn a_glob_member_covers_its_children_and_only_them() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .expect("root manifest");
+        for rel in ["crates/one", "crates/one/nested", "other"] {
+            std::fs::create_dir_all(root.join(rel)).expect("dirs");
+            std::fs::write(
+                root.join(rel).join("Cargo.toml"),
+                "[package]\nname = \"x\"\n",
+            )
+            .expect("crate manifest");
+        }
+        assert!(!excluded_from_root_workspace(
+            root,
+            &root.join("crates/one")
+        ));
+        assert!(
+            excluded_from_root_workspace(root, &root.join("crates/one/nested")),
+            "`crates/*` is one level, not a subtree"
+        );
+        assert!(excluded_from_root_workspace(root, &root.join("other")));
+    }
+
+    #[test]
+    fn a_plain_package_has_no_workspace_to_belong_to() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"solo\"\n").expect("manifest");
+        std::fs::create_dir_all(root.join("sub")).expect("dirs");
+        std::fs::write(
+            root.join("sub").join("Cargo.toml"),
+            "[package]\nname = \"sub\"\n",
+        )
+        .expect("manifest");
+        assert!(
+            excluded_from_root_workspace(root, &root.join("sub")),
+            "a crate under a plain package answers for itself"
+        );
     }
 }
