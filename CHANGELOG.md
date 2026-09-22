@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Added
+- Bundle parameters into a struct (roadmap 7.1.2): `code_introduce_parameter_object` (MCP) and
+  `prod-code parameter-object <symbol> --param a --param b --name Opts` take several of a
+  function's parameters and make them fields of a new `pub struct` written directly above it,
+  in declaration order and with the types the declaration gave — a single lifetime is introduced
+  when any of those types borrows. The declaration takes one parameter in place of them, every
+  use of them in the body is rewritten to reach through it at the positions the analyzer
+  reports, and every call site is rewritten in place: the bundled arguments become one struct
+  literal where the first of them was, the others stay where they were, and an argument that is
+  a closure, a method chain or a string containing a comma survives. A call site in another
+  module of the same crate gets the import; one in a file that is not a module of the crate at
+  all, such as a test, names the type in full instead. A use that is not a call with this
+  arity is named rather than mangled. The whole change is type-checked in one overlay before
+  anything is written.
+
 ### Fixed
 - **Half a second off every CLI invocation** (#56). The gateway probed for installed language
   servers on every `StatusRequest`, `Gossip`, `ClusterRequest` and placement decision, and one

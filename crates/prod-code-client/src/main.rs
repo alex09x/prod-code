@@ -235,6 +235,29 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with every call site.
+    /// Bundle several of a function's parameters into a struct, with body and call sites.
+    ParameterObject {
+        /// The function, by name (`move_item`, `Session::open_text`).
+        symbol: String,
+        /// A parameter to bundle, by the name the declaration gives it. Repeat the flag.
+        #[arg(long = "param", required = true)]
+        params: Vec<String>,
+        /// The struct's name, UpperCamelCase.
+        #[arg(long)]
+        name: String,
+        /// What the new parameter is called in the body (default: the name in snake_case).
+        #[arg(long)]
+        binding: Option<String>,
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Write the change instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Move a declaration into another module, with the imports that keep it compiling.
     Move {
         /// The item, by name (`snake_case`, `Session::open_text`).
@@ -535,6 +558,18 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_schema_rename_cli(remote, field, to, path, apply, force).await,
+        Commands::ParameterObject {
+            symbol,
+            params,
+            name,
+            binding,
+            path,
+            apply,
+            force,
+        } => {
+            run_parameter_object_cli(remote, symbol, params, name, binding, path, apply, force)
+                .await
+        }
         Commands::Move {
             symbol,
             to,
@@ -2093,6 +2128,41 @@ async fn run_schema_rename_cli(
     }
     let result =
         prod_code_mcp::tools::execute_tool(remote, &root, "code_schema_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_parameter_object_cli(
+    remote: SocketAddr,
+    symbol: String,
+    params: Vec<String>,
+    name: String,
+    binding: Option<String>,
+    path: Option<String>,
+    apply: bool,
+    force: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let mut args = serde_json::json!({
+        "symbol": symbol, "params": params, "name": name, "apply": apply, "force": force
+    });
+    if let Some(binding) = binding {
+        args["binding"] = serde_json::Value::String(binding);
+    }
+    if let Some(path) = path {
+        args["path"] = serde_json::Value::String(path);
+    }
+    let result =
+        prod_code_mcp::tools::execute_tool(remote, &root, "code_introduce_parameter_object", args)
+            .await?;
     for content in &result.content {
         let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
         println!("{text}");
