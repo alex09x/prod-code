@@ -1426,8 +1426,16 @@ async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
         ),
     ]);
 
+    // Each run pulls twice: the file on disk, which has no error, then the proposed text,
+    // where the mismatch is the migration's.
+    let pulls = std::sync::atomic::AtomicUsize::new(0);
     let gw = MockGateway::start(move |method, _| match method {
         "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic"
+            if pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 0 =>
+        {
+            serde_json::json!({ "kind": "full", "items": [] })
+        }
         "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
             { "severity": 1, "code": "E0308", "message": "expected u64, found Duration",
               "range": { "start": { "line": 5, "character": 4 }, "end": { "line": 5, "character": 18 } } }

@@ -1213,9 +1213,23 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     );
     commit(&ws);
 
+    // Each run pulls diagnostics twice: first for the file as it is on disk, where the derive
+    // the analyzer cannot type is already there once and is not the migration's (#79), then
+    // for the proposed text, where it is there twice and the second copy is.
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
         "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic"
+            if pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 0 =>
+        {
+            serde_json::json!({ "kind": "full", "items": [
+                { "severity": 1, "code": "E0282", "message": "type annotations needed",
+                  "range": { "start": { "line": 0, "character": 2 }, "end": { "line": 0, "character": 3 } } }
+            ] })
+        }
         "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+            { "severity": 1, "code": "E0282", "message": "type annotations needed",
+              "range": { "start": { "line": 0, "character": 2 }, "end": { "line": 0, "character": 3 } } },
             { "severity": 1, "code": "E0308", "message": "expected u64, found Duration",
               "range": { "start": { "line": 6, "character": 4 }, "end": { "line": 6, "character": 18 } } },
             // The same derive, reported once per expansion, on a line nobody can edit.

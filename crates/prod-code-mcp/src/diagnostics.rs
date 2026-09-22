@@ -28,6 +28,11 @@ pub struct DiagnosticsReport {
     pub errors: usize,
     pub warnings: usize,
     pub items: Vec<DocDiagnostic>,
+    /// Diagnostics the file already had on disk, before the edit under review: the same
+    /// severity, code and message on a line with the same text. They are not the edit's, so
+    /// they are neither in `items` nor counted in `errors` and `warnings`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub preexisting: Vec<DocDiagnostic>,
 }
 
 impl DiagnosticsReport {
@@ -40,6 +45,13 @@ impl DiagnosticsReport {
             "{}: {} error(s), {} warning(s)\n",
             self.file, self.errors, self.warnings
         );
+        if !self.preexisting.is_empty() {
+            out.push_str(&format!(
+                "  ({} diagnostic(s) the file already had before this edit are not counted: {})\n",
+                self.preexisting.len(),
+                preexisting_summary(&self.preexisting)
+            ));
+        }
         for d in &self.items {
             out.push_str(&format!(
                 "  {}: {}{} ({}:{}:{})\n",
@@ -59,6 +71,79 @@ impl DiagnosticsReport {
         }
         out
     }
+}
+
+/// The distinct messages among `items`, most frequent first, each with how often it occurs.
+fn preexisting_summary(items: &[DocDiagnostic]) -> String {
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    for d in items {
+        let message = format!(
+            "{}{}",
+            d.message.lines().next().unwrap_or(""),
+            d.code
+                .as_deref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default()
+        );
+        match counts.iter_mut().find(|(m, _)| *m == message) {
+            Some((_, n)) => *n += 1,
+            None => counts.push((message, 1)),
+        }
+    }
+    counts.sort_by_key(|a| std::cmp::Reverse(a.1));
+    counts
+        .iter()
+        .map(|(m, n)| format!("{n}× {m}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What makes two diagnostics the same one across an edit: lines move, so not the position,
+/// but the text of the line it is on.
+fn identity(d: &DocDiagnostic, text: &str) -> (String, Option<String>, String, String) {
+    let line = text
+        .lines()
+        .nth(d.line.saturating_sub(1) as usize)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (d.severity.clone(), d.code.clone(), d.message.clone(), line)
+}
+
+/// Moves from `report.items` to `report.preexisting` every diagnostic that `before` — the same
+/// file's diagnostics against `before_text`, the text on disk — already had. Each diagnostic
+/// before the edit accounts for at most one after it, so a second copy of an old error on a new
+/// line is still the edit's.
+fn set_aside_preexisting(
+    report: &mut DiagnosticsReport,
+    text: &str,
+    before: &DiagnosticsReport,
+    before_text: &str,
+) {
+    let mut old: HashMap<(String, Option<String>, String, String), usize> = HashMap::new();
+    for d in &before.items {
+        *old.entry(identity(d, before_text)).or_default() += 1;
+    }
+    let items = std::mem::take(&mut report.items);
+    for d in items {
+        match old.get_mut(&identity(&d, text)) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                report.preexisting.push(d);
+            }
+            _ => report.items.push(d),
+        }
+    }
+    report.errors = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "error")
+        .count();
+    report.warnings = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "warning")
+        .count();
 }
 
 /// Every symbol name in a `textDocument/documentSymbol` result (flat or hierarchical).
@@ -235,6 +320,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
         errors: items.iter().filter(|d| d.severity == "error").count(),
         warnings: items.iter().filter(|d| d.severity == "warning").count(),
         items,
+        preexisting: Vec::new(),
     }
 }
 
@@ -266,16 +352,45 @@ pub async fn validate_text(
 ) -> Result<DiagnosticsReport> {
     let mut session = LspSession::open(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
+    let params = serde_json::json!({ "textDocument": { "uri": uri } });
+    let shown = display(root, file);
+    let before = on_disk(&mut session, root, file, &shown).await;
     let result = session
-        .query_with_text(
+        .query_with_text(file, new_text, "textDocument/diagnostic", params)
+        .await?;
+    session.close().await;
+    let mut report = parse_items(&shown, &result);
+    if let Some((before, before_text)) = before {
+        set_aside_preexisting(&mut report, new_text, &before, &before_text);
+    }
+    Ok(report)
+}
+
+/// The diagnostics of `file` as it is on disk, and that text, or `None` for a file that does
+/// not exist yet. Asked before any proposed text is open in the session, so they are the
+/// checkout's and not the edit's.
+async fn on_disk(
+    session: &mut LspSession,
+    root: &Path,
+    file: &Path,
+    shown: &str,
+) -> Option<(DiagnosticsReport, String)> {
+    let abs = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let text = std::fs::read_to_string(&abs).ok()?;
+    let uri = session.uri_for(file).ok()?;
+    let result = session
+        .query(
             file,
-            new_text,
             "textDocument/diagnostic",
             serde_json::json!({ "textDocument": { "uri": uri } }),
         )
-        .await?;
-    session.close().await;
-    Ok(parse_items(&display(root, file), &result))
+        .await
+        .ok()?;
+    Some((parse_items(shown, &result), text))
 }
 
 /// Validates several proposed file contents together, the way a multi-file refactor must be
@@ -295,6 +410,15 @@ pub async fn validate_texts(
         .map(|(file, _)| file.as_path())
         .or_else(|| also_check.first().map(|p| p.as_path()));
     let mut session = LspSession::open(remote, root, hint).await?;
+    // What every file says before any proposed text is in place: an error the checkout already
+    // has is not the edit's, and a report that counts it refuses every edit to that file.
+    let mut baselines: HashMap<String, (DiagnosticsReport, String)> = HashMap::new();
+    for file in edits.iter().map(|(f, _)| f).chain(also_check) {
+        let shown = display(root, file);
+        if let Some(before) = on_disk(&mut session, root, file, &shown).await {
+            baselines.insert(shown, before);
+        }
+    }
     let mut uris = Vec::with_capacity(edits.len());
     // Symbols that the proposed texts remove or rename, with the file they vanish from: an
     // error on a line that still uses one of them gets an explaining note, because the
@@ -334,7 +458,14 @@ pub async fn validate_texts(
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
             .await?;
-        reports.push(parse_items(&display(root, file), &result));
+        let shown = display(root, file);
+        let mut report = parse_items(&shown, &result);
+        if let (Some((before, before_text)), Some(text)) =
+            (baselines.get(&shown), sources.get(&shown))
+        {
+            set_aside_preexisting(&mut report, text, before, before_text);
+        }
+        reports.push(report);
     }
     for file in also_check {
         let uri = session.uri_for(file)?;
@@ -351,10 +482,14 @@ pub async fn validate_texts(
         } else {
             root.join(file)
         };
+        let mut report = parse_items(&shown, &result);
         if let Ok(text) = std::fs::read_to_string(&abs) {
+            if let Some((before, before_text)) = baselines.get(&shown) {
+                set_aside_preexisting(&mut report, &text, before, before_text);
+            }
             sources.insert(shown.clone(), text);
         }
-        reports.push(parse_items(&shown, &result));
+        reports.push(report);
     }
     session.close().await;
     annotate_missing_symbols(&mut reports, &sources, &missing);
@@ -434,6 +569,66 @@ mod tests {
         ));
     }
 
+    fn diagnostic(severity: &str, message: &str, line: u32) -> DocDiagnostic {
+        DocDiagnostic {
+            severity: severity.to_string(),
+            code: Some("E0282".to_string()),
+            message: message.to_string(),
+            line,
+            col: 3,
+            source: None,
+            note: None,
+        }
+    }
+
+    fn report_of(items: Vec<DocDiagnostic>) -> DiagnosticsReport {
+        DiagnosticsReport {
+            file: "src/messages.rs".to_string(),
+            errors: items.iter().filter(|d| d.severity == "error").count(),
+            warnings: items.iter().filter(|d| d.severity == "warning").count(),
+            items,
+            preexisting: vec![],
+        }
+    }
+
+    #[test]
+    fn an_error_the_file_already_had_is_not_the_edits() {
+        // Two derives the analyzer cannot type on disk; the edit moves them down a line and
+        // adds a third error of the same kind, and one of its own.
+        let before_text = "#[derive(Deserialize)]\nstruct A;\n#[derive(Deserialize)]\nstruct B;\n";
+        let before = report_of(vec![
+            diagnostic("error", "type annotations needed", 1),
+            diagnostic("error", "type annotations needed", 3),
+        ]);
+        let text = "use x;\n#[derive(Deserialize)]\nstruct A;\n#[derive(Deserialize)]\nstruct B;\n\
+                    #[derive(Deserialize)]\nstruct C(u8);\nfn f() -> u8 { \"\" }\n";
+        let mut report = report_of(vec![
+            diagnostic("error", "type annotations needed", 2),
+            diagnostic("error", "type annotations needed", 4),
+            diagnostic("error", "type annotations needed", 6),
+            diagnostic("error", "expected u8, found &str", 8),
+            diagnostic("warning", "type annotations needed", 2),
+        ]);
+        set_aside_preexisting(&mut report, text, &before, before_text);
+        assert_eq!(report.preexisting.len(), 2, "{:?}", report.preexisting);
+        let lines: Vec<u32> = report.items.iter().map(|d| d.line).collect();
+        assert_eq!(
+            lines,
+            vec![6, 8, 2],
+            "a third copy and a new severity are the edit's"
+        );
+        assert_eq!((report.errors, report.warnings), (2, 1));
+        let shown = report.render();
+        assert!(
+            shown.contains("src/messages.rs: 2 error(s), 1 warning(s)"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("2 diagnostic(s) the file already had before this edit are not counted: 2× type annotations needed [E0282]"),
+            "{shown}"
+        );
+    }
+
     #[test]
     fn errors_on_lines_using_a_removed_symbol_get_a_note() {
         let mut reports = vec![DiagnosticsReport {
@@ -460,6 +655,7 @@ mod tests {
                     note: None,
                 },
             ],
+            preexisting: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -498,12 +694,14 @@ mod tests {
                 errors: 0,
                 warnings: 0,
                 items: vec![],
+                preexisting: vec![],
             },
             DiagnosticsReport {
                 file: "crates/gateway/src/workspace.rs".to_string(),
                 errors: 0,
                 warnings: 0,
                 items: vec![],
+                preexisting: vec![],
             },
         ];
         let mut sources = HashMap::new();

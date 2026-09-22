@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Fixed
+- **An error the file already had is no longer counted against an edit** (#79). The analyzer
+  reports `type annotations needed [E0282]` on every `#[derive(..., Deserialize)]` in this
+  workspace, with or without an edit — 124 of them in `prod-code-protocol/src/messages.rs` — and
+  the overlay check behind `code_validate_edit` and every write tool counted them, so an edit
+  that changed nothing was "rejected" and any refactoring touching such a file refused to write.
+  Each file's diagnostics on disk are now taken before the proposed texts are opened, and one
+  with the same severity, code and message on a line with the same text is set aside and
+  counted in the report rather than listed as the edit's. A second copy of an old error on a
+  new line is still the edit's.
 - **A write tool checks the name is where the analyzer says before rewriting a call.**
   `code_introduce_parameter_object` and `code_extract_parameter` edited the call that followed
   whatever position the analyzer reported; when that position was stale (#75) and the position
