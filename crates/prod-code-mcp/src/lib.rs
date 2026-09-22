@@ -23,6 +23,7 @@ pub mod signature;
 pub mod slice;
 pub mod sync;
 pub mod tools;
+pub mod type_migration;
 pub mod verify;
 pub mod watch;
 
