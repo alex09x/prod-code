@@ -14,106 +14,26 @@
 //! two phases are separate now, and `a_whole_file_rename_is_not_merged_with_text_edits` is
 //! what holds them apart.
 
-use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{
-    HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec, SyncProbeResponse, SyncResponse,
-    WireMessage,
-};
+use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_util::codec::Framed;
 
-/// Answers one LSP request. `method` is the JSON-RPC method, `params` its params.
-type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
-
-/// A gateway that syncs nothing, loads nothing, and answers LSP requests from `answer`.
-async fn scripted_gateway(answer: Answer) -> SocketAddr {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        loop {
-            let Ok((socket, _)) = listener.accept().await else {
-                return;
-            };
-            let answer = Arc::clone(&answer);
-            tokio::spawn(async move {
-                let _ = serve(socket, answer).await;
-            });
-        }
-    });
-    addr
+/// The checkout a test drives a tool against.
+fn workspace() -> Workspace {
+    Workspace::empty()
 }
 
-async fn serve(socket: TcpStream, answer: Answer) -> anyhow::Result<()> {
-    let mut framed = Framed::new(socket, ProdCodeCodec::new());
-    while let Some(message) = framed.next().await {
-        match message? {
-            WireMessage::SyncProbeRequest(req) => {
-                framed
-                    .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
-                        server_workspace_root: req.client_workspace_root.clone(),
-                        seeded: false,
-                        files_deleted: 0,
-                        // Nothing is missing: the gateway pretends it already has the tree, so
-                        // the test does not depend on how much the client decides to upload.
-                        missing: Vec::new(),
-                    }))
-                    .await?;
-            }
-            WireMessage::SyncRequest(req) => {
-                framed
-                    .send(WireMessage::SyncResponse(SyncResponse {
-                        server_workspace_root: req.client_workspace_root.clone(),
-                        files_updated: 0,
-                        files_deleted: 0,
-                        bytes_transferred: 0,
-                        duration_ms: 0,
-                        workspace_was_fresh: false,
-                    }))
-                    .await?;
-            }
-            WireMessage::HandshakeRequest(req) => {
-                framed
-                    .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                        protocol_version: PROTOCOL_VERSION,
-                        server_pid: std::process::id(),
-                        session_id: 1,
-                        // Same path on both sides: no translation, so the scripted answers can
-                        // use the test's own paths.
-                        server_workspace_root: req.client_workspace_root.clone(),
-                        detected_engine: "rust".to_string(),
-                    }))
-                    .await?;
-            }
-            WireMessage::LspPayload(json) => {
-                let Ok(value) = serde_json::from_str::<serde_json::Value>(&json) else {
-                    continue;
-                };
-                let Some(id) = value.get("id").cloned() else {
-                    continue; // a notification: didOpen, initialized
-                };
-                let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                let params = value
-                    .get("params")
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                let result = if method == "initialize" {
-                    serde_json::json!({ "capabilities": { "hoverProvider": true } })
-                } else {
-                    answer(method, &params)
-                };
-                let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
-                framed
-                    .send(WireMessage::LspPayload(response.to_string()))
-                    .await?;
-            }
-            WireMessage::Disconnect { .. } => break,
-            _ => {}
-        }
-    }
-    Ok(())
+fn write(ws: &Workspace, rel: &str, text: &str) -> PathBuf {
+    ws.write(rel, text)
+}
+
+fn commit(ws: &Workspace) {
+    ws.commit();
+}
+
+async fn scripted_gateway(answer: Answer) -> SocketAddr {
+    ScriptedGateway::start_arc(answer).await.addr()
 }
 
 /// The file a request is about.
@@ -123,79 +43,6 @@ fn uri_of(params: &serde_json::Value) -> String {
         .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string()
-}
-
-fn write(root: &Path, rel: &str, text: &str) -> PathBuf {
-    let path = root.join(rel);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, text).unwrap();
-    path
-}
-
-/// The client syncs a checkout, so the workspace has to be one: a commit is what the pre-flight
-/// sync measures its delta against.
-fn commit(root: &Path) {
-    let git = |args: &[&str]| {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("git runs");
-        assert!(status.success(), "git {args:?}");
-    };
-    git(&["init", "-q"]);
-    git(&["add", "-A"]);
-    git(&[
-        "-c",
-        "user.email=test@example.invalid",
-        "-c",
-        "user.name=test",
-        "commit",
-        "-qm",
-        "fixture",
-    ]);
-}
-
-/// A workspace edit that replaces a whole file, the shape our in-process Rust engine answers
-/// a rename with.
-fn whole_file(path: &Path, old: &str, new_text: &str) -> serde_json::Value {
-    serde_json::json!({ "documentChanges": [ {
-        "textDocument": { "uri": format!("file://{}", path.display()), "version": null },
-        "edits": [ {
-            "range": {
-                "start": { "line": 0, "character": 0 },
-                "end": { "line": old.lines().count(), "character": 0 }
-            },
-            "newText": new_text
-        } ]
-    } ] })
-}
-
-/// A workspace edit with one edit per occurrence, the shape gopls and the TypeScript server
-/// answer a rename with. Positions are 1-based here and converted, like everywhere else.
-fn ranged(path: &Path, spots: &[(u32, u32, usize, &str)]) -> serde_json::Value {
-    let edits: Vec<serde_json::Value> = spots
-        .iter()
-        .map(|(line, col, len, text)| {
-            serde_json::json!({
-                "range": {
-                    "start": { "line": line - 1, "character": col - 1 },
-                    "end": { "line": line - 1, "character": col - 1 + *len as u32 }
-                },
-                "newText": text
-            })
-        })
-        .collect();
-    serde_json::json!({ "documentChanges": [ {
-        "textDocument": { "uri": format!("file://{}", path.display()), "version": null },
-        "edits": edits
-    } ] })
-}
-
-fn no_diagnostics() -> serde_json::Value {
-    serde_json::json!({ "kind": "full", "items": [] })
 }
 
 const GO: &str =
@@ -208,22 +55,22 @@ const PROTO: &str = "message Order {\n  string order_id = 1;\n}\n";
 /// text the analyzer produced.
 #[tokio::test]
 async fn a_whole_file_rename_is_not_merged_with_text_edits() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
-    let go = write(&root, "backend/order.go", GO);
+    let ws = workspace();
+    let root = ws.root();
+    let go = write(&ws, "backend/order.go", GO);
     write(
-        &root,
+        &ws,
         "backend/go.mod",
         "module example.com/backend\n\ngo 1.22\n",
     );
-    let rs = write(&root, "core/src/lib.rs", RUST);
+    let rs = write(&ws, "core/src/lib.rs", RUST);
     write(
-        &root,
+        &ws,
         "core/Cargo.toml",
         "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    write(&root, "schema/order.proto", PROTO);
-    commit(&root);
+    write(&ws, "schema/order.proto", PROTO);
+    commit(&ws);
 
     let (go_path, rs_path) = (go.clone(), rs.clone());
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
@@ -231,19 +78,19 @@ async fn a_whole_file_rename_is_not_merged_with_text_edits() {
             let uri = uri_of(params);
             if uri.ends_with("lib.rs") {
                 // rust-analyzer: the whole file, already renamed, string literal untouched.
-                whole_file(
+                answers::whole_file(
                     &rs_path,
                     RUST,
                     "pub struct Order {\n    pub trade_id: String,\n}\n\npub const Q: &str = \"SELECT order_id FROM orders\";\n",
                 )
             } else if uri.ends_with("order.go") {
                 // gopls: one edit for the identifier, and nothing for the tag.
-                ranged(&go_path, &[(4, 2, 7, "TradeID")])
+                answers::ranged(&go_path, &[(4, 2, 7, "TradeID")])
             } else {
                 serde_json::Value::Null
             }
         }
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -289,16 +136,16 @@ async fn a_whole_file_rename_is_not_merged_with_text_edits() {
 /// computed against the file as it was, and the whole new text no longer has those positions.
 #[tokio::test]
 async fn a_ranged_rename_is_not_added_to_a_file_that_was_replaced_wholesale() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let source = "pub struct A {\n    pub order_id: String,\n}\n\npub struct B {\n    pub order_id: String,\n}\n";
-    let lib = write(&root, "src/lib.rs", source);
-    commit(&root);
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
 
     // Two structs, two different symbols: rust-analyzer answers the first with the file's
     // whole new text, and would answer the second with one too — but the first already owns
@@ -311,16 +158,16 @@ async fn a_ranged_rename_is_not_added_to_a_file_that_was_replaced_wholesale() {
                 .and_then(|l| l.as_u64())
                 .unwrap_or(0);
             if line == 1 {
-                whole_file(
+                answers::whole_file(
                     &path,
                     source,
                     "pub struct A {\n    pub trade_id: String,\n}\n\npub struct B {\n    pub order_id: String,\n}\n",
                 )
             } else {
-                ranged(&path, &[(6, 9, 8, "trade_id")])
+                answers::ranged(&path, &[(6, 9, 8, "trade_id")])
             }
         }
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -349,20 +196,20 @@ async fn a_ranged_rename_is_not_added_to_a_file_that_was_replaced_wholesale() {
 /// out loud, because both were computed against the file as it is now.
 #[tokio::test]
 async fn a_second_rename_that_overlaps_the_first_is_reported_not_merged() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     let ts = write(
-        &root,
+        &ws,
         "src/order.ts",
         "export interface Order {\n  orderId: string;\n}\n\nexport function make(orderId: string): Order {\n  return { orderId };\n}\n",
     );
-    write(&root, "tsconfig.json", "{ \"include\": [\"src\"] }\n");
+    write(&ws, "tsconfig.json", "{ \"include\": [\"src\"] }\n");
     write(
-        &root,
+        &ws,
         "package.json",
         "{ \"name\": \"t\", \"version\": \"1.0.0\" }\n",
     );
-    commit(&root);
+    commit(&ws);
 
     let path = ts.clone();
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
@@ -374,15 +221,15 @@ async fn a_second_rename_that_overlaps_the_first_is_reported_not_merged() {
                 .and_then(|l| l.as_u64())
                 .unwrap_or(0);
             if line == 1 {
-                ranged(
+                answers::ranged(
                     &path,
                     &[(2, 3, 7, "tradeId"), (6, 12, 7, "tradeId: orderId")],
                 )
             } else {
-                ranged(&path, &[(5, 22, 7, "tradeId"), (6, 12, 7, "tradeId")])
+                answers::ranged(&path, &[(5, 22, 7, "tradeId"), (6, 12, 7, "tradeId")])
             }
         }
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -412,22 +259,22 @@ async fn a_second_rename_that_overlaps_the_first_is_reported_not_merged() {
 /// A field that appears only in prose is reported, never rewritten.
 #[tokio::test]
 async fn an_identifier_in_a_comment_is_reported_rather_than_rewritten() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "core/Cargo.toml",
         "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let rs = write(
-        &root,
+        &ws,
         "core/src/lib.rs",
         "// the order_id is the key\npub struct Order {\n    pub symbol: String,\n}\n",
     );
-    commit(&root);
+    commit(&ws);
 
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -456,18 +303,18 @@ async fn an_identifier_in_a_comment_is_reported_rather_than_rewritten() {
 /// `apply` writes, and only then. The same run twice: once reporting, once writing.
 #[tokio::test]
 async fn apply_is_what_writes_and_it_writes_everything_at_once() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
-    let proto = write(&root, "schema/order.proto", PROTO);
+    let ws = workspace();
+    let root = ws.root();
+    let proto = write(&ws, "schema/order.proto", PROTO);
     let sql = write(
-        &root,
+        &ws,
         "db/schema.sql",
         "CREATE TABLE orders (order_id TEXT);\n",
     );
-    commit(&root);
+    commit(&ws);
 
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -501,19 +348,19 @@ async fn apply_is_what_writes_and_it_writes_everything_at_once() {
 /// A result the analyzer rejects is not written, and the errors are what comes back.
 #[tokio::test]
 async fn a_rename_that_does_not_compile_is_not_written() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let lib = write(
-        &root,
+        &ws,
         "src/lib.rs",
         "pub const Q: &str = \"SELECT order_id\";\n",
     );
-    commit(&root);
+    commit(&ws);
 
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
         "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [ {
@@ -544,21 +391,21 @@ async fn a_rename_that_does_not_compile_is_not_written() {
 /// could not match — the case a line-proximity check used to call done.
 #[tokio::test]
 async fn a_signature_change_names_the_reference_it_did_not_rewrite() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let source = "pub fn join(a: &str, b: &str) -> String {\n    format!(\"{a}{b}\")\n}\n\npub fn use_it() -> String {\n    join(\"x\", \"y\")\n}\n\npub fn as_a_value() -> fn(&str, &str) -> String {\n    join\n}\n";
-    let lib = write(&root, "src/lib.rs", source);
-    commit(&root);
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
 
     let path = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
         // The rewrite reaches the call, not the place the function is used as a value.
-        "prodCode/structuralReplace" => whole_file(
+        "prodCode/structuralReplace" => answers::whole_file(
             &path,
             source,
             "pub fn join(a: &str, b: &str) -> String {\n    format!(\"{a}{b}\")\n}\n\npub fn use_it() -> String {\n    join(\"y\", \"x\")\n}\n\npub fn as_a_value() -> fn(&str, &str) -> String {\n    join\n}\n",
@@ -569,7 +416,7 @@ async fn a_signature_change_names_the_reference_it_did_not_rewrite() {
             { "uri": format!("file://{}", path.display()),
               "range": { "start": { "line": 9, "character": 4 }, "end": { "line": 9, "character": 8 } } }
         ]),
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -609,16 +456,16 @@ async fn a_signature_change_names_the_reference_it_did_not_rewrite() {
 /// Dropping a parameter the body still uses is refused, with the usages.
 #[tokio::test]
 async fn a_parameter_the_body_uses_is_not_dropped() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let source = "pub fn join(a: &str, b: &str) -> String {\n    format!(\"{a}{b}\")\n}\n";
-    let lib = write(&root, "src/lib.rs", source);
-    commit(&root);
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
 
     let path = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
@@ -626,7 +473,7 @@ async fn a_parameter_the_body_uses_is_not_dropped() {
             { "uri": format!("file://{}", path.display()),
               "range": { "start": { "line": 1, "character": 14 }, "end": { "line": 1, "character": 15 } } }
         ]),
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -644,16 +491,16 @@ async fn a_parameter_the_body_uses_is_not_dropped() {
 /// when the analyzer accepts it.
 #[tokio::test]
 async fn a_fixture_is_built_from_the_declaration_and_verified() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().to_path_buf();
+    let ws = workspace();
+    let root = ws.root();
     write(
-        &root,
+        &ws,
         "Cargo.toml",
         "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
     let source = "pub struct Config {\n    pub name: String,\n    pub retries: u32,\n    pub verbose: bool,\n    pub tags: Vec<String>,\n}\n";
-    let lib = write(&root, "src/lib.rs", source);
-    commit(&root);
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
 
     let path = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _params| match method {
@@ -668,7 +515,7 @@ async fn a_fixture_is_built_from_the_declaration_and_verified() {
               "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 5, "character": 1 } },
               "selectionRange": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 17 } } }
         ]),
-        "textDocument/diagnostic" => no_diagnostics(),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;

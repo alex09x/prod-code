@@ -24,3 +24,4 @@ similar = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+prod-code-testkit = { path = "../prod-code-testkit" }

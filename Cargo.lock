@@ -1165,6 +1165,7 @@ dependencies = [
  "ignore",
  "notify",
  "prod-code-protocol",
+ "prod-code-testkit",
  "serde",
  "serde_json",
  "similar",
@@ -1189,6 +1190,19 @@ dependencies = [
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "prod-code-testkit"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "prod-code-protocol",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

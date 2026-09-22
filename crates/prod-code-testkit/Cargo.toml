@@ -1,0 +1,19 @@
+[package]
+name = "prod-code-testkit"
+description = "Test-only harness: a gateway that answers from a script, and workspaces to point it at"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+prod-code-protocol = { path = "../prod-code-protocol" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tempfile = { workspace = true }
