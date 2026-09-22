@@ -258,7 +258,7 @@ hosted CI).
 
 ## Author
 
-**Alex** ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
+**Alexander Panasenko** ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
 
 ## License
 
