@@ -133,6 +133,50 @@ pub fn type_from_hover(hover: &str) -> Option<String> {
     None
 }
 
+/// The smallest *function* containing `line`, and its line span.
+///
+/// Not the smallest declaration: `textDocument/documentSymbol` reports local bindings too, so
+/// the innermost thing containing an expression is usually the `let` it is part of. Only a
+/// function or a method can take a parameter, so only those are candidates.
+pub fn enclosing_function(symbols: &serde_json::Value, line: u32) -> Option<(String, u32, u32)> {
+    /// LSP `SymbolKind`: a free function, and a method on a type.
+    const FUNCTION: u64 = 12;
+    const METHOD: u64 = 6;
+
+    fn walk(nodes: &[serde_json::Value], line: u32, best: &mut Option<(String, u32, u32)>) {
+        for node in nodes {
+            let range = node
+                .get("range")
+                .or_else(|| node.get("location").and_then(|l| l.get("range")));
+            let kind = node.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
+            if let Some(range) = range
+                && (kind == FUNCTION || kind == METHOD)
+                && let (Some(s), Some(e)) = (
+                    range.pointer("/start/line").and_then(|l| l.as_u64()),
+                    range.pointer("/end/line").and_then(|l| l.as_u64()),
+                )
+            {
+                let (s, e) = (s as u32 + 1, e as u32 + 1);
+                if s <= line && line <= e && best.as_ref().is_none_or(|(_, bs, be)| e - s < be - bs)
+                {
+                    let name = node
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    *best = Some((name, s, e));
+                }
+            }
+            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+                walk(children, line, best);
+            }
+        }
+    }
+    let mut best = None;
+    walk(symbols.as_array().map(|a| a.as_slice())?, line, &mut best);
+    best
+}
+
 /// The parameter list with `param` added at the end.
 pub fn with_parameter(list: &str, param: &str) -> String {
     let trimmed = list.trim();
@@ -210,8 +254,8 @@ pub async fn extract(
             .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?.to_string() } }),
     )
     .await?;
-    let (callee, fn_start, fn_end) = crate::move_item::span_at(&symbols, start.0)
-        .context("the selection is not inside a declaration")?;
+    let (callee, fn_start, fn_end) =
+        enclosing_function(&symbols, start.0).context("the selection is not inside a function")?;
     let fn_offset = {
         let lines: Vec<&str> = text.lines().collect();
         let head = lines
@@ -395,6 +439,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_enclosing_function_is_not_the_let_the_expression_sits_in() {
+        // What the analyzer really answers: the function, and the local inside it.
+        let symbols = serde_json::json!([
+            { "name": "move_item", "kind": 12,
+              "range": { "start": { "line": 577 }, "end": { "line": 700 } },
+              "children": [
+                { "name": "removed", "kind": 13,
+                  "range": { "start": { "line": 628 }, "end": { "line": 628 } } }
+              ] }
+        ]);
+        assert_eq!(
+            enclosing_function(&symbols, 629),
+            Some(("move_item".to_string(), 578, 701)),
+            "a local binding cannot take a parameter, so it is not a candidate"
+        );
+        assert_eq!(enclosing_function(&symbols, 900), None);
+    }
+
+    #[test]
     fn a_hover_that_names_a_binding_gives_its_type_and_anything_else_gives_none() {
         assert_eq!(
             type_from_hover("```rust\nlet decl_end: u32\n```").as_deref(),
@@ -420,6 +483,72 @@ mod tests {
             with_parameter("\n    a: u8,\n    b: u8,\n", "limit: usize"),
             "\n    a: u8,\n    b: u8,\n    limit: usize,\n"
         );
+    }
+
+    fn report(
+        unmatched: Vec<String>,
+        diagnostics: Vec<String>,
+        applied: bool,
+    ) -> ExtractedParameter {
+        ExtractedParameter {
+            symbol: "render".into(),
+            root: PathBuf::from("/root"),
+            file: "src/lib.rs".into(),
+            name: "width_limit".into(),
+            ty: "usize".into(),
+            expression: "80".into(),
+            replaced: 1,
+            call_sites: 2,
+            rewritten: vec![("/root/src/lib.rs".into(), "pub fn render() {}\n".into())],
+            unmatched,
+            diagnostics,
+            applied,
+        }
+    }
+
+    #[test]
+    fn the_report_says_what_was_left_out_and_what_the_analyzer_thought() {
+        let clean = report(Vec::new(), Vec::new(), false).render(4000);
+        assert!(
+            clean.contains("new parameter: `width_limit: usize`"),
+            "{clean}"
+        );
+        assert!(clean.contains("2 call site(s) pass it"), "{clean}");
+        assert!(
+            clean.contains("the analyzer accepts the result: 0 errors"),
+            "{clean}"
+        );
+        assert!(clean.contains("nothing was written"), "{clean}");
+
+        let missed = report(vec!["src/other.rs:9:5".into()], Vec::new(), false).render(4000);
+        assert!(
+            missed.contains("not given the argument (1 reference"),
+            "{missed}"
+        );
+        assert!(missed.contains("src/other.rs:9:5"), "{missed}");
+
+        // A rejected result explains the usual cause rather than leaving a raw diagnostic.
+        let broken = report(
+            Vec::new(),
+            vec!["cannot find value `n` [E0425] (src/lib.rs:8:17)".into()],
+            false,
+        )
+        .render(4000);
+        assert!(
+            broken.contains("the analyzer rejects the result"),
+            "{broken}"
+        );
+        assert!(broken.contains("if it names a local"), "{broken}");
+
+        let written = report(Vec::new(), Vec::new(), true).render(4000);
+        assert!(written.contains("[applied to 1 file(s)]"), "{written}");
+        assert!(!written.contains("nothing was written"), "{written}");
+    }
+
+    #[test]
+    fn a_diff_longer_than_the_budget_is_cut_and_says_so() {
+        let cut = report(Vec::new(), Vec::new(), false).render(10);
+        assert!(cut.contains("… diff truncated"), "{cut}");
     }
 
     #[test]

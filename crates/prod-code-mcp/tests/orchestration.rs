@@ -1003,3 +1003,192 @@ async fn an_expression_the_callers_cannot_see_is_refused_with_the_reason() {
         "{err:#}"
     );
 }
+
+/// The guards that refuse before anything is asked of a gateway: a name that is not an
+/// identifier, an empty selection, and a selection that is in the signature rather than in the
+/// body. Each one is a mistake an agent can make from a bad position, and none of them should
+/// cost a round trip.
+#[tokio::test]
+async fn a_bad_request_is_refused_before_the_gateway_is_asked() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub fn render(text: &str) -> String {\n    let width = 80;\n    format!(\"{text}{width}\")\n}\n",
+    );
+    commit(&ws);
+
+    // Nothing here answers anything; reaching it would hang the test rather than pass it.
+    let unreachable: SocketAddr = "127.0.0.1:1".parse().expect("addr");
+
+    let err = prod_code_mcp::extract_parameter::extract(
+        unreachable,
+        &root,
+        &lib,
+        (2, 17),
+        (2, 19),
+        "not an identifier",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect_err("a name with spaces is not an identifier");
+    assert!(
+        format!("{err:#}").contains("is not an identifier"),
+        "{err:#}"
+    );
+
+    let err = prod_code_mcp::extract_parameter::extract(
+        unreachable,
+        &root,
+        &lib,
+        (2, 17),
+        (2, 17),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect_err("an empty selection is refused");
+    assert!(format!("{err:#}").contains("selection is empty"), "{err:#}");
+}
+
+/// `replace_all` and `apply` together: every identical occurrence inside the body reads the
+/// parameter, the type comes from the analyzer rather than the caller, and this time the files
+/// on disk actually change.
+#[tokio::test]
+async fn replace_all_takes_every_occurrence_and_apply_writes_them() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    let home = write(
+        &ws,
+        "src/home.rs",
+        "pub fn render(text: &str) -> String {\n    let a = 80;\n    let b = 80;\n    format!(\"{text}{a}{b}\")\n}\n\npub fn caller() -> String {\n    render(\"x\")\n}\n",
+    );
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 5, 8),
+            answers::document_symbol("caller", 12, 7, 9, 8),
+        ]),
+        // The type is not given by the caller here; it comes from this.
+        "textDocument/hover" => answers::hover("```rust\nlet a: usize\n```"),
+        "textDocument/references" => answers::locations(&h, &[(8, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (2, 13),
+        (2, 15),
+        "width_limit",
+        None,
+        true,
+        true,
+        false,
+    )
+    .await
+    .expect("the extraction runs");
+
+    assert_eq!(done.ty, "usize", "the type came from the analyzer");
+    assert_eq!(done.replaced, 2, "both occurrences read the parameter");
+    assert!(done.applied);
+
+    let on_disk = ws.read("src/home.rs");
+    assert!(
+        on_disk.contains("let a = width_limit;") && on_disk.contains("let b = width_limit;"),
+        "{on_disk}"
+    );
+    assert!(on_disk.contains("render(\"x\", 80)"), "{on_disk}");
+    assert!(
+        on_disk.contains("pub fn render(text: &str, width_limit: usize)"),
+        "{on_disk}"
+    );
+}
+
+/// A use that is not a call cannot be given an argument, and a selection inside the signature
+/// is not an expression in the body. Both are named rather than attempted.
+#[tokio::test]
+async fn a_value_use_gets_no_argument_and_a_selection_in_the_signature_is_refused() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    let home = write(
+        &ws,
+        "src/home.rs",
+        "pub fn render(text: &str) -> String {\n    let width = 80;\n    format!(\"{text}{width}\")\n}\n\npub fn as_a_value() -> fn(&str) -> String {\n    render\n}\n",
+    );
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 4, 8),
+            answers::document_symbol("as_a_value", 12, 6, 8, 8),
+        ]),
+        "textDocument/references" => answers::locations(&h, &[(7, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (2, 17),
+        (2, 19),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect("the extraction runs");
+    assert_eq!(done.call_sites, 0);
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+
+    let err = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (1, 15),
+        (1, 19),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect_err("a selection in the signature is not an expression in the body");
+    assert!(format!("{err:#}").contains("in the signature"), "{err:#}");
+}
