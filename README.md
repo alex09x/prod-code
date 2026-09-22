@@ -34,9 +34,15 @@ on the laptop:
 |---|---|
 | hover on a warm workspace | 1–4 ms |
 | tool call over a persistent session | ~10 ms |
-| `cargo clippy --workspace --all-targets` on a 32-core node | 2.5 s |
-| `cargo test --workspace` | 46 s |
+| `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
+| `cargo test --workspace` — 422 tests | 5 min |
+| the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
+
+Most of those five minutes are one suite: it starts the real daemon as a child process and
+drives it against rust-analyzer, gopls, the TypeScript server, basedpyright and clangd. It is
+the only thing that proves a workspace loads, and every file in the workspace is at or above
+80% of regions because of it and the suites beside it (`python3 scripts/coverage.py --min 80`).
 
 ## Install
 
