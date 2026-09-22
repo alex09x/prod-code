@@ -262,9 +262,14 @@ fn nowhere() -> SocketAddr {
 #[tokio::test]
 async fn unknown_tool_name_is_reported_by_name() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_frobnicate", serde_json::json!({}))
-        .await
-        .expect("dispatch does not fail, it answers with an error result");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_frobnicate",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("dispatch does not fail, it answers with an error result");
     assert!(err.is_error);
     assert_eq!(text_of(&err), "Unknown tool: code_frobnicate");
 }
@@ -347,9 +352,14 @@ async fn code_assist_requires_an_id() {
 #[tokio::test]
 async fn code_schema_rename_requires_field_and_to() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_schema_rename", serde_json::json!({}))
-        .await
-        .expect_err("field is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_schema_rename",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("field is required");
     assert!(format!("{err:#}").contains("Missing 'field' argument"));
     let err = execute_tool(
         nowhere(),
@@ -379,9 +389,14 @@ async fn code_change_signature_requires_params() {
 #[tokio::test]
 async fn code_generate_fixture_requires_a_symbol() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_generate_fixture", serde_json::json!({}))
-        .await
-        .expect_err("symbol is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_generate_fixture",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("symbol is required");
     assert!(format!("{err:#}").contains("Missing 'symbol' argument"));
 }
 
@@ -433,14 +448,24 @@ async fn code_slice_requires_path_and_line() {
 #[tokio::test]
 async fn code_diagnostics_and_validate_edit_require_a_path_and_new_text() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_diagnostics", serde_json::json!({}))
-        .await
-        .expect_err("path is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_diagnostics",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("path is required");
     assert!(format!("{err:#}").contains("Missing 'path' argument"));
 
-    let err = execute_tool(nowhere(), &ws.root(), "code_validate_edit", serde_json::json!({}))
-        .await
-        .expect_err("path is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_validate_edit",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("path is required");
     assert!(format!("{err:#}").contains("Missing 'path' argument"));
 
     let result = execute_tool(
@@ -458,9 +483,14 @@ async fn code_diagnostics_and_validate_edit_require_a_path_and_new_text() {
 #[tokio::test]
 async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_text() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_validate_edits", serde_json::json!({}))
-        .await
-        .expect_err("edits is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("edits is required");
     assert!(format!("{err:#}").contains("Missing 'edits' argument"));
 
     let result = execute_tool(
@@ -498,9 +528,14 @@ async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_t
 #[tokio::test]
 async fn code_shadow_run_requires_argv_and_hypotheses() {
     let ws = workspace();
-    let err = execute_tool(nowhere(), &ws.root(), "code_shadow_run", serde_json::json!({}))
-        .await
-        .expect_err("argv is required");
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_shadow_run",
+        serde_json::json!({}),
+    )
+    .await
+    .expect_err("argv is required");
     assert!(format!("{err:#}").contains("Missing 'argv' argument"));
 
     let result = execute_tool(
@@ -561,9 +596,9 @@ async fn code_symbols_lists_hits_and_reports_when_there_are_none() {
     commit(&ws);
     let path = lib.clone();
     let remote = scripted_gateway(Arc::new(move |method, _| match method {
-        "workspace/symbol" => serde_json::Value::Array(vec![answers::symbol(
-            "record", 12, &path, 1, 8,
-        )]),
+        "workspace/symbol" => {
+            serde_json::Value::Array(vec![answers::symbol("record", 12, &path, 1, 8)])
+        }
         _ => serde_json::Value::Null,
     }))
     .await;
@@ -600,7 +635,11 @@ async fn code_definition_reports_locations_or_says_there_are_none() {
     )
     .await
     .expect("the query runs");
-    assert!(text_of(&result).contains("Definition:"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("Definition:"),
+        "{}",
+        text_of(&result)
+    );
     assert!(text_of(&result).contains(":3:5"), "{}", text_of(&result));
 
     let empty_remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -638,7 +677,11 @@ async fn code_references_counts_hits_and_says_when_there_are_none() {
     )
     .await
     .expect("the query runs");
-    assert!(text_of(&result).contains("Found 2 reference(s)"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("Found 2 reference(s)"),
+        "{}",
+        text_of(&result)
+    );
 
     let empty_remote = scripted_gateway(Arc::new(|method, _| match method {
         "textDocument/references" => serde_json::json!([]),
@@ -703,7 +746,11 @@ async fn code_callers_and_callees_walk_the_call_hierarchy() {
     )
     .await
     .expect("callees run");
-    assert!(text_of(&callees).contains("`callee`: 0 callee(s)"), "{}", text_of(&callees));
+    assert!(
+        text_of(&callees).contains("`callee`: 0 callee(s)"),
+        "{}",
+        text_of(&callees)
+    );
 }
 
 #[tokio::test]
@@ -724,7 +771,11 @@ async fn code_callers_reports_no_function_at_position() {
     )
     .await
     .expect("the query runs");
-    assert!(text_of(&result).contains("No function at"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("No function at"),
+        "{}",
+        text_of(&result)
+    );
 }
 
 #[tokio::test]
@@ -746,7 +797,11 @@ async fn code_implementations_lists_locations_or_says_there_are_none() {
     )
     .await
     .expect("the query runs");
-    assert!(text_of(&result).contains("Found 1 implementation(s)"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("Found 1 implementation(s)"),
+        "{}",
+        text_of(&result)
+    );
 
     let empty_remote = scripted_gateway(Arc::new(|method, _| match method {
         "textDocument/implementation" => serde_json::json!([]),
@@ -820,7 +875,11 @@ async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     )
     .await
     .expect("hover runs");
-    assert!(text_of(&hover).contains("pub fn a()"), "{}", text_of(&hover));
+    assert!(
+        text_of(&hover).contains("pub fn a()"),
+        "{}",
+        text_of(&hover)
+    );
 
     let type_at = execute_tool(
         remote,
@@ -1033,8 +1092,15 @@ async fn code_rename_writes_the_analyzers_edit_into_the_checkout() {
     .await
     .expect("the rename runs");
     assert!(!result.is_error);
-    assert!(text_of(&result).contains("renamed to `new_name`; 1 path(s)"), "{}", text_of(&result));
-    assert_eq!(std::fs::read_to_string(&lib).unwrap(), "pub fn new_name() {}\n");
+    assert!(
+        text_of(&result).contains("renamed to `new_name`; 1 path(s)"),
+        "{}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "pub fn new_name() {}\n"
+    );
 }
 
 #[tokio::test]
@@ -1079,7 +1145,11 @@ async fn code_safe_delete_removes_an_unreferenced_item() {
     .await
     .expect("the delete runs");
     assert!(!result.is_error);
-    assert!(text_of(&result).contains("deleted; 1 path(s)"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("deleted; 1 path(s)"),
+        "{}",
+        text_of(&result)
+    );
     assert_eq!(std::fs::read_to_string(&lib).unwrap(), "");
 }
 
@@ -1149,14 +1219,25 @@ async fn code_assist_applies_the_chosen_action() {
     .await
     .expect("the assist runs");
     assert!(!result.is_error);
-    assert!(text_of(&result).contains("applied `extract_variable`; 1 path(s)"), "{}", text_of(&result));
-    assert_eq!(std::fs::read_to_string(&lib).unwrap(), "pub fn a() { let x = 1 + 1; }\n");
+    assert!(
+        text_of(&result).contains("applied `extract_variable`; 1 path(s)"),
+        "{}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "pub fn a() { let x = 1 + 1; }\n"
+    );
 }
 
 #[tokio::test]
 async fn code_codemod_reports_no_match_and_applies_a_match() {
     let ws = workspace();
-    let lib = write(&ws, "src/lib.rs", "fn a(x: Option<i32>) -> i32 {\n    x.unwrap()\n}\n");
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "fn a(x: Option<i32>) -> i32 {\n    x.unwrap()\n}\n",
+    );
     commit(&ws);
     let path = lib.clone();
     let no_match_remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -1172,7 +1253,11 @@ async fn code_codemod_reports_no_match_and_applies_a_match() {
     )
     .await
     .expect("the rule runs");
-    assert!(text_of(&no_match).contains("matches nothing"), "{}", text_of(&no_match));
+    assert!(
+        text_of(&no_match).contains("matches nothing"),
+        "{}",
+        text_of(&no_match)
+    );
 
     let old = "fn a(x: Option<i32>) -> i32 {\n    x.unwrap()\n}\n";
     let new = "fn a(x: Option<i32>) -> i32 {\n    x.expect(\"invariant\")\n}\n";
@@ -1237,7 +1322,10 @@ async fn code_schema_rename_renames_a_field_and_reports_clean() {
     assert!(!result.is_error);
     let text = text_of(&result);
     assert!(text.contains("`order_id` → `trade_id`"), "{text}");
-    assert!(!text.contains("[applied"), "a dry run says nothing about applying");
+    assert!(
+        !text.contains("[applied"),
+        "a dry run says nothing about applying"
+    );
     assert_eq!(
         std::fs::read_to_string(&lib).unwrap(),
         "pub struct Order {\n    pub order_id: String,\n}\n",
@@ -1376,14 +1464,9 @@ async fn code_dead_code_finds_an_unreferenced_function() {
         _ => serde_json::Value::Null,
     }))
     .await;
-    let result = execute_tool(
-        remote,
-        &ws.root(),
-        "code_dead_code",
-        serde_json::json!({}),
-    )
-    .await
-    .expect("the scan runs");
+    let result = execute_tool(remote, &ws.root(), "code_dead_code", serde_json::json!({}))
+        .await
+        .expect("the scan runs");
     let text = text_of(&result);
     assert!(text.contains("1 unreferenced"), "{text}");
     assert!(text.contains("function helper"), "{text}");
@@ -1409,10 +1492,16 @@ async fn code_impact_attributes_a_changed_line_to_its_function() {
     .await
     .expect("the analysis runs");
     let text = text_of(&result);
-    assert!(text.contains("1 changed file(s), 1 changed function(s)"), "{text}");
+    assert!(
+        text.contains("1 changed file(s), 1 changed function(s)"),
+        "{text}"
+    );
     assert!(text.contains("changed functions:"), "{text}");
     assert!(text.contains("• a"), "{text}");
-    assert!(text.contains("affected tests: none reach the changed functions"), "{text}");
+    assert!(
+        text.contains("affected tests: none reach the changed functions"),
+        "{text}"
+    );
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1472,7 +1561,11 @@ async fn code_check_reports_ok_with_no_diagnostics() {
         .await
         .expect("check runs");
     assert!(!result.is_error);
-    assert!(text_of(&result).contains("rust check: OK"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("rust check: OK"),
+        "{}",
+        text_of(&result)
+    );
 }
 
 #[tokio::test]
@@ -1508,7 +1601,11 @@ async fn code_test_parses_cargo_test_output() {
         .await
         .expect("test runs");
     assert!(!result.is_error);
-    assert!(text_of(&result).contains("3 passed, 0 failed"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("3 passed, 0 failed"),
+        "{}",
+        text_of(&result)
+    );
 }
 
 #[tokio::test]
@@ -1697,5 +1794,9 @@ async fn code_sync_reports_the_delta() {
     let result = execute_tool(remote, &ws.root(), "code_sync", serde_json::json!({}))
         .await
         .expect("sync runs");
-    assert!(text_of(&result).contains("Fast-Sync Completed"), "{}", text_of(&result));
+    assert!(
+        text_of(&result).contains("Fast-Sync Completed"),
+        "{}",
+        text_of(&result)
+    );
 }
