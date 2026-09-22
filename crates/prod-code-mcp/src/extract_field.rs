@@ -309,18 +309,63 @@ pub enum Braces {
 }
 
 pub fn braces_kind(text: &str, open: usize, close: usize) -> Braces {
-    let after = text[close + 1..].trim_start();
-    let pattern = after.starts_with("=>")
+    // A bare `..` before the closing brace is a rest pattern; a literal's update syntax always
+    // names the value it copies from (`..base`). That settles `matches!(x, Store { a, .. })`,
+    // where nothing around the braces says which it is.
+    let inner = text[open + 1..close].trim_end().trim_end_matches(',');
+    let rest = inner.trim_end().ends_with("..");
+    if rest || followed_by_pattern_cue(text, close + 1, 0) {
+        return Braces::Pattern { rest };
+    }
+    Braces::Literal
+}
+
+/// Whether what follows `from` marks the text before it as a pattern: `=>`, a single `=`, `|`,
+/// a `:` type ascription, `in` (a `for` loop) or `if` (a match guard). Braces nested in a
+/// tuple, a slice, a variant or another struct — `Some(Store { a }) =>` — are a pattern when
+/// the brackets around them are, so a `)`, `]`, `}` or `,` sends the question outward.
+fn followed_by_pattern_cue(text: &str, from: usize, depth: usize) -> bool {
+    let after = text[from..].trim_start();
+    let word = |w: &str| {
+        after.starts_with(w)
+            && !after[w.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+    };
+    if after.starts_with("=>")
         || (after.starts_with('=') && !after.starts_with("=="))
         || (after.starts_with('|') && !after.starts_with("||"))
-        || (after.starts_with(':') && !after.starts_with("::"));
-    if !pattern {
-        return Braces::Literal;
+        || (after.starts_with(':') && !after.starts_with("::"))
+        || word("in")
+        || word("if")
+    {
+        return true;
     }
-    let inner = text[open + 1..close].trim_end().trim_end_matches(',');
-    Braces::Pattern {
-        rest: inner.trim_end().ends_with(".."),
+    if depth < 8 && after.starts_with([')', ']', '}', ',']) {
+        return enclosing_close(text, text.len() - after.len())
+            .is_some_and(|close| followed_by_pattern_cue(text, close + 1, depth + 1));
     }
+    false
+}
+
+/// The bracket that closes the group `at` sits in, skipping any group opened after it.
+fn enclosing_close(text: &str, at: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = at;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => i = crate::parameter_object::matching_bracket(text, i)?,
+            b')' | b']' | b'}' => return Some(i),
+            b'"' => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += if bytes[j] == b'\\' { 2 } else { 1 };
+                }
+                i = j;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// The edit that initialises `field` first in the literal whose braces open at `open`.
@@ -825,6 +870,26 @@ mod tests {
             kind("fn f(Store { entries }: Store) {}"),
             Braces::Pattern { rest: false }
         );
+        for (text, rest) in [
+            ("for Store { entries } in all {}", false),
+            ("Store { entries } if entries.is_empty() => 1,", false),
+            ("Some(Store { entries }) => 1,", false),
+            ("(Store { entries, .. }, 2) => 1,", true),
+            ("let [Store { entries }] = all;", false),
+            ("assert!(matches!(s, Store { entries, .. }));", true),
+        ] {
+            assert_eq!(kind(text), Braces::Pattern { rest }, "{text}");
+        }
+        for text in [
+            "f(Store { entries }, g(1));",
+            "let v = vec![Store { entries }];",
+            "Outer { s: Store { entries }, n: 1 }",
+            "let s = Store { entries }.into_inner();",
+            "x => Store { entries },",
+            "Store { entries, ..Store::new() }",
+        ] {
+            assert_eq!(kind(text), Braces::Literal, "{text}");
+        }
     }
 
     #[test]
