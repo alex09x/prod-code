@@ -34,23 +34,24 @@ impl Gateway {
     ///
     /// The port comes from the daemon rather than from a probe: binding a socket to find a free
     /// port and then dropping it leaves a window in which another test takes it, and eleven
-    /// gateways starting at once find that window. Here the server binds port 0 and says what
-    /// it got, which is why it logs the address it actually bound.
+    /// gateways starting at once find that window. The daemon logs the address it actually
+    /// bound, and this reads it back.
     fn start_with(extra: &[(&str, &str)]) -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
-            .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env("PROD_CODE_STORAGE", storage.path())
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
             .env("RUST_LOG", "info")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
         let mut wanted: Option<SocketAddr> = None;
+        let mut bind = "127.0.0.1:0".to_string();
         for (key, value) in extra {
             if *key == "PROD_CODE_BIND" {
                 wanted = Some(value.parse().expect("an address to bind"));
+                bind = value.to_string();
             }
             // An empty value means "leave it unset", which is how a test reaches the defaults
             // the daemon falls back to when the environment says nothing.
@@ -60,9 +61,10 @@ impl Gateway {
                 command.env(key, value);
             }
         }
+        command.env("PROD_CODE_BIND", &bind);
         let mut child = command.spawn().expect("the server binary starts");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let addr = wanted.unwrap_or_else(|| read_bound_address(stderr));
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let addr = wanted.unwrap_or_else(|| read_bound_address(stdout));
         let gateway = Self {
             child,
             addr,
@@ -108,35 +110,37 @@ impl Drop for Gateway {
 }
 
 /// Reads the daemon's own report of where it is listening, then keeps draining its log so a
-/// full pipe never blocks it.
-fn read_bound_address(stderr: std::process::ChildStderr) -> SocketAddr {
+/// full pipe never stops it.
+///
+/// The read happens on a thread of its own and the answer comes back over a channel, because
+/// `read_line` on a pipe that stays silent never returns: a deadline checked between reads is
+/// not a deadline at all, and a whole suite can hang on it.
+fn read_bound_address(stdout: std::process::ChildStdout) -> SocketAddr {
     use std::io::BufRead;
-    let mut reader = std::io::BufReader::new(stderr);
-    let deadline = Instant::now() + Duration::from_secs(60);
-    let mut line = String::new();
-    while Instant::now() < deadline {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => panic!("the gateway exited before it said where it was listening"),
-            Ok(_) => {
-                if let Some(rest) = line.split("listening on ").nth(1)
-                    && let Ok(addr) = rest.trim().parse::<SocketAddr>()
-                {
-                    // Whatever it logs from here on goes nowhere, but it has to go somewhere:
-                    // a child that fills its stderr pipe stops.
-                    std::thread::spawn(move || {
-                        let mut sink = String::new();
-                        while reader.read_line(&mut sink).unwrap_or(0) > 0 {
-                            sink.clear();
-                        }
-                    });
-                    return addr;
-                }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        let mut found = false;
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
             }
-            Err(err) => panic!("cannot read the gateway's log: {err}"),
+            if !found
+                && let Some(rest) = line.split("listening on ").nth(1)
+                && let Ok(addr) = rest.trim().parse::<SocketAddr>()
+            {
+                found = true;
+                let _ = tx.send(addr);
+            }
+            // Whatever it logs from here on goes nowhere, but it has to go somewhere: a child
+            // that fills its pipe stops.
         }
-    }
-    panic!("the gateway never said where it was listening");
+    });
+    rx.recv_timeout(Duration::from_secs(60))
+        .expect("the gateway says where it is listening within a minute")
 }
 
 /// A port nothing is listening on, for the tests that have to name one in advance (the two
@@ -954,7 +958,10 @@ async fn the_gateway_supervises_a_generic_language_server() {
     if let Some(id) = assists
         .lines()
         .find_map(|line| line.split_whitespace().next().filter(|w| !w.is_empty()))
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.').to_string())
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+                .to_string()
+        })
         .filter(|id| !id.is_empty())
     {
         // Applying one goes back through the same identifier, which is the half of this path

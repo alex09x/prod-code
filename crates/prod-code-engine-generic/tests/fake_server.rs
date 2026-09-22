@@ -400,7 +400,6 @@ fn settings_are_read_from_the_project_for_the_section_that_asks() {
     );
 }
 
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_command_that_asks_for_an_edit_hands_the_edit_back() {
     let (dir, script) = workspace();
