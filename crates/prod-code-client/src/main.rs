@@ -28,6 +28,7 @@ struct Cli {
     #[arg(
         short,
         long,
+        global = true,
         env = "PROD_CODE_REMOTE",
         default_value = "127.0.0.1:9400"
     )]
