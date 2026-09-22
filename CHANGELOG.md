@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Fixed
+- **A write tool can ask the compiler before writing** (#63). The overlay check every write tool
+  runs does not report an unresolved type or a module path that does not resolve, so "the
+  analyzer accepts the result" was weaker than it read. `code_move`,
+  `code_introduce_parameter_object`, `code_extract_parameter`, `code_change_signature` and
+  `code_schema_rename` take `verify: "compile"` (`--verify compile` on the CLI): the proposed
+  files become one hypothesis in a shadow of the workspace, `cargo check` runs there against the
+  warm target directory, and the change is written only if the compiler accepts it too. It adds
+  the check's own time — 2.3–2.6 s on this repository — and the report says which check ran.
 - **A multi-file edit is written whole or not at all** (#70). Every write tool ends in
   `apply_workspace_edit`, which renamed and deleted during its first pass and wrote contents one
   file after another: the first failure returned a bare OS error and left whatever was already
