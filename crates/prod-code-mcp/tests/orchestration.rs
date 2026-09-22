@@ -1377,11 +1377,12 @@ async fn a_call_above_the_declaration_that_changes_shape_does_not_lose_it() {
 }
 
 /// #75, from the tools' side. An analyzer that has not seen the file's latest text places a
-/// reference on the wrong line. When the call that follows that position happens to have a name
-/// as long as the real one, `(` is exactly where the tool expects it, and the argument lands in
-/// someone else's call — which is what happened to `is_some_and(|g| g.applied)` in this
-/// repository. The name has to be at the position, or the position is reported and nothing
-/// there is touched.
+/// reference on the wrong line. The tool looks for `(` right after where the name should end, so
+/// whenever the stale position plus the name's length lands on some other call's parenthesis, the
+/// argument goes into that call — `is_some_and(|g| g.applied, 2)` in this repository, where column
+/// 35 plus the six letters of `render` was `is_some_and`'s `(` at 41. Here `double` is placed at the
+/// stale position, the simplest way to put a parenthesis six characters on. The name has to be at
+/// the position, or the position is reported and nothing there is touched.
 #[tokio::test]
 async fn a_position_that_does_not_hold_the_name_is_reported_not_rewritten() {
     let ws = workspace();

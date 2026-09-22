@@ -5,10 +5,12 @@
 ### Fixed
 - **A write tool checks the name is where the analyzer says before rewriting a call.**
   `code_introduce_parameter_object` and `code_extract_parameter` edited the call that followed
-  whatever position the analyzer reported; when that position was stale (#75) and the call there
-  had a name as long as the real one, the argument landed in the wrong call — in this repository,
-  `is_some_and(|g| g.applied, 2)`. A position that does not hold the callee's name is now reported
-  under "not rewritten" with the reason, and nothing there is touched.
+  whatever position the analyzer reported; when that position was stale (#75) and the position
+  plus the callee's length happened to land on another call's `(`, the argument went into that
+  call — in this repository `is_some_and(|g| g.applied, 2)`: column 35 plus the six letters of
+  `render` is 41, which is `is_some_and`'s parenthesis. A position that does not hold the
+  callee's name is now reported under "not rewritten" with the reason, and nothing there is
+  touched.
 - A test that bound a port, dropped it and expected a refused connection failed now and then
   when another test's listener took the port first; it uses a port nothing can bind.
 - **A command that rewrites files no longer leaves the analyzer on the old text** (#75).
