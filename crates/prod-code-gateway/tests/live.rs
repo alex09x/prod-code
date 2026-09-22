@@ -1329,6 +1329,42 @@ async fn the_gateway_runs_commands_and_hypotheses() {
         before,
         "a shadow run writes nothing to the checkout"
     );
+
+    // A command that rewrites a file — a formatter, a generator — must leave the analyzer
+    // looking at the new text. The client is sent the new contents and records them as synced,
+    // so no later sync carries them to the node; if the command does not tell the engine
+    // itself, every position in that file is off by however many lines the command moved it.
+    // `store.rs` uses `Quantity` on its line 6; the query opens `lib.rs`, so the reference in
+    // `store.rs` comes from the engine's own copy, not from anything the client sends.
+    let quantity = serde_json::json!({ "path": "src/lib.rs", "line": 7, "character": 12 });
+    let before_exec = text_of(&tool(addr, &root, "code_references", quantity.clone()).await);
+    assert!(
+        before_exec.contains("store.rs:6:"),
+        "the field in store.rs is found where it is: {before_exec}"
+    );
+    let prepended = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_exec",
+            serde_json::json!({
+                "argv": ["sh", "-c", "printf '// one\\n// two\\n// three\\n' | cat - src/store.rs > src/store.rs.new && mv src/store.rs.new src/store.rs"],
+                "timeout_secs": 60
+            }),
+        )
+        .await,
+    );
+    assert!(
+        std::fs::read_to_string(checkout.path("src/store.rs"))
+            .unwrap()
+            .starts_with("// one\n"),
+        "the command's change came back to the checkout: {prepended}"
+    );
+    let after_exec = text_of(&tool(addr, &root, "code_references", quantity).await);
+    assert!(
+        after_exec.contains("store.rs:9:") && !after_exec.contains("store.rs:6:"),
+        "the analyzer sees the file the command wrote, three lines further down: {after_exec}"
+    );
 }
 
 /// A workspace the gateway has not been asked about for a while is evicted, and the next
