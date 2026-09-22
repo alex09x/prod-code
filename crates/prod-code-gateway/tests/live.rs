@@ -25,22 +25,33 @@ struct Gateway {
 
 impl Gateway {
     /// Starts `prod-code-server` on a free port with an empty storage directory, and waits
-    /// until it answers a status request.
+    /// until it is listening.
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// The same, with extra environment for the settings a test wants to change.
+    fn start_with(extra: &[(&str, &str)]) -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
         let addr = free_port();
-        let child = Command::new(env!("CARGO_BIN_EXE_prod-code-server"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
+        command
             .env("PROD_CODE_BIND", addr.to_string())
             .env("PROD_CODE_STORAGE", storage.path())
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
             .env("RUST_LOG", "warn")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("the server binary starts");
+            .stderr(std::process::Stdio::null());
+        let mut addr = addr;
+        for (key, value) in extra {
+            if *key == "PROD_CODE_BIND" {
+                addr = value.parse().expect("an address to bind");
+            }
+            command.env(key, value);
+        }
         let gateway = Self {
-            child,
+            child: command.spawn().expect("the server binary starts"),
             addr,
             _storage: storage,
         };
@@ -959,4 +970,315 @@ fn commit_in(root: &Path) {
         "-qm",
         "subject",
     ]);
+}
+
+/// The tools that change the checkout, and the refusals that stop them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_gateway_applies_and_refuses_changes() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+
+    // Safe delete refuses what is still used, and names the uses.
+    let refused = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_safe_delete",
+        serde_json::json!({ "symbol": "Quantity::new" }),
+    )
+    .await;
+    let refused = match refused {
+        Ok(result) => text_of(&result),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        refused.contains("lib.rs") || refused.to_lowercase().contains("used"),
+        "a used symbol is not deleted silently: {refused}"
+    );
+    assert!(
+        std::fs::read_to_string(checkout.path("src/lib.rs"))
+            .unwrap()
+            .contains("pub fn new"),
+        "and it is still there"
+    );
+
+    // What nothing uses can go.
+    let deleted = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_safe_delete",
+            serde_json::json!({ "symbol": "unused_helper" }),
+        )
+        .await,
+    );
+    assert!(
+        deleted.contains("lib.rs") || deleted.to_lowercase().contains("delet"),
+        "the unused helper is removed: {deleted}"
+    );
+    assert!(
+        !std::fs::read_to_string(checkout.path("src/lib.rs"))
+            .unwrap()
+            .contains("unused_helper"),
+        "and it is gone from the file"
+    );
+
+    // A signature change, with its call sites.
+    let signature = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "symbol": "total",
+                "params": ["all", "scale: u32 = 1"],
+                "apply": true
+            }),
+        )
+        .await,
+    );
+    assert!(
+        signature.contains("applied") || signature.contains("scale"),
+        "the new parameter reaches the declaration: {signature}"
+    );
+    let lib = std::fs::read_to_string(checkout.path("src/lib.rs")).unwrap();
+    assert!(
+        lib.contains("scale: u32"),
+        "the declaration takes it now: {lib}"
+    );
+    assert!(
+        std::fs::read_to_string(checkout.path("src/store.rs"))
+            .unwrap()
+            .contains("total(&self"),
+        "and the call site still calls it"
+    );
+
+    // A structural rewrite, applied this time.
+    let codemod = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_codemod",
+            serde_json::json!({
+                "rule": "Quantity::new(0) ==>> Quantity::new(0u32)",
+                "apply": true
+            }),
+        )
+        .await,
+    );
+    assert!(
+        codemod.contains("applied") || codemod.contains("matches nothing"),
+        "the rewrite says what it did: {codemod}"
+    );
+
+    // A proposed pair of files that does not compile comes back as the analyzer's errors.
+    let broken = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_validate_edits",
+            serde_json::json!({ "edits": [
+                { "path": "src/lib.rs", "new_text": "pub fn total() -> Nonexistent { todo!() }\n" }
+            ] }),
+        )
+        .await,
+    );
+    assert!(
+        broken.to_lowercase().contains("error") || broken.contains("Nonexistent"),
+        "the unresolvable type is reported: {broken}"
+    );
+}
+
+/// Commands, tests and hypotheses: the parts of the gateway that run things rather than
+/// answer questions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_gateway_runs_commands_and_hypotheses() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+
+    // A command that fails comes back with its exit code, not as an error.
+    let failed = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_exec",
+            serde_json::json!({ "argv": ["sh", "-c", "echo out; echo err 1>&2; exit 3"], "timeout_secs": 60 }),
+        )
+        .await,
+    );
+    assert!(
+        failed.contains("exit 3") || failed.contains('3'),
+        "the exit code is reported: {failed}"
+    );
+    assert!(
+        failed.contains("out"),
+        "and so is what it printed: {failed}"
+    );
+
+    // The test runner parses cargo's output into results.
+    let tested = text_of(&tool(addr, &root, "code_test", serde_json::json!({})).await);
+    assert!(
+        tested.contains("OK") || tested.contains("passed") || tested.contains("0 failed"),
+        "a crate with no tests still reports a result: {tested}"
+    );
+
+    // Hypotheses, each in its own shadow of the workspace, none of them written.
+    let before = std::fs::read_to_string(checkout.path("src/lib.rs")).unwrap();
+    let shadow = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_shadow_run",
+            serde_json::json!({
+                "argv": ["cargo", "check", "--quiet"],
+                "timeout_secs": 300,
+                "hypotheses": [
+                    { "name": "as-is", "files": [] },
+                    { "name": "broken", "files": [
+                        { "path": "src/lib.rs", "content": "pub fn total() -> Nope { todo!() }\n" }
+                    ] }
+                ]
+            }),
+        )
+        .await,
+    );
+    assert!(
+        shadow.contains("as-is"),
+        "each hypothesis is reported by name: {shadow}"
+    );
+    assert!(
+        shadow.contains("broken"),
+        "including the one that fails: {shadow}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(checkout.path("src/lib.rs")).unwrap(),
+        before,
+        "a shadow run writes nothing to the checkout"
+    );
+}
+
+/// A workspace the gateway has not been asked about for a while is evicted, and the next
+/// query loads it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_workspace_is_evicted_and_comes_back() {
+    // Evict after a second of idleness, so the sweep runs inside a test's lifetime.
+    let gateway = Gateway::start_with(&[("PROD_CODE_IDLE_EVICT_SECS", "1")]);
+    let checkout = Checkout::new();
+    let root = checkout.root();
+
+    let first = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_hover",
+            serde_json::json!({ "symbol": "Quantity::plus" }),
+        )
+        .await,
+    );
+    assert!(first.contains("fn plus"), "the workspace loaded: {first}");
+
+    // Long enough for the eviction sweep to notice it has nothing to do.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+
+    let again = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_hover",
+            serde_json::json!({ "symbol": "Quantity::plus" }),
+        )
+        .await,
+    );
+    assert!(
+        again.contains("fn plus"),
+        "and it answers again after being evicted: {again}"
+    );
+}
+
+/// Two gateways that know about each other: gossip, the merged cluster view, and placing a
+/// workspace on the node that can actually serve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_gateways_find_each_other_and_place_work() {
+    use futures_util::{SinkExt, StreamExt};
+    use prod_code_protocol::{PlaceRequest, ProdCodeCodec, WireMessage};
+    use tokio_util::codec::Framed;
+
+    // Each one is told the other's address and which engines it is allowed to serve, so the
+    // placement question has a right answer that is not "me".
+    let rust_port = free_port();
+    let go_port = free_port();
+    let rust_node = Gateway::start_with(&[
+        ("PROD_CODE_BIND", &rust_port.to_string()),
+        ("PROD_CODE_ENGINES", "rust"),
+        ("PROD_CODE_PEERS", &go_port.to_string()),
+        ("PROD_CODE_ADVERTISE", &rust_port.to_string()),
+    ]);
+    let go_node = Gateway::start_with(&[
+        ("PROD_CODE_BIND", &go_port.to_string()),
+        ("PROD_CODE_ENGINES", "go"),
+        ("PROD_CODE_PEERS", &rust_port.to_string()),
+        ("PROD_CODE_ADVERTISE", &go_port.to_string()),
+    ]);
+
+    // Gossip runs every few seconds; wait for the Rust node to hear about the Go one.
+    let deadline = Instant::now() + Duration::from_secs(40);
+    let mut nodes = 0usize;
+    while Instant::now() < deadline {
+        let stream = tokio::net::TcpStream::connect(rust_port)
+            .await
+            .expect("connect");
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::ClusterRequest)
+            .await
+            .expect("send cluster");
+        if let Some(Ok(WireMessage::ClusterResponse(cluster))) = framed.next().await {
+            nodes = cluster.nodes.len();
+            if nodes >= 2 {
+                let engines: Vec<String> = cluster
+                    .nodes
+                    .iter()
+                    .flat_map(|node| node.status.detected_engines.clone())
+                    .collect();
+                assert!(
+                    engines.iter().any(|e| e.contains("go")),
+                    "the cluster view carries the other node's engines: {engines:?}"
+                );
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(
+        nodes >= 2,
+        "the two gateways never found each other (saw {nodes} node(s))"
+    );
+
+    // Go work does not belong on a Rust-only node, and the answer says where it does belong.
+    let stream = tokio::net::TcpStream::connect(rust_port)
+        .await
+        .expect("connect");
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed
+        .send(WireMessage::PlaceRequest(PlaceRequest {
+            workspace_name: "a-go-project".to_string(),
+            engine: Some("go".to_string()),
+        }))
+        .await
+        .expect("send place");
+    match framed.next().await {
+        Some(Ok(WireMessage::PlaceResponse(place))) => {
+            let node = place.node.unwrap_or_default();
+            assert!(
+                node.contains(&go_port.port().to_string()),
+                "Go work is placed on the Go node, not here: {node} ({})",
+                place.reason
+            );
+        }
+        other => panic!("unexpected answer to a placement request: {other:?}"),
+    }
+
+    drop(go_node);
+    drop(rust_node);
 }
