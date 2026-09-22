@@ -605,11 +605,18 @@ pub async fn change(
     let (open, close) = if base == text {
         (open, close)
     } else {
-        let offset = offset_of(&base, line, col)
-            .context("the declaration moved while its call sites were rewritten")?;
-        let (_, o, c) = param_span(&base, offset)
-            .context("the declaration moved while its call sites were rewritten")?;
-        (o, c)
+        // Not at its old line and column: a call site above it may have come back from the
+        // rewrite on fewer lines than it went in with (#58). The declaration itself is not a
+        // call and the rewrite never touches it, so its own text is still there to find.
+        locate_declaration(&base, &name, &old_inner).with_context(|| {
+            format!(
+                "`{name}`'s call sites were rewritten, but its declaration `fn {name}({})` is no \
+                 longer in {} exactly once — a rewrite in the same file changed it or duplicated \
+                 it. Nothing was written.",
+                normalize(&old_inner),
+                display(root, file)
+            )
+        })?
     };
     let new_inner = format_list(&old_inner, receiver.as_deref(), &new_params);
     let mut decl_text = String::with_capacity(base.len());
@@ -730,6 +737,38 @@ pub async fn change(
         diagnostics,
         applied,
     })
+}
+
+/// The parameter list of `fn name(old_inner)` in `text`, found by the declaration's own text
+/// rather than by a position that an earlier edit to the same file may have moved. `None`
+/// unless it occurs exactly once.
+pub(crate) fn locate_declaration(
+    text: &str,
+    name: &str,
+    old_inner: &str,
+) -> Option<(usize, usize)> {
+    let needle = format!("fn {name}");
+    let mut found = None;
+    let mut from = 0;
+    while let Some(i) = text[from..].find(&needle) {
+        let at = from + i + 3; // the name, which is what `param_span` starts from
+        from = at;
+        // A longer name that starts with this one is not this function.
+        let after = text[at + name.len()..].chars().next();
+        if after.is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let Some((_, open, close)) = param_span(text, at) else {
+            continue;
+        };
+        if text[open..close] == *old_inner {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((open, close));
+        }
+    }
+    found
 }
 
 /// A workspace edit that replaces each file wholesale, the shape the gateway answers a
@@ -1025,5 +1064,21 @@ mod tests {
     #[test]
     fn consecutive_changed_lines_are_one_hunk() {
         assert_eq!(hunks(vec![10, 11, 12, 40]), [(10, 12), (40, 40)]);
+    }
+
+    #[test]
+    fn a_declaration_is_found_by_its_text_once_and_only_once() {
+        let text =
+            "fn caller() { join(1, 2); }\n\nfn join(a: u8, b: u8) {}\nfn joined(a: u8, b: u8) {}\n";
+        let (open, close) = locate_declaration(text, "join", "a: u8, b: u8").expect("found");
+        assert_eq!(&text[open..close], "a: u8, b: u8");
+        assert!(
+            text[..open].ends_with("fn join("),
+            "the one declared as `join`, not `joined` or the call"
+        );
+        // Changed, or there twice: not guessed at.
+        assert_eq!(locate_declaration(text, "join", "a: u16, b: u8"), None);
+        let twice = "fn join(a: u8) {}\nmod m { fn join(a: u8) {} }\n";
+        assert_eq!(locate_declaration(twice, "join", "a: u8"), None);
     }
 }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- **change-signature no longer loses a declaration that a call above it moved** (#58). The
+  structural rewrite renders a call site it changes on one line; when that call sat above the
+  declaration across several lines, everything below it moved up, and the declaration was looked
+  for again at its old line and column and not found — reported as `the declaration moved while
+  its call sites were rewritten`, naming nothing. The declaration is a declaration, not a call,
+  and the rewrite never touches it, so it is now found by its own text. If that text is gone or
+  appears twice, the refusal names the function and its signature. The command from the issue —
+  reordering `execute_lsp_query`, 178 changed lines in 6 files — now succeeds.
+
 ### Added
 - Change a declared type and see the whole job first (roadmap 7.1.4): `code_migrate_type` (MCP)
   and `prod-code migrate-type <file> --line N --character C --to <Type>` rewrite the declaration
