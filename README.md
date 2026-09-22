@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 488 tests | 5 min |
+| `cargo test --workspace` — 489 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
@@ -183,6 +183,13 @@ worktree gets its own server workspace and its own database, named `<repo>--wt-<
 cost is the first load; the engine then stays resident until it has been idle for thirty
 minutes (`--idle-evict-secs`), and worktree directories are pruned after seven days
 (`--prune-worktree-days`).
+
+**Proposals are checked on a second analyzer.** Validating an edit opens the proposed text in the
+analyzer and closes it again; in the analyzer every other query uses, a proposal that changes
+what a widely imported file declares made the next query re-infer the crate (21 s for a
+`references` after a dry run). Validation sessions run on a second engine for the same
+workspace, fed by every sync like the first, so a dry run never reaches anyone else's query. It
+costs the memory of one more database per workspace that has been validated.
 
 **Builds and tests run on the node**, in the workspace's own `target/`, which stays warm
 between runs. Files a command changes are written back into your checkout.
