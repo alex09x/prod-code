@@ -1323,3 +1323,55 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
     );
     assert!(ws.read("src/lib.rs").contains("r.timeout_secs"));
 }
+
+/// Issue #58. A call site above the declaration, written across several lines, comes back from
+/// the structural rewrite on one — so everything below it moves up, and a declaration looked
+/// for again at its old line and column is not there. It never changed: it is a declaration,
+/// not a call, and the rewrite does not touch it. So it is found by its own text.
+#[tokio::test]
+async fn a_call_above_the_declaration_that_changes_shape_does_not_lose_it() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "pub fn caller() -> String {\n    join(\n        \"x\",\n        \"y\",\n    )\n}\n\npub fn join(a: &str, b: &str) -> String {\n    format!(\"{a}{b}\")\n}\n";
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        // The four-line call comes back as one line, as structural rewrites render them.
+        "prodCode/structuralReplace" => answers::whole_file(
+            &path,
+            source,
+            "pub fn caller() -> String {\n    join(\"y\", \"x\")\n}\n\npub fn join(a: &str, b: &str) -> String {\n    format!(\"{a}{b}\")\n}\n",
+        ),
+        "textDocument/references" => answers::locations(&path, &[(2, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let params = [
+        prod_code_mcp::signature::parse_param("b").unwrap(),
+        prod_code_mcp::signature::parse_param("a").unwrap(),
+    ];
+    let change =
+        match prod_code_mcp::signature::change(remote, &root, &lib, 8, 8, &params, false, false)
+            .await
+        {
+            Ok(change) => change,
+            Err(err) => {
+                panic!("the declaration is found by its text, not its old position: {err:#}")
+            }
+        };
+    let text = &change.rewritten.first().expect("one file").1;
+    assert!(
+        text.contains("pub fn join(b: &str, a: &str) -> String {"),
+        "the declaration is rewritten where it now is: {text}"
+    );
+    assert!(text.contains("join(\"y\", \"x\")"), "{text}");
+}
