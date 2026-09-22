@@ -38,6 +38,9 @@ mod tests {
         for directive in ["salsa=warn", "ra_ap_hir_ty=warn", "prod_code_gateway=debug"] {
             assert!(shown.contains(directive), "{directive} in {shown}");
         }
-        assert!(!DEFAULT_LOG_FILTER.contains(' '), "no stray spaces from the line breaks");
+        assert!(
+            !DEFAULT_LOG_FILTER.contains(' '),
+            "no stray spaces from the line breaks"
+        );
     }
 }
