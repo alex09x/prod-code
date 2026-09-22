@@ -179,7 +179,7 @@ impl ServerState {
 
     /// The installed engines this node advertises, narrowed by `--engines`.
     fn advertised_engines(&self) -> Vec<String> {
-        available_engines()
+        cached_available_engines()
             .into_iter()
             .filter(|entry| {
                 let name = entry.split(' ').next().unwrap_or(entry.as_str());
@@ -3320,6 +3320,48 @@ async fn run_session_loop(
 /// workspaces were built with, not a distro/snap binary a systemd user session resolves first.
 /// The engines this host can actually serve: Rust is in-process, the others need their
 /// language server on PATH. Clients place a workspace only on a node that lists its engine.
+/// How long a probe for installed engines is reused. Engines appear when somebody installs
+/// one, which is rare; the probe costs a `npm root -g` and half a dozen `which` calls, which
+/// is 200 ms and more, and it used to run on every status, gossip and placement request.
+const ENGINE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The probe's answer and the moment it stops being used. An expiry rather than the time of
+/// the probe, so that a test can seed an entry that is already stale without subtracting from
+/// a monotonic clock.
+type EngineCache = std::sync::RwLock<Option<(Instant, Vec<String>)>>;
+
+fn engine_cache() -> &'static EngineCache {
+    static CACHE: std::sync::OnceLock<EngineCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// [`available_engines`], answered from the last probe until it expires. Everything that
+/// serves a request asks through here; the probe itself runs at startup and on the janitor's
+/// tick, off the request path.
+pub fn cached_available_engines() -> Vec<String> {
+    if let Ok(cache) = engine_cache().read()
+        && let Some((expires_at, engines)) = cache.as_ref()
+        && Instant::now() < *expires_at
+    {
+        return engines.clone();
+    }
+    refresh_available_engines()
+}
+
+/// Probes for installed engines and stores the answer. Blocking: call it from a place that
+/// is allowed to block, never from a request handler.
+pub fn refresh_available_engines() -> Vec<String> {
+    let engines = available_engines();
+    store_engines(Instant::now() + ENGINE_CACHE_TTL, engines.clone());
+    engines
+}
+
+fn store_engines(expires_at: Instant, engines: Vec<String>) {
+    if let Ok(mut cache) = engine_cache().write() {
+        *cache = Some((expires_at, engines));
+    }
+}
+
 fn available_engines() -> Vec<String> {
     let mut engines = vec!["rust (ra_ap_ide)".to_string()];
     // gopls is useless without the go tool it drives ("no views" for every file).
@@ -3439,6 +3481,9 @@ async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_d
     ticker.tick().await;
     loop {
         ticker.tick().await;
+        // An engine installed while the daemon runs is picked up here, on a thread that is
+        // allowed to block, instead of by the next request that needs the list.
+        let _ = tokio::task::spawn_blocking(refresh_available_engines).await;
         if idle_evict_secs > 0 {
             let evicted = state
                 .workspace_manager
@@ -3462,6 +3507,9 @@ async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_d
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
     prefer_rustup_toolchain();
+    // Probe once here, while nothing is waiting on us, rather than on the first request.
+    let engines = refresh_available_engines();
+    tracing::info!(?engines, "engines detected");
 
     tracing::info!(
         "prod-code gateway daemon starting on {} (storage: {:?})",
@@ -3828,5 +3876,33 @@ mod tests {
         assert_eq!(del_resp.files_deleted, 1);
         assert!(!app_dir.join("README.md").exists());
         assert!(app_dir.join("src/lib.rs").exists());
+    }
+
+    /// Both halves of the engine cache, in one test because the cache is process-global and
+    /// two tests would race for it. The sentinel is a value the probe cannot produce, so a
+    /// sentinel coming back proves the probe did not run, and a sentinel gone proves it did.
+    #[test]
+    fn engines_are_served_from_the_cache_until_it_expires() {
+        let sentinel = vec!["sentinel (not a real engine)".to_string()];
+
+        store_engines(Instant::now() + ENGINE_CACHE_TTL, sentinel.clone());
+        assert_eq!(
+            cached_available_engines(),
+            sentinel,
+            "a live entry must be answered without probing"
+        );
+
+        store_engines(Instant::now(), sentinel.clone());
+        let fresh = cached_available_engines();
+        assert_ne!(fresh, sentinel, "an expired entry must be probed again");
+        assert!(
+            fresh.iter().any(|e| e.starts_with("rust ")),
+            "the probe always reports the in-process Rust engine, got {fresh:?}"
+        );
+        assert_eq!(
+            cached_available_engines(),
+            fresh,
+            "the probe's answer is what the next caller gets"
+        );
     }
 }
