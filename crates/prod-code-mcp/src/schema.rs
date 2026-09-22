@@ -40,6 +40,7 @@ struct Occurrence {
 }
 
 /// What the rename did, or would do.
+#[derive(Debug)]
 pub struct SchemaRename {
     pub field: String,
     pub to: String,
@@ -933,6 +934,130 @@ mod tests {
         assert_eq!(kind_of(Path::new("a/b.rs")), Kind::Code("rust"));
         assert_eq!(kind_of(Path::new("a/b.proto")), Kind::Text("protobuf"));
         assert_eq!(kind_of(Path::new("a/b.png")), Kind::Skip);
+    }
+
+    #[test]
+    fn the_two_shapes_of_a_rename_answer_are_told_apart() {
+        // gopls and the TypeScript server: one edit per occurrence.
+        let ranged = serde_json::json!({ "documentChanges": [ {
+            "textDocument": { "uri": "file:///w/a.go" },
+            "edits": [
+                { "range": { "start": { "line": 3, "character": 1 }, "end": { "line": 3, "character": 8 } }, "newText": "TradeID" }
+            ]
+        } ] });
+        let parts = ranged_edits(&ranged);
+        assert_eq!(parts.len(), 1);
+        assert!(!parts[0].2, "one identifier edit is not a whole file");
+
+        // rust-analyzer: the file's whole new text.
+        let whole = serde_json::json!({ "documentChanges": [ {
+            "textDocument": { "uri": "file:///w/a.rs" },
+            "edits": [
+                { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 12, "character": 0 } }, "newText": "fn main() {}\n" }
+            ]
+        } ] });
+        let parts = ranged_edits(&whole);
+        assert!(
+            parts[0].2,
+            "a replacement from the top of the file is the whole file"
+        );
+    }
+
+    #[test]
+    fn an_identifier_at_the_very_start_of_a_file_is_not_a_whole_file_replacement() {
+        let edit = serde_json::json!([
+            { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 8 } }, "newText": "trade_id" }
+        ]);
+        assert!(!replaces_whole_file(edit.as_array().unwrap()));
+    }
+
+    #[test]
+    fn edits_that_want_the_same_characters_are_seen_to_overlap() {
+        let a = (5, 10, 5, 17);
+        assert!(overlaps(a, (5, 12, 5, 20)), "a later start inside it");
+        assert!(
+            overlaps(a, (5, 0, 5, 11)),
+            "an earlier one reaching into it"
+        );
+        assert!(
+            !overlaps(a, (5, 17, 5, 24)),
+            "starting where it ends is not an overlap"
+        );
+        assert!(!overlaps(a, (4, 0, 4, 40)), "another line");
+        assert!(
+            overlaps(a, (0, 0, u32::MAX, 0)),
+            "a whole-file replacement takes everything"
+        );
+    }
+
+    #[test]
+    fn a_comment_marker_depends_on_the_language() {
+        let rust = PathBuf::from("/w/src/lib.rs");
+        let python = PathBuf::from("/w/app.py");
+        let mut texts = BTreeMap::new();
+        texts.insert(
+            rust.clone(),
+            "#[derive(Debug)] // order_id
+let order_id = 1;
+"
+            .to_string(),
+        );
+        texts.insert(
+            python.clone(),
+            "# order_id is the key
+"
+            .to_string(),
+        );
+        // `#` starts an attribute in Rust, not a comment: the attribute line is not prose.
+        let attribute = Occurrence {
+            file: rust.clone(),
+            line: 2,
+            col: 5,
+            len: 8,
+            variant: 0,
+            in_string: false,
+        };
+        assert!(!in_comment(&texts, &attribute));
+        let after_slashes = Occurrence {
+            file: rust,
+            line: 1,
+            col: 21,
+            len: 8,
+            variant: 0,
+            in_string: false,
+        };
+        assert!(in_comment(&texts, &after_slashes));
+        let hash = Occurrence {
+            file: python,
+            line: 1,
+            col: 3,
+            len: 8,
+            variant: 0,
+            in_string: false,
+        };
+        assert!(in_comment(&texts, &hash), "in Python it is a comment");
+    }
+
+    #[test]
+    fn the_walk_skips_what_is_not_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (rel, text) in [
+            ("src/a.rs", "fn a() {}"),
+            ("schema/b.proto", "message B {}"),
+            ("target/debug/c.rs", "fn c() {}"),
+            ("node_modules/d/e.ts", "export {};"),
+            ("logo.png", "not text"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        let found: Vec<String> = walk(root, 512 * 1024)
+            .iter()
+            .map(|p| display(root, p))
+            .collect();
+        assert_eq!(found, ["schema/b.proto", "src/a.rs"]);
     }
 
     #[test]

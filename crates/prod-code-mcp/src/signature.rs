@@ -47,6 +47,7 @@ struct Declared {
 }
 
 /// What a change did, or would do.
+#[derive(Debug)]
 pub struct SignatureChange {
     pub symbol: String,
     /// The workspace root, so that the report can show relative paths.
@@ -968,6 +969,57 @@ mod tests {
         let old = "\n    a: u32,\n    b: u32,\n";
         let out = format_list(old, None, &["b: u32".into(), "a: u32".into()]);
         assert_eq!(out, "\n    b: u32,\n    a: u32,\n");
+    }
+
+    #[test]
+    fn a_call_spans_from_its_name_to_its_closing_parenthesis() {
+        let text = "fn main() {\n    join(\n        \"a\",\n        \"b\",\n    );\n}\n";
+        assert_eq!(call_span_lines(text, 2, 5), Some((2, 5)));
+    }
+
+    #[test]
+    fn a_reference_is_matched_against_its_own_call_not_its_neighbours() {
+        // The line above a rewritten one is not rewritten, however close it is: this is the
+        // case a proximity check called done, hiding a reference the rule never matched.
+        let old = "let f = join;\nlet s = join(a, b);\n";
+        let new = "let f = join;\nlet s = join(b, a);\n";
+        let changed = changed_lines(old, new);
+        assert_eq!(changed, [2]);
+        // The function used as a value has no argument list at all, so there is no call span
+        // and the reference stands for its own line — which nothing rewrote.
+        assert_eq!(call_span_lines(old, 1, 9), None);
+        let span = call_span_lines(old, 1, 9).unwrap_or((1, 1));
+        assert!(
+            !changed.iter().any(|l| *l >= span.0 && *l <= span.1),
+            "the value use was not rewritten"
+        );
+    }
+
+    #[test]
+    fn a_position_becomes_an_offset_and_back() {
+        let text = "fn a() {}\nfn b(x: u32) {}\n";
+        let offset = offset_of(text, 2, 4).expect("line 2 exists");
+        assert_eq!(&text[offset..offset + 1], "b");
+        assert_eq!(line_col_at(text, offset), (2, 4));
+    }
+
+    #[test]
+    fn the_signature_is_reported_on_one_line() {
+        assert_eq!(normalize("\n    a: u32,\n    b: u32,\n"), "a: u32, b: u32");
+    }
+
+    #[test]
+    fn a_whole_file_edit_covers_the_file_it_replaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fn a() {}\nfn b() {}\n").unwrap();
+        let mut files = BTreeMap::new();
+        files.insert(path.clone(), "fn a() {}\n".to_string());
+        let edit = whole_file_edit(&files);
+        let change = &edit["documentChanges"][0];
+        assert_eq!(change["edits"][0]["range"]["start"]["line"], 0);
+        assert_eq!(change["edits"][0]["range"]["end"]["line"], 2);
+        assert_eq!(change["edits"][0]["newText"], "fn a() {}\n");
     }
 
     #[test]
