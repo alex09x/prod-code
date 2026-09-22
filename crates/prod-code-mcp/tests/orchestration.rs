@@ -1375,3 +1375,75 @@ async fn a_call_above_the_declaration_that_changes_shape_does_not_lose_it() {
     );
     assert!(text.contains("join(\"y\", \"x\")"), "{text}");
 }
+
+/// #75, from the tools' side. An analyzer that has not seen the file's latest text places a
+/// reference on the wrong line. When the call that follows that position happens to have a name
+/// as long as the real one, `(` is exactly where the tool expects it, and the argument lands in
+/// someone else's call — which is what happened to `is_some_and(|g| g.applied)` in this
+/// repository. The name has to be at the position, or the position is reported and nothing
+/// there is touched.
+#[tokio::test]
+async fn a_position_that_does_not_hold_the_name_is_reported_not_rewritten() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod home;\n");
+    // `double` is six letters, like `render`; its call is where a stale position lands.
+    let source = "pub fn render(text: &str) -> String {\n    let width = 80;\n    let w = double(40);\n    format!(\"{text:width$}{w}\")\n}\n\nfn double(x: u32) -> u32 {\n    x * 2\n}\n\npub fn caller() -> String {\n    render(\"x\")\n}\n";
+    let home = write(&ws, "src/home.rs", source);
+    commit(&ws);
+
+    let h = home.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("render", 12, 1, 5, 8),
+            answers::document_symbol("double", 12, 7, 9, 4),
+            answers::document_symbol("caller", 12, 11, 13, 8),
+        ]),
+        // Stale: the call to `render` is on line 12, but this says line 3, column 13 — `double(`.
+        "textDocument/references" => answers::locations(&h, &[(3, 13)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        remote,
+        &root,
+        &home,
+        (2, 17),
+        (2, 19),
+        "width_limit",
+        Some("usize"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect("the extraction runs");
+
+    let text = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("home.rs"))
+        .map(|(_, t)| t.clone())
+        .expect("the declaration was still rewritten");
+    assert!(
+        text.contains("let w = double(40);"),
+        "the call the stale position pointed at is untouched: {text}"
+    );
+    assert_eq!(
+        done.call_sites, 0,
+        "nothing was rewritten at the wrong place"
+    );
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(
+        done.unmatched[0].contains("the file says otherwise"),
+        "{:?}",
+        done.unmatched
+    );
+}
