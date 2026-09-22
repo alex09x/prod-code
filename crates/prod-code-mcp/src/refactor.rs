@@ -107,6 +107,99 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Resul
 /// Returns the relative paths written, moved or deleted, in application order.
 pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // Every path the edit can touch, and what is there now, before the first byte moves. A
+    // multi-file refactor that stops halfway is worse than one that never started: the checkout
+    // is inconsistent and nothing says which half landed.
+    let paths = paths_touched_by(&root, edit)?;
+    let before: Vec<(String, Option<Vec<u8>>)> = paths
+        .iter()
+        .map(|rel| {
+            let abs = root.join(rel);
+            let bytes = if abs.is_file() {
+                std::fs::read(&abs).ok()
+            } else {
+                None
+            };
+            (rel.clone(), bytes)
+        })
+        .collect();
+    match apply_unguarded(&root, edit) {
+        Ok(touched) => Ok(touched),
+        Err(err) => {
+            let restored = restore(&root, &before);
+            crate::sync::forget_synced_files(&root, &paths);
+            Err(err.context(format!(
+                "the edit failed partway and was undone: {restored} file(s) put back as they were"
+            )))
+        }
+    }
+}
+
+/// Every checkout-relative path an edit renames, creates, deletes or rewrites, in the order the
+/// edit names them. Refuses a path outside the checkout, the same as applying would.
+fn paths_touched_by(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |rel: String| {
+        if !out.contains(&rel) {
+            out.push(rel);
+        }
+    };
+    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
+        for change in changes {
+            let uri_at = |key: &str| change.get(key).and_then(|u| u.as_str()).unwrap_or("");
+            match change.get("kind").and_then(|k| k.as_str()) {
+                Some("rename") => {
+                    push(uri_to_relative(root, uri_at("oldUri"))?);
+                    push(uri_to_relative(root, uri_at("newUri"))?);
+                }
+                Some("create") | Some("delete") => push(uri_to_relative(root, uri_at("uri"))?),
+                _ => {
+                    let uri = change
+                        .pointer("/textDocument/uri")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("");
+                    push(uri_to_relative(root, uri)?);
+                }
+            }
+        }
+    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
+        for uri in changes.keys() {
+            push(uri_to_relative(root, uri)?);
+        }
+    }
+    Ok(out)
+}
+
+/// Puts every snapshotted path back: the bytes it had, or no file at all where there was none.
+/// A directory is never removed — only files this edit could have created.
+fn restore(root: &Path, before: &[(String, Option<Vec<u8>>)]) -> usize {
+    let mut restored = 0;
+    for (rel, bytes) in before {
+        let abs = root.join(rel);
+        match bytes {
+            Some(bytes) => {
+                if std::fs::read(&abs).ok().as_deref() == Some(bytes.as_slice()) {
+                    continue;
+                }
+                if let Some(parent) = abs.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if std::fs::write(&abs, bytes).is_ok() {
+                    restored += 1;
+                }
+            }
+            None => {
+                if abs.is_file() && std::fs::remove_file(&abs).is_ok() {
+                    restored += 1;
+                }
+            }
+        }
+    }
+    restored
+}
+
+fn apply_unguarded(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
+    let root = root.to_path_buf();
     let mut deltas: Vec<FileDelta> = Vec::new();
     let mut touched = Vec::new();
 
@@ -271,6 +364,54 @@ mod tests {
         // Anything outside the checkout is refused.
         let outside = serde_json::json!({ "changes": { "file:///etc/hosts": [] } });
         assert!(apply_workspace_edit(&root, &outside).is_err());
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A multi-file edit either lands whole or not at all. The second write here cannot happen —
+    /// its parent directory is a regular file — and the first one, which already succeeded, has
+    /// to be put back, or the checkout is left half-refactored with nothing to say so.
+    #[test]
+    fn a_write_that_fails_halfway_leaves_every_file_as_it_was() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn old() {}\n").unwrap();
+        std::fs::write(root.join("src/other.rs"), "pub fn keep() {}\n").unwrap();
+        // A regular file where a directory would have to be.
+        std::fs::write(root.join("blocker"), "not a directory\n").unwrap();
+
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let whole = |text: &str| {
+            serde_json::json!([{ "range": { "start": { "line": 0, "character": 0 },
+                                             "end": { "line": 1, "character": 0 } },
+                                  "newText": text }])
+        };
+        let edit = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("src/lib.rs"), "version": null }, "edits": whole("pub fn new() {}\n") },
+            { "kind": "rename", "oldUri": uri("src/other.rs"), "newUri": uri("src/moved.rs") },
+            { "textDocument": { "uri": uri("blocker/inner.rs"), "version": null }, "edits": whole("x\n") }
+        ]});
+
+        let err = apply_workspace_edit(&root, &edit).expect_err("the third write cannot happen");
+        assert!(
+            format!("{err:#}").contains("put back"),
+            "the error says the checkout was restored: {err:#}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/lib.rs")).unwrap(),
+            "pub fn old() {}\n",
+            "the edit that succeeded before the failure is undone"
+        );
+        assert!(
+            root.join("src/other.rs").is_file() && !root.join("src/moved.rs").exists(),
+            "the rename is undone too"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("blocker")).unwrap(),
+            "not a directory\n",
+            "and nothing that was in the way is disturbed"
+        );
         crate::sync::clear_sync_cache(&root);
     }
 }

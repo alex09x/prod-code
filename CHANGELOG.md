@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **A multi-file edit is written whole or not at all** (#70). Every write tool ends in
+  `apply_workspace_edit`, which renamed and deleted during its first pass and wrote contents one
+  file after another: the first failure returned a bare OS error and left whatever was already
+  written in place. It now snapshots every path the edit touches before the first side effect,
+  and on any failure puts each one back — the bytes it had, or no file where there was none —
+  and says so: `the edit failed partway and was undone: N file(s) put back as they were`.
+  Directories are never removed.
 - **change-signature no longer loses a declaration that a call above it moved** (#58). The
   structural rewrite renders a call site it changes on one line; when that call sat above the
   declaration across several lines, everything below it moved up, and the declaration was looked
@@ -11,6 +18,15 @@
   and the rewrite never touches it, so it is now found by its own text. If that text is gone or
   appears twice, the refusal names the function and its signature. The command from the issue —
   reordering `execute_lsp_query`, 178 changed lines in 6 files — now succeeds.
+- **Half a second off every CLI invocation** (#56). The gateway probed for installed language
+  servers on every `StatusRequest`, `Gossip`, `ClusterRequest` and placement decision, and one
+  of those probes is `npm root -g`, which spends 213 ms starting node. A CLI invocation asks
+  two such questions before it can send its query — where the cluster is, and which node holds
+  this workspace — so it paid the probe twice. The answer changes only when somebody installs a
+  language server, so it is now taken once at startup, refreshed by the janitor's existing
+  minute tick on a thread that may block, and read from memory on the request path. Measured on
+  a Linux build node over loopback: `StatusRequest` 436.8 ms → 0.2 ms (median of 7), and
+  `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
 - Change a declared type and see the whole job first (roadmap 7.1.4): `code_migrate_type` (MCP)
@@ -46,19 +62,6 @@
   all, such as a test, names the type in full instead. A use that is not a call with this
   arity is named rather than mangled. The whole change is type-checked in one overlay before
   anything is written.
-
-### Fixed
-- **Half a second off every CLI invocation** (#56). The gateway probed for installed language
-  servers on every `StatusRequest`, `Gossip`, `ClusterRequest` and placement decision, and one
-  of those probes is `npm root -g`, which spends 213 ms starting node. A CLI invocation asks
-  two such questions before it can send its query — where the cluster is, and which node holds
-  this workspace — so it paid the probe twice. The answer changes only when somebody installs a
-  language server, so it is now taken once at startup, refreshed by the janitor's existing
-  minute tick on a thread that may block, and read from memory on the request path. Measured on
-  a Linux build node over loopback: `StatusRequest` 436.8 ms → 0.2 ms (median of 7), and
-  `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
-
-### Added
 - Move a declaration to another module (roadmap 7.1.1): `code_move` (MCP) and
   `prod-code move <symbol> --to <file>` take a function, struct, enum, trait or const out of one
   module and put it in another, with the imports that keep every user of it compiling. The item
