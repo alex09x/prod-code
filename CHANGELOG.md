@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Fixed
+- **introduce_variable no longer changes what the code does in two cases** (#155). Both used to
+  write a different program, and the type check accepted it:
+  - a method call on a name the expression reads (`s.bump()` between two copies of `s.x + 1`)
+    now counts as a possible change, like an assignment;
+  - an expression that can panic (`/`, `%`, indexing, arithmetic that overflows in a debug
+    build) is bound earlier only when one occurrence runs every time the binding does. That
+    occurrence must sit at the binding's block level, with no `return`, `break`, `continue`, `?`
+    or panicking macro before it, and no `&&`, `||` or closure earlier in its statement. Two
+    divisions each under their own `if b != 0` used to be hoisted above both guards, so
+    `ratio(1, 0)` panicked. That change is now refused;
+  - an occurrence written `(expr)` on its own is replaced by the bare name (`a + x1`, not
+    `a + (x1)`).
 - **`prod-code outline` no longer lists every local variable** (#151). The CLI had its own copy of
   the outline renderer. It printed every `Variable` the analyzer reports: 147 of the 206 entries
   for `move_item.rs`. The CLI and `code_outline` now share one renderer:
