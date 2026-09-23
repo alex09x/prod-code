@@ -72,6 +72,11 @@ pub struct SignatureChange {
     pub returns: Option<(String, String)>,
     /// The visibility before and after, when the request changed it (`private` for none).
     pub visibility: Option<(String, String)>,
+    /// Whether it was `async` and is now, when the request changed it.
+    pub asyncness: Option<(bool, bool)>,
+    /// Calls that now `.await` from a function that is not `async`: each blocks the write
+    /// unless `force`.
+    pub not_async: Vec<String>,
 }
 
 /// What a signature change does besides the parameters: the return type and the visibility.
@@ -81,6 +86,8 @@ pub struct Modifiers {
     pub returns: Option<String>,
     /// `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove it.
     pub visibility: Option<String>,
+    /// Whether the function should be `async`; every call gains or loses its `.await`.
+    pub asyncness: Option<bool>,
 }
 
 impl SignatureChange {
@@ -94,6 +101,20 @@ impl SignatureChange {
         }
         if let Some((was, now)) = &self.visibility {
             out.push_str(&format!("- visibility: `{was}` → `{now}`\n"));
+        }
+        if let Some((was, now)) = self.asyncness {
+            let word = |a: bool| if a { "async" } else { "not async" };
+            out.push_str(&format!(
+                "- {} → {}: every call {} `.await`\n",
+                word(was),
+                word(now),
+                if now { "gains" } else { "loses" }
+            ));
+        }
+        for site in &self.not_async {
+            out.push_str(&format!(
+                "- {site}: awaits from a function that is not `async`\n"
+            ));
         }
         if !self.rule.is_empty() {
             out.push_str(&format!("- call sites: `{}`\n", self.rule));
@@ -686,6 +707,38 @@ fn with_visibility(text: &str, name_at: usize, visibility: &str) -> Option<(Stri
     Some((was, out))
 }
 
+/// `text` with `async` put in front of the `fn` at `fn_at` (before `unsafe`, which comes after
+/// it), or taken away.
+pub(crate) fn with_async(text: &str, fn_at: usize, want: bool) -> String {
+    let line_start = text[..fn_at].rfind('\n').map_or(0, |i| i + 1);
+    let head = &text[line_start..fn_at];
+    let mut out = text.to_string();
+    if want {
+        let at = match head.rfind("unsafe ") {
+            Some(i) if head[i + "unsafe ".len()..].trim().is_empty() => line_start + i,
+            _ => fn_at,
+        };
+        out.insert_str(at, "async ");
+    } else if let Some(i) = head.rfind("async ") {
+        out.replace_range(line_start + i..line_start + i + "async ".len(), "");
+    }
+    out
+}
+
+/// Whether the code at `at` is in the body of an `async fn`.
+pub(crate) fn in_async_fn(text: &str, at: usize) -> bool {
+    let Some((open, _)) = crate::introduce_variable::enclosing_body(text, at) else {
+        return false;
+    };
+    let Some(fn_at) = text[..open].rfind("fn ") else {
+        return false;
+    };
+    let start = text[..fn_at]
+        .rfind(['\n', ';', '}', '{'])
+        .map_or(0, |i| i + 1);
+    text[start..fn_at].split_whitespace().any(|w| w == "async")
+}
+
 /// [`change`], with the return type and the visibility changed in the same edit.
 #[allow(clippy::too_many_arguments)]
 pub async fn change_with(
@@ -770,6 +823,58 @@ pub async fn change_with(
         }
     }
 
+    // `async` in or out: every call the analyzer knows gains or loses its `.await`.
+    let head_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let was_async = text[head_start..offset]
+        .split_whitespace()
+        .any(|w| w == "async");
+    let mut asyncness_change = None;
+    let mut not_async = Vec::new();
+    if let Some(want) = modifiers.asyncness.filter(|w| *w != was_async) {
+        anyhow::ensure!(
+            !order_changed,
+            "change `async` and the parameter list in two steps"
+        );
+        asyncness_change = Some((was_async, want));
+        let refs = references(remote, root, file, line, col)
+            .await
+            .unwrap_or_default();
+        let mut edits: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+        for (path, rl, rc) in &refs {
+            let t = match rewritten.get(path) {
+                Some(t) => t.clone(),
+                None => std::fs::read_to_string(path).unwrap_or_default(),
+            };
+            let Some(end) = offset_of(&t, *rl, *rc)
+                .and_then(|at| param_span(&t, at))
+                .map(|(_, _, close)| close + 1)
+            else {
+                continue; // not a call: the function used as a value
+            };
+            if want != t[end..].starts_with(".await") {
+                edits.entry(path.clone()).or_default().push(end);
+                if want && !in_async_fn(&t, end) {
+                    not_async.push(format!("{}:{rl}:{rc}", display(root, path)));
+                }
+            }
+        }
+        for (path, mut ends) in edits {
+            let mut t = match rewritten.get(&path) {
+                Some(t) => t.clone(),
+                None => std::fs::read_to_string(&path).unwrap_or_default(),
+            };
+            ends.sort_unstable();
+            for end in ends.into_iter().rev() {
+                if want {
+                    t.insert_str(end, ".await");
+                } else {
+                    t.replace_range(end..end + ".await".len(), "");
+                }
+            }
+            rewritten.insert(path, t);
+        }
+    }
+
     // Then the declaration, on top of whatever the rewrite did to its file (a recursive
     // function calls itself, and the call site is inside the body being edited).
     let base = rewritten.get(file).cloned().unwrap_or_else(|| text.clone());
@@ -817,6 +922,12 @@ pub async fn change_with(
             visibility_change = Some((was, visibility.trim().to_string()));
             decl_text = out;
         }
+    }
+    if let Some((_, want)) = asyncness_change {
+        let fn_at = decl_text[..open]
+            .rfind(&format!("fn {name}"))
+            .context("the declaration's `fn` keyword is not where the parameter list says")?;
+        decl_text = with_async(&decl_text, fn_at, want);
     }
     rewritten.insert(file.to_path_buf(), decl_text);
 
@@ -922,6 +1033,13 @@ pub async fn change_with(
             diagnostics.len(),
             diagnostics.join("\n  ")
         );
+        anyhow::ensure!(
+            not_async.is_empty() || force,
+            "{} call(s) would `.await` from a function that is not `async`; nothing was \
+             written. Make those callers `async` first, or pass `force: true`:\n  {}",
+            not_async.len(),
+            not_async.join("\n  ")
+        );
         let edit = whole_file_edit(&rewritten);
         crate::refactor::apply_workspace_edit(root, &edit)?;
         applied = true;
@@ -944,6 +1062,8 @@ pub async fn change_with(
         applied,
         returns: returns_change,
         visibility: visibility_change,
+        asyncness: asyncness_change,
+        not_async,
     })
 }
 
@@ -1309,6 +1429,20 @@ mod tests {
     #[test]
     fn the_signature_is_reported_on_one_line() {
         assert_eq!(normalize("\n    a: u32,\n    b: u32,\n"), "a: u32, b: u32");
+    }
+
+    #[test]
+    fn async_goes_before_unsafe_and_callers_are_told_apart() {
+        let t = "pub unsafe fn raw() {}\n";
+        let out = with_async(t, t.find("fn raw").unwrap(), true);
+        assert_eq!(out, "pub async unsafe fn raw() {}\n");
+        assert_eq!(with_async(&out, out.find("fn raw").unwrap(), false), t);
+        let plain = "fn f() {}\n";
+        assert_eq!(with_async(plain, 0, true), "async fn f() {}\n");
+        let callers = "async fn a() {\n    load(1)\n}\nfn b() {\n    load(2)\n}\n";
+        assert!(in_async_fn(callers, callers.find("load(1)").unwrap()));
+        assert!(!in_async_fn(callers, callers.find("load(2)").unwrap()));
+        assert!(!in_async_fn("load(3)", 0));
     }
 
     #[test]

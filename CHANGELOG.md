@@ -226,6 +226,17 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- `async` in change_signature (roadmap 7.1.1, #176): `async: true|false` on
+  `code_change_signature`, and `--async true|false` on the CLI.
+  - `async` is added to the declaration, placed before `unsafe`, or taken away. Every call the
+    analyzer lists gains or loses `.await` right after its closing parenthesis, in the same
+    type-checked edit. A reference that is not a call is left alone.
+  - A call that would `.await` from a function that is not `async` is listed, and it blocks the
+    write unless `force` is set. The analyzer also reports that case, as E0728.
+  - A request that also changes the order of the parameters is refused.
+
+  On a scratch crate, making `load` async awaited its four calls in one change, and clippy
+  passed.
 - Rename follows the old name into comments and test names (roadmap 7.1.1, #174): `comments:
   true` on `code_rename`, `prod-code rename … --comments`. In every file the rename touches:
   - the old name is replaced where it stands as a whole word in a comment (`Orders` stays);
