@@ -1222,6 +1222,42 @@ async fn code_safe_delete_removes_an_unreferenced_item() {
 
 const WITH_PRELUDE: &str = "fn g() -> std::prelude::v1::Option<u8> {\n    None\n}\n";
 
+/// A file that already mentions the prelude path — in a comment, or code that spells it on
+/// purpose — keeps those lines as they are; only the lines the assist wrote are shortened.
+#[tokio::test]
+async fn only_the_lines_an_assist_wrote_are_respelled() {
+    let ws = workspace();
+    let before = "// std::prelude::v1::Option is spelled out here on purpose\nfn g() {}\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    let after =
+        format!("// std::prelude::v1::Option is spelled out here on purpose\n{WITH_PRELUDE}");
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => answers::whole_file(&path, before, &after),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_assist",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 4, "id": "some_assist" }),
+    )
+    .await
+    .expect("the assist runs");
+    assert!(
+        text_of(&result).contains("1 `std::prelude::v1::` path(s)"),
+        "{}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "// std::prelude::v1::Option is spelled out here on purpose\nfn g() -> Option<u8> {\n    None\n}\n"
+    );
+}
+
 /// An assist that spells a prelude item by its full path gets the name in scope instead, when the
 /// analyzer accepts it (#97), and keeps rust-analyzer's spelling when it does not.
 #[tokio::test]
