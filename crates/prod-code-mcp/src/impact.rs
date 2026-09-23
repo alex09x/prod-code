@@ -37,6 +37,18 @@ pub struct ImpactReport {
     pub test_command: Option<Vec<String>>,
     /// Files whose changed lines lie outside any function (module-level code, manifests).
     pub unattributed_files: Vec<String>,
+    /// How the analyzer's index was brought up to date first, when it had to be (Swift), and
+    /// whether that worked: when it did not, no callers means unknown callers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<IndexBuild>,
+}
+
+/// The build that gives sourcekit-lsp its index: Swift 5 finds callers only through it (#166).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct IndexBuild {
+    pub command: String,
+    pub ok: bool,
+    pub duration_ms: u64,
 }
 
 impl ImpactReport {
@@ -50,6 +62,21 @@ impl ImpactReport {
             self.callers.len(),
             self.tests.len()
         ));
+        let unindexed = self.index.as_ref().is_some_and(|b| !b.ok);
+        if let Some(b) = &self.index {
+            out.push_str(&if b.ok {
+                format!(
+                    "index: `{}` ({:.1}s) before the call hierarchy\n",
+                    b.command,
+                    b.duration_ms as f64 / 1000.0
+                )
+            } else {
+                format!(
+                    "index: `{}` failed, so the analyzer has no index; callers and tests below are unknown, not none\n",
+                    b.command
+                )
+            });
+        }
         if !self.changed.is_empty() {
             out.push_str("changed functions:\n");
             for s in &self.changed {
@@ -76,6 +103,8 @@ impl ImpactReport {
                     s.name, s.file, s.line, s.col
                 ));
             }
+        } else if unindexed {
+            out.push_str("affected tests: unknown (no index); run the full suite\n");
         } else if !self.changed.is_empty() {
             out.push_str("affected tests: none reach the changed functions\n");
         }
@@ -358,6 +387,35 @@ pub async fn analyze(
         .to_string();
     let tools = crate::verify::detect_tools(root);
     let ranges = changed_lines(root, base)?;
+    // sourcekit-lsp 5 finds a caller in another file only through the index store a build
+    // leaves; without one every answer is empty and reads like "nothing calls this" (#166).
+    let index = if language == "swift" && !ranges.is_empty() {
+        let command = vec![
+            "swift".to_string(),
+            "build".to_string(),
+            "--build-tests".to_string(),
+        ];
+        let outcome = crate::exec::run_remote(
+            remote,
+            root,
+            None,
+            command.clone(),
+            Vec::new(),
+            900,
+            false,
+            |_, _| {},
+        )
+        .await;
+        Some(IndexBuild {
+            command: command.join(" "),
+            ok: outcome
+                .as_ref()
+                .is_ok_and(|o| o.exit.exit_code == Some(0) && !o.exit.timed_out),
+            duration_ms: outcome.as_ref().map_or(0, |o| o.exit.duration_ms),
+        })
+    } else {
+        None
+    };
     let mut session = LspSession::open(remote, root, None).await?;
     let changed_files: Vec<String> = ranges.keys().cloned().collect();
     let mut changed: Vec<Symbol> = Vec::new();
@@ -509,6 +567,7 @@ pub async fn analyze(
         tests,
         test_command,
         unattributed_files: unattributed,
+        index,
     })
 }
 
