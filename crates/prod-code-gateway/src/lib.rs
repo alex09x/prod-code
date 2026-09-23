@@ -382,6 +382,35 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<us
     Ok(copied)
 }
 
+/// Build products, dependency trees and virtual environments: per-node caches, not sources. They
+/// never travel back to the client, and they are not the client's to delete.
+fn is_node_cache(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | "target"
+            | "node_modules"
+            | ".venv"
+            | "venv"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".tox"
+            | ".nox"
+            | "build"
+            | ".build"
+            | "dist"
+            | ".cache"
+            | ".next"
+            | ".turbo"
+            | "coverage"
+            | "DerivedData"
+            | ".swiftpm"
+            | ".gradle"
+    ) || name == workspace::LAST_USED_MARKER
+}
+
 fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, PathBuf)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -389,33 +418,7 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
     for entry in entries.flatten() {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        // Build products, dependency trees and virtual environments never travel back to
-        // the client: they are per-node caches, not sources.
-        if matches!(
-            name.as_str(),
-            ".git"
-                | "target"
-                | "node_modules"
-                | ".venv"
-                | "venv"
-                | "__pycache__"
-                | ".pytest_cache"
-                | ".mypy_cache"
-                | ".ruff_cache"
-                | ".tox"
-                | ".nox"
-                | "build"
-                | ".build"
-                | "dist"
-                | ".cache"
-                | ".next"
-                | ".turbo"
-                | "coverage"
-                | "DerivedData"
-                | ".swiftpm"
-                | ".gradle"
-        ) || name == workspace::LAST_USED_MARKER
-        {
+        if is_node_cache(&name) {
             continue;
         }
         if path.is_dir() {
@@ -433,9 +436,46 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
     }
 }
 
+/// Removes `dir` and every parent left empty by that, up to but not including `root`: a directory
+/// whose last file was deleted or moved away locally goes away on the copy too (#124). A
+/// directory that still holds anything stops the climb.
+fn prune_empty_parents(root: &std::path::Path, dir: Option<&std::path::Path>) {
+    let mut dir = dir;
+    while let Some(d) = dir {
+        if d == root || !d.starts_with(root) || std::fs::remove_dir(d).is_err() {
+            return;
+        }
+        dir = d.parent();
+    }
+}
+
+/// Removes every directory under `dir` that holds no file, however deeply, except the per-node
+/// caches: what an earlier deletion left behind before empty directories were pruned (#124).
+/// Returns whether `dir` itself is now empty.
+fn prune_empty_dirs(root: &std::path::Path, dir: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut empty = true;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() && !path.is_symlink() && !is_node_cache(&name) {
+            if prune_empty_dirs(root, &path) {
+                let _ = std::fs::remove_dir(&path);
+            } else {
+                empty = false;
+            }
+        } else {
+            empty = false;
+        }
+    }
+    empty && dir != root
+}
+
 /// Compares the workspace directory with the client's manifest: deletes files the client does
-/// not have, and returns `(missing, deleted)` where `missing` are manifest paths the server
-/// lacks or holds with different content.
+/// not have, and the directories that leaves empty, and returns `(missing, deleted)` where
+/// `missing` are manifest paths the server lacks or holds with different content.
 fn reconcile_manifest(root: &std::path::Path, stamps: &[FileStamp]) -> (Vec<String>, Vec<String>) {
     let wanted: std::collections::HashMap<&str, &FileStamp> = stamps
         .iter()
@@ -472,6 +512,7 @@ fn reconcile_manifest(root: &std::path::Path, stamps: &[FileStamp]) -> (Vec<Stri
             missing.push(stamp.relative_path.clone());
         }
     }
+    prune_empty_dirs(root, root);
     missing.sort();
     missing.dedup();
     (missing, deleted)
@@ -1576,6 +1617,7 @@ pub async fn apply_sync_with_metrics(
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
                     files_deleted += 1;
+                    prune_empty_parents(&server_workspace, target_path.parent());
                 }
                 for engine_lock in &loaded_rust {
                     let mut engine = engine_lock.lock().await;
@@ -2765,6 +2807,7 @@ async fn on_client_message(
                             && tokio::fs::remove_file(&target_path).await.is_ok()
                         {
                             files_deleted += 1;
+                            prune_empty_parents(&view.workspace.root, target_path.parent());
                         }
                         for engine_lock in view.workspace.mirrored_rust_engines() {
                             let mut engine = engine_lock.lock().await;
@@ -4174,6 +4217,62 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory renamed or deleted locally leaves nothing behind on the copy (#124): the files
+    /// the manifest no longer lists go, and so do the directories that held only them, while a
+    /// directory that still holds a file, the workspace root and the per-node caches stay.
+    #[test]
+    fn a_directory_gone_locally_is_gone_from_the_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        for (rel, body) in [
+            ("Sources/OldApp/main.swift", "old"),
+            ("Sources/Unused/deep/x.swift", "unused"),
+            ("Sources/NewApp/main.swift", "new"),
+            ("Package.swift", "pkg"),
+            (".build/debug/cache.o", "cache"),
+        ] {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), body).unwrap();
+        }
+        std::fs::create_dir_all(root.join("Sources/Empty/deeper")).unwrap();
+        let stamp = |rel: &str, body: &str| FileStamp {
+            relative_path: rel.to_string(),
+            size: body.len() as u64,
+            hash: content_hash(body.as_bytes()),
+        };
+        let manifest = [
+            stamp("Sources/NewApp/main.swift", "new"),
+            stamp("Package.swift", "pkg"),
+        ];
+        let (missing, mut deleted) = reconcile_manifest(root, &manifest);
+        deleted.sort();
+        assert!(missing.is_empty(), "{missing:?}");
+        assert_eq!(
+            deleted,
+            ["Sources/OldApp/main.swift", "Sources/Unused/deep/x.swift"]
+        );
+        for gone in ["Sources/OldApp", "Sources/Unused", "Sources/Empty"] {
+            assert!(!root.join(gone).exists(), "{gone} is still on the copy");
+        }
+        assert!(root.join("Sources/NewApp/main.swift").is_file());
+        assert!(
+            root.join(".build/debug/cache.o").is_file(),
+            "a node cache is not touched"
+        );
+
+        // A single deletion climbs only as far as the directories it empties.
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/keep.rs"), "k").unwrap();
+        std::fs::write(root.join("a/b/c/gone.rs"), "g").unwrap();
+        std::fs::remove_file(root.join("a/b/c/gone.rs")).unwrap();
+        let emptied = root.join("a/b/c");
+        prune_empty_parents(root, Some(&emptied));
+        assert!(!root.join("a/b").exists());
+        assert!(root.join("a/keep.rs").is_file());
+        prune_empty_parents(root, Some(root));
+        assert!(root.exists(), "the workspace root itself is never removed");
+    }
 
     #[test]
     fn test_changed_since_reports_new_changed_and_deleted() {
