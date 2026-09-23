@@ -42,6 +42,7 @@ pub mod slice;
 pub mod sync;
 pub mod to_method;
 pub mod tools;
+pub mod trait_param;
 pub mod type_migration;
 pub mod verify;
 pub mod watch;

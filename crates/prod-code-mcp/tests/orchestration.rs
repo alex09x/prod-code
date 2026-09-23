@@ -3860,3 +3860,75 @@ async fn a_module_moves_with_its_files_and_every_path_to_it() {
     .expect_err("the target exists");
     assert!(format!("{again:#}").contains("already exists"), "{again:#}");
 }
+
+const SHAPES: &str = "pub trait Shape {\n    fn area(&self, scale: u32, unused: u32) -> u32;\n}\n\npub struct Circle(pub u32);\npub struct Square(pub u32);\n\nimpl Shape for Circle {\n    fn area(&self, scale: u32, _unused: u32) -> u32 {\n        3 * self.0 * self.0 * scale\n    }\n}\n\nimpl Shape for Square {\n    fn area(&self, scale: u32, unused: u32) -> u32 {\n        self.0 * self.0 * scale\n    }\n}\n\npub fn total(shapes: &[&dyn Shape]) -> u32 {\n    shapes.iter().map(|s| s.area(2, 7)).sum()\n}\n\npub fn one(c: &Circle) -> u32 {\n    c.area(1, tick()) + Shape::area(c, 3, 0)\n}\n\nfn tick() -> u32 {\n    0\n}\n";
+
+/// Removing a trait method's parameter, asked at an implementation that names it `_unused`:
+/// the trait is found through the `impl` header, the parameter goes from the trait and both
+/// implementations by position, a method call loses its second argument and a path call its
+/// third (the receiver comes first). An argument that calls something blocks the write until
+/// `force`.
+#[tokio::test]
+async fn a_trait_method_parameter_goes_from_every_implementation_and_call() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", SHAPES);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/definition" => answers::locations(&l, &[(1, 11)]),
+        "textDocument/implementation" => answers::locations(&l, &[(9, 8), (15, 8)]),
+        "textDocument/references" => {
+            answers::locations(&l, &[(9, 8), (15, 8), (21, 29), (25, 7), (25, 32)])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let fn_at = SHAPES.match_indices("area").nth(1).unwrap().0;
+    let run = |apply: bool, force: bool| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::trait_param::remove_parameter(
+                remote, &root, &lib, fn_at, 1, apply, force,
+            )
+            .await
+        }
+    };
+
+    let blocked = run(true, false).await.expect("it reports");
+    assert_eq!(blocked.method, "Shape::area");
+    assert_eq!(blocked.parameter, "unused");
+    assert_eq!(blocked.declarations.len(), 3, "{:?}", blocked.declarations);
+    assert!(blocked.declarations[1].contains("(_unused)"));
+    assert_eq!(blocked.calls, 3);
+    assert_eq!(blocked.blocked.len(), 1, "{:?}", blocked.blocked);
+    assert!(
+        blocked.blocked[0].contains("`tick()` calls something"),
+        "{:?}",
+        blocked.blocked
+    );
+    assert!(!blocked.applied);
+    assert_eq!(ws.read("src/lib.rs"), SHAPES);
+    assert!(
+        blocked
+            .render(20_000)
+            .contains("nothing may be written while")
+    );
+
+    let forced = run(true, true).await.expect("force writes");
+    assert!(forced.applied);
+    let now = ws.read("src/lib.rs");
+    assert!(
+        now.contains("    fn area(&self, scale: u32) -> u32;\n"),
+        "{now}"
+    );
+    assert_eq!(
+        now.matches("fn area(&self, scale: u32) -> u32 {").count(),
+        2,
+        "{now}"
+    );
+    assert!(now.contains("s.area(2)"), "{now}");
+    assert!(now.contains("c.area(1) + Shape::area(c, 3)"), "{now}");
+    assert!(forced.render(20_000).contains("[applied]"));
+}
