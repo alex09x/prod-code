@@ -452,6 +452,7 @@ mod tests {
             tail: String::new(),
             fixes: vec![],
             benches: vec![],
+            usage: None,
         };
         let outcome = |skipped: Option<&str>| Outcome {
             file: "src/lib.rs".into(),

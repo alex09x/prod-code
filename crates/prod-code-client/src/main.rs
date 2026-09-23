@@ -278,6 +278,13 @@ enum Commands {
         /// Apply the compiler's machine-applicable fixes, then check again (Rust).
         #[arg(long, default_value_t = false)]
         fix: bool,
+        /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
+        #[arg(long = "env", value_name = "KEY=VALUE", conflicts_with = "fix")]
+        env: Vec<String>,
+        /// Print each diagnostic and test result as a JSON line as it arrives, and the report as
+        /// the last line.
+        #[arg(long, default_value_t = false)]
+        events: bool,
     },
     /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
     Lint {
@@ -288,6 +295,13 @@ enum Commands {
         /// Apply the machine-applicable fixes, then lint again (Rust).
         #[arg(long, default_value_t = false)]
         fix: bool,
+        /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
+        #[arg(long = "env", value_name = "KEY=VALUE", conflicts_with = "fix")]
+        env: Vec<String>,
+        /// Print each diagnostic and test result as a JSON line as it arrives, and the report as
+        /// the last line.
+        #[arg(long, default_value_t = false)]
+        events: bool,
     },
     /// Run the project's benchmarks remotely (cargo bench / go test -bench) with parsed results.
     Benchmarks {
@@ -297,6 +311,13 @@ enum Commands {
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Print each diagnostic and test result as a JSON line as it arrives, and the report as
+        /// the last line.
+        #[arg(long, default_value_t = false)]
+        events: bool,
     },
     /// Run tests remotely (cargo test / go test -json), optionally filtered by name.
     Test {
@@ -306,6 +327,13 @@ enum Commands {
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Print each diagnostic and test result as a JSON line as it arrives, and the report as
+        /// the last line.
+        #[arg(long, default_value_t = false)]
+        events: bool,
     },
     /// Run a build/test/lint command on the remote gateway inside this checkout's server copy:
     /// prod-code exec -- cargo test -p my-crate
@@ -1224,28 +1252,86 @@ async fn main() -> Result<()> {
             timeout_secs,
             json,
             fix: true,
+            ..
         } => run_fix(remote, VerifyKind::Check, timeout_secs, json).await,
         Commands::Check {
-            timeout_secs, json, ..
-        } => run_verify(remote, VerifyKind::Check, None, timeout_secs, json).await,
+            timeout_secs,
+            json,
+            env,
+            events,
+            ..
+        } => {
+            run_verify(
+                remote,
+                VerifyKind::Check,
+                None,
+                timeout_secs,
+                json,
+                env,
+                events,
+            )
+            .await
+        }
         Commands::Lint {
             timeout_secs,
             json,
             fix: true,
+            ..
         } => run_fix(remote, VerifyKind::Lint, timeout_secs, json).await,
         Commands::Lint {
-            timeout_secs, json, ..
-        } => run_verify(remote, VerifyKind::Lint, None, timeout_secs, json).await,
+            timeout_secs,
+            json,
+            env,
+            events,
+            ..
+        } => {
+            run_verify(
+                remote,
+                VerifyKind::Lint,
+                None,
+                timeout_secs,
+                json,
+                env,
+                events,
+            )
+            .await
+        }
         Commands::Test {
             filter,
             timeout_secs,
             json,
-        } => run_verify(remote, VerifyKind::Test, filter, timeout_secs, json).await,
+            env,
+            events,
+        } => {
+            run_verify(
+                remote,
+                VerifyKind::Test,
+                filter,
+                timeout_secs,
+                json,
+                env,
+                events,
+            )
+            .await
+        }
         Commands::Benchmarks {
             filter,
             timeout_secs,
             json,
-        } => run_verify(remote, VerifyKind::Bench, filter, timeout_secs, json).await,
+            env,
+            events,
+        } => {
+            run_verify(
+                remote,
+                VerifyKind::Bench,
+                filter,
+                timeout_secs,
+                json,
+                env,
+                events,
+            )
+            .await
+        }
         Commands::Exec {
             timeout_secs,
             no_pull,
@@ -3314,26 +3400,51 @@ async fn run_cluster(
     Ok(())
 }
 
-/// Typed remote verification: check / lint / test with parsed diagnostics.
+/// Typed remote verification: check / lint / test with parsed diagnostics. `env` holds
+/// `KEY=VALUE` pairs for the command; `events` prints each [`RunEvent`] as a JSON line as it
+/// arrives and the report as the last one.
+///
+/// [`RunEvent`]: prod_code_mcp::verify::RunEvent
 async fn run_verify(
     remote: SocketAddr,
     kind: VerifyKind,
     filter: Option<String>,
     timeout_secs: u64,
     json: bool,
+    env: Vec<String>,
+    events: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let report = prod_code_mcp::verify::run_verify(
+    let env = env
+        .iter()
+        .map(|pair| {
+            pair.split_once('=')
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .with_context(|| format!("--env takes KEY=VALUE, got `{pair}`"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let report = prod_code_mcp::verify::run_verify_with(
         remote,
         &root,
         Some(&cwd),
         kind,
         filter.as_deref(),
         timeout_secs,
+        &env,
+        |event| {
+            if events && let Ok(line) = serde_json::to_string(&event) {
+                println!("{line}");
+            }
+        },
     )
     .await?;
-    if json {
+    if events {
+        println!(
+            "{}",
+            serde_json::json!({ "event": "report", "report": report })
+        );
+    } else if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", report.render(200));
