@@ -188,6 +188,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Rename a field with its accessors (roadmap 7.1.1, #146): `code_rename` takes `accessors`,
+  `prod-code rename` takes `--accessors`. The methods of the field's struct named after it (`f`,
+  `get_f`, `set_f`, `f_mut`, found in the symbol index by name and container) are renamed along
+  with the field, with every call:
+  - each rename is the analyzer's, computed against the checkout as it is;
+  - the resulting whole-file texts are merged into one change per file by a token-level
+    three-way merge (`rename_accessors::merge_three`). Identifiers are whole tokens, so two
+    renames on one line (`c.set_timeout(c.timeout() * 2)`) merge, and two that would change the
+    same identifier differently are refused;
+  - the result is type-checked in one overlay before it is written.
 - Change a function's return type and visibility (roadmap 7.1.1, #144): `code_change_signature`
   takes `returns` and `visibility`, `prod-code change-signature` takes `--returns` and
   `--visibility`:

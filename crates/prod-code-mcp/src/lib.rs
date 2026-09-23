@@ -23,6 +23,7 @@ pub mod parameter_object;
 pub mod protocol;
 pub mod refactor;
 pub mod remote_fs;
+pub mod rename_accessors;
 pub mod schema;
 pub mod search;
 pub mod session;
