@@ -32,6 +32,65 @@ pub struct Move {
     pub left_alone: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
+    /// The target module did not exist: the file created, and the parent that declares it now.
+    pub created: Option<(String, String)>,
+}
+
+/// The file that must declare the module `target` would be: `src/lib.rs` or `src/main.rs` for
+/// `src/util.rs`, and `src/a.rs` or `src/a/mod.rs` for `src/a/util.rs`. The first that exists.
+pub fn parent_module_file(target: &Path) -> Option<PathBuf> {
+    let dir = target.parent()?;
+    let candidates = if dir.file_name().is_some_and(|n| n == "src") {
+        vec![dir.join("lib.rs"), dir.join("main.rs")]
+    } else {
+        vec![dir.with_extension("rs"), dir.join("mod.rs")]
+    };
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// `text` with `mod name;` (or `pub mod name;`) declared after its last top-level `mod` line, or
+/// after its leading inner doc comments and attributes when it has none.
+pub fn declare_module(text: &str, name: &str, public: bool) -> String {
+    let line = format!("{}mod {name};", if public { "pub " } else { "" });
+    let lines: Vec<&str> = text.lines().collect();
+    let is_mod = |l: &str| {
+        let t = l.trim_start();
+        (t.starts_with("mod ") || t.starts_with("pub mod ") || t.starts_with("pub(crate) mod "))
+            && t.trim_end().ends_with(';')
+            && !l.starts_with(char::is_whitespace)
+    };
+    let at = match lines.iter().rposition(|l| is_mod(l)) {
+        Some(i) => i + 1,
+        None => lines
+            .iter()
+            .position(|l| {
+                let t = l.trim_start();
+                !(t.starts_with("//!") || t.starts_with("#![") || t.is_empty())
+            })
+            .unwrap_or(lines.len()),
+    };
+    // Blank lines above the declaration and nothing else (what an item cut from the top of the
+    // file leaves behind) go.
+    let leading_blank = if lines[..at].iter().all(|l| l.trim().is_empty()) {
+        at
+    } else {
+        0
+    };
+    let at = at - leading_blank;
+    let mut out: Vec<String> = lines[leading_blank..]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    out.insert(at, line);
+    // One blank line between the declarations and what follows them.
+    if lines.iter().rposition(|l| is_mod(l)).is_none()
+        && out.get(at + 1).is_some_and(|l| !l.trim().is_empty())
+    {
+        out.insert(at + 1, String::new());
+    }
+    let mut joined = out.join("\n");
+    joined.push('\n');
+    joined
 }
 
 impl Move {
@@ -48,6 +107,12 @@ impl Move {
             self.new_path,
             self.moved_lines
         );
+        if let Some((file, parent)) = &self.created {
+            out.insert_str(
+                out.len() - 1,
+                &format!("- {file} is new, declared in {parent}\n"),
+            );
+        }
         let mut body = String::new();
         let mut changed_lines = 0usize;
         for (path, new_text) in &self.rewritten {
@@ -592,12 +657,28 @@ pub async fn move_item(
     );
     let source_text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let target_text = std::fs::read_to_string(target).with_context(|| {
-        format!(
-            "cannot read {} — the target module must already exist and be declared by its parent",
-            target.display()
-        )
-    })?;
+    // A target that does not exist yet is created, and declared by its parent module (#148).
+    let new_module_parent = if target.exists() {
+        None
+    } else {
+        anyhow::ensure!(
+            target.extension().is_some_and(|e| e == "rs"),
+            "{} is not a Rust source file",
+            display(root, target)
+        );
+        Some(parent_module_file(target).with_context(|| {
+            format!(
+                "{} does not exist, and neither does a module file to declare it in (for \
+                 `src/a/x.rs`, `src/a.rs` or `src/a/mod.rs`); create the parent module first",
+                display(root, target)
+            )
+        })?)
+    };
+    let target_text = match &new_module_parent {
+        Some(_) => String::new(),
+        None => std::fs::read_to_string(target)
+            .with_context(|| format!("cannot read {}", target.display()))?,
+    };
 
     let (_, from_module) = module_of(file)?;
     let (_, to_module) = module_of(target)?;
@@ -614,7 +695,11 @@ pub async fn move_item(
     let start = with_doc_comment(&source_text, decl_start);
     let (source_new, item) = cut(&source_text, start, decl_end);
     let (target_with_imports, carried) = carry_imports(&source_text, &item, &target_text);
-    let target_new = append_item(&target_with_imports, &item);
+    let target_new = if target_with_imports.trim().is_empty() {
+        format!("{}\n", item.trim())
+    } else {
+        append_item(&target_with_imports, &item)
+    };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
     let refs = crate::signature::references(remote, root, file, line, col).await?;
@@ -622,7 +707,6 @@ pub async fn move_item(
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
     rewritten.insert(target.to_path_buf(), target_new);
-
     // The analyzer reported these against the file as it is now. In the file the item just
     // left, everything below the hole has moved up by as many lines as the item was long, and
     // a position that is not adjusted points at the wrong text.
@@ -675,6 +759,27 @@ pub async fn move_item(
             imports.push(format!("{}: added `{use_line}`", display(root, path)));
         }
         rewritten.insert(path.clone(), text);
+    }
+
+    // A new module is declared last: the imports above were placed at the positions the
+    // analyzer gave, which a line inserted into the parent first would have shifted.
+    let mut created = None;
+    if let Some(parent) = &new_module_parent {
+        let module_name = target
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let public = item.trim_start().starts_with("pub");
+        let parent_text = match rewritten.get(parent) {
+            Some(text) => text.clone(),
+            None => std::fs::read_to_string(parent)
+                .with_context(|| format!("cannot read {}", parent.display()))?,
+        };
+        rewritten.insert(
+            parent.clone(),
+            declare_module(&parent_text, &module_name, public),
+        );
+        created = Some((display(root, target), display(root, parent)));
     }
 
     let edits: Vec<(PathBuf, String)> = rewritten
@@ -731,6 +836,7 @@ pub async fn move_item(
         left_alone,
         diagnostics,
         applied,
+        created,
     })
 }
 
@@ -755,6 +861,46 @@ async fn document_symbols(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_module_is_declared_after_the_last_mod_or_at_the_top() {
+        let with_mods = "//! Root.\n\npub mod a;\nmod b;\n\npub fn f() {}\n";
+        assert_eq!(
+            declare_module(with_mods, "util", true),
+            "//! Root.\n\npub mod a;\nmod b;\npub mod util;\n\npub fn f() {}\n"
+        );
+        let without = "//! Root.\n#![allow(dead_code)]\npub fn f() {}\n";
+        assert_eq!(
+            declare_module(without, "util", false),
+            "//! Root.\n#![allow(dead_code)]\nmod util;\n\npub fn f() {}\n"
+        );
+        // A `mod` inside a block is not the file's own list.
+        let nested = "fn f() {\n    mod inner;\n}\n";
+        assert!(declare_module(nested, "util", false).starts_with("mod util;\n\nfn f()"));
+        // The blank line an item cut from the top leaves behind does not stay above it.
+        assert_eq!(
+            declare_module("\nuse crate::x;\n", "util", true),
+            "pub mod util;\n\nuse crate::x;\n"
+        );
+    }
+
+    #[test]
+    fn a_new_module_s_parent_is_the_crate_root_or_the_directory_s_module() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(src.join("a")).unwrap();
+        std::fs::write(src.join("lib.rs"), "").unwrap();
+        std::fs::write(src.join("a.rs"), "").unwrap();
+        assert_eq!(
+            parent_module_file(&src.join("util.rs")),
+            Some(src.join("lib.rs"))
+        );
+        assert_eq!(
+            parent_module_file(&src.join("a/util.rs")),
+            Some(src.join("a.rs"))
+        );
+        assert_eq!(parent_module_file(&src.join("b/util.rs")), None);
+    }
 
     #[test]
     fn a_crate_name_comes_from_lib_then_package_and_is_spelled_in_rust() {
