@@ -2027,3 +2027,25 @@ async fn a_method_that_never_uses_self_becomes_an_associated_function() {
         "{refused:#}"
     );
 }
+
+/// A method in a trait `impl` keeps its receiver: the trait decides whether it takes `self`, and
+/// an implementation that dropped it would no longer implement the trait.
+#[tokio::test]
+async fn a_trait_impls_method_is_not_made_static() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub struct S;\n\npub trait T {\n    fn f(&self) -> u32;\n}\n\nimpl T for S {\n    fn f(&self) -> u32 {\n        1\n    }\n}\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+    let err = prod_code_mcp::make_static::make_static(remote, &root, &lib, 8, 8, false, false)
+        .await
+        .expect_err("refused");
+    assert!(
+        format!("{err:#}").contains("implements a trait method"),
+        "{err:#}"
+    );
+}
