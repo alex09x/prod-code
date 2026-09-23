@@ -3,12 +3,19 @@
 ## Unreleased
 
 ### Fixed
+- **A rename that does not compile is refused** (#98). The analyzer computes a rename without
+  checking the result, so renaming a function to a name already declared in the same scope
+  produced a second definition and reported success; splitting the gateway's session loop
+  left eight duplicate functions that way. `code_rename` now applies the edit in memory, checks
+  the renamed files in one overlay, and refuses with the errors unless `force` is given, in which
+  case it writes and names them. `prod-code rename` goes through the same handler and gains
+  `--force`. A rename that also moves module files says that part was not checked.
 - **Validating a proposal to a large file takes seconds, not tens of seconds** (#86). After a
   proposal changes what a crate declares, rust-analyzer infers every body of the file again, one
   function on one thread. Two functions made that the whole cost: `execute_tool` in the MCP
   tools (1,786 lines) and the client-message arm of the gateway's session loop (1,412 lines of
   `tokio::select!` input, where no refactoring assist works). `execute_tool` is now a dispatch
-  over 31 handlers; the session loop calls `on_client_message`, whose LSP fast paths are ten
+  over 32 handlers; the session loop calls `on_client_message`, whose LSP fast paths are ten
   handlers. Both splits were made with prod-code's own `extract_function` assist, `rename` and
   `codemod`. The engine also infers a file's functions on several threads before its diagnostics
   pass. Measured on a Linux build node, a new proposal that adds an item: `tools.rs` 25.0 s →

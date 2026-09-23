@@ -164,6 +164,9 @@ enum Commands {
         line: u32,
         col: u32,
         new_name: String,
+        /// Write the rename even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
     },
     /// Compile-check the workspace remotely (cargo check / go build) with structured diagnostics.
     Check {
@@ -647,7 +650,8 @@ async fn main() -> Result<()> {
             line,
             col,
             new_name,
-        } => run_rename(remote, &file, line, col, &new_name).await,
+            force,
+        } => run_rename(remote, &file, line, col, &new_name, force).await,
         Commands::SafeDelete { file, line, col } => run_safe_delete(remote, &file, line, col).await,
         Commands::Assists {
             file,
@@ -2192,32 +2196,29 @@ async fn run_rename(
     line: u32,
     col: u32,
     new_name: &str,
+    force: bool,
 ) -> Result<()> {
+    // The same path as the MCP tool, so the CLI gets the same check before writing (#98).
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let cwd = env::current_dir()?;
     let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
-    let file_uri = Url::from_file_path(&abs_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
-        .to_string();
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri },
-        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
-        "newName": new_name
-    });
     let started = std::time::Instant::now();
-    let edit = execute_lsp_query(remote, file, "textDocument/rename", params).await?;
-    if edit.is_null() {
-        anyhow::bail!("rename produced no edits");
+    let args = serde_json::json!({
+        "path": abs_path.to_string_lossy(),
+        "line": line,
+        "character": col,
+        "new_name": new_name,
+        "force": force,
+    });
+    let result = prod_code_mcp::tools::execute_tool(remote, &ws_root, "code_rename", args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
     }
-    let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
-    println!(
-        "renamed to `{new_name}` in {:.2}s; {} path(s) updated:",
-        started.elapsed().as_secs_f64(),
-        touched.len()
-    );
-    for path in touched {
-        println!("  {path}");
+    if result.is_error {
+        std::process::exit(1);
     }
+    println!("[{:.2}s]", started.elapsed().as_secs_f64());
     Ok(())
 }
 

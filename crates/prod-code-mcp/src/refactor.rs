@@ -103,6 +103,51 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Resul
     Ok(out)
 }
 
+/// What every file an edit rewrites would contain, without writing anything: the text edits of
+/// a `WorkspaceEdit` applied in memory to the files as they are. File renames, creations and
+/// deletions are not modelled; the second value says whether the edit had any, so a caller can
+/// say that part was not checked.
+pub(crate) fn planned_texts(
+    root: &Path,
+    edit: &serde_json::Value,
+) -> Result<(Vec<(std::path::PathBuf, String)>, bool)> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut per_file: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    let mut moves_files = false;
+    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
+        for change in changes {
+            if change.get("kind").and_then(|k| k.as_str()).is_some() {
+                moves_files = true;
+                continue;
+            }
+            let uri = change
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let edits = change
+                .get("edits")
+                .and_then(|e| e.as_array())
+                .cloned()
+                .unwrap_or_default();
+            per_file.push((uri_to_relative(&root, uri)?, edits));
+        }
+    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
+        for (uri, edits) in changes {
+            per_file.push((
+                uri_to_relative(&root, uri)?,
+                edits.as_array().cloned().unwrap_or_default(),
+            ));
+        }
+    }
+    let mut out = Vec::with_capacity(per_file.len());
+    for (rel, edits) in per_file {
+        let abs = root.join(&rel);
+        let current = std::fs::read_to_string(&abs).unwrap_or_default();
+        out.push((abs, apply_text_edits(&current, &edits)?));
+    }
+    Ok((out, moves_files))
+}
+
 /// Applies a `WorkspaceEdit` (`documentChanges` or `changes`) to the checkout at `root`.
 /// Returns the relative paths written, moved or deleted, in application order.
 pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
