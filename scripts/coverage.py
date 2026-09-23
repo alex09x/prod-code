@@ -13,7 +13,10 @@ Run it on a build node, never on the developer's machine:
     python3 scripts/coverage.py                  # report only, exit 0
     python3 scripts/coverage.py --min 80         # fail if any file is under 80% of regions
     python3 scripts/coverage.py --min 80 crates/prod-code-mcp/src/schema.rs   # only these
-    python3 scripts/coverage.py --report cov.json --min 80   # reuse a report, no rebuild
+    python3 scripts/coverage.py --report target/coverage-report.json --min 80 FILE  # reuse the last run, no rebuild
+
+Every run keeps its report at `target/coverage-report.json`. A file with no code (a crate root of
+`pub mod` and `pub use`) is listed as `no code` rather than failing the gate.
 
 `cargo llvm-cov` must be installed (`cargo install cargo-llvm-cov` plus the
 `llvm-tools-preview` component).
@@ -27,7 +30,6 @@ import math
 import os
 import subprocess
 import sys
-import tempfile
 
 # Files nothing is expected to cover: generated code, or a binary's entry point that only wires
 # arguments into functions that are tested. Keep this list short and say why.
@@ -49,29 +51,29 @@ def repo_root() -> str:
     return os.path.realpath(os.getcwd())
 
 
-def collect(report_path: str | None) -> dict:
+def collect(report_path: str | None, root: str) -> dict:
     if report_path:
         with open(report_path) as handle:
             return json.load(handle)
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-        out_path = tmp.name
-    try:
-        subprocess.run(
-            [
-                "cargo",
-                "llvm-cov",
-                "--workspace",
-                "--json",
-                "--summary-only",
-                "--output-path",
-                out_path,
-            ],
-            check=True,
-        )
-        with open(out_path) as handle:
-            return json.load(handle)
-    finally:
-        os.unlink(out_path)
+    # Kept, not temporary: an instrumented build takes minutes, and a rerun over other files can
+    # read this with `--report` instead of building again.
+    out_path = os.path.join(root, "target", "coverage-report.json")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    subprocess.run(
+        [
+            "cargo",
+            "llvm-cov",
+            "--workspace",
+            "--json",
+            "--summary-only",
+            "--output-path",
+            out_path,
+        ],
+        check=True,
+    )
+    print(f"report kept at {out_path} (reuse it with --report)", file=sys.stderr)
+    with open(out_path) as handle:
+        return json.load(handle)
 
 
 def files_of(report: dict, root: str) -> list[tuple[str, float, int, int]]:
@@ -116,13 +118,19 @@ def main() -> int:
     args = parser.parse_args()
 
     root = repo_root()
-    rows = files_of(collect(args.report), root)
+    rows = files_of(collect(args.report, root), root)
     if args.paths:
         wanted = {p.rstrip("/") for p in args.paths}
         rows = [r for r in rows if r[0] in wanted or any(r[0].startswith(w + "/") for w in wanted)]
         missing = wanted - {r[0] for r in rows} - {
             w for w in wanted if any(r[0].startswith(w + "/") for r in rows)
         }
+        # A file that exists but has no regions — a crate root of `pub mod` and `pub use` — has
+        # nothing to cover; only a path that is not there is a mistake.
+        no_code = {m for m in missing if os.path.isfile(os.path.join(root, m))}
+        for path in sorted(no_code):
+            print(f"  {path}  no code (nothing to cover)")
+        missing -= no_code
         if missing:
             print(f"no coverage data for: {', '.join(sorted(missing))}", file=sys.stderr)
             return 2
