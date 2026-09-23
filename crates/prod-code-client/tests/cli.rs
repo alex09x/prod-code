@@ -1941,3 +1941,77 @@ async fn cli_makes_a_parameter_generic() {
     );
     assert!(text.contains("nothing was written"), "{text}");
 }
+
+/// The refactoring subcommands added with roadmap 7.1.2, 7.1.5, 7.2 and 8.6 parse their
+/// arguments and reach their tool: a clap error exits 2, anything the tool answers does not.
+#[tokio::test]
+async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    for args in [
+        &[
+            "extract-delegate",
+            "src/lib.rs",
+            "1",
+            "5",
+            "--fields",
+            "order_id",
+            "--name",
+            "Id",
+            "--field",
+            "id",
+        ][..],
+        &[
+            "extract-trait",
+            "src/lib.rs",
+            "1",
+            "5",
+            "--methods",
+            "a,b",
+            "--name",
+            "T",
+        ][..],
+        &[
+            "introduce-variable",
+            "src/lib.rs",
+            "6",
+            "5",
+            "--to",
+            "6:7",
+            "--name",
+            "v",
+        ][..],
+        &["loop-to-iterator", "src/lib.rs", "5", "1"][..],
+        &["prune", "--max-files", "5"][..],
+    ] {
+        let out = run_cli(&ws, gw.addr, args).await;
+        assert_ne!(out.status.code(), Some(2), "{args:?}: {}", stderr_of(&out));
+        assert!(!stderr_of(&out).contains("unexpected argument"), "{args:?}");
+    }
+    // A malformed `--to` is the CLI's own error, not the tool's.
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "introduce-variable",
+            "src/lib.rs",
+            "6",
+            "5",
+            "--to",
+            "six",
+            "--name",
+            "v",
+        ],
+    )
+    .await;
+    assert!(!out.status.success());
+    assert!(
+        stderr_of(&out).contains("--to takes LINE:COL"),
+        "{}",
+        stderr_of(&out)
+    );
+}

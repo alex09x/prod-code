@@ -446,6 +446,33 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Move some fields of a struct, with the methods that use only them, into a helper type it holds.
+    ExtractDelegate {
+        /// The file that declares the struct.
+        file: PathBuf,
+        /// 1-based line of the `struct` keyword.
+        line: u32,
+        /// 1-based column on that line.
+        col: u32,
+        /// The fields that move, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        fields: Vec<String>,
+        /// The methods that move with them, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        methods: Vec<String>,
+        /// Name of the helper type.
+        #[arg(long)]
+        name: String,
+        /// Name of the field that holds it.
+        #[arg(long)]
+        field: String,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Extract a trait from the methods named of an inherent `impl` block, imported where they are called.
     ExtractTrait {
         /// The file that holds the `impl` block.
@@ -1213,6 +1240,35 @@ async fn main() -> Result<()> {
                     "path": abs.to_string_lossy(),
                     "line": line,
                     "character": col,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
+        }
+        Commands::ExtractDelegate {
+            file,
+            line,
+            col,
+            fields,
+            methods,
+            name,
+            field,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_extract_delegate",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
+                    "fields": fields,
+                    "methods": methods,
+                    "name": name,
+                    "field": field,
                     "apply": apply,
                     "force": force,
                 }),

@@ -12,7 +12,7 @@ the pieces rust-analyzer does not offer are tools of their own — `move`, `intr
 `convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
 analyzer accepts (`convert`), and `invert_boolean` covers `bool` fields and variables. What is
 still open is listed per item below: parameter removal across trait implementations, `async` in
-`change_signature`, whole-file and method moves, and the helper type of `extract_delegate`.
+`change_signature`, and whole-file and method moves.
 
 ---
 
@@ -280,7 +280,13 @@ still open is listed per item below: parameter removal across trait implementati
       - Solves parameter bloat (> 3-4 arguments) by bundling related parameters into a typed DTO/struct/record, rewriting definition and all call sites.
     - [x] `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)` — the whole impl via `code_assists` (`generate_trait_from_impl`); a chosen subset shipped 2026-09-23 (#153) as `code_extract_trait` / `prod-code extract-trait <file> <line> <col> --methods a,b --name …`. Only the named methods move into `trait Name` and `impl Name for Type`, and the rest stay inherent. The trait is as visible as the widest moved method. Every other file that references a moved method imports it. The change is type-checked before writing. Generic `impl` blocks are refused.
       - Extracts selected public method contracts into a new trait/interface, marks the original struct as implementing it, and updates caller type annotations to use the trait where applicable.
-    - [~] `refactor.extract_delegate(path, symbol, delegate_methods, delegate_name)` — partly, via `code_assists` at a field: `generate_delegate_trait` forwards a trait to the field. Extracting a set of responsibilities into a new helper type is not offered.
+    - [x] `refactor.extract_delegate(path, symbol, delegate_methods, delegate_name)` — one field at a time via `code_assists` (`generate_delegate_trait`, `generate_delegate_methods`). A group of fields with its methods shipped 2026-09-23 (#172) as `code_extract_delegate` / `prod-code extract-delegate <file> <line> <col> --fields … --methods … --name … --field …`:
+      - the fields move into a helper type the struct holds;
+      - the methods that use only them move to it, and the struct keeps a forwarding method with the same signature;
+      - every other access, found through the analyzer's references, goes through the new field;
+      - every literal of the struct builds the helper.
+
+      The result is type-checked before anything is written.
       - Extracts selected responsibilities into a separate helper class/struct, replacing direct implementations with an encapsulated delegate field.
 
   - **7.1.3. Hierarchy, Trait & Compositional Transformations**:

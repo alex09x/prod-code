@@ -226,6 +226,21 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Extract a delegate (roadmap 7.1.2, #172): `code_extract_delegate` (MCP) and `prod-code
+  extract-delegate <file> <line> <col> --fields a,b --methods m,n --name Helper --field helper`.
+  rust-analyzer offers delegates for one field at a time. This moves a group:
+  - the fields leave the struct for `Helper`, declared after it with the same `#[derive]`, and
+    one field `helper: Helper` takes their place, as visible as the widest of them;
+  - the methods named move to `impl Helper`. Each keeps a forwarding method with the same
+    signature in the struct, so no caller changes. A moved method may use only moved fields and
+    moved methods;
+  - every other access to a moved field goes through the new field (`a.city` becomes
+    `a.address.city`), found through the analyzer's references, in every file;
+  - every literal of the struct builds the helper. A literal or pattern with `..` is refused.
+
+  On a scratch crate, `street` and `city`, with `address` and `moves_to`, moved into `Address`.
+  Two accesses were rerouted (one of them in another file). Clippy passed, and the same test
+  passed before and after.
 - Suspects in a failure dossier (roadmap 8.2, #168). `code_diagnose_failure` / `prod-code diagnose`
   now list, for each failing test, the changed functions whose callers graph reaches it. The
   nearest come first, each with the number of calls between it and the test, and with the diff
