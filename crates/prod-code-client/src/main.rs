@@ -734,8 +734,14 @@ async fn main() -> Result<()> {
     startup.mark("parse_args");
 
     let seeds = prod_code_mcp::cluster::parse_remotes(&cli.remote)?;
-    // One seed is enough: the rest of the cluster comes from that node's gossip view.
-    let remotes = prod_code_mcp::cluster::discover_nodes(&seeds).await;
+    // Nodes named with `--remote` on the command line are the ones to use, as given (#125);
+    // otherwise one seed is enough and the rest of the cluster comes from its gossip view.
+    let pinned = env::args().any(|a| a == "-r" || a == "--remote" || a.starts_with("--remote="));
+    let remotes = if pinned {
+        seeds.clone()
+    } else {
+        prod_code_mcp::cluster::discover_nodes(&seeds).await
+    };
     startup.mark("discover_nodes");
 
     let cwd_root = env::current_dir()
@@ -756,24 +762,34 @@ async fn main() -> Result<()> {
     // The engine a query needs is that of the nearest project of the file it names (or of
     // the current directory): a SwiftPM package inside a Rust repository must land on a
     // macOS node even though the repository root is Rust.
-    let cwd_engine = cwd_root.as_deref().and_then(|root| {
-        let hint = env::args()
-            .skip(1)
-            .map(PathBuf::from)
-            .find(|p| p.is_file())
-            .and_then(|p| std::fs::canonicalize(p).ok())
-            .or_else(|| env::current_dir().ok())
-            .unwrap_or_else(|| root.to_path_buf());
-        prod_code_mcp::sync::engine_project(root, &hint).1
-    });
+    let (cwd_subproject, cwd_engine) = cwd_root
+        .as_deref()
+        .map(|root| {
+            let hint = env::args()
+                .skip(1)
+                .map(PathBuf::from)
+                .find(|p| p.is_file())
+                .and_then(|p| std::fs::canonicalize(p).ok())
+                .or_else(|| env::current_dir().ok())
+                .unwrap_or_else(|| root.to_path_buf());
+            prod_code_mcp::sync::engine_project(root, &hint)
+        })
+        .unwrap_or((None, None));
+    // A nested project of another language is placed under its own key, so its node does not
+    // displace the checkout's own placement and back again on the next query (#125).
+    let placement_key = match (&cwd_subproject, cwd_engine) {
+        (Some(_), Some(engine)) => format!("{cwd_workspace}#{engine}"),
+        _ => cwd_workspace.clone(),
+    };
     startup.mark("engine_project");
 
     if matches!(cli.command, Some(Commands::Cluster)) {
         startup.report();
-        return run_cluster(&remotes, &cwd_workspace, cwd_engine).await;
+        return run_cluster(&remotes, &placement_key, cwd_engine).await;
     }
 
-    let remote = prod_code_mcp::cluster::pick_node(&remotes, &cwd_workspace, cwd_engine).await?;
+    let remote = prod_code_mcp::cluster::pick_node(&remotes, &placement_key, cwd_engine).await?;
+    prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
     startup.mark("pick_node");
     startup.report();
 
@@ -781,7 +797,7 @@ async fn main() -> Result<()> {
         Commands::Lsp => run_lsp_bridge(remote).await,
         // `status` is about the node you name, not about where this checkout is placed.
         Commands::Status => run_status_probe(seeds[0]).await,
-        Commands::Cluster => run_cluster(&remotes, &cwd_workspace, cwd_engine).await,
+        Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,

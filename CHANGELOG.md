@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Fixed
+- **The Swift half of a mixed repository reaches the macOS node** (#125). A checkout whose root is
+  a Rust crate was always sent to a Rust node, so `code_test {path: "swift"}` failed with "failed
+  to start swift", and even `--remote <macOS node>` ran on Linux because the seed was expanded
+  into the whole cluster and the remembered placement won. Now:
+  - a tool call that names a path in a nested project of another language is routed to a node
+    serving it (`cluster::route_for_path`, before the tool runs), placed under
+    `<workspace>#<engine>` so the checkout's own placement is kept;
+  - a CLI run from inside such a project uses the same key;
+  - nodes given with `--remote` on the command line are used as given (`PROD_CODE_REMOTE` stays
+    a seed for discovery);
+  - with no node serving the engine, the error says so ("no reachable gateway serves swift").
 - **Sync mirrors what git lists, whatever the extension** (#123). A checkout's files were filtered
   by an extension allowlist, so test fixtures (`.txt`, `.bin`, `.recording`), `include_bytes!`
   data and `.github/` never reached the gateway, and a remote `cargo test` failed with "couldn't

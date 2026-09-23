@@ -207,7 +207,11 @@ between runs. Files a command changes are written back into your checkout.
 **Several nodes.** Gateways gossip every 5 s; a client needs one seed address. A checkout is
 placed on the node that already holds it, otherwise on the quietest one that serves its
 language. `--engines rust,go` restricts a node to what it should serve, so a macOS node can be
-Swift-only and placement never sends Rust work to a workstation.
+Swift-only and placement never sends Rust work to a workstation. A request that names a path in a
+nested project of another language — `code_test {path: "swift"}` in a Rust repository with a
+SwiftPM package under `swift/` — goes to a node that serves that language, placed under its own
+key so the checkout's own placement stays. Nodes given with `--remote` on the command line are
+used as given, without asking the cluster.
 
 ```
 $ prod-code cluster
