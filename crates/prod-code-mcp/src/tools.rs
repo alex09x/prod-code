@@ -2169,7 +2169,7 @@ async fn handle_codemod(
             .strip_prefix(workspace_root)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.clone());
-        let old_text = std::fs::read_to_string(path).unwrap_or_default();
+        let old_text = crate::refactor::text_before_apply(Path::new(path));
         let diff = similar::TextDiff::from_lines(&old_text, new_text);
         let file_changed = diff
             .iter_all_changes()

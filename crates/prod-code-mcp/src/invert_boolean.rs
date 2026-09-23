@@ -39,7 +39,7 @@ impl Inverted {
         let mut body = String::new();
         let mut changed_lines = 0usize;
         for (path, new_text) in &self.rewritten {
-            let old_text = std::fs::read_to_string(path).unwrap_or_default();
+            let old_text = crate::refactor::text_before_apply(Path::new(path));
             let rel = display(&self.root, Path::new(path));
             let diff = similar::TextDiff::from_lines(&old_text, new_text);
             changed_lines += diff
