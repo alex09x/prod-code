@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Fixed
+- **Sync mirrors what git lists, whatever the extension** (#123). A checkout's files were filtered
+  by an extension allowlist, so test fixtures (`.txt`, `.bin`, `.recording`), `include_bytes!`
+  data and `.github/` never reached the gateway, and a remote `cargo test` failed with "couldn't
+  read `tests/fixtures/capture.bin`". In a git checkout the synced set is now git's: tracked
+  files and untracked files that are not ignored (`is_synced_git_path`, `git ls-files --cached
+  --others --exclude-standard` for a full scan). Data trees, build output, vendored dependencies,
+  `.git` and the size limits still keep files out. `RELEVANCE_VERSION` is 5, so every client's
+  next sync is a first contact with a manifest reconciliation.
+- **A directory gone locally is gone from the gateway copy** (#124). Deleting a synced file
+  removes the directories it leaves empty, and the manifest reconciliation clears empty
+  directories left from before; the per-node caches are never touched.
 - **An applied edit's report shows its diff again** (#122). Every write tool rendered its diff by
   reading the old text from disk, after `apply` had already written the new one, so an applied
   change reported "0 changed line(s)" and no hunks. `refactor::apply_workspace_edit` now keeps,
