@@ -65,15 +65,22 @@ pub struct IndexBuild {
 impl ImpactReport {
     pub fn render(&self) -> String {
         let mut out = String::new();
+        let unindexed = self.index.as_ref().is_some_and(|b| !b.ok);
+        let reached = if unindexed {
+            "callers and tests unknown".to_string()
+        } else {
+            format!(
+                "{} caller(s), {} test(s)",
+                self.callers.len(),
+                self.tests.len()
+            )
+        };
         out.push_str(&format!(
-            "impact of {} ({} changed file(s), {} changed function(s), {} caller(s), {} test(s))\n",
+            "impact of {} ({} changed file(s), {} changed function(s), {reached})\n",
             self.base,
             self.changed_files.len(),
             self.changed.len(),
-            self.callers.len(),
-            self.tests.len()
         ));
-        let unindexed = self.index.as_ref().is_some_and(|b| !b.ok);
         if let Some(b) = &self.index {
             out.push_str(&if b.ok {
                 format!(
