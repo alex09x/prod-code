@@ -129,7 +129,12 @@ enum Commands {
     /// existing file instead, its outline (the same as `prod-code outline <file>`).
     Symbols { target: String },
     /// The declarations of a file, nested: prod-code outline <file>
-    Outline { file: PathBuf },
+    Outline {
+        file: PathBuf,
+        /// Also list the local variables inside functions and methods.
+        #[arg(long, default_value_t = false)]
+        locals: bool,
+    },
     /// Blast radius of the uncommitted changes: changed functions, their callers and the affected tests
     Impact {
         /// Git ref to diff against (default: working tree vs HEAD)
@@ -922,7 +927,7 @@ async fn main() -> Result<()> {
         },
         Commands::Symbols { target } => {
             if Path::new(&target).is_file() {
-                run_symbols(remote, Path::new(&target)).await
+                run_symbols(remote, Path::new(&target), false).await
             } else {
                 run_tool(
                     remote,
@@ -932,7 +937,7 @@ async fn main() -> Result<()> {
                 .await
             }
         }
-        Commands::Outline { file } => run_symbols(remote, &file).await,
+        Commands::Outline { file, locals } => run_symbols(remote, &file, locals).await,
         Commands::Source {
             path,
             line,
@@ -2372,7 +2377,7 @@ async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
     Ok(())
 }
 
-async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
+async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let file_uri = Url::from_file_path(&abs_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path"))?
@@ -2384,37 +2389,17 @@ async fn run_symbols(remote: SocketAddr, file: &Path) -> Result<()> {
 
     let result = execute_lsp_query(remote, file, "textDocument/documentSymbol", params).await?;
 
-    if let Some(arr) = result.as_array() {
-        println!("Symbols in {:?}:", file);
-        for sym in arr {
-            let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
-            let kind_str = match kind {
-                2 => "Module",
-                5 => "Class",
-                6 => "Method",
-                8 => "Field",
-                9 => "Constructor",
-                10 => "Enum",
-                11 => "Interface",
-                12 => "Function",
-                13 => "Variable",
-                14 => "Constant",
-                22 => "EnumMember",
-                23 => "Struct",
-                _ => "Symbol",
-            };
-            // DocumentSymbol carries `range`; SymbolInformation nests it under `location`.
-            let start_line = sym
-                .get("range")
-                .or_else(|| sym.get("location").and_then(|l| l.get("range")))
-                .and_then(|r| r.get("start"))
-                .and_then(|s| s.get("line"))
-                .and_then(|l| l.as_u64())
-                .unwrap_or(0)
-                + 1;
-            println!("  [{kind_str}] {name} (line {start_line})");
-        }
+    if result.is_array() {
+        println!(
+            "{}",
+            prod_code_mcp::tools::render_outline(
+                &result,
+                &file.display().to_string(),
+                usize::MAX,
+                locals,
+                "pass --locals",
+            )
+        );
     } else {
         println!("{:#}", result);
     }

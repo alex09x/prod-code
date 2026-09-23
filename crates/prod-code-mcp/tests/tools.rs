@@ -822,13 +822,20 @@ async fn code_implementations_lists_locations_or_says_there_are_none() {
 #[tokio::test]
 async fn code_outline_lists_symbols_and_hides_locals_by_default() {
     let ws = workspace();
-    write(&ws, "src/lib.rs", "pub fn a() {\n    let x = 1;\n}\n");
+    write(
+        &ws,
+        "src/lib.rs",
+        "pub fn a() {\n    let x = 1;\n}\n\npub static COUNT: u32 = 1;\n",
+    );
     commit(&ws);
     let remote = scripted_gateway(Arc::new(|method, _| match method {
+        // The analyzer reports a local and a top-level `static` with the same kind, 13.
         "textDocument/documentSymbol" => serde_json::json!([
             answers::document_symbol("a", 12, 1, 3, 8),
             { "name": "x", "kind": 13,
-              "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 14 } } }
+              "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 14 } } },
+            { "name": "COUNT", "kind": 13,
+              "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 26 } } }
         ]),
         _ => serde_json::Value::Null,
     }))
@@ -844,6 +851,10 @@ async fn code_outline_lists_symbols_and_hides_locals_by_default() {
     let text = text_of(&result);
     assert!(text.contains("[Function] a (line 1)"), "{text}");
     assert!(!text.contains("[Variable] x"), "locals are hidden: {text}");
+    assert!(
+        text.contains("[Variable] COUNT (line 5)"),
+        "a static is not a local: {text}"
+    );
     assert!(text.contains("1 local variable(s) hidden"), "{text}");
 
     let with_locals = execute_tool(

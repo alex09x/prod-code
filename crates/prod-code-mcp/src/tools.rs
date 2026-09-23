@@ -1138,16 +1138,58 @@ async fn handle_outline(
         .get("include_locals")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    Ok(McpToolCallResult::text(render_outline(
+        &res,
+        path_str,
+        max_depth,
+        include_locals,
+        "pass include_locals: true",
+    )))
+}
+
+/// The start and end line (0-based) of a symbol from `textDocument/documentSymbol`.
+fn symbol_lines(sym: &serde_json::Value) -> (u64, u64) {
+    let range = sym
+        .get("range")
+        .or_else(|| sym.get("location").and_then(|l| l.get("range")));
+    let at = |edge: &str| {
+        range
+            .and_then(|r| r.get(edge))
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+    };
+    let start = at("start").unwrap_or(0);
+    (start, at("end").unwrap_or(start).max(start))
+}
+
+/// A file's outline from its `textDocument/documentSymbol` answer, for the MCP tool and the
+/// CLI alike. A variable inside a function or method is a local and is left out unless
+/// `include_locals`; a top-level `static`, which the analyzer reports with the same kind, is not
+/// inside one and stays. `hint` says how to list the locals anyway.
+pub fn render_outline(
+    res: &serde_json::Value,
+    path: &str,
+    max_depth: usize,
+    include_locals: bool,
+    hint: &str,
+) -> String {
     let mut out = String::new();
     if let Some(arr) = res.as_array() {
-        out.push_str(&format!("Outline for {path_str}:\n"));
+        out.push_str(&format!("Outline for {path}:\n"));
+        let bodies: Vec<(u64, u64)> = arr
+            .iter()
+            .filter(|s| matches!(s.get("kind").and_then(|k| k.as_u64()), Some(6 | 12)))
+            .map(symbol_lines)
+            .collect();
         let mut skipped_locals = 0usize;
         for sym in arr {
             let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
-            // Locals (LSP kind 13, Variable) are noise for a structural outline:
-            // a 2000-line file lists hundreds of them.
-            if kind == 13 && !include_locals {
+            // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
+            // outline: a 2000-line file lists hundreds of them.
+            let (line, _) = symbol_lines(sym);
+            let local = kind == 13 && bodies.iter().any(|(s, e)| *s < line && line <= *e);
+            if local && !include_locals {
                 skipped_locals += 1;
                 continue;
             }
@@ -1176,25 +1218,17 @@ async fn handle_outline(
                 23 => "Struct",
                 _ => "Symbol",
             };
-            let line = sym
-                .get("range")
-                .or_else(|| sym.get("location").and_then(|l| l.get("range")))
-                .and_then(|r| r.get("start"))
-                .and_then(|s| s.get("line"))
-                .and_then(|l| l.as_u64())
-                .unwrap_or(0)
-                + 1;
-            out.push_str(&format!("  [{kind_str}] {name} (line {line})\n"));
+            out.push_str(&format!("  [{kind_str}] {name} (line {})\n", line + 1));
         }
         if skipped_locals > 0 {
             out.push_str(&format!(
-                "  ({skipped_locals} local variable(s) hidden; pass include_locals: true to list them)\n"
+                "  ({skipped_locals} local variable(s) hidden; {hint} to list them)\n"
             ));
         }
     } else {
         out.push_str("No outline symbols available.");
     }
-    Ok(McpToolCallResult::text(out.trim_end()))
+    out.trim_end().to_string()
 }
 
 async fn handle_references(
