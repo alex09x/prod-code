@@ -2140,7 +2140,7 @@ async fn run_assist(
         Some(spec) => parse_line_col(spec)?,
         None => (line, col),
     };
-    let mut params = serde_json::json!({
+    let params = serde_json::json!({
         "textDocument": { "uri": file_uri },
         "range": {
             "start": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
@@ -2166,24 +2166,29 @@ async fn run_assist(
             Ok(())
         }
         Some(id) => {
-            params["id"] = serde_json::json!(id);
-            if let Some(st) = subtype {
-                params["subtype"] = serde_json::json!(st);
-            }
+            // The same handler as the MCP tool, so the CLI gets the same clean-up (#97).
             let started = std::time::Instant::now();
-            let edit = execute_lsp_query(remote, file, "prodCode/applyAssist", params).await?;
-            if edit.is_null() {
-                anyhow::bail!("assist produced no edits");
+            let mut args = serde_json::json!({
+                "path": abs_path.to_string_lossy(),
+                "line": line,
+                "character": col,
+                "end_line": end.0,
+                "end_character": end.1,
+                "id": id,
+            });
+            if let Some(st) = subtype {
+                args["subtype"] = serde_json::json!(st);
             }
-            let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
-            println!(
-                "applied `{id}` in {:.2}s; {} path(s) updated:",
-                started.elapsed().as_secs_f64(),
-                touched.len()
-            );
-            for path in touched {
-                println!("  {path}");
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &ws_root, "code_assist", args).await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
             }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            println!("[{:.2}s]", started.elapsed().as_secs_f64());
             Ok(())
         }
     }

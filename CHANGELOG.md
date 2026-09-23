@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **An assist's prelude paths are spelled as the names in scope** (#97). rust-analyzer writes
+  a prelude item an assist introduces by its full path, so every function `extract_function`
+  made in this repository returned `std::prelude::v1::Result<T, anyhow::Error>`. Where an assist
+  adds such paths to a file that had none, `code_assist` drops the prefix and applies the shorter
+  text only if the overlay check accepts it; otherwise it applies rust-analyzer's. The report
+  says how many were shortened. `prod-code assist` goes through the same handler.
 - **An assist refused inside a macro call says so** (#99). Inside a macro call's input
   rust-analyzer offers few refactorings — inside `tokio::select!` only `inline_macro` — and the
   refusal said only "not offered here; available: inline_macro". It now names the macro and says
