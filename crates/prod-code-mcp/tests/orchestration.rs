@@ -3028,6 +3028,39 @@ async fn a_variable_is_introduced_for_every_occurrence() {
         "pub fn area(w: u32, h: u32) -> u32 {\n    let w1 = w + 1;\n    let a = if h > 2 {\n        w1 * h\n    } else {\n        0\n    };\n    a + w1\n}\n"
     );
 
+    // An occurrence in parentheses of its own loses them; a method call in between may change
+    // the value (#155); a division guarded by each `if` stays where it was (#155).
+    let at = |text: &str, line: u32, from: u32, to: u32| {
+        std::fs::write(&lib, text).unwrap();
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::introduce_variable::introduce_variable(
+                clean().await,
+                &root,
+                &lib,
+                (line, from),
+                (line, to),
+                "v",
+                true,
+                false,
+            )
+            .await
+        }
+    };
+    let twice = "pub fn twice(s: &mut S) -> u32 {\n    let a = s.x + 1;\n    a + (s.x + 1)\n}\n";
+    at(twice, 2, 13, 20).await.expect("introduced");
+    assert_eq!(
+        ws.read("src/lib.rs"),
+        "pub fn twice(s: &mut S) -> u32 {\n    let v = s.x + 1;\n    let a = v;\n    a + v\n}\n"
+    );
+    let bumped = twice.replace("    a + (", "    s.bump();\n    a + (");
+    let err = at(&bumped, 2, 13, 20).await.expect_err("refused");
+    assert!(format!("{err:#}").contains("`s` changes"), "{err:#}");
+    let ratio = "pub fn ratio(a: u32, b: u32) -> u32 {\n    let mut r = 0;\n    if b != 0 {\n        r += a / b;\n    }\n    if b > 1 {\n        r += a / b;\n    }\n    r\n}\n";
+    let err = at(ratio, 4, 14, 19).await.expect_err("refused");
+    assert!(format!("{err:#}").contains("`a / b` can panic"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), ratio, "nothing was written");
+
     for (text, why) in [
         (
             AREA.replace("(w + 1)", "(w.pow(2))"),

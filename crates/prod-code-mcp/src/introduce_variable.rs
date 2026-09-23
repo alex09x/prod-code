@@ -4,8 +4,10 @@
 //! rust-analyzer's `extract_variable` replaces the one selection. Replacing all of them is only
 //! the same program when evaluating the expression once is the same as evaluating it at each
 //! place, so the expression may not call anything (a call can do something, or return something
-//! different each time), and no name it reads may be assigned or rebound between the first
-//! occurrence and the last. Anything else is refused, and the result is type-checked.
+//! different each time), and no name it reads may be assigned, rebound or have a method called on
+//! it between the first occurrence and the last. An expression that can panic is bound earlier
+//! only when one occurrence runs every time the binding does, so a division is never moved out
+//! of the `if` that guarded it. Anything else is refused, and the result is type-checked.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -155,25 +157,82 @@ pub fn changes(text: &str, name: &str) -> bool {
         }
         let before = text[..start].trim_end();
         let mut after = text[end..].trim_start();
-        // `name.field = ...` changes `name` too.
+        // `name.field = ...` changes `name` too, and `name.method()` may: it can take `&mut self`.
+        let mut segments = 0;
         while let Some(rest) = after.strip_prefix('.') {
             let field = rest.len() - rest.trim_start_matches(is_ident).len();
             if field == 0 {
                 break;
             }
+            segments += 1;
             after = rest[field..].trim_start();
         }
+        let called = segments > 0 && after.starts_with('(');
         let assigned = (after.starts_with('=') && !after.starts_with("=="))
             || ["+=", "-=", "*=", "/=", "%=", "|=", "&=", "^=", "<<=", ">>="]
                 .iter()
                 .any(|op| after.starts_with(op));
         let borrowed = before.ends_with("&mut");
         let bound = before.ends_with("let") || before.ends_with("let mut");
-        if assigned || borrowed || bound {
+        if assigned || borrowed || bound || called {
             return true;
         }
     }
     false
+}
+
+/// Whether evaluating `expr` can panic: a division or remainder, an index, or arithmetic that
+/// overflows in a debug build.
+pub fn can_panic(expr: &str) -> bool {
+    expr.contains(['/', '%', '[', '+', '-', '*']) || expr.contains("<<")
+}
+
+/// Whether the occurrence at `at` is evaluated whenever the statement at `anchor` runs: it sits
+/// at the anchor's own block level, nothing between them can leave early (`return`, `break`,
+/// `continue`, `?`, a panicking macro), and nothing earlier in its own statement short-circuits
+/// or defers it (`&&`, `||`, a closure).
+pub fn surely_evaluated(text: &str, anchor: usize, statement: usize, at: usize) -> bool {
+    let between = &text[anchor..at];
+    let mut depth = 0i32;
+    for c in between.chars() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    let leaves = ["return", "break", "continue"].iter().any(|w| {
+        between.match_indices(w).any(|(i, _)| {
+            !between[..i].chars().next_back().is_some_and(is_ident)
+                && !between[i + w.len()..].chars().next().is_some_and(is_ident)
+        })
+    }) || between.contains('?')
+        || [
+            "panic!",
+            "unreachable!",
+            "todo!",
+            "unimplemented!",
+            "assert",
+        ]
+        .iter()
+        .any(|m| between.contains(m));
+    let own = &text[statement.min(at)..at];
+    depth == 0 && !leaves && !own.contains('|') && !own.contains("&&")
+}
+
+/// The span to replace for the occurrence `start..end`: with the parentheses around it when it
+/// is written `(expr)` on its own, so `a + (s.x + 1)` becomes `a + x1`. The parentheses of a
+/// call, an index or a method stay.
+pub fn parenthesised(text: &str, start: usize, end: usize) -> std::ops::Range<usize> {
+    let open = text[..start].trim_end();
+    let close = text[end..].trim_start();
+    if open.ends_with('(') && close.starts_with(')') {
+        let before = open[..open.len() - 1].trim_end().chars().next_back();
+        if !before.is_some_and(|c| is_ident(c) || matches!(c, ')' | ']' | '>' | '!')) {
+            return open.len() - 1..text.len() - close.len() + 1;
+        }
+    }
+    start..end
 }
 
 /// The bodies, as brace offsets, of the loops (`loop`, `while`, `for`) whose keyword lies in
@@ -326,6 +385,22 @@ pub async fn introduce_variable(
              cannot stand for all of them"
         );
     }
+    // Binding it earlier evaluates it where the code may not have: a division under
+    // `if b != 0` would divide by zero. That is the same program only if one occurrence
+    // runs whenever the binding does.
+    if can_panic(&expr) {
+        let anywhere = found.iter().any(|at| {
+            let statement =
+                statement_start(&text, innermost_block(&text, body_open, *at, *at), *at);
+            surely_evaluated(&text, anchor, statement, *at)
+        });
+        anyhow::ensure!(
+            anywhere,
+            "`{expr}` can panic, and no occurrence of it runs every time the binding would \
+             (each is under a condition, or after a way out). Use `code_assist` with \
+             `extract_variable` for one occurrence"
+        );
+    }
 
     // `let name = expr;` above the statement that holds the first occurrence, in the innermost
     // block that holds them all, at its indentation.
@@ -344,7 +419,7 @@ pub async fn introduce_variable(
         .unwrap_or(&expr);
     let mut new_text = text.clone();
     for at in found.iter().rev() {
-        new_text.replace_range(*at..*at + expr.len(), name);
+        new_text.replace_range(parenthesised(&text, *at, *at + expr.len()), name);
     }
     new_text.insert_str(stmt_line_start, &format!("{indent}let {name} = {bare};\n"));
 
@@ -459,6 +534,46 @@ mod tests {
         let e = "fn e() { let a = if c { 1 } else { w + 1 }; a + (w + 1) }";
         let at = statement_start(e, e.find('{').unwrap(), e.find("w + 1").unwrap());
         assert!(e[at..].starts_with("let a"), "{}", &e[at..]);
+    }
+
+    #[test]
+    fn a_method_call_on_a_name_may_change_it() {
+        assert!(changes("s.bump();", "s"));
+        assert!(changes("s.inner.push(1);", "s"));
+        assert!(!changes("let y = s.x;", "s"));
+    }
+
+    #[test]
+    fn a_guarded_division_is_not_surely_evaluated() {
+        assert!(can_panic("a / b") && can_panic("v[i]") && can_panic("w + 1"));
+        assert!(!can_panic("s.x") && !can_panic("flag"));
+        let r = "fn r() {\n    let mut r = 0;\n    if b != 0 {\n        r += a / b;\n    }\n    r + a / b\n}";
+        let found = occurrences(r, 0, r.len(), "a / b");
+        let body = r.find('{').unwrap();
+        let anchor = statement_start(r, body, found[0]);
+        assert!(r[anchor..].starts_with("if b != 0"));
+        // Inside the `if`: not every time. After it, at the block's level: every time.
+        let own = |at: usize| statement_start(r, innermost_block(r, body, at, at), at);
+        assert!(!surely_evaluated(r, anchor, own(found[0]), found[0]));
+        assert!(surely_evaluated(r, anchor, own(found[1]), found[1]));
+        // A way out before it, or a short circuit in its own statement, and it is not.
+        let early = "fn e() {\n    if c { return 0; }\n    a / b\n}";
+        let at = early.find("a / b").unwrap();
+        assert!(!surely_evaluated(early, early.find("if").unwrap(), at, at));
+        let short = "fn s() {\n    let z = b != 0 && a / b > 1;\n}";
+        let at = short.find("a / b").unwrap();
+        let st = short.find("let z").unwrap();
+        assert!(!surely_evaluated(short, st, st, at));
+    }
+
+    #[test]
+    fn an_occurrence_in_parentheses_of_its_own_loses_them() {
+        let t = "a + (s.x + 1) + f(s.x + 1) + v[(s.x + 1)]";
+        let spans: Vec<_> = occurrences(t, 0, t.len(), "s.x + 1")
+            .into_iter()
+            .map(|at| &t[parenthesised(t, at, at + 7)])
+            .collect();
+        assert_eq!(spans, ["(s.x + 1)", "s.x + 1", "(s.x + 1)"]);
     }
 
     #[test]
