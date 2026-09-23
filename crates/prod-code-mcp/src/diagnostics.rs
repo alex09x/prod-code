@@ -36,6 +36,11 @@ pub struct DiagnosticsReport {
     /// they are neither in `items` nor counted in `errors` and `warnings`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub preexisting: Vec<DocDiagnostic>,
+    /// "type annotations needed" on a `#[derive(...)]` line: the analyzer failing to type its
+    /// own expansion of the derive (`serde::Deserialize` does it), which rustc does not report.
+    /// Not counted, even in a new file that has no text on disk to compare with (#159).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub in_derive: Vec<DocDiagnostic>,
 }
 
 impl DiagnosticsReport {
@@ -53,6 +58,13 @@ impl DiagnosticsReport {
                 "  ({} diagnostic(s) the file already had before this edit are not counted: {})\n",
                 self.preexisting.len(),
                 preexisting_summary(&self.preexisting)
+            ));
+        }
+        if !self.in_derive.is_empty() {
+            out.push_str(&format!(
+                "  ({} \"type annotations needed\" on a #[derive(...)] line are not counted: the \
+                 analyzer's own expansion of the derive, which rustc does not report)\n",
+                self.in_derive.len()
             ));
         }
         for d in &self.items {
@@ -141,6 +153,34 @@ fn set_aside_preexisting(
                 report.preexisting.push(d);
             }
             _ => report.items.push(d),
+        }
+    }
+    report.errors = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "error")
+        .count();
+    report.warnings = report
+        .items
+        .iter()
+        .filter(|d| d.severity == "warning")
+        .count();
+}
+
+/// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
+/// attribute: an inference failure inside the analyzer's expansion of the derive, not in code
+/// anyone wrote.
+fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
+    let items = std::mem::take(&mut report.items);
+    for d in items {
+        let line = text
+            .lines()
+            .nth(d.line.saturating_sub(1) as usize)
+            .unwrap_or("");
+        if d.code.as_deref() == Some("E0282") && line.trim_start().starts_with("#[derive(") {
+            report.in_derive.push(d);
+        } else {
+            report.items.push(d);
         }
     }
     report.errors = report
@@ -346,6 +386,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
         warnings: items.iter().filter(|d| d.severity == "warning").count(),
         items,
         preexisting: Vec::new(),
+        in_derive: Vec::new(),
     }
 }
 
@@ -393,6 +434,7 @@ pub async fn validate_text(
     if let Some((before, before_text)) = before {
         set_aside_preexisting(&mut report, new_text, &before, &before_text);
     }
+    set_aside_derive_expansions(&mut report, new_text);
     Ok(report)
 }
 
@@ -503,6 +545,9 @@ pub async fn validate_texts(
         {
             set_aside_preexisting(&mut report, text, before, before_text);
         }
+        if let Some(text) = sources.get(&shown) {
+            set_aside_derive_expansions(&mut report, text);
+        }
         reports.push(report);
     }
     for file in also_check {
@@ -525,6 +570,7 @@ pub async fn validate_texts(
             if let Some((before, before_text)) = baselines.get(&shown) {
                 set_aside_preexisting(&mut report, &text, before, before_text);
             }
+            set_aside_derive_expansions(&mut report, &text);
             sources.insert(shown.clone(), text);
         }
         reports.push(report);
@@ -638,6 +684,7 @@ mod tests {
             warnings: items.iter().filter(|d| d.severity == "warning").count(),
             items,
             preexisting: vec![],
+            in_derive: vec![],
         }
     }
 
@@ -676,6 +723,42 @@ mod tests {
         assert!(
             shown.contains("2 diagnostic(s) the file already had before this edit are not counted: 2× type annotations needed [E0282]"),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn inference_failing_in_a_derive_expansion_is_not_counted_even_in_a_new_file() {
+        let text = "use serde::Deserialize;\n\n#[derive(Debug, Deserialize)]\npub struct P {\n    pub a: u32,\n}\nfn f() -> u8 { \"\" }\n";
+        let mut report = report_of(vec![
+            DocDiagnostic {
+                code: Some("E0282".into()),
+                ..diagnostic("error", "type annotations needed", 3)
+            },
+            // Anything else on a derive line, or E0282 anywhere else, still counts.
+            DocDiagnostic {
+                code: Some("E0277".into()),
+                ..diagnostic("error", "the trait bound is not satisfied", 3)
+            },
+            DocDiagnostic {
+                code: Some("E0282".into()),
+                ..diagnostic("error", "type annotations needed", 7)
+            },
+        ]);
+        set_aside_derive_expansions(&mut report, text);
+        assert_eq!(report.in_derive.len(), 1);
+        let lines: Vec<(u32, Option<&str>)> = report
+            .items
+            .iter()
+            .map(|d| (d.line, d.code.as_deref()))
+            .collect();
+        assert_eq!(lines, [(3, Some("E0277")), (7, Some("E0282"))]);
+        assert_eq!(report.errors, 2);
+        assert!(
+            report
+                .render()
+                .contains("1 \"type annotations needed\" on a #[derive(...)] line are not counted"),
+            "{}",
+            report.render()
         );
     }
 
@@ -729,6 +812,7 @@ mod tests {
                 },
             ],
             preexisting: vec![],
+            in_derive: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -768,6 +852,7 @@ mod tests {
                 warnings: 0,
                 items: vec![],
                 preexisting: vec![],
+                in_derive: vec![],
             },
             DiagnosticsReport {
                 file: "crates/gateway/src/workspace.rs".to_string(),
@@ -775,6 +860,7 @@ mod tests {
                 warnings: 0,
                 items: vec![],
                 preexisting: vec![],
+                in_derive: vec![],
             },
         ];
         let mut sources = HashMap::new();
