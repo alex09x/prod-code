@@ -503,7 +503,10 @@ async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_t
     .await
     .expect("an empty list is a tool error");
     assert!(result.is_error);
-    assert_eq!(text_of(&result), "'edits' is empty");
+    assert_eq!(
+        text_of(&result),
+        "the change touches no file that can be checked"
+    );
 
     let err = execute_tool(
         nowhere(),
@@ -2238,4 +2241,95 @@ async fn move_method_asks_for_a_parameter_or_a_type() {
             "{err}"
         );
     }
+}
+
+/// `code_validate_edits` takes the change as a unified diff or as a WorkspaceEdit too: the diff
+/// is applied in memory (a new file created, a deleted one named), and a hunk that fits nowhere
+/// is refused by number (#200).
+#[tokio::test]
+async fn validate_edits_takes_a_diff_or_a_workspace_edit() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", "pub fn a() -> u8 {\n    1\n}\n");
+    write(&ws, "src/old.rs", "pub fn o() {}\n");
+    commit(&ws);
+    let _ = lib;
+    // The script plays the analyzer from the text it was sent: `"one"` where a `u8` is due is
+    // the only error.
+    let texts: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>> = Arc::default();
+    let t = Arc::clone(&texts);
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params
+            .pointer("/textDocument/uri")
+            .and_then(|u| u.as_str())
+            .unwrap_or("")
+            .to_string();
+        match method {
+            "textDocument/didOpen" | "textDocument/didChange" => {
+                let text = params
+                    .pointer("/textDocument/text")
+                    .or_else(|| params.pointer("/contentChanges/0/text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                t.lock().unwrap().insert(uri, text.to_string());
+                serde_json::Value::Null
+            }
+            "textDocument/diagnostic" => {
+                let text = t.lock().unwrap().get(&uri).cloned().unwrap_or_default();
+                if text.contains("\"one\"") {
+                    answers::error_at(2, 5, "E0308", "mismatched types")
+                } else {
+                    answers::no_diagnostics()
+                }
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let diff = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n pub fn a() -> u8 {\n-    1\n+    \"one\"\n }\n--- /dev/null\n+++ b/src/new.rs\n@@ -0,0 +1 @@\n+pub fn n() {}\n--- a/src/old.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-pub fn o() {}\n";
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({ "diff": diff }),
+    )
+    .await
+    .expect("it runs");
+    let text = text_of(&result);
+    assert!(
+        text.contains("2 file(s) checked together: 1 error(s)"),
+        "{text}"
+    );
+    assert!(text.contains("src/old.rs is deleted by the diff"), "{text}");
+    assert_eq!(ws.read("src/lib.rs"), "pub fn a() -> u8 {\n    1\n}\n");
+
+    let stale = "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-pub fn b() {}\n+pub fn c() {}\n";
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({ "diff": stale }),
+    )
+    .await
+    .map(|r| text_of(&r))
+    .unwrap_or_else(|e| format!("{e:#}"));
+    assert!(err.contains("hunk 1 of src/lib.rs does not apply"), "{err}");
+
+    let uri = format!("file://{}", ws.root().join("src/lib.rs").display());
+    let edit = serde_json::json!({ "changes": { uri: [ {
+        "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 5 } },
+        "newText": "2"
+    } ] } });
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({ "workspace_edit": edit }),
+    )
+    .await
+    .expect("it runs");
+    assert!(
+        text_of(&result).contains("1 file(s) checked together"),
+        "{}",
+        text_of(&result)
+    );
 }

@@ -174,10 +174,15 @@ enum Commands {
     },
     /// Check a proposed replacement for a file without writing it: prod-code validate <file> --from NEW (or stdin)
     Validate {
-        file: PathBuf,
+        /// The file the proposed content is for (not needed with `--diff`)
+        file: Option<PathBuf>,
         /// Path of the proposed content; stdin when omitted
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Check a unified diff (`git diff` output) instead: a path, or `-` for stdin. Each hunk
+        /// is applied in memory and every file it touches is checked together.
+        #[arg(long, conflicts_with_all = ["from", "with"])]
+        diff: Option<PathBuf>,
         /// Another proposed file, checked together with the first in one overlay: FILE=NEW.
         /// Repeat it for each file of a multi-file change.
         #[arg(long = "with", value_name = "FILE=NEW")]
@@ -1137,9 +1142,27 @@ async fn main() -> Result<()> {
         Commands::Validate {
             file,
             from,
+            diff,
             with,
             json,
         } => {
+            if let Some(diff) = diff {
+                let patch = if diff.as_os_str() == "-" {
+                    let mut buf = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                    buf
+                } else {
+                    std::fs::read_to_string(&diff)
+                        .with_context(|| format!("failed to read {}", diff.display()))?
+                };
+                return run_tool(
+                    remote,
+                    "code_validate_edits",
+                    serde_json::json!({ "diff": patch }),
+                )
+                .await;
+            }
+            let file = file.context("give the file to validate, or `--diff PATCH`")?;
             let text = match from {
                 Some(path) => std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?,

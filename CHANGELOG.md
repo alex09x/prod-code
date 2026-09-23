@@ -250,6 +250,14 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **validate takes a diff or a WorkspaceEdit** (roadmap 7.7, #200): `prod-code validate --diff
+  PATCH` (`-` for stdin), and `code_validate_edits` with `diff` or `workspace_edit`.
+  - Each hunk is applied in memory to the file on disk: at the line its header gives, or at
+    the nearest place its old lines are, when the file has moved since.
+  - A hunk that fits nowhere is refused by number.
+  - A new file is created in the overlay. A deleted file is named, because its users are not
+    checked.
+  - The touched files are checked together, and nothing is written.
 - **An associated function moves to another type** (roadmap 7.1.1, #198): `prod-code
   move-method FILE LINE COL --to-type Order` (MCP `code_move_method` with `to_type`).
   - The type is found by name, and an ambiguous name is refused with the candidates.
