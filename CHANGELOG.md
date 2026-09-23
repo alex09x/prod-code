@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **A re-exported name resolves to its definition** (#128). The workspace index lists a
+  `pub use m::name;` next to the definition it names, and `--symbol name` called the pair
+  ambiguous (for `scan_workspace_files` in this repository). A tie whose line is a `use`
+  declaration now gives way to the definition, and the definition is what is returned: sorted by
+  path, `lib.rs` came first and would have been picked otherwise. Two definitions of the same
+  name are still ambiguous.
 - **The Swift half of a mixed repository reaches the macOS node** (#125). A checkout whose root is
   a Rust crate was always sent to a Rust node, so `code_test {path: "swift"}` failed with "failed
   to start swift", and even `--remote <macOS node>` ran on Linux because the seed was expanded
