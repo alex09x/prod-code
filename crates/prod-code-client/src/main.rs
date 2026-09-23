@@ -428,6 +428,27 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Extract a trait from the methods named of an inherent `impl` block, imported where they are called.
+    ExtractTrait {
+        /// The file that holds the `impl` block.
+        file: PathBuf,
+        /// 1-based line of the `impl` header (or any line inside the block).
+        line: u32,
+        /// 1-based column on that line.
+        col: u32,
+        /// The methods that move into the trait, comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        methods: Vec<String>,
+        /// Name of the new trait.
+        #[arg(long)]
+        name: String,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Introduce a variable for an expression and replace every occurrence in the function.
     IntroduceVariable {
         /// The file that holds the expression.
@@ -1137,6 +1158,31 @@ async fn main() -> Result<()> {
                     "path": abs.to_string_lossy(),
                     "line": line,
                     "character": col,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
+        }
+        Commands::ExtractTrait {
+            file,
+            line,
+            col,
+            methods,
+            name,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_extract_trait",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
+                    "methods": methods,
+                    "name": name,
                     "apply": apply,
                     "force": force,
                 }),

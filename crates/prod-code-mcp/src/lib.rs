@@ -9,6 +9,7 @@ pub mod encapsulate_field;
 pub mod exec;
 pub mod extract_field;
 pub mod extract_parameter;
+pub mod extract_trait;
 pub mod fixture;
 pub mod generify;
 pub mod hot_reload;

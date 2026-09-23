@@ -12,8 +12,7 @@ the pieces rust-analyzer does not offer are tools of their own — `move`, `intr
 `convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
 analyzer accepts (`convert`), and `invert_boolean` covers `bool` fields and variables. What is
 still open is listed per item below: parameter removal across trait implementations, `async` in
-`change_signature`, whole-file and method moves, a chosen subset of methods for
-`extract_trait`, and the helper type of `extract_delegate`.
+`change_signature`, whole-file and method moves, and the helper type of `extract_delegate`.
 
 ---
 
@@ -279,7 +278,7 @@ still open is listed per item below: parameter removal across trait implementati
       - Promotes an internal expression to a function parameter, automatically passing the original expression at all existing call sites.
     - [~] `refactor.introduce_parameter_object(path, symbol, param_indices, struct_name)` — shipped 2026-09-22 for Rust: `code_introduce_parameter_object` / `prod-code parameter-object <symbol> --param … --name Opts` generate the struct above the declaration with the declared types (one lifetime when any of them borrows), rewrite the declaration and the body uses at the analyzer's positions, and rewrite every call site in place — the bundled arguments become one literal where the first of them was, and a caller in another module gets the import it needs. A use that is not a call with this arity is reported, not mangled.
       - Solves parameter bloat (> 3-4 arguments) by bundling related parameters into a typed DTO/struct/record, rewriting definition and all call sites.
-    - [~] `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)` — via `code_assists` at an `impl` block: `generate_trait_from_impl`. It takes the whole impl rather than a chosen subset of methods.
+    - [x] `refactor.extract_trait / extract_interface(path, symbol, method_names, trait_name)` — the whole impl via `code_assists` (`generate_trait_from_impl`); a chosen subset shipped 2026-09-23 (#153) as `code_extract_trait` / `prod-code extract-trait <file> <line> <col> --methods a,b --name …`. Only the named methods move into `trait Name` and `impl Name for Type`, and the rest stay inherent. The trait is as visible as the widest moved method. Every other file that references a moved method imports it. The change is type-checked before writing. Generic `impl` blocks are refused.
       - Extracts selected public method contracts into a new trait/interface, marks the original struct as implementing it, and updates caller type annotations to use the trait where applicable.
     - [~] `refactor.extract_delegate(path, symbol, delegate_methods, delegate_name)` — partly, via `code_assists` at a field: `generate_delegate_trait` forwards a trait to the field. Extracting a set of responsibilities into a new helper type is not offered.
       - Extracts selected responsibilities into a separate helper class/struct, replacing direct implementations with an encapsulated delegate field.

@@ -3076,3 +3076,135 @@ async fn a_variable_is_introduced_for_every_occurrence() {
     assert_eq!(ws.read("src/lib.rs"), AREA);
     assert!(introduce(clean().await, "w 1").await.is_err());
 }
+
+const RECT: &str = "pub struct Rect {\n    pub w: f64,\n    pub h: f64,\n}\n\nimpl Rect {\n    pub fn new(w: f64, h: f64) -> Self {\n        Rect { w, h }\n    }\n\n    pub fn area(&self) -> f64 {\n        self.w * self.h\n    }\n\n    pub fn perimeter(&self) -> f64 {\n        2.0 * (self.w + self.h)\n    }\n}\n";
+const REPORT: &str = "use crate::shapes::Rect;\n\npub fn describe(r: &Rect) -> String {\n    format!(\"{} {}\", r.area(), r.perimeter())\n}\n\npub fn unit() -> Rect {\n    Rect::new(1.0, 1.0)\n}\n";
+
+/// Only the methods named move into the trait, the trait is as visible as they were, and the
+/// file that calls them imports it once; a result the analyzer rejects is not written.
+#[tokio::test]
+async fn a_trait_is_extracted_from_the_methods_named_with_its_callers_imports() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod report;\npub mod shapes;\n");
+    let shapes = write(&ws, "src/shapes.rs", RECT);
+    let report = write(&ws, "src/report.rs", REPORT);
+    commit(&ws);
+    let script = |pulls_fail: bool| {
+        let r = report.clone();
+        // Diagnostics are pulled per file, first for the file as it is, then for the proposal:
+        // only the caller's proposal has the error.
+        let pulls = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            usize,
+        >::new()));
+        scripted_gateway(Arc::new(move |method, params| match method {
+            // `area` is declared on line 11, `perimeter` on line 15; both are called on line 4.
+            "textDocument/references" => {
+                match params.pointer("/position/line").and_then(|l| l.as_u64()) {
+                    Some(10) => answers::locations(&r, &[(4, 24)]),
+                    Some(14) => answers::locations(&r, &[(4, 34)]),
+                    _ => serde_json::json!([]),
+                }
+            }
+            "textDocument/diagnostic"
+                if !pulls_fail || !uri_of(params).ends_with("src/report.rs") || {
+                    let mut seen = pulls.lock().unwrap();
+                    let n = seen.entry(uri_of(params)).or_insert(0);
+                    *n += 1;
+                    *n == 1
+                } =>
+            {
+                answers::no_diagnostics()
+            }
+            "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+                { "severity": 1, "code": "E0599", "message": "no method named `area` found for reference `&Rect` in the current scope",
+                  "range": { "start": { "line": 3, "character": 23 }, "end": { "line": 3, "character": 27 } } }
+            ] }),
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let methods = vec!["area".to_string(), "perimeter".to_string()];
+
+    // The analyzer's error stops the write.
+    let err = prod_code_mcp::extract_trait::extract_trait(
+        script(true).await,
+        &root,
+        &shapes,
+        6,
+        1,
+        &methods,
+        "Measure",
+        true,
+        false,
+    )
+    .await
+    .expect_err("a result that does not compile is not written");
+    assert!(format!("{err:#}").contains("does not compile"), "{err:#}");
+    assert_eq!(
+        (ws.read("src/shapes.rs"), ws.read("src/report.rs")),
+        (RECT.to_string(), REPORT.to_string())
+    );
+
+    let done = prod_code_mcp::extract_trait::extract_trait(
+        script(false).await,
+        &root,
+        &shapes,
+        6,
+        1,
+        &methods,
+        "Measure",
+        true,
+        false,
+    )
+    .await
+    .expect("extracted");
+    assert!(done.applied);
+    assert_eq!(done.kept, ["new"]);
+    assert_eq!(
+        done.imports,
+        [(
+            "src/report.rs".to_string(),
+            "use crate::shapes::Measure;".to_string()
+        )]
+    );
+    assert_eq!(
+        ws.read("src/shapes.rs"),
+        "pub struct Rect {\n    pub w: f64,\n    pub h: f64,\n}\n\nimpl Rect {\n    pub fn new(w: f64, h: f64) -> Self {\n        Rect { w, h }\n    }\n}\n\npub trait Measure {\n    fn area(&self) -> f64;\n\n    fn perimeter(&self) -> f64;\n}\n\nimpl Measure for Rect {\n    fn area(&self) -> f64 {\n        self.w * self.h\n    }\n\n    fn perimeter(&self) -> f64 {\n        2.0 * (self.w + self.h)\n    }\n}\n"
+    );
+    assert_eq!(
+        ws.read("src/report.rs"),
+        REPORT.replacen(
+            "use crate::shapes::Rect;\n",
+            "use crate::shapes::Rect;\nuse crate::shapes::Measure;\n",
+            1
+        )
+    );
+    assert!(
+        done.render()
+            .contains("src/report.rs: added `use crate::shapes::Measure;`")
+    );
+
+    let err = prod_code_mcp::extract_trait::extract_trait(
+        script(false).await,
+        &root,
+        &shapes,
+        6,
+        1,
+        &["volume".to_string()],
+        "Measure",
+        false,
+        false,
+    )
+    .await
+    .expect_err("an unknown method is named");
+    assert!(
+        format!("{err:#}").contains("has no method `volume`"),
+        "{err:#}"
+    );
+}
