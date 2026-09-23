@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Fixed
+- **`prod-code outline` no longer lists every local variable** (#151). The CLI had its own copy of
+  the outline renderer. It printed every `Variable` the analyzer reports: 147 of the 206 entries
+  for `move_item.rs`. The CLI and `code_outline` now share one renderer:
+  - a variable inside the range of a function or method is a local, is hidden, and is counted in
+    the last line (`147 local variable(s) hidden; pass --locals to list them`);
+  - a top-level `static`, which the analyzer reports with the same kind, now stays in both. The
+    MCP tool used to hide it along with the locals;
+  - `prod-code outline --locals` lists the locals, like `include_locals: true`.
 - **Safe delete at a parameter removes the parameter, not a line of the body** (#138). The engine
   fell back to the smallest item containing the position when no item was named there, so
   `safe-delete` on a parameter deleted the function's only expression and reported success.
