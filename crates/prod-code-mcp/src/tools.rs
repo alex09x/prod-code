@@ -3487,6 +3487,18 @@ pub async fn resolve_symbol(
         .filter(|(s, _)| *s == best)
         .map(|(_, h)| h)
         .collect();
+    // A re-export (`pub use sync::scan;`) is listed by the index next to the definition it
+    // names. It is the same symbol, not a second candidate, and the answer is the definition.
+    let definitions: Vec<&SymbolHit> = ties
+        .iter()
+        .copied()
+        .filter(|h| !is_use_declaration(&h.path, h.line))
+        .collect();
+    let ties = if definitions.is_empty() {
+        ties
+    } else {
+        definitions
+    };
     if ties.len() > 1
         && ties
             .iter()
@@ -3501,7 +3513,7 @@ pub async fn resolve_symbol(
         }
         anyhow::bail!(msg.trim_end().to_string());
     }
-    Ok(scored.swap_remove(0).1)
+    Ok(ties[0].clone())
 }
 
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
@@ -3596,6 +3608,28 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
         }
     }
     best.map(|(_, _, p)| p)
+}
+
+/// Whether the 1-based `line` of `path` is a `use` declaration (`use a::b;`, `pub use`,
+/// `pub(crate) use`): what the workspace index lists for a re-export, next to the definition it
+/// names (#128).
+fn is_use_declaration(path: &Path, line: u32) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Some(row) = text.lines().nth(line.saturating_sub(1) as usize) else {
+        return false;
+    };
+    let row = row.trim_start();
+    let row = match row.strip_prefix("pub") {
+        Some(rest) if rest.starts_with('(') => rest
+            .find(')')
+            .map_or(rest, |close| &rest[close + 1..])
+            .trim_start(),
+        Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+        _ => row,
+    };
+    row.starts_with("use ")
 }
 
 /// Whether `name` is the identifier at the 1-based line/column of `path` (false when the

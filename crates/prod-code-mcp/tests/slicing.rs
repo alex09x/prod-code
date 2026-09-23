@@ -405,6 +405,51 @@ async fn resolve_type_prefers_the_hint_and_lists_every_file_without_it() {
     assert!(text.contains("a.rs") && text.contains("b.rs"), "{text}");
 }
 
+/// A re-export is listed by the index next to the definition it names; the name resolves to the
+/// definition instead of being called ambiguous (#128). Two definitions still are.
+#[tokio::test]
+async fn a_re_exported_name_resolves_to_its_definition() {
+    let ws = Workspace::new(&[
+        ("src/lib.rs", "pub mod sync;\npub use sync::scan;\n"),
+        ("src/sync.rs", "pub fn scan() {}\n"),
+        ("src/other.rs", "pub fn scan() {}\n"),
+    ]);
+    let root = ws.root();
+    let (lib, sync, other) = (
+        root.join("src/lib.rs"),
+        root.join("src/sync.rs"),
+        root.join("src/other.rs"),
+    );
+    let (l, s) = (lib.clone(), sync.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("scan", 12, &l, 2, 15),
+            answers::symbol("scan", 12, &s, 1, 8),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "scan", None)
+        .await
+        .expect("the re-export is not a second candidate");
+    assert_eq!(hit.path, sync);
+    assert_eq!((hit.line, hit.col), (1, 8));
+
+    let (s, o) = (sync.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("scan", 12, &s, 1, 8),
+            answers::symbol("scan", 12, &o, 1, 8),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let err = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "scan", None)
+        .await
+        .expect_err("two definitions are still two");
+    assert!(format!("{err:#}").contains("ambiguous"), "{err:#}");
+}
+
 /// `verify: false` never asks the analyzer, and `verify: true` reports exactly what it rejected
 /// rather than pretending the fixture is usable.
 #[tokio::test]
