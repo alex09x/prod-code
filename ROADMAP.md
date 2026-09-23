@@ -313,7 +313,12 @@ still open is listed per item below: parameter removal across trait implementati
       - Flips conditional branches to early returns (`guard clauses`), reducing nested block indentation depth from 5+ levels to 1.
     - *Not applicable to Rust* — a `match` on an enum is the idiom, not a smell to remove. `refactor.replace_conditional_with_polymorphism(path, range)`:
       - Replaces large `match`/`switch`/`if-else` cascades on enum/type tags with polymorphic trait/interface method dispatch.
-    - [~] `refactor.loop_to_iterator(path, range)` — via `code_assists` at a loop: `convert_for_loop_with_for_each` and `convert_for_loop_to_while_let`.
+    - [x] `refactor.loop_to_iterator(path, range)` — the analyzer offers `convert_for_loop_with_for_each` and `convert_for_loop_to_while_let` at a loop. Both keep the mutable accumulator. Accumulator loops shipped 2026-09-23 (#164) as `code_loop_to_iterator` / `prod-code loop-to-iterator <file> <line> <col>`, in three shapes, each optionally under one `if`:
+      - a sum from zero, into `.map(..).sum()`;
+      - a count into a `usize`, into `.filter(..).count()`;
+      - a `Vec` built with `push`, into `.collect()`.
+
+      A name that holds a reference is iterated with `.iter()`, as the analyzer's hover shows. `mut` stays only when the analyzer asks for it. `break`, `continue`, `return`, `?`, `.await`, a second use of the accumulator and a non-identity start are refused. The result is type-checked before writing.
       - Converts imperative `for`/`while` loops with mutable accumulators into idiomatic functional iterator chains (`.map().filter().fold()`).
     - [~] `refactor.structural_replace(path_pattern, search_template, replace_template)` — shipped 2026-09-21 as `code_codemod` / `prod-code codemod` (roadmap 8.7), on rust-analyzer's SSR. Listed here as well because the catalog was written before it existed.
       - Structural Search and Replace (SSR) engine: AST pattern templates with typed meta-variables (e.g. `$expr$.then($cb$)` -> `await $expr$`), transforming code across thousands of files irrespective of whitespace or variable naming.

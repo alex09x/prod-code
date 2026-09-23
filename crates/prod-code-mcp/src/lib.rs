@@ -20,6 +20,7 @@ pub mod introduce_variable;
 pub mod invert_boolean;
 pub mod invert_value;
 pub mod lang;
+pub mod loop_to_iterator;
 pub mod make_static;
 pub mod move_item;
 pub mod parameter_object;

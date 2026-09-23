@@ -366,6 +366,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_loop_to_iterator".to_string(),
+            description: "Turn a `for` loop that only builds up an accumulator into an iterator chain: `let mut sum = 0; for p in prices { sum += p * 2; }` becomes `let sum: u64 = prices.into_iter().map(|p| p * 2).sum();`. Recognised: a sum from zero, a count (`if C { n += 1 }` into a `usize`), and a `Vec` built with `push`, each optionally under one `if`. The accumulator must be declared by the `let mut` just above the loop. Refused: `break`, `continue`, `return`, `?` or `.await` in the body, any other use of the accumulator, a non-empty start value. `mut` stays only when the analyzer says the variable is still changed afterwards. Type-checked before anything is written. Rust only; rust-analyzer's own `convert_for_loop_with_for_each` keeps the mutable accumulator."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the loop" },
+                    "line": { "type": "integer", "description": "1-based line of the `for`" },
+                    "character": { "type": "integer", "description": "1-based column on that line" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
             name: "code_introduce_variable".to_string(),
             description: "Introduce a variable for an expression and replace every occurrence of it in the enclosing function, not only the selected one: `(w + 1)` three times becomes `let w1 = w + 1;` above the first and `w1` at each place. Give the selection (`line`/`character` to `end_line`/`end_character`) and `name`. Refused when evaluating once is not the same as evaluating at each place: the expression calls something, expands a macro, uses `?` or awaits, or a name it reads is assigned, mutably borrowed or rebound between the first occurrence and the last (or in a loop that runs a later one again). For one occurrence of such an expression use `code_assist` with `extract_variable`. Type-checked in one overlay before anything is written. Rust only."
                 .to_string(),
@@ -967,6 +983,37 @@ pub async fn execute_tool(
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
         "code_introduce_variable" => handle_introduce_variable(remote, workspace_root, &args).await,
+        "code_loop_to_iterator" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let num = |key: &str| -> Result<u32> {
+                args.get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let done = crate::loop_to_iterator::loop_to_iterator(
+                remote,
+                workspace_root,
+                &file_path,
+                num("line")?,
+                num("character")?,
+                apply,
+                force,
+            )
+            .await?;
+            let text = done.render();
+            Ok(if done.diagnostics.is_empty() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_extract_trait" => handle_extract_trait(remote, workspace_root, &args).await,
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,

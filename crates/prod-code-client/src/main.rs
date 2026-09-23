@@ -467,6 +467,21 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Turn a loop that only builds up an accumulator into a sum / count / collect chain.
+    LoopToIterator {
+        /// The file that holds the loop.
+        file: PathBuf,
+        /// 1-based line of the `for`.
+        line: u32,
+        /// 1-based column on that line.
+        col: u32,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Introduce a variable for an expression and replace every occurrence in the function.
     IntroduceVariable {
         /// The file that holds the expression.
@@ -1223,6 +1238,27 @@ async fn main() -> Result<()> {
                     "character": col,
                     "methods": methods,
                     "name": name,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
+        }
+        Commands::LoopToIterator {
+            file,
+            line,
+            col,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_loop_to_iterator",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
                     "apply": apply,
                     "force": force,
                 }),

@@ -215,6 +215,21 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Loops into iterator chains (roadmap 7.1.5, #164): `code_loop_to_iterator` (MCP) and `prod-code
+  loop-to-iterator <file> <line> <col>`. A `for` loop whose body only builds up the variable
+  declared by the `let mut` just above it becomes one statement:
+  - `let mut sum = 0; for p in prices { sum += p * 2; }` becomes
+    `let sum: u64 = prices.iter().map(|p| p * 2).sum();`;
+  - `if x % 2 == 0 { n += 1; }` into a `usize` becomes `.filter(|&x| x % 2 == 0).count()`;
+  - `out.push(..)` into an empty `Vec`, with or without an `if`, becomes `.collect()` (with
+    `filter_map` for the `if`).
+
+  The closure binds the loop's pattern as the loop did. A name that holds a reference is
+  iterated with `.iter()`: the analyzer's hover gives the type, and clippy flags `into_iter` on a
+  reference. `mut` is kept only when the analyzer asks for it (`need-mut`). A loop is refused
+  when its body has `break`, `continue`, `return`, `?` or `.await`, uses the accumulator a
+  second time, or starts from a value that is not the identity. On a scratch crate, all three
+  shapes passed `clippy -D warnings`, and the same assertions passed before and after.
 - Prune orphans (roadmap 8.6, #162): `code_prune_orphans` (MCP) and `prod-code prune [--apply]
   [--force]`:
   - everything on the dead-code scan's `dead` list is removed with the analyzer's safe delete.
