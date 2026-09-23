@@ -5,7 +5,7 @@
 use crate::session::LspSession;
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use url::Url;
@@ -41,6 +41,17 @@ pub struct ImpactReport {
     /// whether that worked: when it did not, no callers means unknown callers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<IndexBuild>,
+    /// Which changed function reaches which test, in how many calls: the suspects of a failure.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reaches: Vec<Reach>,
+}
+
+/// A test the walk from a changed function reached, and in how many calls.
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+pub struct Reach {
+    pub test: Symbol,
+    pub changed: Symbol,
+    pub hops: usize,
 }
 
 /// The build that gives sourcekit-lsp its index: Swift 5 finds callers only through it (#166).
@@ -467,91 +478,41 @@ pub async fn analyze(
         }
     }
 
-    // Walk incoming calls breadth-first from every changed function.
-    let mut seen: HashSet<(String, u32, u32)> = changed
-        .iter()
-        .map(|s| (s.file.clone(), s.line, s.col))
-        .collect();
-    let mut queue: VecDeque<(Symbol, usize)> = changed.iter().cloned().map(|s| (s, 0)).collect();
+    // Walk incoming calls breadth-first from each changed function on its own, so every test
+    // reached knows which changed functions reach it and in how many hops. The answers are
+    // cached: a function two walks pass through is asked once.
+    let key = |s: &Symbol| (s.file.clone(), s.line, s.col);
+    let changed_keys: HashSet<(String, u32, u32)> = changed.iter().map(key).collect();
+    let mut cache: HashMap<(String, u32, u32), Vec<(Symbol, bool)>> = HashMap::new();
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     let mut tests: BTreeSet<Symbol> = BTreeSet::new();
-    while let Some((sym, level)) = queue.pop_front() {
-        if level >= depth {
-            continue;
-        }
-        let abs = root.join(&sym.file);
-        let uri = match Url::from_file_path(&abs) {
-            Ok(u) => u.to_string(),
-            Err(_) => continue,
-        };
-        let position = serde_json::json!({ "line": sym.line.saturating_sub(1), "character": sym.col.saturating_sub(1) });
-        let items = session
-            .query(
-                &abs,
-                "textDocument/prepareCallHierarchy",
-                serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
-            )
-            .await
-            .unwrap_or(serde_json::Value::Null);
-        let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-            continue;
-        };
-        let incoming = session
-            .query(
-                &abs,
-                "callHierarchy/incomingCalls",
-                serde_json::json!({ "item": item }),
-            )
-            .await
-            .unwrap_or(serde_json::Value::Null);
-        for edge in incoming.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
-            let Some(from) = edge.get("from") else {
-                continue;
-            };
-            let mut name = from
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("")
-                .to_string();
-            let file = rel(root, from.get("uri").and_then(|u| u.as_str()).unwrap_or(""));
-            // Module-level code (a test file's top-level `it(...)` calls) is reported with the
-            // file as its name: keep it checkout-relative.
-            if name.starts_with('/') {
-                name = rel(root, &name);
-            }
-            let sel = from.get("selectionRange").and_then(|r| r.get("start"));
-            let line = sel
-                .and_then(|s| s.get("line"))
-                .and_then(|l| l.as_u64())
-                .unwrap_or(0) as u32
-                + 1;
-            let col = sel
-                .and_then(|s| s.get("character"))
-                .and_then(|c| c.as_u64())
-                .unwrap_or(0) as u32
-                + 1;
-            if file.starts_with('/') || name.is_empty() {
-                continue; // outside the checkout
-            }
-            if !seen.insert((file.clone(), line, col)) {
+    let mut reaches: Vec<Reach> = Vec::new();
+    for origin in &changed {
+        let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
+        let mut queue: VecDeque<(Symbol, usize)> = VecDeque::from([(origin.clone(), 0)]);
+        while let Some((sym, level)) = queue.pop_front() {
+            if level >= depth {
                 continue;
             }
-            let caller = Symbol {
-                name,
-                file,
-                line,
-                col,
-            };
-            let flagged = edge
-                .get("isTest")
-                .and_then(|t| t.as_bool())
-                .unwrap_or(false);
-            if flagged || looks_like_test(&language, &caller.name, &caller.file) {
-                tests.insert(caller.clone());
-            } else {
-                callers.insert(caller.clone());
+            if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(key(&sym)) {
+                slot.insert(incoming_calls(&mut session, root, &language, &sym).await);
             }
-            queue.push_back((caller, level + 1));
+            for (caller, is_test) in cache[&key(&sym)].clone() {
+                if !seen.insert(key(&caller)) {
+                    continue;
+                }
+                if is_test {
+                    tests.insert(caller.clone());
+                    reaches.push(Reach {
+                        test: caller.clone(),
+                        changed: origin.clone(),
+                        hops: level + 1,
+                    });
+                } else if !changed_keys.contains(&key(&caller)) {
+                    callers.insert(caller.clone());
+                }
+                queue.push_back((caller, level + 1));
+            }
         }
     }
 
@@ -568,7 +529,112 @@ pub async fn analyze(
         test_command,
         unattributed_files: unattributed,
         index,
+        reaches,
     })
+}
+
+/// The functions that call `sym`, each with whether it is a test (the analyzer's `isTest`, or
+/// the language's naming conventions).
+async fn incoming_calls(
+    session: &mut LspSession,
+    root: &Path,
+    language: &str,
+    sym: &Symbol,
+) -> Vec<(Symbol, bool)> {
+    let abs = root.join(&sym.file);
+    let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
+        return Vec::new();
+    };
+    let position = serde_json::json!({ "line": sym.line.saturating_sub(1), "character": sym.col.saturating_sub(1) });
+    let items = session
+        .query(
+            &abs,
+            "textDocument/prepareCallHierarchy",
+            serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
+        )
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
+        return Vec::new();
+    };
+    let incoming = session
+        .query(
+            &abs,
+            "callHierarchy/incomingCalls",
+            serde_json::json!({ "item": item }),
+        )
+        .await
+        .unwrap_or(serde_json::Value::Null);
+    let mut out = Vec::new();
+    for edge in incoming.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        let Some(from) = edge.get("from") else {
+            continue;
+        };
+        let mut name = from
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string();
+        let file = rel(root, from.get("uri").and_then(|u| u.as_str()).unwrap_or(""));
+        // Module-level code (a test file's top-level `it(...)` calls) is reported with the
+        // file as its name: keep it checkout-relative.
+        if name.starts_with('/') {
+            name = rel(root, &name);
+        }
+        let sel = from.get("selectionRange").and_then(|r| r.get("start"));
+        let line = sel
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0) as u32
+            + 1;
+        let col = sel
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0) as u32
+            + 1;
+        if file.starts_with('/') || name.is_empty() {
+            continue; // outside the checkout
+        }
+        let flagged = edge
+            .get("isTest")
+            .and_then(|t| t.as_bool())
+            .unwrap_or(false);
+        let is_test = flagged || looks_like_test(language, &name, &file);
+        out.push((
+            Symbol {
+                name,
+                file,
+                line,
+                col,
+            },
+            is_test,
+        ));
+    }
+    out
+}
+
+/// The changed functions that reach the failing test `name` (`tests::doubles`,
+/// `MathTests.testAdds()`, `tests/test_x.py::test_y`), nearest first, each once.
+pub fn suspects_for(reaches: &[Reach], name: &str) -> Vec<(Symbol, usize)> {
+    let bare = |n: &str| -> String {
+        n.rsplit("::")
+            .next()
+            .unwrap_or(n)
+            .rsplit('.')
+            .next()
+            .unwrap_or(n)
+            .trim_end_matches("()")
+            .to_string()
+    };
+    let wanted = bare(name);
+    let mut best: BTreeMap<Symbol, usize> = BTreeMap::new();
+    for r in reaches.iter().filter(|r| bare(&r.test.name) == wanted) {
+        let hops = best.entry(r.changed.clone()).or_insert(r.hops);
+        *hops = (*hops).min(r.hops);
+    }
+    let mut out: Vec<(Symbol, usize)> = best.into_iter().collect();
+    out.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    out
 }
 
 #[cfg(test)]
