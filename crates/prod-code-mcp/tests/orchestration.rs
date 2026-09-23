@@ -3587,3 +3587,129 @@ async fn async_is_added_and_removed_with_every_await() {
     assert_eq!(change.asyncness, Some((true, false)));
     assert_eq!(ws.read("src/lib.rs"), LOAD);
 }
+
+const ORDERS: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net + 5\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n";
+/// What rust-analyzer's `extract_function` makes of lines 8-9 of `ORDERS`: the new function goes
+/// after `invoice`, and its body repeats the selection.
+const ORDERS_EXTRACTED: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let net = fun_name(o);\n    net + 5\n}\n\nfn fun_name(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n";
+
+/// Extracting a function with its duplicates: `quote` has the same two lines (indented
+/// differently) and gets the same call; `audit` has them too, but reads `gross` afterwards, which
+/// the new function does not return, so the call there does not type-check and the lines stay.
+#[tokio::test]
+async fn an_extracted_function_replaces_the_duplicates_that_type_check() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", ORDERS);
+    commit(&ws);
+
+    let texts: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let (l, t) = (lib.clone(), Arc::clone(&texts));
+    let script: Answer = Arc::new(move |method: &str, params: &serde_json::Value| {
+        let uri = uri_of(params);
+        match method {
+            "prodCode/applyAssist" => answers::whole_file(&l, ORDERS, ORDERS_EXTRACTED),
+            "textDocument/didOpen" | "textDocument/didChange" => {
+                let text = params
+                    .pointer("/textDocument/text")
+                    .or_else(|| params.pointer("/contentChanges/0/text"))
+                    .and_then(|v| v.as_str());
+                t.lock()
+                    .unwrap()
+                    .insert(uri, text.unwrap_or("").to_string());
+                serde_json::Value::Null
+            }
+            "textDocument/diagnostic" => {
+                let this = t.lock().unwrap().get(&uri).cloned().unwrap_or_default();
+                let mut items = Vec::new();
+                if this.contains("let net = net_price(o);\n    gross - net") {
+                    items.push(mismatch("E0425", "no such value in this scope", 25, 4, 9));
+                }
+                serde_json::json!({ "kind": "full", "items": items })
+            }
+            _ => serde_json::Value::Null,
+        }
+    });
+    let remote = scripted_gateway(script).await;
+    let run = |name: &'static str, duplicates: bool| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::extract_function::extract_function(
+                remote,
+                &root,
+                &lib,
+                (8, 5),
+                (9, 48),
+                name,
+                duplicates,
+            )
+            .await
+        }
+    };
+
+    let done = run("net_price", true).await.expect("the dry run reports");
+    assert_eq!(done.call, "let net = net_price(o);");
+    let lines: Vec<(u32, bool)> = done
+        .duplicates
+        .iter()
+        .map(|d| (d.line, d.replaced))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![(14, true), (20, false)],
+        "{:?}",
+        done.duplicates
+    );
+    assert!(
+        done.duplicates[1]
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("does not type-check") && r.contains("E0425")),
+        "{:?}",
+        done.duplicates[1]
+    );
+    assert_eq!(done.replaced(), 1);
+    assert!(done.diagnostics.is_empty(), "{:?}", done.diagnostics);
+    let text = &done.rewritten[0].1;
+    assert!(!text.contains("fun_name"), "{text}");
+    assert!(
+        text.contains("\nfn net_price(o: &Order) -> u32 {\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("pub fn quote(o: &Order) -> u32 {\n    let net = net_price(o);\n    net\n}"),
+        "{text}"
+    );
+    assert!(
+        text.contains("pub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;"),
+        "{text}"
+    );
+    let rendered = done.render();
+    assert!(
+        rendered.contains("line 14: the same code, now the same call"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("line 20: left as it is"), "{rendered}");
+    assert!(rendered.contains("nothing was written"), "{rendered}");
+    assert_eq!(ws.read("src/lib.rs"), ORDERS);
+
+    // The selection alone.
+    let alone = run("net_price", false).await.expect("the selection alone");
+    assert!(alone.duplicates.is_empty());
+    // The call in `invoice`; the definition reads `net_price(o: &Order)`.
+    assert_eq!(alone.rewritten[0].1.matches("net_price(o)").count(), 1);
+    assert!(alone.render().contains("no other place in the file"));
+
+    // A name the file already uses is refused before anything is asked.
+    let err = run("quote", true).await.expect_err("the name is taken");
+    assert!(format!("{err:#}").contains("already has something called `quote`"));
+
+    let mut done = done;
+    done.write(false).expect("a clean result writes");
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    assert_eq!(written.matches("net_price(o)").count(), 2, "{written}");
+    assert!(done.render().contains("[applied]"));
+}

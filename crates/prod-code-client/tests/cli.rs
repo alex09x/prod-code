@@ -1989,6 +1989,19 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         ][..],
         &["loop-to-iterator", "src/lib.rs", "5", "1"][..],
         &["prune", "--max-files", "5"][..],
+        &[
+            "extract-function",
+            "src/lib.rs",
+            "6",
+            "5",
+            "--to",
+            "6:7",
+            "--name",
+            "f",
+            "--no-duplicates",
+            "--verify",
+            "compile",
+        ][..],
     ] {
         let out = run_cli(&ws, gw.addr, args).await;
         assert_ne!(out.status.code(), Some(2), "{args:?}: {}", stderr_of(&out));

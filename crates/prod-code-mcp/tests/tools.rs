@@ -2042,3 +2042,56 @@ async fn code_sync_reports_the_delta() {
         text_of(&result)
     );
 }
+
+const TWICE: &str = "pub fn a(x: u32) -> u32 {\n    let y = x * 2;\n    y + 1\n}\n\npub fn b(x: u32) -> u32 {\n    let y = x * 2;\n    y\n}\n";
+const TWICE_EXTRACTED: &str = "pub fn a(x: u32) -> u32 {\n    let y = fun_name(x);\n    y + 1\n}\n\nfn fun_name(x: u32) -> u32 {\n    let y = x * 2;\n    y\n}\n\npub fn b(x: u32) -> u32 {\n    let y = x * 2;\n    y\n}\n";
+
+/// `code_extract_function` with `duplicates: false` extracts the selection alone, names the
+/// function, and writes with `apply` without asking the compiler (no duplicate was replaced).
+#[tokio::test]
+async fn extract_function_alone_names_the_function_and_writes() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", TWICE);
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => answers::whole_file(&path, TWICE, TWICE_EXTRACTED),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let args = |apply: bool| {
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 5,
+            "end_line": 2, "end_character": 19, "name": "doubled",
+            "duplicates": false, "apply": apply })
+    };
+    let dry = execute_tool(remote, &ws.root(), "code_extract_function", args(false))
+        .await
+        .expect("the dry run reports");
+    let text = text_of(&dry);
+    assert!(text.contains("`fn doubled` extracted"), "{text}");
+    assert!(
+        text.contains("the selection now reads `let y = doubled(x);`"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("compiler"),
+        "no duplicate, no compiler: {text}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), TWICE);
+
+    let written = execute_tool(remote, &ws.root(), "code_extract_function", args(true))
+        .await
+        .expect("it writes");
+    assert!(
+        text_of(&written).contains("[applied]"),
+        "{}",
+        text_of(&written)
+    );
+    let now = ws.read("src/lib.rs");
+    assert!(now.contains("fn doubled(x: u32) -> u32 {"), "{now}");
+    assert!(
+        now.contains("pub fn b(x: u32) -> u32 {\n    let y = x * 2;"),
+        "{now}"
+    );
+}

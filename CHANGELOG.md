@@ -14,7 +14,7 @@
   cannot see. A crate that `include!`s build-script output is one example.
 
   On the three Rust repositories at hand (122 files), the only reports on unchanged code were
-  10 warnings in such a crate. `tools.rs` (10k lines) takes 1.09 s warm instead of 0.80 s.
+  10 warnings in such a crate. `tools.rs` (4,381 lines) takes 1.09 s warm instead of 0.80 s.
 - **impact's first line no longer counts unknown callers as zero** (#170). When the Swift index
   could not be built, the header still said `0 caller(s), 0 test(s)` above the line saying they
   were unknown. It now says `callers and tests unknown`.
@@ -238,6 +238,20 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **extract_function names the function and replaces the selection's duplicates** (roadmap
+  7.1.2, #186): MCP `code_extract_function` and `prod-code extract-function FILE LINE COL --to
+  L:C --name NAME`.
+  - rust-analyzer's `extract_function` does the selection. The function gets `NAME` instead of
+    `fun_name`.
+  - Every other place in the same file whose text is the selection's (whitespace aside) gets
+    the same call, one at a time. A place is kept only if the result type-checks with it.
+    A duplicate left behind is reported with the analyzer's error, for example a name the new
+    function does not return but the code after the duplicate reads (E0425).
+  - rust-analyzer does not check borrows. So when a duplicate is replaced, `apply` runs `cargo
+    check` in a shadow first. `--no-duplicates` extracts the selection alone.
+  - The call is read from the text before and after the extraction, and the result is checked
+    to rebuild it exactly. A line diff cannot be used here: it pairs the selection with the new
+    function's body, which repeats it.
 - **Every exec summary shows the CPU time and peak memory of the command** (roadmap 6.1/6.4,
   #180). The gateway reaps the command with `wait4` and sends `ExecExit.usage`: user and system
   CPU and the largest resident set of the command and its children. `prod-code exec` prints

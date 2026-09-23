@@ -521,6 +521,33 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Extract the selection into a new function and replace the same code elsewhere in the file.
+    ExtractFunction {
+        /// The file that holds the selection.
+        file: PathBuf,
+        /// 1-based line where the selection starts.
+        line: u32,
+        /// 1-based column where the selection starts.
+        col: u32,
+        /// End of the selection as LINE:COL (1-based, just past it).
+        #[arg(long)]
+        to: String,
+        /// Name of the new function.
+        #[arg(long)]
+        name: String,
+        /// Extract the selection alone; leave the same code elsewhere as it is.
+        #[arg(long, default_value_t = false)]
+        no_duplicates: bool,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Introduce a variable for an expression and replace every occurrence in the function.
     IntroduceVariable {
         /// The file that holds the expression.
@@ -1346,6 +1373,38 @@ async fn main() -> Result<()> {
                 }),
             )
             .await
+        }
+        Commands::ExtractFunction {
+            file,
+            line,
+            col,
+            to,
+            name,
+            no_duplicates,
+            verify,
+            apply,
+            force,
+        } => {
+            let (end_line, end_col) = to
+                .split_once(':')
+                .and_then(|(l, c)| Some((l.parse::<u32>().ok()?, c.parse::<u32>().ok()?)))
+                .context("--to takes LINE:COL")?;
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            let mut args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "line": line,
+                "character": col,
+                "end_line": end_line,
+                "end_character": end_col,
+                "name": name,
+                "duplicates": !no_duplicates,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(verify) = verify {
+                args["verify"] = serde_json::Value::String(verify);
+            }
+            run_tool(remote, "code_extract_function", args).await
         }
         Commands::IntroduceVariable {
             file,
