@@ -759,1679 +759,132 @@ pub async fn execute_tool(
         args
     };
     match tool_name {
-        "code_symbols" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .context("Missing 'query' argument")?;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
-            let hint = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p));
-            let hits =
-                workspace_symbol_search(remote, workspace_root, query, hint.as_deref(), limit)
-                    .await?;
-            if hits.is_empty() {
-                return Ok(McpToolCallResult::text(format!(
-                    "No symbols match `{query}`."
-                )));
-            }
-            let mut out = format!("{} symbol(s) matching `{query}`:\n", hits.len());
-            for hit in &hits {
-                out.push_str(&format!("  {}\n", hit.render(workspace_root)));
-            }
-            Ok(McpToolCallResult::text(out.trim_end()))
-        }
-        "code_safe_delete" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
-            });
-            let edit = match execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "prodCode/safeDelete",
-                params,
-            )
-            .await
-            {
-                Ok(edit) => edit,
-                Err(e) => {
-                    return Ok(McpToolCallResult::error(format!(
-                        "safe delete refused: {e:#}"
-                    )));
-                }
-            };
-            let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-            Ok(McpToolCallResult::text(format!(
-                "deleted; {} path(s) updated in the checkout:\n{}",
-                touched.len(),
-                touched.join("\n")
-            )))
-        }
+        "code_symbols" => handle_symbols(remote, workspace_root, &args).await,
+        "code_safe_delete" => handle_safe_delete(remote, workspace_root, &args).await,
         "code_assists" | "code_assist" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let (end_line, end_char) = match (
-                args.get("end_line").and_then(|v| v.as_u64()),
-                args.get("end_character").and_then(|v| v.as_u64()),
-            ) {
-                (Some(l), Some(c)) => (l as u32, c as u32),
-                _ => (line, character),
-            };
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-            let mut params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "range": {
-                    "start": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-                    "end": { "line": end_line.saturating_sub(1), "character": end_char.saturating_sub(1) }
-                }
-            });
-            if tool_name == "code_assist" {
-                let id = args
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .context("Missing 'id' argument")?;
-                params["id"] = serde_json::json!(id);
-                if let Some(subtype) = args.get("subtype").and_then(|v| v.as_u64()) {
-                    params["subtype"] = serde_json::json!(subtype);
-                }
-                let edit = match execute_lsp_query(
-                    remote,
-                    workspace_root,
-                    &file_path,
-                    "prodCode/applyAssist",
-                    params,
-                )
-                .await
-                {
-                    Ok(edit) => edit,
-                    Err(e) => {
-                        return Ok(McpToolCallResult::error(format!("assist refused: {e:#}")));
-                    }
-                };
-                let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-                return Ok(McpToolCallResult::text(format!(
-                    "applied `{id}`; {} path(s) updated in the checkout:\n{}",
-                    touched.len(),
-                    touched.join("\n")
-                )));
-            }
-            let list = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "prodCode/assists",
-                params,
-            )
-            .await?;
-            let mut out = String::new();
-            if let Some(items) = list.as_array() {
-                if items.is_empty() {
-                    out.push_str("no code actions at this position\n");
-                }
-                for item in items {
-                    let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-                    let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                    match item.get("subtype").and_then(|v| v.as_u64()) {
-                        Some(st) => {
-                            out.push_str(&format!("{id} (subtype {st}) [{kind}]: {label}\n"))
-                        }
-                        None => out.push_str(&format!("{id} [{kind}]: {label}\n")),
-                    }
-                }
-            }
-            Ok(McpToolCallResult::text(out.trim_end().to_string()))
+            handle_assists(remote, workspace_root, tool_name, &args).await
         }
         "code_check" | "code_lint" | "code_test" => {
-            let kind = match tool_name {
-                "code_check" => crate::verify::VerifyKind::Check,
-                "code_lint" => crate::verify::VerifyKind::Lint,
-                _ => crate::verify::VerifyKind::Test,
-            };
-            let filter = args
-                .get("filter")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let timeout_secs = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            // `path` selects a nested project (any file or directory inside it).
-            let hint = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p));
-            let report = crate::verify::run_verify(
-                remote,
-                workspace_root,
-                hint.as_deref(),
-                kind,
-                filter.as_deref(),
-                timeout_secs,
-            )
-            .await?;
-            let text = report.render(40);
-            Ok(if report.ok() {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
+            handle_check(remote, workspace_root, tool_name, &args).await
         }
-        "code_rename" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let new_name = args
-                .get("new_name")
-                .and_then(|v| v.as_str())
-                .context("Missing 'new_name' argument")?
-                .to_string();
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-                "newName": new_name
-            });
-            let edit = match execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/rename",
-                params,
-            )
-            .await
-            {
-                Ok(edit) => edit,
-                Err(e) => return Ok(McpToolCallResult::error(format!("rename refused: {e:#}"))),
-            };
-            if edit.is_null() {
-                return Ok(McpToolCallResult::error(
-                    "rename produced no edits".to_string(),
-                ));
-            }
-            let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-            Ok(McpToolCallResult::text(format!(
-                "renamed to `{new_name}`; {} path(s) updated in the checkout:\n{}",
-                touched.len(),
-                touched.join("\n")
-            )))
-        }
-        "code_exec" => {
-            let argv: Vec<String> = args
-                .get("argv")
-                .and_then(|v| v.as_array())
-                .context("Missing 'argv' argument")?
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            let timeout_secs = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let tail_bytes = args
-                .get("tail_bytes")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(16 * 1024) as usize;
-            let mut tail = crate::exec::TailBuffer::new(tail_bytes);
-            let subdir = args
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p))
-                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
-            let outcome = crate::exec::run_remote(
-                remote,
-                workspace_root,
-                subdir.as_deref(),
-                argv.clone(),
-                vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
-                timeout_secs,
-                true,
-                |_, data| tail.push(data),
-            )
-            .await?;
-            let exit = outcome.exit;
-            let status = match (&exit.error, exit.timed_out, exit.exit_code) {
-                (Some(err), _, _) => format!("failed to start: {err}"),
-                (None, true, _) => "timed out".to_string(),
-                (None, false, Some(code)) => format!("exit code {code}"),
-                (None, false, None) => "killed by signal".to_string(),
-            };
-            let mut text = format!(
-                "$ {}\n[{status} in {:.1}s on {}; {} bytes of output{}]\n",
-                argv.join(" "),
-                exit.duration_ms as f64 / 1000.0,
-                exit.server_workspace_root,
-                tail.total,
-                if tail.total > tail_bytes {
-                    ", tail shown"
-                } else {
-                    ""
-                }
-            );
-            if !outcome.pulled_files.is_empty() {
-                text.push_str(&format!(
-                    "[{} file(s) changed by the command were written back: {}]\n",
-                    outcome.pulled_files.len(),
-                    outcome.pulled_files.join(", ")
-                ));
-            }
-            text.push_str(&tail.text());
-            Ok(if matches!(exit.exit_code, Some(0)) {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_definition" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
-            });
-
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/definition",
-                params,
-            )
-            .await?;
-
-            let mut out = String::new();
-            if let Some(arr) = res.as_array() {
-                if arr.is_empty() {
-                    out.push_str("No definition found.");
-                } else {
-                    for (i, loc) in arr.iter().enumerate() {
-                        let uri = loc
-                            .get("uri")
-                            .or_else(|| loc.get("targetUri"))
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("");
-                        let range = loc.get("range").or_else(|| loc.get("targetSelectionRange"));
-                        let start_line = range
-                            .and_then(|r| r.get("start"))
-                            .and_then(|s| s.get("line"))
-                            .and_then(|l| l.as_u64())
-                            .unwrap_or(0)
-                            + 1;
-                        let start_col = range
-                            .and_then(|r| r.get("start"))
-                            .and_then(|s| s.get("character"))
-                            .and_then(|c| c.as_u64())
-                            .unwrap_or(0)
-                            + 1;
-                        if i > 0 {
-                            out.push('\n');
-                        }
-                        out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
-                        // Outside the checkout the file exists only on the gateway: include
-                        // the lines around the definition so the agent can read it.
-                        let path = crate::remote_fs::uri_to_path(uri);
-                        if i < 3 && crate::remote_fs::is_external(workspace_root, &path) {
-                            match crate::remote_fs::read_remote_file(remote, &path, 0).await {
-                                Ok((bytes, _)) => {
-                                    let text = String::from_utf8_lossy(&bytes);
-                                    out.push('\n');
-                                    out.push_str(&crate::remote_fs::snippet(
-                                        &text,
-                                        start_line as u32,
-                                        8,
-                                    ));
-                                }
-                                Err(e) => out
-                                    .push_str(&format!("\n   (external source not readable: {e})")),
-                            }
-                        }
-                    }
-                }
-            } else if let Some(obj) = res.as_object() {
-                let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start_line = obj
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("line"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let start_col = obj
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("character"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
-            } else {
-                out.push_str("No definition found.");
-            }
-
-            Ok(McpToolCallResult::text(out))
-        }
+        "code_rename" => handle_rename(remote, workspace_root, &args).await,
+        "code_exec" => handle_exec(remote, workspace_root, &args).await,
+        "code_definition" => handle_definition(remote, workspace_root, &args).await,
 
         "code_callers" | "code_callees" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let incoming = tool_name == "code_callers";
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-            });
-            let items = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/prepareCallHierarchy",
-                params,
-            )
-            .await?;
-            let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-                return Ok(McpToolCallResult::text(format!(
-                    "No function at {path_str}:{line}:{character}."
-                )));
-            };
-            let fn_name = item
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("?")
-                .to_string();
-            let method = if incoming {
-                "callHierarchy/incomingCalls"
-            } else {
-                "callHierarchy/outgoingCalls"
-            };
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                method,
-                serde_json::json!({ "item": item }),
-            )
-            .await?;
-            let edges = res.as_array().cloned().unwrap_or_default();
-            let side = if incoming { "from" } else { "to" };
-            let mut out = format!(
-                "`{fn_name}`: {} {}\n",
-                edges.len(),
-                if incoming { "caller(s)" } else { "callee(s)" }
-            );
-            for edge in &edges {
-                let other = edge.get(side).cloned().unwrap_or_default();
-                let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-                let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start = other.get("selectionRange").and_then(|r| r.get("start"));
-                let dl = start
-                    .and_then(|s| s.get("line"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let dc = start
-                    .and_then(|s| s.get("character"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let sites: Vec<String> = edge
-                    .get("fromRanges")
-                    .and_then(|r| r.as_array())
-                    .map(|ranges| {
-                        ranges
-                            .iter()
-                            .filter_map(|r| r.get("start"))
-                            .map(|s| {
-                                format!(
-                                    "{}:{}",
-                                    s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
-                                    s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                out.push_str(&format!(
-                    "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]\n",
-                    sites.join(", ")
-                ));
-            }
-            Ok(McpToolCallResult::text(out.trim_end().to_string()))
+            handle_callers(remote, workspace_root, tool_name, &args).await
         }
-        "code_implementations" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-            });
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/implementation",
-                params,
-            )
-            .await?;
-            let arr = match &res {
-                serde_json::Value::Array(a) => a.clone(),
-                serde_json::Value::Object(_) => vec![res.clone()],
-                _ => Vec::new(),
-            };
-            if arr.is_empty() {
-                return Ok(McpToolCallResult::text(
-                    "No implementations found.".to_string(),
-                ));
-            }
-            let mut out = format!("Found {} implementation(s):\n", arr.len());
-            for loc in &arr {
-                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start = loc.get("range").and_then(|r| r.get("start"));
-                let l = start
-                    .and_then(|s| s.get("line"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let c = start
-                    .and_then(|s| s.get("character"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                out.push_str(&format!("  • {uri}:{l}:{c}\n"));
-            }
-            Ok(McpToolCallResult::text(out.trim_end().to_string()))
-        }
+        "code_implementations" => handle_implementations(remote, workspace_root, &args).await,
         "code_impact" => {
             let base = args.get("base").and_then(|v| v.as_str());
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
             let report = crate::impact::analyze(remote, workspace_root, base, depth).await?;
             Ok(McpToolCallResult::text(report.render()))
         }
-        "code_diagnose_failure" => {
-            let filter = args.get("filter").and_then(|v| v.as_str());
-            let timeout_secs = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let report =
-                crate::dossier::diagnose(remote, workspace_root, filter, timeout_secs).await?;
-            let text = report.render();
-            Ok(
-                if report.tests_failed == 0 && report.build_errors.is_empty() {
-                    McpToolCallResult::text(text)
-                } else {
-                    McpToolCallResult::error(text)
-                },
-            )
-        }
+        "code_diagnose_failure" => handle_diagnose_failure(remote, workspace_root, &args).await,
         "code_diagnostics" | "code_validate_edit" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let report = match args.get("new_text").and_then(|v| v.as_str()) {
-                Some(text) if tool_name == "code_validate_edit" => {
-                    crate::diagnostics::validate_text(remote, workspace_root, &file_path, text)
-                        .await?
-                }
-                _ if tool_name == "code_validate_edit" => {
-                    return Ok(McpToolCallResult::error(
-                        "Missing 'new_text' argument".to_string(),
-                    ));
-                }
-                _ => crate::diagnostics::diagnostics(remote, workspace_root, &file_path).await?,
-            };
-            let text = report.render();
-            Ok(if report.ok() {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
+            handle_diagnostics(remote, workspace_root, tool_name, &args).await
         }
-        "code_validate_edits" => {
-            let edits: Vec<(std::path::PathBuf, String)> = args
-                .get("edits")
-                .and_then(|v| v.as_array())
-                .context("Missing 'edits' argument")?
-                .iter()
-                .map(|e| {
-                    let path = e
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .context("edit without 'path'")?;
-                    let text = e
-                        .get("new_text")
-                        .and_then(|v| v.as_str())
-                        .with_context(|| format!("edit for {path} without 'new_text'"))?;
-                    Ok((resolve_file_path(workspace_root, path), text.to_string()))
-                })
-                .collect::<Result<_>>()?;
-            if edits.is_empty() {
-                return Ok(McpToolCallResult::error("'edits' is empty".to_string()));
-            }
-            let also_check: Vec<std::path::PathBuf> = args
-                .get("also_check")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .map(|p| resolve_file_path(workspace_root, p))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let reports =
-                crate::diagnostics::validate_texts(remote, workspace_root, &edits, &also_check)
-                    .await?;
-            let errors: usize = reports.iter().map(|r| r.errors).sum();
-            let warnings: usize = reports.iter().map(|r| r.warnings).sum();
-            let mut text = format!(
-                "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n",
-                reports.len()
-            );
-            for report in &reports {
-                text.push_str(&report.render());
-            }
-            let text = text.trim_end().to_string();
-            Ok(if errors == 0 {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_shadow_run" => {
-            let argv: Vec<String> = args
-                .get("argv")
-                .and_then(|v| v.as_array())
-                .context("Missing 'argv' argument")?
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect();
-            if argv.is_empty() {
-                return Ok(McpToolCallResult::error("'argv' is empty".to_string()));
-            }
-            let specs = crate::shadow::parse_specs(workspace_root, &args, None)?;
-            let timeout_secs = args
-                .get("timeout_secs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let parallel = args.get("parallel").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let tail_bytes = args
-                .get("tail_bytes")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(16 * 1024) as usize;
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let subdir = args
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p))
-                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
-            let outcome = crate::shadow::run_shadow(
-                remote,
-                workspace_root,
-                subdir.as_deref(),
-                &specs,
-                argv.clone(),
-                vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
-                timeout_secs,
-                parallel,
-                tail_bytes,
-            )
-            .await?;
-            let applied = match (apply, outcome.winner) {
-                (true, Some(i)) => {
-                    Some(crate::shadow::apply_hypothesis(workspace_root, &specs[i])?)
-                }
-                _ => None,
-            };
-            let text = crate::shadow::render_report(&outcome, &argv, applied.as_deref(), 2000);
-            Ok(if outcome.winner.is_some() {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_slice" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or pass 'symbol')")?;
-            let line =
-                args.get("line")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'line' argument (or pass 'symbol')")? as u32;
-            let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
-            let depth = args
-                .get("depth")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(crate::slice::DEFAULT_DEPTH as u64) as u32;
-            let max_bytes =
-                args.get("max_bytes")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(crate::slice::DEFAULT_MAX_BYTES as u64) as usize;
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let report = crate::slice::slice(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                depth,
-                max_bytes,
-            )
-            .await?;
-            Ok(McpToolCallResult::text(report.render()))
-        }
-        "code_search" => {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .context("Missing 'query' argument")?;
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let subpath = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p))
-                .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
-            let resp =
-                crate::search::search(remote, workspace_root, query, limit, subpath.as_deref())
-                    .await?;
-            Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
-        }
-        "code_codemod" => {
-            let rule = args
-                .get("rule")
-                .and_then(|v| v.as_str())
-                .context("Missing 'rule' argument")?;
-            if !rule.contains("==>>") {
-                return Ok(McpToolCallResult::error(
-                    "a rule is `pattern ==>> replacement`, for example `$a.unwrap() ==>> $a.expect(\"invariant\")`"
-                        .to_string(),
-                ));
-            }
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            // `path` restricts the rewrite to one file and doubles as the resolve context.
-            // Without it the rewrite covers the workspace, which is correct and slow.
-            let scope = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p));
-            let context = match scope.clone() {
-                Some(p) => p,
-                None => representative_source_file(workspace_root)
-                    .context("no source file found to resolve the rule against; pass `path`")?,
-            };
-            let uri = Url::from_file_path(&context)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", context))?
-                .to_string();
-            let edit = execute_lsp_query(
-                remote,
-                workspace_root,
-                &context,
-                "prodCode/structuralReplace",
-                serde_json::json!({
-                    "rule": rule,
-                    "scope": scope.as_ref().map(|p| p.to_string_lossy().into_owned()),
-                    "textDocument": { "uri": uri },
-                    "position": { "line": 0, "character": 0 },
-                }),
-            )
-            .await?;
-            let rewritten = rewritten_files(&edit);
-            if rewritten.is_empty() {
-                return Ok(McpToolCallResult::text(format!(
-                    "`{rule}` matches nothing{}",
-                    match &scope {
-                        Some(p) => format!(" in {}", p.display()),
-                        None => " in this workspace".to_string(),
-                    }
-                )));
-            }
-            let mut text = format!("`{rule}`\n");
-            let mut changed_lines = 0usize;
-            let mut body = String::new();
-            for (path, new_text) in &rewritten {
-                let rel = std::path::Path::new(path)
-                    .strip_prefix(workspace_root)
-                    .map(|p| p.to_string_lossy().into_owned())
-                    .unwrap_or_else(|_| path.clone());
-                let old_text = std::fs::read_to_string(path).unwrap_or_default();
-                let diff = similar::TextDiff::from_lines(&old_text, new_text);
-                let file_changed = diff
-                    .iter_all_changes()
-                    .filter(|c| c.tag() != similar::ChangeTag::Equal)
-                    .count();
-                changed_lines += file_changed;
-                body.push_str(
-                    &diff
-                        .unified_diff()
-                        .context_radius(2)
-                        .header(&format!("a/{rel}"), &format!("b/{rel}"))
-                        .to_string(),
-                );
-            }
-            text.push_str(&format!(
-                "{} changed line(s) in {} file(s)\n\n",
-                changed_lines,
-                rewritten.len()
-            ));
-            const MAX_DIFF: usize = 6000;
-            if body.len() > MAX_DIFF {
-                let cut: String = body.chars().take(MAX_DIFF).collect();
-                text.push_str(&cut);
-                text.push_str("\n… diff truncated\n");
-            } else {
-                text.push_str(&body);
-            }
-            if apply {
-                let written = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-                text.push_str(&format!(
-                    "\n[applied to {} file(s): {}]\n",
-                    written.len(),
-                    written.join(", ")
-                ));
-            } else {
-                text.push_str("\nnothing was written; pass `apply: true` to make these edits\n");
-            }
-            Ok(McpToolCallResult::text(text.trim_end().to_string()))
-        }
-        "code_schema_rename" => {
-            let field = args
-                .get("field")
-                .and_then(|v| v.as_str())
-                .context("Missing 'field' argument")?;
-            let to = args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .context("Missing 'to' argument")?;
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let scope = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p));
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let mut done = crate::schema::rename(
-                remote,
-                workspace_root,
-                field,
-                to,
-                apply && !verify,
-                force,
-                scope.as_deref(),
-            )
-            .await?;
-            let gate = if verify {
-                let files = done
-                    .rewritten
-                    .iter()
-                    .map(|(p, t)| (p.to_string_lossy().into_owned(), t.clone()))
-                    .collect::<Vec<_>>();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        done.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                done.applied = true;
-            }
-            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = done.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_encapsulate_field" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or `symbol`)")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument (or `symbol`)")? as u32;
-            let character =
-                args.get("character")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'character' argument (or `symbol`)")? as u32;
-            let by_value = args.get("by_value").and_then(|v| v.as_bool());
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let mut done = crate::encapsulate_field::encapsulate(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                by_value,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify && (done.blocked.is_empty() || force) {
-                let files = done.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        done.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                done.applied = true;
-            }
-            let clean = done.diagnostics.is_empty()
-                && done.blocked.is_empty()
-                && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = done.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_migrate_type" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or `symbol`)")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument (or `symbol`)")? as u32;
-            let character =
-                args.get("character")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'character' argument (or `symbol`)")? as u32;
-            let to = args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .context("Missing 'to' argument: the type it should become")?;
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::type_migration::migrate(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                to,
-                apply,
-                force,
-            )
-            .await?;
-            let clean = done.sites.is_empty();
-            let text = done.render(40);
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_extract_field" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let num = |key: &str| -> Result<u32> {
-                args.get(key)
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .with_context(|| format!("Missing '{key}' argument"))
-            };
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .context("Missing 'name' argument: what the new field is called")?;
-            let ty = args.get("type").and_then(|v| v.as_str());
-            let init = args.get("init").and_then(|v| v.as_str());
-            let replace_all = args
-                .get("replace_all")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let mut done = crate::extract_field::extract(
-                remote,
-                workspace_root,
-                &file_path,
-                (num("line")?, num("character")?),
-                (num("end_line")?, num("end_character")?),
-                name,
-                ty,
-                init,
-                replace_all,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify && (done.blocked.is_empty() || force) {
-                let files = done.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        done.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                done.applied = true;
-            }
-            let clean = done.diagnostics.is_empty()
-                && done.blocked.is_empty()
-                && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = done.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_extract_parameter" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let num = |key: &str| -> Result<u32> {
-                args.get(key)
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .with_context(|| format!("Missing '{key}' argument"))
-            };
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .context("Missing 'name' argument: what the new parameter is called")?;
-            let ty = args.get("type").and_then(|v| v.as_str());
-            let replace_all = args
-                .get("replace_all")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let mut done = crate::extract_parameter::extract(
-                remote,
-                workspace_root,
-                &file_path,
-                (num("line")?, num("character")?),
-                (num("end_line")?, num("end_character")?),
-                name,
-                ty,
-                replace_all,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify {
-                let files = done.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        done.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                done.applied = true;
-            }
-            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = done.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
+        "code_validate_edits" => handle_validate_edits(remote, workspace_root, &args).await,
+        "code_shadow_run" => handle_shadow_run(remote, workspace_root, &args).await,
+        "code_slice" => handle_slice(remote, workspace_root, &args).await,
+        "code_search" => handle_search(remote, workspace_root, &args).await,
+        "code_codemod" => handle_codemod(remote, workspace_root, &args).await,
+        "code_schema_rename" => handle_schema_rename(remote, workspace_root, &args).await,
+        "code_encapsulate_field" => handle_encapsulate_field(remote, workspace_root, &args).await,
+        "code_migrate_type" => handle_migrate_type(remote, workspace_root, &args).await,
+        "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
+        "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
         "code_introduce_parameter_object" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or `symbol`)")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument (or `symbol`)")? as u32;
-            let character =
-                args.get("character")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'character' argument (or `symbol`)")? as u32;
-            let name = args
-                .get("name")
-                .and_then(|v| v.as_str())
-                .context("Missing 'name' argument: what the new struct is called")?;
-            let specs = args
-                .get("params")
-                .and_then(|v| v.as_array())
-                .context("Missing 'params' argument: the parameters to bundle, by name")?;
-            let mut params = Vec::with_capacity(specs.len());
-            for spec in specs {
-                params.push(
-                    spec.as_str()
-                        .context("every entry of `params` is a parameter name")?
-                        .to_string(),
+            handle_introduce_parameter_object(remote, workspace_root, &args).await
+        }
+        "code_move" => handle_move(remote, workspace_root, &args).await,
+        "code_change_signature" => handle_change_signature(remote, workspace_root, &args).await,
+        "code_generate_fixture" => handle_generate_fixture(remote, workspace_root, &args).await,
+        "code_dead_code" => handle_dead_code(remote, workspace_root, &args).await,
+        "code_source" => handle_source(remote, &args).await,
+        "code_references" => handle_references(remote, workspace_root, &args).await,
+
+        "code_outline" => handle_outline(remote, workspace_root, &args).await,
+
+        "code_hover" | "code_type_at" => handle_hover(remote, workspace_root, &args).await,
+
+        "code_status" => handle_status(remote).await,
+
+        "code_sync" => handle_sync(remote, workspace_root, args).await,
+
+        unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
+    }
+}
+
+async fn handle_sync(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let subpath = args.get("path").and_then(|v| v.as_str()).map(Path::new);
+    let deltas = scan_workspace_files(workspace_root, subpath)?;
+    let file_count = deltas.len();
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let req = SyncRequest {
+        client_workspace_root: workspace_root.to_string_lossy().to_string(),
+        files: deltas,
+        clean_others: false,
+        base_workspace_name: None,
+    };
+    framed.send(WireMessage::SyncRequest(req)).await?;
+    if let Some(msg_res) = framed.next().await {
+        match msg_res? {
+            WireMessage::SyncResponse(resp) => {
+                let kb = (resp.bytes_transferred as f64) / 1024.0;
+                let info = format!(
+                    "⚡ Fast-Sync Completed in {}ms\n\
+                             • Files scanned: {file_count}\n\
+                             • Files updated: {}\n\
+                             • Files deleted: {}\n\
+                             • Data transferred: {kb:.1} KB\n\
+                             • Remote workspace: {}",
+                    resp.duration_ms,
+                    resp.files_updated,
+                    resp.files_deleted,
+                    resp.server_workspace_root
                 );
+                Ok(McpToolCallResult::text(info))
             }
-            let binding = args
-                .get("binding")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| crate::fixture::snake_case(name));
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let mut done = crate::parameter_object::introduce(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                &params,
-                name,
-                &binding,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify {
-                let files = done.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        done.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                done.applied = true;
-            }
-            let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = done.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
+            other => Ok(McpToolCallResult::error(format!(
+                "Unexpected response: {other:?}"
+            ))),
         }
-        "code_move" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or `symbol`)")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument (or `symbol`)")? as u32;
-            let character =
-                args.get("character")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'character' argument (or `symbol`)")? as u32;
-            let to = args
-                .get("to")
-                .and_then(|v| v.as_str())
-                .context("Missing 'to' argument: the target module's file")?;
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let target = resolve_file_path(workspace_root, to);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let mut moved = crate::move_item::move_item(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                &target,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify {
-                let files = moved.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        moved.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                moved.applied = true;
-            }
-            let clean = moved.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = moved.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_change_signature" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument (or `symbol`)")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument (or `symbol`)")? as u32;
-            let character =
-                args.get("character")
-                    .and_then(|v| v.as_u64())
-                    .context("Missing 'character' argument (or `symbol`)")? as u32;
-            let specs = args.get("params").and_then(|v| v.as_array()).context(
-                "Missing 'params' argument: the parameter list the function should end up with",
-            )?;
-            let mut params = Vec::with_capacity(specs.len());
-            for spec in specs {
-                let spec = spec.as_str().context(
-                    "every entry of `params` is a string: `name`, or `name: Type = expression`",
-                )?;
-                params.push(crate::signature::parse_param(spec)?);
-            }
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-            let mut change = crate::signature::change(
-                remote,
-                workspace_root,
-                &file_path,
-                line,
-                character,
-                &params,
-                apply && !verify,
-                force,
-            )
-            .await?;
-            let gate = if verify {
-                let files = change.rewritten.clone();
-                Some(
-                    compile_gate(
-                        remote,
-                        workspace_root,
-                        &files,
-                        change.diagnostics.is_empty(),
-                        apply,
-                        force,
-                    )
-                    .await?,
-                )
-            } else {
-                None
-            };
-            if gate.as_ref().is_some_and(|g| g.applied) {
-                change.applied = true;
-            }
-            let clean = change.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
-            let mut text = change.render(6000);
-            if let Some(gate) = &gate {
-                text.push_str(&gate.text);
-            }
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_generate_fixture" => {
-            let symbol = args
-                .get("symbol")
-                .and_then(|v| v.as_str())
-                .context("Missing 'symbol' argument")?;
-            let depth = args
-                .get("depth")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
-            let verify = args.get("verify").and_then(|v| v.as_bool()).unwrap_or(true);
-            let hint = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .map(|p| resolve_file_path(workspace_root, p));
-            let fixture = crate::fixture::generate(
-                remote,
-                workspace_root,
-                symbol,
-                depth,
-                verify,
-                hint.as_deref(),
-            )
-            .await?;
-            let clean = fixture.diagnostics.is_empty();
-            let text = fixture.render();
-            Ok(if clean {
-                McpToolCallResult::text(text)
-            } else {
-                McpToolCallResult::error(text)
-            })
-        }
-        "code_dead_code" => {
-            let include_exported = args
-                .get("include_exported")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let max_files = args
-                .get("max_files")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(400) as usize;
-            let report = crate::dead_code::find_dead_code(
-                remote,
-                workspace_root,
-                include_exported,
-                max_files,
-            )
-            .await?;
-            Ok(McpToolCallResult::text(report.render()))
-        }
-        "code_source" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let path = crate::remote_fs::uri_to_path(path);
-            let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
-            let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
-            let (bytes, truncated) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
-            let text = String::from_utf8_lossy(&bytes);
-            let mut out = match line {
-                Some(line) => crate::remote_fs::snippet(&text, line, context),
-                None => text.into_owned(),
-            };
-            if truncated {
-                out.push_str("\n[truncated at 2 MiB]");
-            }
-            Ok(McpToolCallResult::text(out))
-        }
-        "code_references" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-            let include_decl = args
-                .get("include_declarations")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+    } else {
+        Ok(McpToolCallResult::error(
+            "Gateway closed connection without sync response",
+        ))
+    }
+}
 
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
+async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {
+    let start = std::time::Instant::now();
+    let stream = TcpStream::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
+    let _ = stream.set_nodelay(true);
+    let rtt = start.elapsed();
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    framed.send(WireMessage::StatusRequest).await?;
+    if let Some(msg_res) = framed.next().await {
+        match msg_res? {
+            WireMessage::StatusResponse(resp) => {
+                let hours = resp.uptime_seconds / 3600;
+                let minutes = (resp.uptime_seconds % 3600) / 60;
+                let seconds = resp.uptime_seconds % 60;
+                let mem = resp.memory_rss_mb().unwrap_or(0.0);
 
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-                "context": { "includeDeclaration": include_decl }
-            });
-
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/references",
-                params,
-            )
-            .await?;
-
-            let mut out = String::new();
-            if let Some(arr) = res.as_array() {
-                if arr.is_empty() {
-                    out.push_str("No references found.");
-                } else {
-                    out.push_str(&format!("Found {} reference(s):\n", arr.len()));
-                    for loc in arr {
-                        let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                        let start_line = loc
-                            .get("range")
-                            .and_then(|r| r.get("start"))
-                            .and_then(|s| s.get("line"))
-                            .and_then(|l| l.as_u64())
-                            .unwrap_or(0)
-                            + 1;
-                        let start_col = loc
-                            .get("range")
-                            .and_then(|r| r.get("start"))
-                            .and_then(|s| s.get("character"))
-                            .and_then(|c| c.as_u64())
-                            .unwrap_or(0)
-                            + 1;
-                        out.push_str(&format!("  • {uri}:{start_line}:{start_col}\n"));
-                    }
-                }
-            } else {
-                out.push_str("No references found.");
-            }
-
-            Ok(McpToolCallResult::text(out.trim_end()))
-        }
-
-        "code_outline" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri }
-            });
-
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/documentSymbol",
-                params,
-            )
-            .await?;
-
-            let max_depth = args
-                .get("max_depth")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3)
-                .max(1) as usize;
-            let include_locals = args
-                .get("include_locals")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let mut out = String::new();
-            if let Some(arr) = res.as_array() {
-                out.push_str(&format!("Outline for {path_str}:\n"));
-                let mut skipped_locals = 0usize;
-                for sym in arr {
-                    let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
-                    // Locals (LSP kind 13, Variable) are noise for a structural outline:
-                    // a 2000-line file lists hundreds of them.
-                    if kind == 13 && !include_locals {
-                        skipped_locals += 1;
-                        continue;
-                    }
-                    // Depth from the container chain the gateway reports ("a > b > c").
-                    let depth = sym
-                        .get("containerName")
-                        .and_then(|c| c.as_str())
-                        .filter(|c| c.contains(" > "))
-                        .map(|c| c.split(" > ").count() + 1)
-                        .unwrap_or(1);
-                    if depth > max_depth {
-                        continue;
-                    }
-                    let kind_str = match kind {
-                        2 => "Module",
-                        5 => "Class",
-                        6 => "Method",
-                        8 => "Field",
-                        9 => "Constructor",
-                        10 => "Enum",
-                        11 => "Interface",
-                        12 => "Function",
-                        13 => "Variable",
-                        14 => "Constant",
-                        22 => "EnumMember",
-                        23 => "Struct",
-                        _ => "Symbol",
-                    };
-                    let line = sym
-                        .get("range")
-                        .or_else(|| sym.get("location").and_then(|l| l.get("range")))
-                        .and_then(|r| r.get("start"))
-                        .and_then(|s| s.get("line"))
-                        .and_then(|l| l.as_u64())
-                        .unwrap_or(0)
-                        + 1;
-                    out.push_str(&format!("  [{kind_str}] {name} (line {line})\n"));
-                }
-                if skipped_locals > 0 {
-                    out.push_str(&format!(
-                        "  ({skipped_locals} local variable(s) hidden; pass include_locals: true to list them)\n"
-                    ));
-                }
-            } else {
-                out.push_str("No outline symbols available.");
-            }
-
-            Ok(McpToolCallResult::text(out.trim_end()))
-        }
-
-        "code_hover" | "code_type_at" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let line = args
-                .get("line")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'line' argument")? as u32;
-            let character = args
-                .get("character")
-                .and_then(|v| v.as_u64())
-                .context("Missing 'character' argument")? as u32;
-
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let file_uri = Url::from_file_path(&file_path)
-                .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-                .to_string();
-
-            let params = serde_json::json!({
-                "textDocument": { "uri": file_uri },
-                "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
-            });
-
-            let res = execute_lsp_query(
-                remote,
-                workspace_root,
-                &file_path,
-                "textDocument/hover",
-                params,
-            )
-            .await?;
-
-            if let Some(contents) = res.get("contents") {
-                if let Some(val) = contents.get("value").and_then(|v| v.as_str()) {
-                    return Ok(McpToolCallResult::text(val));
-                } else if let Some(arr) = contents.as_array() {
-                    let text = arr
-                        .iter()
-                        .filter_map(|i| i.get("value").and_then(|v| v.as_str()))
-                        .collect::<Vec<_>>()
-                        .join("\n\n");
-                    return Ok(McpToolCallResult::text(text));
-                }
-            }
-
-            Ok(McpToolCallResult::text("No hover information available."))
-        }
-
-        "code_status" => {
-            let start = std::time::Instant::now();
-            let stream = TcpStream::connect(remote)
-                .await
-                .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
-            let _ = stream.set_nodelay(true);
-            let rtt = start.elapsed();
-
-            let mut framed = Framed::new(stream, ProdCodeCodec::new());
-            framed.send(WireMessage::StatusRequest).await?;
-
-            if let Some(msg_res) = framed.next().await {
-                match msg_res? {
-                    WireMessage::StatusResponse(resp) => {
-                        let hours = resp.uptime_seconds / 3600;
-                        let minutes = (resp.uptime_seconds % 3600) / 60;
-                        let seconds = resp.uptime_seconds % 60;
-                        let mem = resp.memory_rss_mb().unwrap_or(0.0);
-
-                        let info = format!(
-                            "⚡ prod-code Gateway Status\n\
+                let info = format!(
+                    "⚡ prod-code Gateway Status\n\
                              • Address: {remote} ({rtt:.2?} RTT)\n\
                              • Server PID: {}\n\
                              • Uptime: {hours}h {minutes}m {seconds}s\n\
@@ -2441,77 +894,1782 @@ pub async fn execute_tool(
                              • Queries Handled: {} (in-flight: {})\n\
                              • Engines: {}\n\
                              • Status: HEALTHY",
-                            resp.server_pid,
-                            resp.active_sessions,
-                            resp.loaded_workspaces,
-                            resp.total_queries,
-                            resp.active_queries,
-                            resp.detected_engines.join(", ")
-                        );
-                        Ok(McpToolCallResult::text(info))
-                    }
-                    other => Ok(McpToolCallResult::error(format!(
-                        "Unexpected response from gateway: {other:?}"
-                    ))),
-                }
-            } else {
-                Ok(McpToolCallResult::error(
-                    "Gateway closed connection without status response",
-                ))
+                    resp.server_pid,
+                    resp.active_sessions,
+                    resp.loaded_workspaces,
+                    resp.total_queries,
+                    resp.active_queries,
+                    resp.detected_engines.join(", ")
+                );
+                Ok(McpToolCallResult::text(info))
             }
+            other => Ok(McpToolCallResult::error(format!(
+                "Unexpected response from gateway: {other:?}"
+            ))),
         }
-
-        "code_sync" => {
-            let subpath = args.get("path").and_then(|v| v.as_str()).map(Path::new);
-            let deltas = scan_workspace_files(workspace_root, subpath)?;
-            let file_count = deltas.len();
-
-            let stream = TcpStream::connect(remote)
-                .await
-                .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
-            let _ = stream.set_nodelay(true);
-            let mut framed = Framed::new(stream, ProdCodeCodec::new());
-
-            let req = SyncRequest {
-                client_workspace_root: workspace_root.to_string_lossy().to_string(),
-                files: deltas,
-                clean_others: false,
-                base_workspace_name: None,
-            };
-
-            framed.send(WireMessage::SyncRequest(req)).await?;
-
-            if let Some(msg_res) = framed.next().await {
-                match msg_res? {
-                    WireMessage::SyncResponse(resp) => {
-                        let kb = (resp.bytes_transferred as f64) / 1024.0;
-                        let info = format!(
-                            "⚡ Fast-Sync Completed in {}ms\n\
-                             • Files scanned: {file_count}\n\
-                             • Files updated: {}\n\
-                             • Files deleted: {}\n\
-                             • Data transferred: {kb:.1} KB\n\
-                             • Remote workspace: {}",
-                            resp.duration_ms,
-                            resp.files_updated,
-                            resp.files_deleted,
-                            resp.server_workspace_root
-                        );
-                        Ok(McpToolCallResult::text(info))
-                    }
-                    other => Ok(McpToolCallResult::error(format!(
-                        "Unexpected response: {other:?}"
-                    ))),
-                }
-            } else {
-                Ok(McpToolCallResult::error(
-                    "Gateway closed connection without sync response",
-                ))
-            }
-        }
-
-        unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
+    } else {
+        Ok(McpToolCallResult::error(
+            "Gateway closed connection without status response",
+        ))
     }
+}
+
+async fn handle_hover(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
+    });
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/hover",
+        params,
+    )
+    .await?;
+    if let Some(contents) = res.get("contents") {
+        if let Some(val) = contents.get("value").and_then(|v| v.as_str()) {
+            return Ok(McpToolCallResult::text(val));
+        } else if let Some(arr) = contents.as_array() {
+            let text = arr
+                .iter()
+                .filter_map(|i| i.get("value").and_then(|v| v.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            return Ok(McpToolCallResult::text(text));
+        }
+    }
+    Ok(McpToolCallResult::text("No hover information available."))
+}
+
+async fn handle_outline(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri }
+    });
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/documentSymbol",
+        params,
+    )
+    .await?;
+    let max_depth = args
+        .get("max_depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .max(1) as usize;
+    let include_locals = args
+        .get("include_locals")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut out = String::new();
+    if let Some(arr) = res.as_array() {
+        out.push_str(&format!("Outline for {path_str}:\n"));
+        let mut skipped_locals = 0usize;
+        for sym in arr {
+            let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
+            // Locals (LSP kind 13, Variable) are noise for a structural outline:
+            // a 2000-line file lists hundreds of them.
+            if kind == 13 && !include_locals {
+                skipped_locals += 1;
+                continue;
+            }
+            // Depth from the container chain the gateway reports ("a > b > c").
+            let depth = sym
+                .get("containerName")
+                .and_then(|c| c.as_str())
+                .filter(|c| c.contains(" > "))
+                .map(|c| c.split(" > ").count() + 1)
+                .unwrap_or(1);
+            if depth > max_depth {
+                continue;
+            }
+            let kind_str = match kind {
+                2 => "Module",
+                5 => "Class",
+                6 => "Method",
+                8 => "Field",
+                9 => "Constructor",
+                10 => "Enum",
+                11 => "Interface",
+                12 => "Function",
+                13 => "Variable",
+                14 => "Constant",
+                22 => "EnumMember",
+                23 => "Struct",
+                _ => "Symbol",
+            };
+            let line = sym
+                .get("range")
+                .or_else(|| sym.get("location").and_then(|l| l.get("range")))
+                .and_then(|r| r.get("start"))
+                .and_then(|s| s.get("line"))
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+                + 1;
+            out.push_str(&format!("  [{kind_str}] {name} (line {line})\n"));
+        }
+        if skipped_locals > 0 {
+            out.push_str(&format!(
+                "  ({skipped_locals} local variable(s) hidden; pass include_locals: true to list them)\n"
+            ));
+        }
+    } else {
+        out.push_str("No outline symbols available.");
+    }
+    Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+async fn handle_references(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let include_decl = args
+        .get("include_declarations")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+        "context": { "includeDeclaration": include_decl }
+    });
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/references",
+        params,
+    )
+    .await?;
+    let mut out = String::new();
+    if let Some(arr) = res.as_array() {
+        if arr.is_empty() {
+            out.push_str("No references found.");
+        } else {
+            out.push_str(&format!("Found {} reference(s):\n", arr.len()));
+            for loc in arr {
+                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+                let start_line = loc
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let start_col = loc
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                out.push_str(&format!("  • {uri}:{start_line}:{start_col}\n"));
+            }
+        }
+    } else {
+        out.push_str("No references found.");
+    }
+    Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+async fn handle_source(remote: SocketAddr, args: &serde_json::Value) -> Result<McpToolCallResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let path = crate::remote_fs::uri_to_path(path);
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
+    let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
+    let (bytes, truncated) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut out = match line {
+        Some(line) => crate::remote_fs::snippet(&text, line, context),
+        None => text.into_owned(),
+    };
+    if truncated {
+        out.push_str("\n[truncated at 2 MiB]");
+    }
+    Ok(McpToolCallResult::text(out))
+}
+
+async fn handle_dead_code(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let include_exported = args
+        .get("include_exported")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let max_files = args
+        .get("max_files")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(400) as usize;
+    let report =
+        crate::dead_code::find_dead_code(remote, workspace_root, include_exported, max_files)
+            .await?;
+    Ok(McpToolCallResult::text(report.render()))
+}
+
+async fn handle_generate_fixture(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let symbol = args
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .context("Missing 'symbol' argument")?;
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
+    let verify = args.get("verify").and_then(|v| v.as_bool()).unwrap_or(true);
+    let hint = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p));
+    let fixture = crate::fixture::generate(
+        remote,
+        workspace_root,
+        symbol,
+        depth,
+        verify,
+        hint.as_deref(),
+    )
+    .await?;
+    let clean = fixture.diagnostics.is_empty();
+    let text = fixture.render();
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_change_signature(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or `symbol`)")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let specs = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .context("Missing 'params' argument: the parameter list the function should end up with")?;
+    let mut params = Vec::with_capacity(specs.len());
+    for spec in specs {
+        let spec = spec
+            .as_str()
+            .context("every entry of `params` is a string: `name`, or `name: Type = expression`")?;
+        params.push(crate::signature::parse_param(spec)?);
+    }
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut change = crate::signature::change(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        &params,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = change.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                change.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        change.applied = true;
+    }
+    let clean = change.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = change.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_move(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or `symbol`)")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let to = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .context("Missing 'to' argument: the target module's file")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let target = resolve_file_path(workspace_root, to);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut moved = crate::move_item::move_item(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        &target,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = moved.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                moved.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        moved.applied = true;
+    }
+    let clean = moved.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = moved.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_introduce_parameter_object(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or `symbol`)")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument: what the new struct is called")?;
+    let specs = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .context("Missing 'params' argument: the parameters to bundle, by name")?;
+    let mut params = Vec::with_capacity(specs.len());
+    for spec in specs {
+        params.push(
+            spec.as_str()
+                .context("every entry of `params` is a parameter name")?
+                .to_string(),
+        );
+    }
+    let binding = args
+        .get("binding")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::fixture::snake_case(name));
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut done = crate::parameter_object::introduce(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        &params,
+        name,
+        &binding,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_extract_parameter(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument: what the new parameter is called")?;
+    let ty = args.get("type").and_then(|v| v.as_str());
+    let replace_all = args
+        .get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut done = crate::extract_parameter::extract(
+        remote,
+        workspace_root,
+        &file_path,
+        (num("line")?, num("character")?),
+        (num("end_line")?, num("end_character")?),
+        name,
+        ty,
+        replace_all,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_extract_field(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument: what the new field is called")?;
+    let ty = args.get("type").and_then(|v| v.as_str());
+    let init = args.get("init").and_then(|v| v.as_str());
+    let replace_all = args
+        .get("replace_all")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::extract_field::extract(
+        remote,
+        workspace_root,
+        &file_path,
+        (num("line")?, num("character")?),
+        (num("end_line")?, num("end_character")?),
+        name,
+        ty,
+        init,
+        replace_all,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_encapsulate_field(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or `symbol`)")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let by_value = args.get("by_value").and_then(|v| v.as_bool());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::encapsulate_field::encapsulate(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        by_value,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_schema_rename(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let field = args
+        .get("field")
+        .and_then(|v| v.as_str())
+        .context("Missing 'field' argument")?;
+    let to = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .context("Missing 'to' argument")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let scope = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p));
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut done = crate::schema::rename(
+        remote,
+        workspace_root,
+        field,
+        to,
+        apply && !verify,
+        force,
+        scope.as_deref(),
+    )
+    .await?;
+    let gate = if verify {
+        let files = done
+            .rewritten
+            .iter()
+            .map(|(p, t)| (p.to_string_lossy().into_owned(), t.clone()))
+            .collect::<Vec<_>>();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_codemod(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let rule = args
+        .get("rule")
+        .and_then(|v| v.as_str())
+        .context("Missing 'rule' argument")?;
+    if !rule.contains("==>>") {
+        return Ok(McpToolCallResult::error(
+            "a rule is `pattern ==>> replacement`, for example `$a.unwrap() ==>> $a.expect(\"invariant\")`"
+                .to_string(),
+        ));
+    }
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    // `path` restricts the rewrite to one file and doubles as the resolve context.
+    // Without it the rewrite covers the workspace, which is correct and slow.
+    let scope = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p));
+    let context = match scope.clone() {
+        Some(p) => p,
+        None => representative_source_file(workspace_root)
+            .context("no source file found to resolve the rule against; pass `path`")?,
+    };
+    let uri = Url::from_file_path(&context)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", context))?
+        .to_string();
+    let edit = execute_lsp_query(
+        remote,
+        workspace_root,
+        &context,
+        "prodCode/structuralReplace",
+        serde_json::json!({
+            "rule": rule,
+            "scope": scope.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            "textDocument": { "uri": uri },
+            "position": { "line": 0, "character": 0 },
+        }),
+    )
+    .await?;
+    let rewritten = rewritten_files(&edit);
+    if rewritten.is_empty() {
+        return Ok(McpToolCallResult::text(format!(
+            "`{rule}` matches nothing{}",
+            match &scope {
+                Some(p) => format!(" in {}", p.display()),
+                None => " in this workspace".to_string(),
+            }
+        )));
+    }
+    let mut text = format!("`{rule}`\n");
+    let mut changed_lines = 0usize;
+    let mut body = String::new();
+    for (path, new_text) in &rewritten {
+        let rel = std::path::Path::new(path)
+            .strip_prefix(workspace_root)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.clone());
+        let old_text = std::fs::read_to_string(path).unwrap_or_default();
+        let diff = similar::TextDiff::from_lines(&old_text, new_text);
+        let file_changed = diff
+            .iter_all_changes()
+            .filter(|c| c.tag() != similar::ChangeTag::Equal)
+            .count();
+        changed_lines += file_changed;
+        body.push_str(
+            &diff
+                .unified_diff()
+                .context_radius(2)
+                .header(&format!("a/{rel}"), &format!("b/{rel}"))
+                .to_string(),
+        );
+    }
+    text.push_str(&format!(
+        "{} changed line(s) in {} file(s)\n\n",
+        changed_lines,
+        rewritten.len()
+    ));
+    const MAX_DIFF: usize = 6000;
+    if body.len() > MAX_DIFF {
+        let cut: String = body.chars().take(MAX_DIFF).collect();
+        text.push_str(&cut);
+        text.push_str("\n… diff truncated\n");
+    } else {
+        text.push_str(&body);
+    }
+    if apply {
+        let written = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+        text.push_str(&format!(
+            "\n[applied to {} file(s): {}]\n",
+            written.len(),
+            written.join(", ")
+        ));
+    } else {
+        text.push_str("\nnothing was written; pass `apply: true` to make these edits\n");
+    }
+    Ok(McpToolCallResult::text(text.trim_end().to_string()))
+}
+
+async fn handle_search(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .context("Missing 'query' argument")?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let subpath = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p))
+        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+    let resp =
+        crate::search::search(remote, workspace_root, query, limit, subpath.as_deref()).await?;
+    Ok(McpToolCallResult::text(crate::search::render(&resp, query)))
+}
+
+async fn handle_slice(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or pass 'symbol')")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or pass 'symbol')")? as u32;
+    let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::slice::DEFAULT_DEPTH as u64) as u32;
+    let max_bytes = args
+        .get("max_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::slice::DEFAULT_MAX_BYTES as u64) as usize;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let report = crate::slice::slice(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        depth,
+        max_bytes,
+    )
+    .await?;
+    Ok(McpToolCallResult::text(report.render()))
+}
+
+async fn handle_shadow_run(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let argv: Vec<String> = args
+        .get("argv")
+        .and_then(|v| v.as_array())
+        .context("Missing 'argv' argument")?
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    if argv.is_empty() {
+        return Ok(McpToolCallResult::error("'argv' is empty".to_string()));
+    }
+    let specs = crate::shadow::parse_specs(workspace_root, args, None)?;
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let parallel = args.get("parallel").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    let tail_bytes = args
+        .get("tail_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(16 * 1024) as usize;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let subdir = args
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p))
+        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+    let outcome = crate::shadow::run_shadow(
+        remote,
+        workspace_root,
+        subdir.as_deref(),
+        &specs,
+        argv.clone(),
+        vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+        timeout_secs,
+        parallel,
+        tail_bytes,
+    )
+    .await?;
+    let applied = match (apply, outcome.winner) {
+        (true, Some(i)) => Some(crate::shadow::apply_hypothesis(workspace_root, &specs[i])?),
+        _ => None,
+    };
+    let text = crate::shadow::render_report(&outcome, &argv, applied.as_deref(), 2000);
+    Ok(if outcome.winner.is_some() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_validate_edits(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let edits: Vec<(std::path::PathBuf, String)> = args
+        .get("edits")
+        .and_then(|v| v.as_array())
+        .context("Missing 'edits' argument")?
+        .iter()
+        .map(|e| {
+            let path = e
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("edit without 'path'")?;
+            let text = e
+                .get("new_text")
+                .and_then(|v| v.as_str())
+                .with_context(|| format!("edit for {path} without 'new_text'"))?;
+            Ok((resolve_file_path(workspace_root, path), text.to_string()))
+        })
+        .collect::<Result<_>>()?;
+    if edits.is_empty() {
+        return Ok(McpToolCallResult::error("'edits' is empty".to_string()));
+    }
+    let also_check: Vec<std::path::PathBuf> = args
+        .get("also_check")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(|p| resolve_file_path(workspace_root, p))
+                .collect()
+        })
+        .unwrap_or_default();
+    let reports =
+        crate::diagnostics::validate_texts(remote, workspace_root, &edits, &also_check).await?;
+    let errors: usize = reports.iter().map(|r| r.errors).sum();
+    let warnings: usize = reports.iter().map(|r| r.warnings).sum();
+    let mut text = format!(
+        "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n",
+        reports.len()
+    );
+    for report in &reports {
+        text.push_str(&report.render());
+    }
+    let text = text.trim_end().to_string();
+    Ok(if errors == 0 {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_diagnostics(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let report = match args.get("new_text").and_then(|v| v.as_str()) {
+        Some(text) if tool_name == "code_validate_edit" => {
+            crate::diagnostics::validate_text(remote, workspace_root, &file_path, text).await?
+        }
+        _ if tool_name == "code_validate_edit" => {
+            return Ok(McpToolCallResult::error(
+                "Missing 'new_text' argument".to_string(),
+            ));
+        }
+        _ => crate::diagnostics::diagnostics(remote, workspace_root, &file_path).await?,
+    };
+    let text = report.render();
+    Ok(if report.ok() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_diagnose_failure(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let filter = args.get("filter").and_then(|v| v.as_str());
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let report = crate::dossier::diagnose(remote, workspace_root, filter, timeout_secs).await?;
+    let text = report.render();
+    Ok(
+        if report.tests_failed == 0 && report.build_errors.is_empty() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        },
+    )
+}
+
+async fn handle_implementations(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+    });
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/implementation",
+        params,
+    )
+    .await?;
+    let arr = match &res {
+        serde_json::Value::Array(a) => a.clone(),
+        serde_json::Value::Object(_) => vec![res.clone()],
+        _ => Vec::new(),
+    };
+    if arr.is_empty() {
+        return Ok(McpToolCallResult::text(
+            "No implementations found.".to_string(),
+        ));
+    }
+    let mut out = format!("Found {} implementation(s):\n", arr.len());
+    for loc in &arr {
+        let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start = loc.get("range").and_then(|r| r.get("start"));
+        let l = start
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let c = start
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
+        out.push_str(&format!("  • {uri}:{l}:{c}\n"));
+    }
+    Ok(McpToolCallResult::text(out.trim_end().to_string()))
+}
+
+async fn handle_callers(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let incoming = tool_name == "code_callers";
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+    });
+    let items = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/prepareCallHierarchy",
+        params,
+    )
+    .await?;
+    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
+        return Ok(McpToolCallResult::text(format!(
+            "No function at {path_str}:{line}:{character}."
+        )));
+    };
+    let fn_name = item
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("?")
+        .to_string();
+    let method = if incoming {
+        "callHierarchy/incomingCalls"
+    } else {
+        "callHierarchy/outgoingCalls"
+    };
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        method,
+        serde_json::json!({ "item": item }),
+    )
+    .await?;
+    let edges = res.as_array().cloned().unwrap_or_default();
+    let side = if incoming { "from" } else { "to" };
+    let mut out = format!(
+        "`{fn_name}`: {} {}\n",
+        edges.len(),
+        if incoming { "caller(s)" } else { "callee(s)" }
+    );
+    for edge in &edges {
+        let other = edge.get(side).cloned().unwrap_or_default();
+        let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
+        let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start = other.get("selectionRange").and_then(|r| r.get("start"));
+        let dl = start
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let dc = start
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let sites: Vec<String> = edge
+            .get("fromRanges")
+            .and_then(|r| r.as_array())
+            .map(|ranges| {
+                ranges
+                    .iter()
+                    .filter_map(|r| r.get("start"))
+                    .map(|s| {
+                        format!(
+                            "{}:{}",
+                            s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
+                            s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]\n",
+            sites.join(", ")
+        ));
+    }
+    Ok(McpToolCallResult::text(out.trim_end().to_string()))
+}
+
+async fn handle_definition(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
+    });
+    let res = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/definition",
+        params,
+    )
+    .await?;
+    let mut out = String::new();
+    if let Some(arr) = res.as_array() {
+        if arr.is_empty() {
+            out.push_str("No definition found.");
+        } else {
+            for (i, loc) in arr.iter().enumerate() {
+                let uri = loc
+                    .get("uri")
+                    .or_else(|| loc.get("targetUri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
+                let range = loc.get("range").or_else(|| loc.get("targetSelectionRange"));
+                let start_line = range
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(|l| l.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                let start_col = range
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("character"))
+                    .and_then(|c| c.as_u64())
+                    .unwrap_or(0)
+                    + 1;
+                if i > 0 {
+                    out.push('\n');
+                }
+                out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
+                // Outside the checkout the file exists only on the gateway: include
+                // the lines around the definition so the agent can read it.
+                let path = crate::remote_fs::uri_to_path(uri);
+                if i < 3 && crate::remote_fs::is_external(workspace_root, &path) {
+                    match crate::remote_fs::read_remote_file(remote, &path, 0).await {
+                        Ok((bytes, _)) => {
+                            let text = String::from_utf8_lossy(&bytes);
+                            out.push('\n');
+                            out.push_str(&crate::remote_fs::snippet(&text, start_line as u32, 8));
+                        }
+                        Err(e) => {
+                            out.push_str(&format!("\n   (external source not readable: {e})"))
+                        }
+                    }
+                }
+            }
+        }
+    } else if let Some(obj) = res.as_object() {
+        let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+        let start_line = obj
+            .get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|s| s.get("line"))
+            .and_then(|l| l.as_u64())
+            .unwrap_or(0)
+            + 1;
+        let start_col = obj
+            .get("range")
+            .and_then(|r| r.get("start"))
+            .and_then(|s| s.get("character"))
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0)
+            + 1;
+        out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
+    } else {
+        out.push_str("No definition found.");
+    }
+    Ok(McpToolCallResult::text(out))
+}
+
+async fn handle_exec(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let argv: Vec<String> = args
+        .get("argv")
+        .and_then(|v| v.as_array())
+        .context("Missing 'argv' argument")?
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let tail_bytes = args
+        .get("tail_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(16 * 1024) as usize;
+    let mut tail = crate::exec::TailBuffer::new(tail_bytes);
+    let subdir = args
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p))
+        .and_then(|p| crate::exec::subdir_of(workspace_root, &p));
+    let outcome = crate::exec::run_remote(
+        remote,
+        workspace_root,
+        subdir.as_deref(),
+        argv.clone(),
+        vec![("CARGO_TERM_COLOR".to_string(), "never".to_string())],
+        timeout_secs,
+        true,
+        |_, data| tail.push(data),
+    )
+    .await?;
+    let exit = outcome.exit;
+    let status = match (&exit.error, exit.timed_out, exit.exit_code) {
+        (Some(err), _, _) => format!("failed to start: {err}"),
+        (None, true, _) => "timed out".to_string(),
+        (None, false, Some(code)) => format!("exit code {code}"),
+        (None, false, None) => "killed by signal".to_string(),
+    };
+    let mut text = format!(
+        "$ {}\n[{status} in {:.1}s on {}; {} bytes of output{}]\n",
+        argv.join(" "),
+        exit.duration_ms as f64 / 1000.0,
+        exit.server_workspace_root,
+        tail.total,
+        if tail.total > tail_bytes {
+            ", tail shown"
+        } else {
+            ""
+        }
+    );
+    if !outcome.pulled_files.is_empty() {
+        text.push_str(&format!(
+            "[{} file(s) changed by the command were written back: {}]\n",
+            outcome.pulled_files.len(),
+            outcome.pulled_files.join(", ")
+        ));
+    }
+    text.push_str(&tail.text());
+    Ok(if matches!(exit.exit_code, Some(0)) {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_rename(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let new_name = args
+        .get("new_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'new_name' argument")?
+        .to_string();
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+        "newName": new_name
+    });
+    let edit = match execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "textDocument/rename",
+        params,
+    )
+    .await
+    {
+        Ok(edit) => edit,
+        Err(e) => return Ok(McpToolCallResult::error(format!("rename refused: {e:#}"))),
+    };
+    if edit.is_null() {
+        return Ok(McpToolCallResult::error(
+            "rename produced no edits".to_string(),
+        ));
+    }
+    let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    Ok(McpToolCallResult::text(format!(
+        "renamed to `{new_name}`; {} path(s) updated in the checkout:\n{}",
+        touched.len(),
+        touched.join("\n")
+    )))
+}
+
+async fn handle_check(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let kind = match tool_name {
+        "code_check" => crate::verify::VerifyKind::Check,
+        "code_lint" => crate::verify::VerifyKind::Lint,
+        _ => crate::verify::VerifyKind::Test,
+    };
+    let filter = args
+        .get("filter")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    // `path` selects a nested project (any file or directory inside it).
+    let hint = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p));
+    let report = crate::verify::run_verify(
+        remote,
+        workspace_root,
+        hint.as_deref(),
+        kind,
+        filter.as_deref(),
+        timeout_secs,
+    )
+    .await?;
+    let text = report.render(40);
+    Ok(if report.ok() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_assists(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let (end_line, end_char) = match (
+        args.get("end_line").and_then(|v| v.as_u64()),
+        args.get("end_character").and_then(|v| v.as_u64()),
+    ) {
+        (Some(l), Some(c)) => (l as u32, c as u32),
+        _ => (line, character),
+    };
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let mut params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "range": {
+            "start": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
+            "end": { "line": end_line.saturating_sub(1), "character": end_char.saturating_sub(1) }
+        }
+    });
+    if tool_name == "code_assist" {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .context("Missing 'id' argument")?;
+        params["id"] = serde_json::json!(id);
+        if let Some(subtype) = args.get("subtype").and_then(|v| v.as_u64()) {
+            params["subtype"] = serde_json::json!(subtype);
+        }
+        let edit = match execute_lsp_query(
+            remote,
+            workspace_root,
+            &file_path,
+            "prodCode/applyAssist",
+            params,
+        )
+        .await
+        {
+            Ok(edit) => edit,
+            Err(e) => {
+                return Ok(McpToolCallResult::error(format!("assist refused: {e:#}")));
+            }
+        };
+        let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+        return Ok(McpToolCallResult::text(format!(
+            "applied `{id}`; {} path(s) updated in the checkout:\n{}",
+            touched.len(),
+            touched.join("\n")
+        )));
+    }
+    let list = execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "prodCode/assists",
+        params,
+    )
+    .await?;
+    let mut out = String::new();
+    if let Some(items) = list.as_array() {
+        if items.is_empty() {
+            out.push_str("no code actions at this position\n");
+        }
+        for item in items {
+            let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+            let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
+            match item.get("subtype").and_then(|v| v.as_u64()) {
+                Some(st) => out.push_str(&format!("{id} (subtype {st}) [{kind}]: {label}\n")),
+                None => out.push_str(&format!("{id} [{kind}]: {label}\n")),
+            }
+        }
+    }
+    Ok(McpToolCallResult::text(out.trim_end().to_string()))
+}
+
+async fn handle_safe_delete(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument")? as u32;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let file_uri = Url::from_file_path(&file_path)
+        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": file_uri },
+        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) }
+    });
+    let edit = match execute_lsp_query(
+        remote,
+        workspace_root,
+        &file_path,
+        "prodCode/safeDelete",
+        params,
+    )
+    .await
+    {
+        Ok(edit) => edit,
+        Err(e) => {
+            return Ok(McpToolCallResult::error(format!(
+                "safe delete refused: {e:#}"
+            )));
+        }
+    };
+    let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    Ok(McpToolCallResult::text(format!(
+        "deleted; {} path(s) updated in the checkout:\n{}",
+        touched.len(),
+        touched.join("\n")
+    )))
+}
+
+async fn handle_symbols(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let query = args
+        .get("query")
+        .and_then(|v| v.as_str())
+        .context("Missing 'query' argument")?;
+    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(30) as usize;
+    let hint = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(|p| resolve_file_path(workspace_root, p));
+    let hits =
+        workspace_symbol_search(remote, workspace_root, query, hint.as_deref(), limit).await?;
+    if hits.is_empty() {
+        return Ok(McpToolCallResult::text(format!(
+            "No symbols match `{query}`."
+        )));
+    }
+    let mut out = format!("{} symbol(s) matching `{query}`:\n", hits.len());
+    for hit in &hits {
+        out.push_str(&format!("  {}\n", hit.render(workspace_root)));
+    }
+    Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+async fn handle_migrate_type(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument (or `symbol`)")? as u32;
+    let character = args
+        .get("character")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let to = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .context("Missing 'to' argument: the type it should become")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::type_migration::migrate(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        character,
+        to,
+        apply,
+        force,
+    )
+    .await?;
+    let clean = done.sites.is_empty();
+    let text = done.render(40);
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
 }
 
 fn resolve_file_path(workspace_root: &Path, path_str: &str) -> std::path::PathBuf {

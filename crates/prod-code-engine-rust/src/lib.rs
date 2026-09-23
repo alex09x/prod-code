@@ -5,8 +5,9 @@ use ra_ap_cfg::{CfgAtom, CfgDiff};
 use ra_ap_ide::{
     AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig, DiagnosticsConfig,
     FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
-    GotoImplementationConfig, HoverConfig, HoverDocFormat, NavigationTarget, RaFixtureConfig,
-    RenameConfig, SingleResolve, StructureNodeKind, TextRange, TextSize,
+    GotoImplementationConfig, HighlightConfig, HoverConfig, HoverDocFormat, NavigationTarget,
+    RaFixtureConfig, RenameConfig, SingleResolve, StructureNodeKind, SymbolKind, TextRange,
+    TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -1431,7 +1432,102 @@ impl RustEngine {
     }
 
     pub fn diagnostics(&self, path: &Path) -> Result<Vec<FileDiagnostic>> {
-        self.snapshot().diagnostics(path)
+        let started = std::time::Instant::now();
+        self.infer_functions_in_parallel(path);
+        let primed = started.elapsed();
+        let result = self.snapshot().diagnostics(path);
+        tracing::debug!(
+            file = %path.display(),
+            primed_ms = primed.as_millis() as u64,
+            diagnostics_ms = (started.elapsed() - primed).as_millis() as u64,
+            "diagnostics: functions inferred in parallel, then the diagnostics pass"
+        );
+        result
+    }
+
+    /// Type-checks the functions of `path` on several threads before its diagnostics are asked
+    /// for (#86).
+    ///
+    /// Diagnostics need every body in the file inferred, and rust-analyzer infers them one after
+    /// another. After a change to what the crate declares — the usual case for a proposal a
+    /// refactoring validates — every body must be inferred again, which for a large file is tens
+    /// of seconds on one core of a machine that has dozens. Highlighting a range resolves every
+    /// name in it, and so infers the bodies there; doing that for each function on its own
+    /// snapshot lets Salsa compute those inferences side by side, and the diagnostics pass that
+    /// follows finds them done. A function is inferred by one thread at a time, so a file that is
+    /// one huge function gains nothing. The snapshots are used and dropped before this returns:
+    /// a snapshot kept alive would block the next write to the database.
+    fn infer_functions_in_parallel(&self, path: &Path) {
+        let Some(file_id) = self.file_id_for_path(path) else {
+            return;
+        };
+        let analysis = self.host.analysis();
+        let Ok(nodes) = analysis.file_structure(
+            &FileStructureConfig {
+                exclude_locals: true,
+            },
+            file_id,
+        ) else {
+            return;
+        };
+        let mut ranges: Vec<TextRange> = nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.kind,
+                    StructureNodeKind::SymbolKind(SymbolKind::Function | SymbolKind::Method)
+                )
+            })
+            .map(|n| n.node_range)
+            .collect();
+        drop(analysis);
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(16)
+            .min(ranges.len());
+        if threads < 2 {
+            return;
+        }
+        // Largest first, dealt out in turn, so no thread is left with all the big ones.
+        ranges.sort_by_key(|r| std::cmp::Reverse(r.len()));
+        let mut shares: Vec<Vec<TextRange>> = vec![Vec::new(); threads];
+        for (i, range) in ranges.into_iter().enumerate() {
+            shares[i % threads].push(range);
+        }
+        // Each thread owns its snapshot; all of them are joined, and so dropped, before this
+        // returns.
+        let workers: Vec<_> = shares
+            .into_iter()
+            .map(|share| {
+                let analysis = self.host.analysis();
+                std::thread::spawn(move || {
+                    for range in share {
+                        let config = HighlightConfig {
+                            strings: false,
+                            comments: false,
+                            punctuation: false,
+                            specialize_punctuation: false,
+                            operator: false,
+                            specialize_operator: false,
+                            inject_doc_comment: false,
+                            macro_bang: false,
+                            syntactic_name_ref_highlighting: false,
+                            ra_fixture: RaFixtureConfig::default(),
+                        };
+                        if analysis
+                            .highlight_range(config, FileRange { file_id, range })
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            let _ = worker.join();
+        }
     }
 
     pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
