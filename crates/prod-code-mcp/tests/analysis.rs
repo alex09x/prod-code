@@ -291,6 +291,11 @@ async fn impact_report_says_when_the_index_could_not_be_built() {
         "{failed}"
     );
     assert!(
+        failed.contains("1 changed function(s), callers and tests unknown)"),
+        "{failed}"
+    );
+    assert!(built.contains("0 caller(s), 0 test(s))"), "{built}");
+    assert!(
         failed.contains("affected tests: unknown (no index)"),
         "{failed}"
     );

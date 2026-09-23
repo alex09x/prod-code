@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- **impact's first line no longer counts unknown callers as zero** (#170). When the Swift index
+  could not be built, the header still said `0 caller(s), 0 test(s)` above the line saying they
+  were unknown. It now says `callers and tests unknown`.
 - **impact on Swift no longer says no test reaches a change it never looked at** (#166). The
   macOS node runs Swift 5.10, whose sourcekit-lsp finds a caller in another file only through
   the index a build leaves. Before any build, `impact` answered "affected tests: none reach the
