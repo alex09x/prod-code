@@ -6,13 +6,13 @@ pub mod path;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecMetric, ExecRequest, FileDelta,
-    FileStamp, HandshakeRequest, HandshakeResponse, LoadedWorkspaceInfo, MetricsRequest,
-    MetricsResponse, NodeGossip, PROTOCOL_VERSION, PURPOSE_VALIDATION, PeerInfo, PlaceRequest,
-    PlaceResponse, QueryMetric, ReadFileRequest, ReadFileResponse, SearchHit, SearchRequest,
-    SearchResponse, ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse,
-    StatusResponse, SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage,
-    client_host, content_hash, detect_client_agent,
+    ANALYZER_PANIC_CODE, ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecMetric,
+    ExecRequest, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse, LoadedWorkspaceInfo,
+    MetricsRequest, MetricsResponse, NodeGossip, PROTOCOL_VERSION, PURPOSE_VALIDATION, PeerInfo,
+    PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest, ReadFileResponse, SearchHit,
+    SearchRequest, SearchResponse, ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest,
+    ShadowRunResponse, StatusResponse, SyncProbeRequest, SyncProbeResponse, SyncRequest,
+    SyncResponse, WireMessage, client_host, content_hash, detect_client_agent,
 };
 pub use path::PathTranslator;
 
