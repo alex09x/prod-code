@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **The coverage gate no longer fails on a file with no code** (#102). A crate root of `pub mod`
+  and `pub use` lines has no regions, and naming it failed the whole run with "no coverage data"
+  after a seven-minute instrumented build, whose report was a temporary file. Such a file is
+  now listed as `no code`; only a path that does not exist fails. The report is kept at
+  `target/coverage-report.json`, so a rerun over other files can pass `--report` and skip the
+  build.
 - **An assist's prelude paths are spelled as the names in scope** (#97). rust-analyzer writes
   a prelude item an assist introduces by its full path, so every function `extract_function`
   made in this repository returned `std::prelude::v1::Result<T, anyhow::Error>`. Where an assist
