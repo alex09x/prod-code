@@ -19,10 +19,18 @@ pub struct Inverted {
     #[serde(skip)]
     pub root: PathBuf,
     pub file: String,
-    /// Calls that gained a `!`.
+    /// What was inverted: `function`, `field` or `variable`.
+    pub kind: String,
+    /// Calls (or reads) that gained a `!`.
     pub negated: usize,
-    /// Calls whose `!` was removed, because it and the inversion cancel.
+    /// Calls (or reads) whose `!` was removed, because it and the inversion cancel.
     pub cancelled: usize,
+    /// Writes that now store the negation of what they stored: an assignment, a `let` initialiser,
+    /// a field in a struct literal.
+    pub writes: usize,
+    /// Uses that cannot keep their meaning under the inversion; nothing is written while any
+    /// remains, unless `force`.
+    pub blocked: Vec<String>,
     pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
@@ -31,11 +39,19 @@ pub struct Inverted {
 
 impl Inverted {
     pub fn render(&self, diff_budget: usize) -> String {
-        let mut out = format!(
-            "`{}` → `{}` ({})\n\n- the body returns the negation of what it returned\n- {} call(s) \
-             gain a `!`, {} lose the `!` they had\n\n",
-            self.was, self.now, self.file, self.negated, self.cancelled
-        );
+        let mut out = if self.kind == "function" {
+            format!(
+                "`{}` → `{}` ({})\n\n- the body returns the negation of what it returned\n- {} \
+                 call(s) gain a `!`, {} lose the `!` they had\n\n",
+                self.was, self.now, self.file, self.negated, self.cancelled
+            )
+        } else {
+            format!(
+                "`{}` → `{}` ({}, a boolean {})\n\n- {} read(s) gain a `!`, {} lose the `!` they \
+                 had\n- {} write(s) now store the negation of what they stored\n\n",
+                self.was, self.now, self.file, self.kind, self.negated, self.cancelled, self.writes
+            )
+        };
         let mut body = String::new();
         let mut changed_lines = 0usize;
         for (path, new_text) in &self.rewritten {
@@ -65,6 +81,16 @@ impl Inverted {
             out.push_str("\n… diff truncated\n");
         } else {
             out.push_str(&body);
+        }
+        if !self.blocked.is_empty() {
+            out.push_str(&format!(
+                "\n{} use(s) cannot keep their meaning under the inversion; nothing is written \
+                 while any remains:\n",
+                self.blocked.len()
+            ));
+            for b in &self.blocked {
+                out.push_str(&format!("  {b}\n"));
+            }
         }
         if !self.unmatched.is_empty() {
             out.push_str(&format!(
@@ -258,10 +284,17 @@ pub async fn invert(
         .take_while(|(_, c)| is_ident(*c))
         .last()
         .map_or(at, |(i, _)| i);
-    anyhow::ensure!(
-        text[..start].trim_end().ends_with("fn"),
-        "the position is not the name of a function declaration"
-    );
+    if !text[..start].trim_end().ends_with("fn") {
+        let name: String = text[start..].chars().take_while(|c| is_ident(*c)).collect();
+        let kind = crate::invert_value::value_kind(&text, start, &name).context(
+            "the position is not the name of a function returning `bool`, a `bool` field or a \
+             `let` binding",
+        )?;
+        return crate::invert_value::invert_value(
+            remote, root, file, &text, start, kind, new_name, apply, force,
+        )
+        .await;
+    }
     let (name, _, close) =
         crate::signature::param_span(&text, start).context("the function has no parameter list")?;
     anyhow::ensure!(name != new_name, "the new name is the old one");
@@ -398,8 +431,11 @@ pub async fn invert(
         now: new_name.to_string(),
         root: root.to_path_buf(),
         file: display(root, file),
+        kind: "function".to_string(),
         negated,
         cancelled,
+        writes: 0,
+        blocked: Vec::new(),
         unmatched,
         rewritten: rewritten
             .into_iter()
@@ -469,8 +505,11 @@ mod tests {
             now: "is_invalid".into(),
             root: "/root".into(),
             file: "src/lib.rs".into(),
+            kind: "function".into(),
             negated: 2,
             cancelled: 1,
+            writes: 0,
+            blocked: Vec::new(),
             unmatched: vec!["src/app.rs:9:14 `is_valid` used as a value".into()],
             rewritten: vec![("/root/src/lib.rs".into(), "fn main() {}\n".into())],
             diagnostics: vec!["mismatched types (src/app.rs:4:5)".into()],
@@ -497,6 +536,22 @@ mod tests {
             text.contains("0 errors")
                 && text.contains("[applied to 1 file(s)]")
                 && text.contains("diff truncated"),
+            "{text}"
+        );
+
+        let mut field = report();
+        field.kind = "field".into();
+        field.writes = 3;
+        field.blocked = vec!["src/lib.rs:1:1 the struct derives `Default`".into()];
+        let text = field.render(10_000);
+        assert!(text.contains("a boolean field"), "{text}");
+        assert!(
+            text.contains("2 read(s) gain a `!`, 1 lose the `!`"),
+            "{text}"
+        );
+        assert!(text.contains("3 write(s) now store the negation"), "{text}");
+        assert!(
+            text.contains("1 use(s) cannot keep their meaning"),
             "{text}"
         );
     }

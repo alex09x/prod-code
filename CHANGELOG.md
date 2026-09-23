@@ -168,6 +168,21 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Invert a boolean field or local variable (roadmap 7.1.4, #132): `code_invert_boolean` and
+  `prod-code invert-boolean` accept a `bool` field or a `let` binding besides a function
+  (`crates/prod-code-mcp/src/invert_value.rs`):
+  - every read gains a `!` or loses the one it had, and one that goes on (`.then_some(…)`) is
+    parenthesized;
+  - every write stores the negation: an assignment, the `let` initialiser, a field in a struct
+    literal (`!(v)`, `true`/`false` flipped, `!v` unwrapped), a shorthand `S { enabled }` →
+    `S { disabled: !enabled }`;
+  - a borrow, a compound assignment (`|=`, `&=`, `^=`), a pattern that binds the name, a use
+    inside a format string, `#[derive(Default)]` or a serde derive on the struct are reported and
+    block the write unless `force`;
+  - a local without `: bool` is inverted only when the analyzer's hover says it is `bool`,
+    because `!` on an integer compiles as a bitwise not;
+  - struct braces are told from a block by the CamelCase type before them, so `if c { flag }` is
+    a read and not a shorthand field.
 - Convert a function to a method (roadmap 7.1.3, #120): `code_convert_to_method` (MCP) and
   `prod-code convert-to-method <file> --line N --character C`, the other direction of
   `make_static`. An associated function whose first parameter is the `impl`'s own type (`T`,

@@ -279,15 +279,15 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_invert_boolean".to_string(),
-            description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+            description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. At a `bool` field or a `let` binding instead, the value is inverted: every read gains a `!` or loses the one it had (parenthesized when it goes on), and every write stores the negation — an assignment, the `let` initialiser, the field in a struct literal or its shorthand. A borrow, a compound assignment (`|=`), a pattern that binds it, a use in a format string, a derived `Default` or a serde derive cannot keep their meaning and block the write unless `force`; a local without a `: bool` annotation is inverted only when the analyzer says it is `bool`. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File that declares the function" },
-                    "line": { "type": "integer", "description": "1-based line of the function's name" },
-                    "character": { "type": "integer", "description": "1-based column of the function's name" },
-                    "new_name": { "type": "string", "description": "The name of the inverted predicate" },
+                    "path": { "type": "string", "description": "File that declares the function, field or variable" },
+                    "line": { "type": "integer", "description": "1-based line of its name" },
+                    "character": { "type": "integer", "description": "1-based column of its name" },
+                    "new_name": { "type": "string", "description": "The name of the inverted predicate, field or variable" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }

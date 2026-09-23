@@ -361,11 +361,12 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Invert a predicate: a new name, the opposite meaning, and every caller unchanged in effect.
+    /// Invert a predicate, a bool field or a bool variable: a new name, the opposite meaning, and
+    /// every use unchanged in effect.
     InvertBoolean {
-        /// The function by name, or a file with `--line`.
+        /// The function by name, or a file with `--line` (needed for a field or a variable).
         symbol: String,
-        /// The name of the inverted predicate.
+        /// The new name.
         #[arg(long = "to")]
         new_name: String,
         /// 1-based line, when the first argument is a file path.

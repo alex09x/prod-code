@@ -14,6 +14,7 @@ pub mod generify;
 pub mod hot_reload;
 pub mod impact;
 pub mod invert_boolean;
+pub mod invert_value;
 pub mod lang;
 pub mod make_static;
 pub mod move_item;
