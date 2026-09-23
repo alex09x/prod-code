@@ -1933,1416 +1933,9 @@ async fn run_session_loop(
     loop {
         tokio::select! {
             client_msg_res = socket_rx.next() => {
-                match client_msg_res {
-                    Some(Ok(WireMessage::Ping)) => {
-                        let _ = out_tx.send(WireMessage::Pong).await;
-                    }
-                    Some(Ok(WireMessage::LspPayload(raw_client_lsp))) => {
-                        let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
-                        tracing::debug!(
-                            payload_len = server_lsp.len(),
-                            single_owner = view.is_single_owner,
-                            "Processing incoming LSP message"
-                        );
-
-                        // Inspect LSP message structure
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
-                            let method = val.get("method").and_then(|m| m.as_str());
-                            let id = val.get("id").cloned();
-                            if let (Some(m), Some(id_val)) = (method, &id)
-                                && !id_val.is_null()
-                                && m != "initialize"
-                            {
-                                let params = val.get("params");
-                                let uri = params
-                                    .and_then(|p| p.get("textDocument").and_then(|t| t.get("uri")).or_else(|| p.get("item").and_then(|i| i.get("uri"))))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("");
-                                let file = std::path::Path::new(uri.trim_start_matches("file://"))
-                                    .strip_prefix(&meta.engine_root)
-                                    .map(|p| p.to_string_lossy().into_owned())
-                                    .unwrap_or_else(|_| uri.trim_start_matches("file://").to_string());
-                                let pos = params.and_then(|p| p.get("position").or_else(|| p.get("range").and_then(|r| r.get("start"))));
-                                pending.lock().await.insert(
-                                    id_val.to_string(),
-                                    PendingRequest {
-                                        method: m.to_string(),
-                                        file,
-                                        line: pos.and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32 + 1,
-                                        col: pos.and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1,
-                                        start: Instant::now(),
-                                    },
-                                );
-                            }
-
-                            // 1. Intercept "initialize": reply immediately with cached server capabilities
-                            if method == Some("initialize") {
-                                let req_id = id.unwrap_or(serde_json::json!(1));
-                                let caps = if let Some(ref go) = view.workspace.go_engine {
-                                    go.capabilities.read().await.clone()
-                                } else if let Some(ref generic_eng) = view.workspace.generic_engine {
-                                    generic_eng.capabilities.read().await.clone()
-                                } else if let Some(ref backend) = view.workspace.backend {
-                                    backend.capabilities.read().await.clone()
-                                } else {
-                                    None
-                                };
-                                let init_resp = serde_json::json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": {
-                                        "capabilities": caps.unwrap_or_else(|| serde_json::json!({
-                                            "textDocumentSync": 1,
-                                            "hoverProvider": true,
-                                            "definitionProvider": true,
-                                            "referencesProvider": true,
-                                            "documentSymbolProvider": true,
-                                            "workspaceSymbolProvider": true
-                                        })),
-                                        "serverInfo": {
-                                            "name": "prod-code-rci",
-                                            "version": "0.1.0"
-                                        }
-                                    }
-                                });
-                                let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
-                                let _ = out_tx.send(WireMessage::LspPayload(client_resp)).await;
-                                continue;
-                            }
-
-                            // 2. Intercept "initialized": backend already initialized, consume without forwarding
-                            if method == Some("initialized") {
-                                continue;
-                            }
-
-                            // 3. Intercept "shutdown": reply cleanly
-                            if method == Some("shutdown") {
-                                let req_id = id.unwrap_or(serde_json::json!(1));
-                                let shutdown_resp = serde_json::json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": null
-                                });
-                                let _ = out_tx.send(WireMessage::LspPayload(shutdown_resp.to_string())).await;
-                                continue;
-                            }
-
-                            // 4. In-Memory RustEngine multi-core fast path: hover, definition, references, documentSymbol
-                            if let Some(ref engine_lock) = view.workspace.rust_engine {
-                                match method {
-                                    Some("textDocument/hover") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "textDocument/hover",
-                                                file = %file_path.display(),
-                                                pos = format!("{}:{}", line + 1, col + 1),
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
-
-                                            // Acquire cheap snapshot (<1 µs) without holding mutex during query
-                                            let engine_arc = Arc::clone(engine_lock);
-
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let hover_res = {
-                                                    // Hold the engine for the whole query: activating the session view and
-                                                    // running the query under one lock keeps other sessions' buffers out and
-                                                    // prevents a concurrent edit from cancelling this snapshot.
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.hover(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                                                            tracing::warn!(error = %e, session = session_id, "query failed");
-                                                            None
-                                                        })
-                                                    })
-                                                    .await
-                                                    .unwrap_or(None)
-                                                };
-
-                                                let duration = query_start.elapsed();
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let ms = duration.as_secs_f64() * 1000.0;
-                                                let found = hover_res.is_some();
-
-                                                if ms > 200.0 {
-                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/hover",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        found,
-                                                        in_flight = remaining,
-                                                        "⚠️ [LSP SLOW >200ms]"
-                                                    );
-                                                } else {
-                                                    tracing::info!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/hover",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        found,
-                                                        in_flight = remaining,
-                                                        "✅ [LSP DONE]"
-                                                    );
-                                                }
-
-                                                let resp = match hover_res {
-                                                    Some(markup) => serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": req_id,
-                                                        "result": {
-                                                            "contents": {
-                                                                "kind": "markdown",
-                                                                "value": markup
-                                                            }
-                                                        }
-                                                    }),
-                                                    None => serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": req_id,
-                                                        "result": null
-                                                    }),
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("textDocument/definition") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "textDocument/definition",
-                                                file = %file_path.display(),
-                                                pos = format!("{}:{}", line + 1, col + 1),
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
-
-                                            let engine_arc = Arc::clone(engine_lock);
-
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let defs = {
-                                                    // Hold the engine for the whole query: activating the session view and
-                                                    // running the query under one lock keeps other sessions' buffers out and
-                                                    // prevents a concurrent edit from cancelling this snapshot.
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                                                            tracing::warn!(error = %e, session = session_id, "query failed");
-                                                            Vec::new()
-                                                        })
-                                                    })
-                                                    .await
-                                                    .unwrap_or_default()
-                                                };
-
-                                                let duration = query_start.elapsed();
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let ms = duration.as_secs_f64() * 1000.0;
-                                                let count = defs.len();
-
-                                                if ms > 200.0 {
-                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/definition",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        targets = count,
-                                                        in_flight = remaining,
-                                                        "⚠️ [LSP SLOW >200ms]"
-                                                    );
-                                                } else {
-                                                    tracing::info!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/definition",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        targets = count,
-                                                        in_flight = remaining,
-                                                        "✅ [LSP DONE]"
-                                                    );
-                                                }
-
-                                                let locations: Vec<_> = defs.into_iter().map(|t| {
-                                                    serde_json::json!({
-                                                        "uri": format!("file://{}", t.path.display()),
-                                                        "range": {
-                                                            "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
-                                                            "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
-                                                        }
-                                                    })
-                                                }).collect();
-
-                                                let resp = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": req_id,
-                                                    "result": locations
-                                                });
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("textDocument/references") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "textDocument/references",
-                                                file = %file_path.display(),
-                                                pos = format!("{}:{}", line + 1, col + 1),
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
-
-                                            let engine_arc = Arc::clone(engine_lock);
-
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let refs = {
-                                                    // Hold the engine for the whole query: activating the session view and
-                                                    // running the query under one lock keeps other sessions' buffers out and
-                                                    // prevents a concurrent edit from cancelling this snapshot.
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                                                            tracing::warn!(error = %e, session = session_id, "query failed");
-                                                            Vec::new()
-                                                        })
-                                                    })
-                                                    .await
-                                                    .unwrap_or_default()
-                                                };
-
-                                                let duration = query_start.elapsed();
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let ms = duration.as_secs_f64() * 1000.0;
-                                                let count = refs.len();
-
-                                                if ms > 200.0 {
-                                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                    tracing::warn!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/references",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        references = count,
-                                                        in_flight = remaining,
-                                                        "⚠️ [LSP SLOW >200ms]"
-                                                    );
-                                                } else {
-                                                    tracing::info!(
-                                                        req = req_num,
-                                                        session = session_id,
-                                                        method = "textDocument/references",
-                                                        duration_ms = format!("{:.2}ms", ms),
-                                                        references = count,
-                                                        in_flight = remaining,
-                                                        "✅ [LSP DONE]"
-                                                    );
-                                                }
-
-                                                let locations: Vec<_> = refs.into_iter().map(|t| {
-                                                    serde_json::json!({
-                                                        "uri": format!("file://{}", t.path.display()),
-                                                        "range": {
-                                                            "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
-                                                            "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
-                                                        }
-                                                    })
-                                                }).collect();
-
-                                                let resp = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": req_id,
-                                                    "result": locations
-                                                });
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("textDocument/documentSymbol") => {
-                                        if let Some(params) = val.get("params") {
-                                             let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("").to_string();
-                                             let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                             let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                             let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                             TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                             let query_start = Instant::now();
-
-                                             tracing::info!(
-                                                 req = req_num,
-                                                 session = view.session_id,
-                                                 method = "textDocument/documentSymbol",
-                                                 file = %file_path.display(),
-                                                 in_flight,
-                                                 "🚀 [LSP START]"
-                                             );
-
-                                             let engine_arc = Arc::clone(engine_lock);
-
-                                             let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                             let fp_clone = file_path.clone();
-                                             let out_tx_task = out_tx.clone();
-                                             let translator_task = translator.clone();
-                                             let session_id = view.session_id;
-
-                                             tokio::task::spawn(async move {
-                                                 let syms = {
-                                                     // Hold the engine for the whole query: activating the session view and
-                                                     // running the query under one lock keeps other sessions' buffers out and
-                                                     // prevents a concurrent edit from cancelling this snapshot.
-                                                     let mut engine = engine_arc.lock_owned().await;
-                                                     tokio::task::spawn_blocking(move || {
-                                                         if let Err(e) = engine.activate_session(session_id) {
-                                                             tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                         }
-                                                         engine.document_symbols(&fp_clone).unwrap_or_else(|e| {
-                                                             tracing::warn!(error = %e, session = session_id, "query failed");
-                                                             Vec::new()
-                                                         })
-                                                     })
-                                                     .await
-                                                     .unwrap_or_default()
-                                                 };
-
-                                                 let duration = query_start.elapsed();
-                                                 let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                 let ms = duration.as_secs_f64() * 1000.0;
-                                                 let count = syms.len();
-
-                                                 if ms > 200.0 {
-                                                     SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                     tracing::warn!(
-                                                         req = req_num,
-                                                         session = session_id,
-                                                         method = "textDocument/documentSymbol",
-                                                         duration_ms = format!("{:.2}ms", ms),
-                                                         symbols = count,
-                                                         in_flight = remaining,
-                                                         "⚠️ [LSP SLOW >200ms]"
-                                                     );
-                                                 } else {
-                                                     tracing::info!(
-                                                         req = req_num,
-                                                         session = session_id,
-                                                         method = "textDocument/documentSymbol",
-                                                         duration_ms = format!("{:.2}ms", ms),
-                                                         symbols = count,
-                                                         in_flight = remaining,
-                                                         "✅ [LSP DONE]"
-                                                     );
-                                                 }
-
-                                                 let sym_list: Vec<_> = syms.into_iter().map(|s| {
-                                                     let kind_num = lsp_symbol_kind(&s.kind);
-                                                     serde_json::json!({
-                                                         "name": s.name,
-                                                         "kind": kind_num,
-                                                         "location": {
-                                                             "uri": uri,
-                                                             "range": {
-                                                                 "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
-                                                                 "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
-                                                             }
-                                                         },
-                                                         "containerName": if s.containers.is_empty() { s.detail.clone() } else { Some(s.containers.join(" > ")) }
-                                                     })
-                                                 }).collect();
-
-                                                 let resp = serde_json::json!({
-                                                     "jsonrpc": "2.0",
-                                                     "id": req_id,
-                                                     "result": sym_list
-                                                 });
-                                                 let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                 let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                             });
-                                             continue;
-                                         }
-                                    }
-                                    Some("workspace/symbol") => {
-                                        if let Some(params) = val.get("params") {
-                                            let query = params.get("query").and_then(|q| q.as_str()).unwrap_or("").to_string();
-                                            let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(64) as usize;
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            tracing::info!(req = req_num, session = view.session_id, method = "workspace/symbol", query = %query, in_flight, "🚀 [LSP START]");
-
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let syms = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    let q = query.clone();
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.workspace_symbols(&q, limit).unwrap_or_else(|e| {
-                                                            tracing::warn!(error = %e, session = session_id, "query failed");
-                                                            Vec::new()
-                                                        })
-                                                    })
-                                                    .await
-                                                    .unwrap_or_default()
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                tracing::info!(req = req_num, session = session_id, method = "workspace/symbol", duration_ms = format!("{:.2}ms", ms), symbols = syms.len(), in_flight = remaining, "✅ [LSP DONE]");
-
-                                                let sym_list: Vec<_> = syms.into_iter().map(|s| {
-                                                    serde_json::json!({
-                                                        "name": s.name,
-                                                        "kind": lsp_symbol_kind(&s.kind),
-                                                        "location": {
-                                                            "uri": format!("file://{}", s.path.display()),
-                                                            "range": {
-                                                                "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
-                                                                "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
-                                                            }
-                                                        },
-                                                        "containerName": s.container
-                                                    })
-                                                }).collect();
-                                                let resp = serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": sym_list });
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("prodCode/assists") | Some("prodCode/applyAssist") => {
-                                        if let Some(params) = val.get("params") {
-                                            let apply = method == Some("prodCode/applyAssist");
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.pointer("/range/start/line").and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.pointer("/range/start/character").and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let end = match (
-                                                params.pointer("/range/end/line").and_then(|l| l.as_u64()),
-                                                params.pointer("/range/end/character").and_then(|c| c.as_u64()),
-                                            ) {
-                                                (Some(l), Some(c)) => Some((l as u32 + 1, c as u32 + 1)),
-                                                _ => None,
-                                            };
-                                            let assist_id = params.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                            let subtype = params.get("subtype").and_then(|v| v.as_u64()).map(|v| v as usize);
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            let method_name = if apply { "prodCode/applyAssist" } else { "prodCode/assists" };
-                                            tracing::info!(req = req_num, session = view.session_id, method = method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), assist = %assist_id, in_flight, "🚀 [LSP START]");
-
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let result = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        if apply {
-                                                            engine
-                                                                .apply_assist(&fp_clone, line + 1, col + 1, end, &assist_id, subtype)
-                                                                .map(|r| r.map(|outcome| workspace_edit_json(&outcome)))
-                                                        } else {
-                                                            engine
-                                                                .list_assists(&fp_clone, line + 1, col + 1, end)
-                                                                .map(|list| Ok(serde_json::json!(list)))
-                                                        }
-                                                    })
-                                                    .await
-                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("assist task failed: {e}")))
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let resp = match result {
-                                                    Ok(Ok(value)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = method_name, duration_ms = format!("{:.2}ms", ms), in_flight = remaining, "✅ [LSP DONE]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": value })
-                                                    }
-                                                    Ok(Err(refused)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = method_name, reason = %refused, "🚫 [LSP REFUSED]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(req = req_num, session = session_id, error = %e, "assist failed");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
-                                                    }
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("prodCode/safeDelete") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            tracing::info!(req = req_num, session = view.session_id, method = "prodCode/safeDelete", file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-                                            tokio::task::spawn(async move {
-                                                let outcome = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.safe_delete(&fp_clone, line + 1, col + 1)
-                                                    })
-                                                    .await
-                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("safe delete task failed: {e}")))
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let resp = match outcome {
-                                                    Ok(Ok(outcome)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = "prodCode/safeDelete", duration_ms = format!("{:.2}ms", ms), in_flight = remaining, "✅ [LSP DONE]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
-                                                    }
-                                                    Ok(Err(refused)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = "prodCode/safeDelete", "🚫 [LSP REFUSED]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
-                                                    }
-                                                    Err(e) => serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } }),
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some(hm @ ("textDocument/prepareCallHierarchy" | "callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls" | "textDocument/implementation" | "textDocument/diagnostic")) => {
-                                        if let Some(params) = val.get("params") {
-                                            // Call-hierarchy follow-ups carry the item; the others a text document position.
-                                            let (uri, position) = match params.get("item") {
-                                                Some(item) => (
-                                                    item.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
-                                                    item.get("selectionRange").and_then(|r| r.get("start")),
-                                                ),
-                                                None => (
-                                                    params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or(""),
-                                                    params.get("position"),
-                                                ),
-                                            };
-                                            let line = position.and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = position.and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-                                            let method_name = hm.to_string();
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            tracing::info!(req = req_num, session = view.session_id, method = %method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
-
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let outcome = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    let m = method_name.clone();
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        hierarchy_query(&engine, &m, &fp_clone, line + 1, col + 1)
-                                                    })
-                                                    .await
-                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("query task failed: {e}")))
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let resp = match outcome {
-                                                    Ok(result) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = %method_name, duration_ms = format!("{:.2}ms", ms), items = result.as_array().map(|a| a.len()).unwrap_or(0), in_flight = remaining, "✅ [LSP DONE]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(req = req_num, session = session_id, method = %method_name, error = %e, "query failed");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
-                                                    }
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("textDocument/rename") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let new_name = params.get("newName").and_then(|n| n.as_str()).unwrap_or("").to_string();
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "textDocument/rename",
-                                                file = %file_path.display(),
-                                                pos = format!("{}:{}", line + 1, col + 1),
-                                                new_name = %new_name,
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
-
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let outcome = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.rename(&fp_clone, line + 1, col + 1, &new_name)
-                                                    })
-                                                    .await
-                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("rename task failed: {e}")))
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let resp = match outcome {
-                                                    Ok(Ok(outcome)) => {
-                                                        tracing::info!(
-                                                            req = req_num,
-                                                            session = session_id,
-                                                            method = "textDocument/rename",
-                                                            duration_ms = format!("{:.2}ms", ms),
-                                                            files = outcome.files.len(),
-                                                            edits = outcome.total_edits(),
-                                                            moves = outcome.moves.len(),
-                                                            in_flight = remaining,
-                                                            "✅ [LSP DONE]"
-                                                        );
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
-                                                    }
-                                                    Ok(Err(refused)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = "textDocument/rename", reason = %refused, "🚫 [LSP REFUSED]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(req = req_num, session = session_id, error = %e, "rename failed");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
-                                                    }
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("prodCode/structuralReplace") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let line = params.get("position").and_then(|p| p.get("line")).and_then(|l| l.as_u64()).unwrap_or(0) as u32;
-                                            let col = params.get("position").and_then(|p| p.get("character")).and_then(|c| c.as_u64()).unwrap_or(0) as u32;
-                                            let rule = params.get("rule").and_then(|r| r.as_str()).unwrap_or("").to_string();
-                                            let scope = params
-                                                .get("scope")
-                                                .and_then(|s| s.as_str())
-                                                .filter(|s| !s.is_empty())
-                                                .map(|s| PathBuf::from(s.trim_start_matches("file://")));
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-
-                                            let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            let query_start = Instant::now();
-                                            tracing::info!(
-                                                req = req_num,
-                                                session = view.session_id,
-                                                method = "prodCode/structuralReplace",
-                                                file = %file_path.display(),
-                                                pos = format!("{}:{}", line + 1, col + 1),
-                                                rule = %rule,
-                                                in_flight,
-                                                "🚀 [LSP START]"
-                                            );
-
-                                            let engine_arc = Arc::clone(engine_lock);
-                                            let req_id = id.clone().unwrap_or(serde_json::json!(1));
-                                            let fp_clone = file_path.clone();
-                                            let out_tx_task = out_tx.clone();
-                                            let translator_task = translator.clone();
-                                            let session_id = view.session_id;
-
-                                            tokio::task::spawn(async move {
-                                                let outcome = {
-                                                    let mut engine = engine_arc.lock_owned().await;
-                                                    tokio::task::spawn_blocking(move || {
-                                                        if let Err(e) = engine.activate_session(session_id) {
-                                                            tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                                                        }
-                                                        engine.structural_replace(&rule, &fp_clone, line + 1, col + 1, scope.as_deref())
-                                                    })
-                                                    .await
-                                                    .unwrap_or_else(|e| Err(anyhow::anyhow!("codemod task failed: {e}")))
-                                                };
-                                                let ms = query_start.elapsed().as_secs_f64() * 1000.0;
-                                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-                                                let resp = match outcome {
-                                                    Ok(Ok(outcome)) => {
-                                                        tracing::info!(
-                                                            req = req_num,
-                                                            session = session_id,
-                                                            method = "prodCode/structuralReplace",
-                                                            duration_ms = format!("{:.2}ms", ms),
-                                                            files = outcome.files.len(),
-                                                            edits = outcome.total_edits(),
-                                                            moves = outcome.moves.len(),
-                                                            in_flight = remaining,
-                                                            "✅ [LSP DONE]"
-                                                        );
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
-                                                    }
-                                                    Ok(Err(refused)) => {
-                                                        tracing::info!(req = req_num, session = session_id, method = "prodCode/structuralReplace", reason = %refused, "🚫 [LSP REFUSED]");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
-                                                    }
-                                                    Err(e) => {
-                                                        tracing::warn!(req = req_num, session = session_id, error = %e, "codemod failed");
-                                                        serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
-                                                    }
-                                                };
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            });
-                                            continue;
-                                        }
-                                    }
-                                    Some("textDocument/didOpen") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-                                            if let Some(text) = params.get("textDocument").and_then(|td| td.get("text")).and_then(|t| t.as_str()) {
-                                                let edit_start = Instant::now();
-                                                let text_len = text.len();
-                                                {
-                                                    let mut engine = engine_lock.lock().await;
-                                                    if let Err(e) = engine.set_session_overlay(view.session_id, &file_path, Some(text.to_string())) {
-                                                        tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
-                                                    }
-                                                }
-                                                let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
-                                                tracing::info!(
-                                                    session = view.session_id,
-                                                    file = %file_path.display(),
-                                                    bytes = text_len,
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    "📝 [OVERLAY] didOpen recorded as session buffer in Salsa DB"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Some("textDocument/didChange") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-                                            let first = params
-                                                .get("contentChanges")
-                                                .and_then(|c| c.as_array())
-                                                .and_then(|arr| arr.first())
-                                                .and_then(|c| c.get("text"))
-                                                .and_then(|t| t.as_str());
-                                            if let Some(text) = first {
-                                                let edit_start = Instant::now();
-                                                let text_len = text.len();
-                                                {
-                                                    let mut engine = engine_lock.lock().await;
-                                                    if let Err(e) = engine.set_session_overlay(view.session_id, &file_path, Some(text.to_string())) {
-                                                        tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
-                                                    }
-                                                }
-                                                let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
-                                                tracing::info!(
-                                                    session = view.session_id,
-                                                    file = %file_path.display(),
-                                                    bytes = text_len,
-                                                    duration_ms = format!("{:.2}ms", ms),
-                                                    "📝 [OVERLAY] didChange recorded as session buffer in Salsa DB"
-                                                );
-                                            }
-                                        }
-                                    }
-                                    Some("textDocument/didClose") => {
-                                        if let Some(params) = val.get("params") {
-                                            let uri = params.get("textDocument").and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                            let file_path = PathBuf::from(uri.trim_start_matches("file://"));
-                                            let mut engine = engine_lock.lock().await;
-                                            if let Err(e) = engine.clear_session_overlay(view.session_id, &file_path) {
-                                                tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
-                                            }
-                                        }
-                                        continue;
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            // 5. Fallback handling for textDocument/didOpen vs didChange on backend worker
-                            if let (Some("textDocument/didOpen"), Some(backend)) = (method, &view.workspace.backend) {
-                                let uri = val.get("params")
-                                    .and_then(|p| p.get("textDocument"))
-                                    .and_then(|td| td.get("uri"))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("");
-                                let is_open = backend.open_files.read().await.contains(uri);
-                                if is_open {
-                                    let text = val.get("params")
-                                        .and_then(|p| p.get("textDocument"))
-                                        .and_then(|td| td.get("text"))
-                                        .and_then(|t| t.as_str())
-                                        .unwrap_or("");
-                                    let version = val.get("params")
-                                        .and_then(|p| p.get("textDocument"))
-                                        .and_then(|td| td.get("version"))
-                                        .and_then(|v| v.as_i64())
-                                        .unwrap_or(2);
-                                    let did_change = serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "method": "textDocument/didChange",
-                                        "params": {
-                                            "textDocument": {
-                                                "uri": uri,
-                                                "version": version
-                                            },
-                                            "contentChanges": [
-                                                { "text": text }
-                                            ]
-                                        }
-                                    });
-                                    let _ = backend.send_lsp(&did_change.to_string()).await;
-                                    continue;
-                                } else {
-                                    backend.open_files.write().await.insert(uri.to_string());
-                                }
-                            }
-
-                            // 5a'. Code actions on managed language servers: the Rust-style
-                            // prodCode/assists | applyAssist requests become LSP codeAction.
-                            if let (Some(pm @ ("prodCode/assists" | "prodCode/applyAssist")), Some(req_id)) = (method, &id)
-                                && (view.workspace.go_engine.is_some() || view.workspace.generic_engine.is_some())
-                            {
-                                let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                let go = view.workspace.go_engine.clone();
-                                let generic = view.workspace.generic_engine.clone();
-                                let out_tx_task = out_tx.clone();
-                                let translator_task = translator.clone();
-                                let r_id = req_id.clone();
-                                let session_id = view.session_id;
-                                let method_name = pm.to_string();
-                                let start = Instant::now();
-                                TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                tokio::task::spawn(async move {
-                                    let engine = match (&go, &generic) {
-                                        (_, Some(g)) => ManagedLsp::Generic(g),
-                                        (Some(g), None) => ManagedLsp::Go(g),
-                                        (None, None) => unreachable!("guarded above"),
-                                    };
-                                    let outcome = lsp_code_actions(&engine, &method_name, params).await;
-                                    let ms = start.elapsed().as_secs_f64() * 1000.0;
-                                    let resp = match outcome {
-                                        Ok(result) => {
-                                            tracing::info!(session = session_id, method = %method_name, duration_ms = format!("{ms:.2}ms"), "✅ [LSP DONE] code actions");
-                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": result })
-                                        }
-                                        Err(err) => {
-                                            tracing::info!(session = session_id, method = %method_name, error = %err, "🚫 [LSP REFUSED] code actions");
-                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32602, "message": err.to_string() } })
-                                        }
-                                    };
-                                    let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                    let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                });
-                                continue;
-                            }
-
-                            // 5b. Supervised GoEngine fast path
-                            if let Some(ref go) = view.workspace.go_engine {
-                                match method {
-                                    Some("textDocument/didOpen") => {
-                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                        let text = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("text")).and_then(|t| t.as_str()).unwrap_or("");
-                                        let _ = go.did_open(uri, text).await;
-                                        continue;
-                                    }
-                                    Some("textDocument/didChange") => {
-                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                        let version = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("version")).and_then(|v| v.as_i64()).unwrap_or(1) as i32;
-                                        let text = val.get("params").and_then(|p| p.get("contentChanges")).and_then(|c| c.as_array()).and_then(|a| a.first()).and_then(|ch| ch.get("text")).and_then(|t| t.as_str()).unwrap_or("");
-                                        let _ = go.did_change(uri, text, version).await;
-                                        continue;
-                                    }
-                                    Some("textDocument/didClose") => {
-                                        let uri = val.get("params").and_then(|p| p.get("textDocument")).and_then(|td| td.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
-                                        let _ = go.did_close(uri).await;
-                                        continue;
-                                    }
-                                    Some(m) if id.is_some() => {
-                                        let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                        let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                        let start = Instant::now();
-
-                                        tracing::info!(
-                                            req = req_id_log,
-                                            session = view.session_id,
-                                            method = m,
-                                            in_flight,
-                                            "🚀 [LSP START] dispatching to GoEngine"
-                                        );
-
-                                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                        let out_tx_task = out_tx.clone();
-                                        let go_clone = Arc::clone(go);
-                                        let translator_task = translator.clone();
-                                        let session_id = view.session_id;
-                                        let method_str = m.to_string();
-                                        let req_id = id.clone();
-
-                                        tokio::task::spawn(async move {
-                                            let resp_res = go_clone.send_request(&method_str, params).await;
-                                            let duration = start.elapsed();
-                                            let duration_ms = duration.as_secs_f64() * 1000.0;
-                                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-
-                                            if duration_ms > 200.0 {
-                                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                                tracing::warn!(
-                                                    req = req_id_log,
-                                                    session = session_id,
-                                                    method = %method_str,
-                                                    duration_ms = %format!("{:.2}ms", duration_ms),
-                                                    in_flight = remaining,
-                                                    "⚠️ [LSP SLOW >200ms] GoEngine query exceeded threshold"
-                                                );
-                                            } else {
-                                                tracing::info!(
-                                                    req = req_id_log,
-                                                    session = session_id,
-                                                    method = %method_str,
-                                                    duration_ms = %format!("{:.2}ms", duration_ms),
-                                                    in_flight = remaining,
-                                                    "✅ [LSP DONE] GoEngine query complete"
-                                                );
-                                            }
-
-                                            match resp_res {
-                                                Ok(mut resp) => {
-                                                    if let Some(ref r_id) = req_id {
-                                                        resp["id"] = r_id.clone();
-                                                    }
-                                                    let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                    let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                                }
-                                                Err(err) => {
-                                                    let err_resp = serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": req_id,
-                                                        "error": { "code": -32603, "message": err.to_string() }
-                                                    });
-                                                    let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
-                                                }
-                                            }
-                                        });
-                                        continue;
-                                    }
-                                    Some(m) => {
-                                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                        let _ = go.send_notification(m, params).await;
-                                        continue;
-                                    }
-                                    None => {}
-                                }
-                            }
-
-                            // 5c. Supervised GenericLspEngine fast path
-                            if let Some(ref generic_eng) = view.workspace.generic_engine {
-                                if let (Some("textDocument/rename"), Some(req_id)) = (method, &id) {
-                                    // Servers such as pyright only rename inside open documents:
-                                    // open every file that references the symbol first.
-                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                    let engine = Arc::clone(generic_eng);
-                                    let out_tx_task = out_tx.clone();
-                                    let translator_task = translator.clone();
-                                    let r_id = req_id.clone();
-                                    let session_id = view.session_id;
-                                    let start = Instant::now();
-                                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                    tokio::task::spawn(async move {
-                                        let (resp, opened) = rename_with_references_open(&engine, params).await;
-                                        tracing::info!(session = session_id, opened, duration_ms = format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0), "✅ [LSP DONE] generic rename");
-                                        let resp = match resp {
-                                            Ok(mut resp) => {
-                                                resp["id"] = r_id;
-                                                resp
-                                            }
-                                            Err(err) => serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } }),
-                                        };
-                                        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                    });
-                                    continue;
-                                }
-                                if let (Some("textDocument/diagnostic"), Some(req_id)) = (method, &id) {
-                                    // Servers without pull diagnostics answer from what they
-                                    // published for the document.
-                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                    let engine = Arc::clone(generic_eng);
-                                    let out_tx_task = out_tx.clone();
-                                    let translator_task = translator.clone();
-                                    let r_id = req_id.clone();
-                                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                    tokio::task::spawn(async move {
-                                        let resp = if engine.has_pull_diagnostics().await {
-                                            match engine.send_request("textDocument/diagnostic", params).await {
-                                                Ok(mut resp) => {
-                                                    resp["id"] = r_id;
-                                                    resp
-                                                }
-                                                Err(err) => serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } }),
-                                            }
-                                        } else {
-                                            let uri = params.get("textDocument").and_then(|t| t.get("uri")).and_then(|u| u.as_str()).unwrap_or("").to_string();
-                                            let items = ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
-                                            serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
-                                        };
-                                        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                    });
-                                    continue;
-                                }
-                                if let (Some(m), Some(req_id)) = (method, &id) {
-                                    let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
-                                    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
-                                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                    let start = Instant::now();
-
-                                    tracing::info!(
-                                        req = req_id_log,
-                                        session = view.session_id,
-                                        method = m,
-                                        in_flight,
-                                        "🚀 [LSP START] dispatching to GenericLspEngine"
-                                    );
-
-                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                    let out_tx_task = out_tx.clone();
-                                    let generic_eng_clone = Arc::clone(generic_eng);
-                                    let translator_task = translator.clone();
-                                    let session_id = view.session_id;
-                                    let method_str = m.to_string();
-                                    let r_id = req_id.clone();
-
-                                    tokio::task::spawn(async move {
-                                        let resp_res = generic_eng_clone.send_request(&method_str, params).await;
-                                        let duration = start.elapsed();
-                                        let duration_ms = duration.as_secs_f64() * 1000.0;
-                                        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
-
-                                        if duration_ms > 200.0 {
-                                            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
-                                            tracing::warn!(
-                                                req = req_id_log,
-                                                session = session_id,
-                                                method = %method_str,
-                                                duration_ms = %format!("{:.2}ms", duration_ms),
-                                                in_flight = remaining,
-                                                "⚠️ [LSP SLOW >200ms] GenericLspEngine query exceeded threshold"
-                                            );
-                                        } else {
-                                            tracing::info!(
-                                                req = req_id_log,
-                                                session = session_id,
-                                                method = %method_str,
-                                                duration_ms = %format!("{:.2}ms", duration_ms),
-                                                in_flight = remaining,
-                                                "✅ [LSP DONE] GenericLspEngine query complete"
-                                            );
-                                        }
-
-                                        match resp_res {
-                                            Ok(mut resp) => {
-                                                resp["id"] = r_id;
-                                                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
-                                            }
-                                            Err(err) => {
-                                                let err_resp = serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": r_id,
-                                                    "error": { "code": -32603, "message": err.to_string() }
-                                                });
-                                                let _ = out_tx_task.send(WireMessage::LspPayload(err_resp.to_string())).await;
-                                            }
-                                        }
-                                    });
-                                    continue;
-                                } else if let Some(m) = method {
-                                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                                    let _ = generic_eng.send_notification(m, params).await;
-                                    continue;
-                                }
-                            }
-
-                            // 6. Handle "textDocument/didClose"
-                            if let (Some("textDocument/didClose"), Some(backend)) = (method, &view.workspace.backend) {
-                                let uri = val.get("params")
-                                    .and_then(|p| p.get("textDocument"))
-                                    .and_then(|td| td.get("uri"))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("");
-                                backend.open_files.write().await.remove(uri);
-                            }
-
-                            // 7. If no backend is attached and client expects a response, return empty result
-                            if let (Some(req_id), None, None, None, None) = (
-                                id,
-                                &view.workspace.backend,
-                                &view.workspace.rust_engine,
-                                &view.workspace.go_engine,
-                                &view.workspace.generic_engine,
-                            ) {
-                                let empty_resp = serde_json::json!({
-                                    "jsonrpc": "2.0",
-                                    "id": req_id,
-                                    "result": null
-                                });
-                                let _ = out_tx.send(WireMessage::LspPayload(empty_resp.to_string())).await;
-                                continue;
-                            }
-                        }
-
-                        if let Some(backend) = &view.workspace.backend {
-                            let _ = backend.send_lsp(&server_lsp).await.inspect_err(|e| {
-                                tracing::error!(error = %e, "Failed to forward LSP to backend worker");
-                            });
-                        }
-                    }
-                    Some(Ok(WireMessage::SyncRequest(req))) => {
-                        let start = Instant::now();
-                        let mut files_updated = 0;
-                        let mut files_deleted = 0;
-                        let mut bytes_transferred = 0;
-
-                        for delta in &req.files {
-                            let target_path = view.workspace.root.join(&delta.relative_path);
-                            match &delta.content {
-                                Some(content_bytes) => {
-                                    if let Some(parent) = target_path.parent() {
-                                        let _ = tokio::fs::create_dir_all(parent).await;
-                                    }
-                                    bytes_transferred += content_bytes.len();
-                                    if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
-                                        files_updated += 1;
-                                        #[cfg(unix)]
-                                        if delta.is_executable {
-                                            use std::os::unix::fs::PermissionsExt;
-                                            let _ = tokio::fs::set_permissions(&target_path, std::fs::Permissions::from_mode(0o755)).await;
-                                        }
-                                    }
-                                    // The workspace is this worktree's own: synced files are its
-                                    // new base, visible to every session except one that still
-                                    // holds an unsaved buffer for the same path.
-                                    if let Ok(text) = std::str::from_utf8(content_bytes) {
-                                        for engine_lock in view.workspace.mirrored_rust_engines() {
-                                            let mut engine = engine_lock.lock().await;
-                                            if let Err(e) = engine.update_base(&target_path, Some(text.to_string())) {
-                                                tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
-                                            }
-                                        }
-                                    }
-                                }
-                                None => {
-                                    if target_path.exists()
-                                        && tokio::fs::remove_file(&target_path).await.is_ok()
-                                    {
-                                        files_deleted += 1;
-                                    }
-                                    for engine_lock in view.workspace.mirrored_rust_engines() {
-                                        let mut engine = engine_lock.lock().await;
-                                        if let Err(e) = engine.update_base(&target_path, None) {
-                                            tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if req.clean_others
-                            && let Some(engine_lock) = &view.workspace.rust_engine
-                        {
-                            // The request is the session's complete dirty set: any other
-                            // overlay this session still holds is stale (reverted or committed).
-                            let keep: Vec<PathBuf> = req
-                                .files
-                                .iter()
-                                .map(|delta| view.workspace.root.join(&delta.relative_path))
-                                .collect();
-                            let mut engine = engine_lock.lock().await;
-                            match engine.retain_session_overlays(view.session_id, &keep) {
-                                Ok(dropped) if dropped > 0 => tracing::info!(
-                                    session = view.session_id,
-                                    dropped,
-                                    "🧹 [OVERLAY] dropped stale session buffers after full dirty sync"
-                                ),
-                                Ok(_) => {}
-                                Err(e) => tracing::warn!(error = %e, session = view.session_id, "failed to drop stale session buffers"),
-                            }
-                        }
-
-                        let duration_ms = start.elapsed().as_millis() as u64;
-                        let _ = out_tx
-                            .send(WireMessage::SyncResponse(SyncResponse {
-                                files_updated,
-                                files_deleted,
-                                bytes_transferred,
-                                duration_ms,
-                                server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
-                                workspace_was_fresh: false,
-                            }))
-                            .await;
-                    }
-                    Some(Ok(WireMessage::Disconnect { reason })) => {
-                        tracing::info!(reason, "Client terminated session");
-                        break;
-                    }
-                    Some(Ok(WireMessage::StatusRequest)) => {
-                        let _ = out_tx
-                            .send(WireMessage::StatusResponse(StatusResponse {
-                                server_pid: std::process::id(),
-                                uptime_seconds: 0,
-                                active_sessions: 1,
-                                loaded_workspaces: 1,
-                                detected_engines: vec![view.workspace.engine.clone()],
-                                memory_rss_bytes: memory::get_process_rss_bytes(),
-                                total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
-                                active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
-                                load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
-                                cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
-                            }))
-                            .await;
-                    }
-                    Some(Err(e)) => {
-                        tracing::error!(error = %e, "TCP frame decode error");
-                        break;
-                    }
-                    None => {
-                        tracing::info!("Client disconnected");
-                        break;
-                    }
-                    _ => {}
+                match on_client_message(client_msg_res, &out_tx, translator, view, &meta, &pending).await {
+                    Flow::Next => continue,
+                    Flow::Stop => break,
                 }
             }
 
@@ -3375,6 +1968,1875 @@ async fn run_session_loop(
     drop(out_tx);
     let _ = writer_handle.await;
     Ok(())
+}
+
+/// What the session loop does once a client message has been handled.
+enum Flow {
+    /// Wait for the next message.
+    Next,
+    /// The client is gone or asked to disconnect: end the session.
+    Stop,
+}
+
+/// One message from the client: an LSP payload answered by the in-memory engine or forwarded
+/// to the backend, a sync, a status request or a disconnect.
+///
+/// It lived inside the session loop's `tokio::select!`, where it was 1,400 lines of macro
+/// input: rust-analyzer offers no refactoring inside a macro call, and every validation of the
+/// file inferred it as one body (#86). Out here it is ordinary code.
+async fn on_client_message(
+    client_msg_res: Option<std::result::Result<WireMessage, std::io::Error>>,
+    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    meta: &Arc<SessionMeta>,
+    pending: &Arc<tokio::sync::Mutex<std::collections::HashMap<String, PendingRequest>>>,
+) -> Flow {
+    match client_msg_res {
+        Some(Ok(WireMessage::Ping)) => {
+            let _ = out_tx.send(WireMessage::Pong).await;
+        }
+        Some(Ok(WireMessage::LspPayload(raw_client_lsp))) => {
+            let server_lsp = translator.translate_lsp_to_server(&raw_client_lsp);
+            tracing::debug!(
+                payload_len = server_lsp.len(),
+                single_owner = view.is_single_owner,
+                "Processing incoming LSP message"
+            );
+
+            // Inspect LSP message structure
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
+                let method = val.get("method").and_then(|m| m.as_str());
+                let id = val.get("id").cloned();
+                if let (Some(m), Some(id_val)) = (method, &id)
+                    && !id_val.is_null()
+                    && m != "initialize"
+                {
+                    let params = val.get("params");
+                    let uri = params
+                        .and_then(|p| {
+                            p.get("textDocument")
+                                .and_then(|t| t.get("uri"))
+                                .or_else(|| p.get("item").and_then(|i| i.get("uri")))
+                        })
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("");
+                    let file = std::path::Path::new(uri.trim_start_matches("file://"))
+                        .strip_prefix(&meta.engine_root)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| uri.trim_start_matches("file://").to_string());
+                    let pos = params.and_then(|p| {
+                        p.get("position")
+                            .or_else(|| p.get("range").and_then(|r| r.get("start")))
+                    });
+                    pending.lock().await.insert(
+                        id_val.to_string(),
+                        PendingRequest {
+                            method: m.to_string(),
+                            file,
+                            line: pos
+                                .and_then(|p| p.get("line"))
+                                .and_then(|l| l.as_u64())
+                                .unwrap_or(0) as u32
+                                + 1,
+                            col: pos
+                                .and_then(|p| p.get("character"))
+                                .and_then(|c| c.as_u64())
+                                .unwrap_or(0) as u32
+                                + 1,
+                            start: Instant::now(),
+                        },
+                    );
+                }
+
+                // 1. Intercept "initialize": reply immediately with cached server capabilities
+                if method == Some("initialize") {
+                    let req_id = id.unwrap_or(serde_json::json!(1));
+                    let caps = if let Some(ref go) = view.workspace.go_engine {
+                        go.capabilities.read().await.clone()
+                    } else if let Some(ref generic_eng) = view.workspace.generic_engine {
+                        generic_eng.capabilities.read().await.clone()
+                    } else if let Some(ref backend) = view.workspace.backend {
+                        backend.capabilities.read().await.clone()
+                    } else {
+                        None
+                    };
+                    let init_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "capabilities": caps.unwrap_or_else(|| serde_json::json!({
+                                "textDocumentSync": 1,
+                                "hoverProvider": true,
+                                "definitionProvider": true,
+                                "referencesProvider": true,
+                                "documentSymbolProvider": true,
+                                "workspaceSymbolProvider": true
+                            })),
+                            "serverInfo": {
+                                "name": "prod-code-rci",
+                                "version": "0.1.0"
+                            }
+                        }
+                    });
+                    let client_resp = translator.translate_lsp_to_client(&init_resp.to_string());
+                    let _ = out_tx.send(WireMessage::LspPayload(client_resp)).await;
+                    return Flow::Next;
+                }
+
+                // 2. Intercept "initialized": backend already initialized, consume without forwarding
+                if method == Some("initialized") {
+                    return Flow::Next;
+                }
+
+                // 3. Intercept "shutdown": reply cleanly
+                if method == Some("shutdown") {
+                    let req_id = id.unwrap_or(serde_json::json!(1));
+                    let shutdown_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": null
+                    });
+                    let _ = out_tx
+                        .send(WireMessage::LspPayload(shutdown_resp.to_string()))
+                        .await;
+                    return Flow::Next;
+                }
+
+                // 4. In-Memory RustEngine multi-core fast path: hover, definition, references, documentSymbol
+                if let Some(ref engine_lock) = view.workspace.rust_engine {
+                    match method {
+                        Some("textDocument/hover") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_hover(out_tx, translator, view, &id, params, engine_lock);
+                                return Flow::Next;
+                            }
+                        }
+                        Some("textDocument/definition") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_definition(out_tx, translator, view, &id, params, engine_lock);
+                                return Flow::Next;
+                            }
+                        }
+                        Some("textDocument/references") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_references(out_tx, translator, view, &id, params, engine_lock);
+                                return Flow::Next;
+                            }
+                        }
+                        Some("textDocument/documentSymbol") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_document_symbol(
+                                    out_tx,
+                                    translator,
+                                    view,
+                                    &id,
+                                    params,
+                                    engine_lock,
+                                );
+                                return Flow::Next;
+                            }
+                        }
+                        Some("workspace/symbol") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_workspace_symbol(
+                                    out_tx,
+                                    translator,
+                                    view,
+                                    &id,
+                                    params,
+                                    engine_lock,
+                                );
+                                return Flow::Next;
+                            }
+                        }
+                        Some("prodCode/assists") | Some("prodCode/applyAssist") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_assists(
+                                    out_tx,
+                                    translator,
+                                    view,
+                                    method,
+                                    &id,
+                                    params,
+                                    engine_lock,
+                                );
+                                return Flow::Next;
+                            }
+                        }
+                        Some("prodCode/safeDelete") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_safe_delete(out_tx, translator, view, &id, params, engine_lock);
+                                return Flow::Next;
+                            }
+                        }
+                        Some(
+                            hm @ ("textDocument/prepareCallHierarchy"
+                            | "callHierarchy/incomingCalls"
+                            | "callHierarchy/outgoingCalls"
+                            | "textDocument/implementation"
+                            | "textDocument/diagnostic"),
+                        ) => {
+                            if let Some(params) = val.get("params") {
+                                lsp_call_hierarchy(
+                                    out_tx,
+                                    translator,
+                                    view,
+                                    &id,
+                                    hm,
+                                    params,
+                                    engine_lock,
+                                );
+                                return Flow::Next;
+                            }
+                        }
+                        Some("textDocument/rename") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_rename(out_tx, translator, view, &id, params, engine_lock);
+                                return Flow::Next;
+                            }
+                        }
+                        Some("prodCode/structuralReplace") => {
+                            if let Some(params) = val.get("params") {
+                                lsp_structural_replace(
+                                    out_tx,
+                                    translator,
+                                    view,
+                                    &id,
+                                    params,
+                                    engine_lock,
+                                );
+                                return Flow::Next;
+                            }
+                        }
+                        Some("textDocument/didOpen") => {
+                            if let Some(params) = val.get("params") {
+                                let uri = params
+                                    .get("textDocument")
+                                    .and_then(|td| td.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                if let Some(text) = params
+                                    .get("textDocument")
+                                    .and_then(|td| td.get("text"))
+                                    .and_then(|t| t.as_str())
+                                {
+                                    let edit_start = Instant::now();
+                                    let text_len = text.len();
+                                    {
+                                        let mut engine = engine_lock.lock().await;
+                                        if let Err(e) = engine.set_session_overlay(
+                                            view.session_id,
+                                            &file_path,
+                                            Some(text.to_string()),
+                                        ) {
+                                            tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                        }
+                                    }
+                                    let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
+                                    tracing::info!(
+                                        session = view.session_id,
+                                        file = %file_path.display(),
+                                        bytes = text_len,
+                                        duration_ms = format!("{:.2}ms", ms),
+                                        "📝 [OVERLAY] didOpen recorded as session buffer in Salsa DB"
+                                    );
+                                }
+                            }
+                        }
+                        Some("textDocument/didChange") => {
+                            if let Some(params) = val.get("params") {
+                                let uri = params
+                                    .get("textDocument")
+                                    .and_then(|td| td.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let first = params
+                                    .get("contentChanges")
+                                    .and_then(|c| c.as_array())
+                                    .and_then(|arr| arr.first())
+                                    .and_then(|c| c.get("text"))
+                                    .and_then(|t| t.as_str());
+                                if let Some(text) = first {
+                                    let edit_start = Instant::now();
+                                    let text_len = text.len();
+                                    {
+                                        let mut engine = engine_lock.lock().await;
+                                        if let Err(e) = engine.set_session_overlay(
+                                            view.session_id,
+                                            &file_path,
+                                            Some(text.to_string()),
+                                        ) {
+                                            tracing::warn!(error = %e, file = %file_path.display(), "session overlay update failed");
+                                        }
+                                    }
+                                    let ms = edit_start.elapsed().as_secs_f64() * 1000.0;
+                                    tracing::info!(
+                                        session = view.session_id,
+                                        file = %file_path.display(),
+                                        bytes = text_len,
+                                        duration_ms = format!("{:.2}ms", ms),
+                                        "📝 [OVERLAY] didChange recorded as session buffer in Salsa DB"
+                                    );
+                                }
+                            }
+                        }
+                        Some("textDocument/didClose") => {
+                            if let Some(params) = val.get("params") {
+                                let uri = params
+                                    .get("textDocument")
+                                    .and_then(|td| td.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("");
+                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let mut engine = engine_lock.lock().await;
+                                if let Err(e) =
+                                    engine.clear_session_overlay(view.session_id, &file_path)
+                                {
+                                    tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
+                                }
+                            }
+                            return Flow::Next;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // 5. Fallback handling for textDocument/didOpen vs didChange on backend worker
+                if let (Some("textDocument/didOpen"), Some(backend)) =
+                    (method, &view.workspace.backend)
+                {
+                    let uri = val
+                        .get("params")
+                        .and_then(|p| p.get("textDocument"))
+                        .and_then(|td| td.get("uri"))
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("");
+                    let is_open = backend.open_files.read().await.contains(uri);
+                    if is_open {
+                        let text = val
+                            .get("params")
+                            .and_then(|p| p.get("textDocument"))
+                            .and_then(|td| td.get("text"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
+                        let version = val
+                            .get("params")
+                            .and_then(|p| p.get("textDocument"))
+                            .and_then(|td| td.get("version"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(2);
+                        let did_change = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/didChange",
+                            "params": {
+                                "textDocument": {
+                                    "uri": uri,
+                                    "version": version
+                                },
+                                "contentChanges": [
+                                    { "text": text }
+                                ]
+                            }
+                        });
+                        let _ = backend.send_lsp(&did_change.to_string()).await;
+                        return Flow::Next;
+                    } else {
+                        backend.open_files.write().await.insert(uri.to_string());
+                    }
+                }
+
+                // 5a'. Code actions on managed language servers: the Rust-style
+                // prodCode/assists | applyAssist requests become LSP codeAction.
+                if let (Some(pm @ ("prodCode/assists" | "prodCode/applyAssist")), Some(req_id)) =
+                    (method, &id)
+                    && (view.workspace.go_engine.is_some()
+                        || view.workspace.generic_engine.is_some())
+                {
+                    let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                    let go = view.workspace.go_engine.clone();
+                    let generic = view.workspace.generic_engine.clone();
+                    let out_tx_task = out_tx.clone();
+                    let translator_task = translator.clone();
+                    let r_id = req_id.clone();
+                    let session_id = view.session_id;
+                    let method_name = pm.to_string();
+                    let start = Instant::now();
+                    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                    tokio::task::spawn(async move {
+                        let engine = match (&go, &generic) {
+                            (_, Some(g)) => ManagedLsp::Generic(g),
+                            (Some(g), None) => ManagedLsp::Go(g),
+                            (None, None) => unreachable!("guarded above"),
+                        };
+                        let outcome = lsp_code_actions(&engine, &method_name, params).await;
+                        let ms = start.elapsed().as_secs_f64() * 1000.0;
+                        let resp = match outcome {
+                            Ok(result) => {
+                                tracing::info!(session = session_id, method = %method_name, duration_ms = format!("{ms:.2}ms"), "✅ [LSP DONE] code actions");
+                                serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": result })
+                            }
+                            Err(err) => {
+                                tracing::info!(session = session_id, method = %method_name, error = %err, "🚫 [LSP REFUSED] code actions");
+                                serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32602, "message": err.to_string() } })
+                            }
+                        };
+                        let client_resp =
+                            translator_task.translate_lsp_to_client(&resp.to_string());
+                        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                    });
+                    return Flow::Next;
+                }
+
+                // 5b. Supervised GoEngine fast path
+                if let Some(ref go) = view.workspace.go_engine {
+                    match method {
+                        Some("textDocument/didOpen") => {
+                            let uri = val
+                                .get("params")
+                                .and_then(|p| p.get("textDocument"))
+                                .and_then(|td| td.get("uri"))
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("");
+                            let text = val
+                                .get("params")
+                                .and_then(|p| p.get("textDocument"))
+                                .and_then(|td| td.get("text"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+                            let _ = go.did_open(uri, text).await;
+                            return Flow::Next;
+                        }
+                        Some("textDocument/didChange") => {
+                            let uri = val
+                                .get("params")
+                                .and_then(|p| p.get("textDocument"))
+                                .and_then(|td| td.get("uri"))
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("");
+                            let version = val
+                                .get("params")
+                                .and_then(|p| p.get("textDocument"))
+                                .and_then(|td| td.get("version"))
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(1) as i32;
+                            let text = val
+                                .get("params")
+                                .and_then(|p| p.get("contentChanges"))
+                                .and_then(|c| c.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|ch| ch.get("text"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+                            let _ = go.did_change(uri, text, version).await;
+                            return Flow::Next;
+                        }
+                        Some("textDocument/didClose") => {
+                            let uri = val
+                                .get("params")
+                                .and_then(|p| p.get("textDocument"))
+                                .and_then(|td| td.get("uri"))
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("");
+                            let _ = go.did_close(uri).await;
+                            return Flow::Next;
+                        }
+                        Some(m) if id.is_some() => {
+                            let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                            let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                            TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                            let start = Instant::now();
+
+                            tracing::info!(
+                                req = req_id_log,
+                                session = view.session_id,
+                                method = m,
+                                in_flight,
+                                "🚀 [LSP START] dispatching to GoEngine"
+                            );
+
+                            let params =
+                                val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                            let out_tx_task = out_tx.clone();
+                            let go_clone = Arc::clone(go);
+                            let translator_task = translator.clone();
+                            let session_id = view.session_id;
+                            let method_str = m.to_string();
+                            let req_id = id.clone();
+
+                            tokio::task::spawn(async move {
+                                let resp_res = go_clone.send_request(&method_str, params).await;
+                                let duration = start.elapsed();
+                                let duration_ms = duration.as_secs_f64() * 1000.0;
+                                let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+
+                                if duration_ms > 200.0 {
+                                    SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                    tracing::warn!(
+                                        req = req_id_log,
+                                        session = session_id,
+                                        method = %method_str,
+                                        duration_ms = %format!("{:.2}ms", duration_ms),
+                                        in_flight = remaining,
+                                        "⚠️ [LSP SLOW >200ms] GoEngine query exceeded threshold"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        req = req_id_log,
+                                        session = session_id,
+                                        method = %method_str,
+                                        duration_ms = %format!("{:.2}ms", duration_ms),
+                                        in_flight = remaining,
+                                        "✅ [LSP DONE] GoEngine query complete"
+                                    );
+                                }
+
+                                match resp_res {
+                                    Ok(mut resp) => {
+                                        if let Some(ref r_id) = req_id {
+                                            resp["id"] = r_id.clone();
+                                        }
+                                        let client_resp = translator_task
+                                            .translate_lsp_to_client(&resp.to_string());
+                                        let _ = out_tx_task
+                                            .send(WireMessage::LspPayload(client_resp))
+                                            .await;
+                                    }
+                                    Err(err) => {
+                                        let err_resp = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": req_id,
+                                            "error": { "code": -32603, "message": err.to_string() }
+                                        });
+                                        let _ = out_tx_task
+                                            .send(WireMessage::LspPayload(err_resp.to_string()))
+                                            .await;
+                                    }
+                                }
+                            });
+                            return Flow::Next;
+                        }
+                        Some(m) => {
+                            let params =
+                                val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                            let _ = go.send_notification(m, params).await;
+                            return Flow::Next;
+                        }
+                        None => {}
+                    }
+                }
+
+                // 5c. Supervised GenericLspEngine fast path
+                if let Some(ref generic_eng) = view.workspace.generic_engine {
+                    if let (Some("textDocument/rename"), Some(req_id)) = (method, &id) {
+                        // Servers such as pyright only rename inside open documents:
+                        // open every file that references the symbol first.
+                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                        let engine = Arc::clone(generic_eng);
+                        let out_tx_task = out_tx.clone();
+                        let translator_task = translator.clone();
+                        let r_id = req_id.clone();
+                        let session_id = view.session_id;
+                        let start = Instant::now();
+                        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                        tokio::task::spawn(async move {
+                            let (resp, opened) = rename_with_references_open(&engine, params).await;
+                            tracing::info!(
+                                session = session_id,
+                                opened,
+                                duration_ms =
+                                    format!("{:.2}ms", start.elapsed().as_secs_f64() * 1000.0),
+                                "✅ [LSP DONE] generic rename"
+                            );
+                            let resp = match resp {
+                                Ok(mut resp) => {
+                                    resp["id"] = r_id;
+                                    resp
+                                }
+                                Err(err) => {
+                                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
+                                }
+                            };
+                            let client_resp =
+                                translator_task.translate_lsp_to_client(&resp.to_string());
+                            let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                        });
+                        return Flow::Next;
+                    }
+                    if let (Some("textDocument/diagnostic"), Some(req_id)) = (method, &id) {
+                        // Servers without pull diagnostics answer from what they
+                        // published for the document.
+                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                        let engine = Arc::clone(generic_eng);
+                        let out_tx_task = out_tx.clone();
+                        let translator_task = translator.clone();
+                        let r_id = req_id.clone();
+                        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                        tokio::task::spawn(async move {
+                            let resp = if engine.has_pull_diagnostics().await {
+                                match engine.send_request("textDocument/diagnostic", params).await {
+                                    Ok(mut resp) => {
+                                        resp["id"] = r_id;
+                                        resp
+                                    }
+                                    Err(err) => {
+                                        serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
+                                    }
+                                }
+                            } else {
+                                let uri = params
+                                    .get("textDocument")
+                                    .and_then(|t| t.get("uri"))
+                                    .and_then(|u| u.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let items =
+                                    ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
+                                serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
+                            };
+                            let client_resp =
+                                translator_task.translate_lsp_to_client(&resp.to_string());
+                            let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                        });
+                        return Flow::Next;
+                    }
+                    if let (Some(m), Some(req_id)) = (method, &id) {
+                        let req_id_log = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+                        let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+                        TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+                        let start = Instant::now();
+
+                        tracing::info!(
+                            req = req_id_log,
+                            session = view.session_id,
+                            method = m,
+                            in_flight,
+                            "🚀 [LSP START] dispatching to GenericLspEngine"
+                        );
+
+                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                        let out_tx_task = out_tx.clone();
+                        let generic_eng_clone = Arc::clone(generic_eng);
+                        let translator_task = translator.clone();
+                        let session_id = view.session_id;
+                        let method_str = m.to_string();
+                        let r_id = req_id.clone();
+
+                        tokio::task::spawn(async move {
+                            let resp_res =
+                                generic_eng_clone.send_request(&method_str, params).await;
+                            let duration = start.elapsed();
+                            let duration_ms = duration.as_secs_f64() * 1000.0;
+                            let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+
+                            if duration_ms > 200.0 {
+                                SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+                                tracing::warn!(
+                                    req = req_id_log,
+                                    session = session_id,
+                                    method = %method_str,
+                                    duration_ms = %format!("{:.2}ms", duration_ms),
+                                    in_flight = remaining,
+                                    "⚠️ [LSP SLOW >200ms] GenericLspEngine query exceeded threshold"
+                                );
+                            } else {
+                                tracing::info!(
+                                    req = req_id_log,
+                                    session = session_id,
+                                    method = %method_str,
+                                    duration_ms = %format!("{:.2}ms", duration_ms),
+                                    in_flight = remaining,
+                                    "✅ [LSP DONE] GenericLspEngine query complete"
+                                );
+                            }
+
+                            match resp_res {
+                                Ok(mut resp) => {
+                                    resp["id"] = r_id;
+                                    let client_resp =
+                                        translator_task.translate_lsp_to_client(&resp.to_string());
+                                    let _ = out_tx_task
+                                        .send(WireMessage::LspPayload(client_resp))
+                                        .await;
+                                }
+                                Err(err) => {
+                                    let err_resp = serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": r_id,
+                                        "error": { "code": -32603, "message": err.to_string() }
+                                    });
+                                    let _ = out_tx_task
+                                        .send(WireMessage::LspPayload(err_resp.to_string()))
+                                        .await;
+                                }
+                            }
+                        });
+                        return Flow::Next;
+                    } else if let Some(m) = method {
+                        let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
+                        let _ = generic_eng.send_notification(m, params).await;
+                        return Flow::Next;
+                    }
+                }
+
+                // 6. Handle "textDocument/didClose"
+                if let (Some("textDocument/didClose"), Some(backend)) =
+                    (method, &view.workspace.backend)
+                {
+                    let uri = val
+                        .get("params")
+                        .and_then(|p| p.get("textDocument"))
+                        .and_then(|td| td.get("uri"))
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("");
+                    backend.open_files.write().await.remove(uri);
+                }
+
+                // 7. If no backend is attached and client expects a response, return empty result
+                if let (Some(req_id), None, None, None, None) = (
+                    id,
+                    &view.workspace.backend,
+                    &view.workspace.rust_engine,
+                    &view.workspace.go_engine,
+                    &view.workspace.generic_engine,
+                ) {
+                    let empty_resp = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": null
+                    });
+                    let _ = out_tx
+                        .send(WireMessage::LspPayload(empty_resp.to_string()))
+                        .await;
+                    return Flow::Next;
+                }
+            }
+
+            if let Some(backend) = &view.workspace.backend {
+                let _ = backend.send_lsp(&server_lsp).await.inspect_err(|e| {
+                    tracing::error!(error = %e, "Failed to forward LSP to backend worker");
+                });
+            }
+        }
+        Some(Ok(WireMessage::SyncRequest(req))) => {
+            let start = Instant::now();
+            let mut files_updated = 0;
+            let mut files_deleted = 0;
+            let mut bytes_transferred = 0;
+
+            for delta in &req.files {
+                let target_path = view.workspace.root.join(&delta.relative_path);
+                match &delta.content {
+                    Some(content_bytes) => {
+                        if let Some(parent) = target_path.parent() {
+                            let _ = tokio::fs::create_dir_all(parent).await;
+                        }
+                        bytes_transferred += content_bytes.len();
+                        if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
+                            files_updated += 1;
+                            #[cfg(unix)]
+                            if delta.is_executable {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = tokio::fs::set_permissions(
+                                    &target_path,
+                                    std::fs::Permissions::from_mode(0o755),
+                                )
+                                .await;
+                            }
+                        }
+                        // The workspace is this worktree's own: synced files are its
+                        // new base, visible to every session except one that still
+                        // holds an unsaved buffer for the same path.
+                        if let Ok(text) = std::str::from_utf8(content_bytes) {
+                            for engine_lock in view.workspace.mirrored_rust_engines() {
+                                let mut engine = engine_lock.lock().await;
+                                if let Err(e) =
+                                    engine.update_base(&target_path, Some(text.to_string()))
+                                {
+                                    tracing::warn!(error = %e, file = %target_path.display(), "base update failed");
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        if target_path.exists()
+                            && tokio::fs::remove_file(&target_path).await.is_ok()
+                        {
+                            files_deleted += 1;
+                        }
+                        for engine_lock in view.workspace.mirrored_rust_engines() {
+                            let mut engine = engine_lock.lock().await;
+                            if let Err(e) = engine.update_base(&target_path, None) {
+                                tracing::warn!(error = %e, file = %target_path.display(), "base removal failed");
+                            }
+                        }
+                    }
+                }
+            }
+
+            if req.clean_others
+                && let Some(engine_lock) = &view.workspace.rust_engine
+            {
+                // The request is the session's complete dirty set: any other
+                // overlay this session still holds is stale (reverted or committed).
+                let keep: Vec<PathBuf> = req
+                    .files
+                    .iter()
+                    .map(|delta| view.workspace.root.join(&delta.relative_path))
+                    .collect();
+                let mut engine = engine_lock.lock().await;
+                match engine.retain_session_overlays(view.session_id, &keep) {
+                    Ok(dropped) if dropped > 0 => tracing::info!(
+                        session = view.session_id,
+                        dropped,
+                        "🧹 [OVERLAY] dropped stale session buffers after full dirty sync"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(error = %e, session = view.session_id, "failed to drop stale session buffers")
+                    }
+                }
+            }
+
+            let duration_ms = start.elapsed().as_millis() as u64;
+            let _ = out_tx
+                .send(WireMessage::SyncResponse(SyncResponse {
+                    files_updated,
+                    files_deleted,
+                    bytes_transferred,
+                    duration_ms,
+                    server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
+                    workspace_was_fresh: false,
+                }))
+                .await;
+        }
+        Some(Ok(WireMessage::Disconnect { reason })) => {
+            tracing::info!(reason, "Client terminated session");
+            return Flow::Stop;
+        }
+        Some(Ok(WireMessage::StatusRequest)) => {
+            let _ = out_tx
+                .send(WireMessage::StatusResponse(StatusResponse {
+                    server_pid: std::process::id(),
+                    uptime_seconds: 0,
+                    active_sessions: 1,
+                    loaded_workspaces: 1,
+                    detected_engines: vec![view.workspace.engine.clone()],
+                    memory_rss_bytes: memory::get_process_rss_bytes(),
+                    total_queries: TOTAL_QUERIES.load(Ordering::Relaxed),
+                    active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
+                    load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
+                    cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
+                }))
+                .await;
+        }
+        Some(Err(e)) => {
+            tracing::error!(error = %e, "TCP frame decode error");
+            return Flow::Stop;
+        }
+        None => {
+            tracing::info!("Client disconnected");
+            return Flow::Stop;
+        }
+        _ => {}
+    }
+    Flow::Next
+}
+
+fn lsp_call_hierarchy(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    hm: &str,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    // Call-hierarchy follow-ups carry the item; the others a text document position.
+    let (uri, position) = match params.get("item") {
+        Some(item) => (
+            item.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
+            item.get("selectionRange").and_then(|r| r.get("start")),
+        ),
+        None => (
+            params
+                .get("textDocument")
+                .and_then(|td| td.get("uri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or(""),
+            params.get("position"),
+        ),
+    };
+    let line = position
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = position
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let method_name = hm.to_string();
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    tracing::info!(req = req_num, session = view.session_id, method = %method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
+
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            let m = method_name.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                hierarchy_query(&engine, &m, &fp_clone, line + 1, col + 1)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("query task failed: {e}")))
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let resp = match outcome {
+            Ok(result) => {
+                tracing::info!(req = req_num, session = session_id, method = %method_name, duration_ms = format!("{:.2}ms", ms), items = result.as_array().map(|a| a.len()).unwrap_or(0), in_flight = remaining, "✅ [LSP DONE]");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
+            }
+            Err(e) => {
+                tracing::warn!(req = req_num, session = session_id, method = %method_name, error = %e, "query failed");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_safe_delete(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    tracing::info!(req = req_num, session = view.session_id, method = "prodCode/safeDelete", file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+    tokio::task::spawn(async move {
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.safe_delete(&fp_clone, line + 1, col + 1)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("safe delete task failed: {e}")))
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let resp = match outcome {
+            Ok(Ok(outcome)) => {
+                tracing::info!(
+                    req = req_num,
+                    session = session_id,
+                    method = "prodCode/safeDelete",
+                    duration_ms = format!("{:.2}ms", ms),
+                    in_flight = remaining,
+                    "✅ [LSP DONE]"
+                );
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
+            }
+            Ok(Err(refused)) => {
+                tracing::info!(
+                    req = req_num,
+                    session = session_id,
+                    method = "prodCode/safeDelete",
+                    "🚫 [LSP REFUSED]"
+                );
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+            }
+            Err(e) => {
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_structural_replace(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let rule = params
+        .get("rule")
+        .and_then(|r| r.as_str())
+        .unwrap_or("")
+        .to_string();
+    let scope = params
+        .get("scope")
+        .and_then(|s| s.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| PathBuf::from(s.trim_start_matches("file://")));
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "prodCode/structuralReplace",
+        file = %file_path.display(),
+        pos = format!("{}:{}", line + 1, col + 1),
+        rule = %rule,
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.structural_replace(&rule, &fp_clone, line + 1, col + 1, scope.as_deref())
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("codemod task failed: {e}")))
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let resp = match outcome {
+            Ok(Ok(outcome)) => {
+                tracing::info!(
+                    req = req_num,
+                    session = session_id,
+                    method = "prodCode/structuralReplace",
+                    duration_ms = format!("{:.2}ms", ms),
+                    files = outcome.files.len(),
+                    edits = outcome.total_edits(),
+                    moves = outcome.moves.len(),
+                    in_flight = remaining,
+                    "✅ [LSP DONE]"
+                );
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
+            }
+            Ok(Err(refused)) => {
+                tracing::info!(req = req_num, session = session_id, method = "prodCode/structuralReplace", reason = %refused, "🚫 [LSP REFUSED]");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+            }
+            Err(e) => {
+                tracing::warn!(req = req_num, session = session_id, error = %e, "codemod failed");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_rename(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let new_name = params
+        .get("newName")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "textDocument/rename",
+        file = %file_path.display(),
+        pos = format!("{}:{}", line + 1, col + 1),
+        new_name = %new_name,
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.rename(&fp_clone, line + 1, col + 1, &new_name)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("rename task failed: {e}")))
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let resp = match outcome {
+            Ok(Ok(outcome)) => {
+                tracing::info!(
+                    req = req_num,
+                    session = session_id,
+                    method = "textDocument/rename",
+                    duration_ms = format!("{:.2}ms", ms),
+                    files = outcome.files.len(),
+                    edits = outcome.total_edits(),
+                    moves = outcome.moves.len(),
+                    in_flight = remaining,
+                    "✅ [LSP DONE]"
+                );
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": workspace_edit_json(&outcome) })
+            }
+            Ok(Err(refused)) => {
+                tracing::info!(req = req_num, session = session_id, method = "textDocument/rename", reason = %refused, "🚫 [LSP REFUSED]");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+            }
+            Err(e) => {
+                tracing::warn!(req = req_num, session = session_id, error = %e, "rename failed");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_assists(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    method: Option<&str>,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let apply = method == Some("prodCode/applyAssist");
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .pointer("/range/start/line")
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .pointer("/range/start/character")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let end = match (
+        params.pointer("/range/end/line").and_then(|l| l.as_u64()),
+        params
+            .pointer("/range/end/character")
+            .and_then(|c| c.as_u64()),
+    ) {
+        (Some(l), Some(c)) => Some((l as u32 + 1, c as u32 + 1)),
+        _ => None,
+    };
+    let assist_id = params
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let subtype = params
+        .get("subtype")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    let method_name = if apply {
+        "prodCode/applyAssist"
+    } else {
+        "prodCode/assists"
+    };
+    tracing::info!(req = req_num, session = view.session_id, method = method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), assist = %assist_id, in_flight, "🚀 [LSP START]");
+
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let result = {
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                if apply {
+                    engine
+                        .apply_assist(&fp_clone, line + 1, col + 1, end, &assist_id, subtype)
+                        .map(|r| r.map(|outcome| workspace_edit_json(&outcome)))
+                } else {
+                    engine
+                        .list_assists(&fp_clone, line + 1, col + 1, end)
+                        .map(|list| Ok(serde_json::json!(list)))
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("assist task failed: {e}")))
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let resp = match result {
+            Ok(Ok(value)) => {
+                tracing::info!(
+                    req = req_num,
+                    session = session_id,
+                    method = method_name,
+                    duration_ms = format!("{:.2}ms", ms),
+                    in_flight = remaining,
+                    "✅ [LSP DONE]"
+                );
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": value })
+            }
+            Ok(Err(refused)) => {
+                tracing::info!(req = req_num, session = session_id, method = method_name, reason = %refused, "🚫 [LSP REFUSED]");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32602, "message": refused } })
+            }
+            Err(e) => {
+                tracing::warn!(req = req_num, session = session_id, error = %e, "assist failed");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": e.to_string() } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_workspace_symbol(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let query = params
+        .get("query")
+        .and_then(|q| q.as_str())
+        .unwrap_or("")
+        .to_string();
+    let limit = params.get("limit").and_then(|l| l.as_u64()).unwrap_or(64) as usize;
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+    tracing::info!(req = req_num, session = view.session_id, method = "workspace/symbol", query = %query, in_flight, "🚀 [LSP START]");
+
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let syms = {
+            let mut engine = engine_arc.lock_owned().await;
+            let q = query.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.workspace_symbols(&q, limit).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, session = session_id, "query failed");
+                    Vec::new()
+                })
+            })
+            .await
+            .unwrap_or_default()
+        };
+        let ms = query_start.elapsed().as_secs_f64() * 1000.0;
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        tracing::info!(
+            req = req_num,
+            session = session_id,
+            method = "workspace/symbol",
+            duration_ms = format!("{:.2}ms", ms),
+            symbols = syms.len(),
+            in_flight = remaining,
+            "✅ [LSP DONE]"
+        );
+
+        let sym_list: Vec<_> = syms.into_iter().map(|s| {
+            serde_json::json!({
+                "name": s.name,
+                "kind": lsp_symbol_kind(&s.kind),
+                "location": {
+                    "uri": format!("file://{}", s.path.display()),
+                    "range": {
+                        "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
+                        "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
+                    }
+                },
+                "containerName": s.container
+            })
+        }).collect();
+        let resp = serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": sym_list });
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_document_symbol(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("")
+        .to_string();
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "textDocument/documentSymbol",
+        file = %file_path.display(),
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    let engine_arc = Arc::clone(engine_lock);
+
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let syms = {
+            // Hold the engine for the whole query: activating the session view and
+            // running the query under one lock keeps other sessions' buffers out and
+            // prevents a concurrent edit from cancelling this snapshot.
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                 if let Err(e) = engine.activate_session(session_id) {
+                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                 }
+                 engine.document_symbols(&fp_clone).unwrap_or_else(|e| {
+                     tracing::warn!(error = %e, session = session_id, "query failed");
+                     Vec::new()
+                 })
+             })
+             .await
+             .unwrap_or_default()
+        };
+
+        let duration = query_start.elapsed();
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let ms = duration.as_secs_f64() * 1000.0;
+        let count = syms.len();
+
+        if ms > 200.0 {
+            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/documentSymbol",
+                duration_ms = format!("{:.2}ms", ms),
+                symbols = count,
+                in_flight = remaining,
+                "⚠️ [LSP SLOW >200ms]"
+            );
+        } else {
+            tracing::info!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/documentSymbol",
+                duration_ms = format!("{:.2}ms", ms),
+                symbols = count,
+                in_flight = remaining,
+                "✅ [LSP DONE]"
+            );
+        }
+
+        let sym_list: Vec<_> = syms.into_iter().map(|s| {
+             let kind_num = lsp_symbol_kind(&s.kind);
+             serde_json::json!({
+                 "name": s.name,
+                 "kind": kind_num,
+                 "location": {
+                     "uri": uri,
+                     "range": {
+                         "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
+                         "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
+                     }
+                 },
+                 "containerName": if s.containers.is_empty() { s.detail.clone() } else { Some(s.containers.join(" > ")) }
+             })
+         }).collect();
+
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": sym_list
+        });
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_references(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "textDocument/references",
+        file = %file_path.display(),
+        pos = format!("{}:{}", line + 1, col + 1),
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    let engine_arc = Arc::clone(engine_lock);
+
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let refs = {
+            // Hold the engine for the whole query: activating the session view and
+            // running the query under one lock keeps other sessions' buffers out and
+            // prevents a concurrent edit from cancelling this snapshot.
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, session = session_id, "query failed");
+                    Vec::new()
+                })
+            })
+            .await
+            .unwrap_or_default()
+        };
+
+        let duration = query_start.elapsed();
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let ms = duration.as_secs_f64() * 1000.0;
+        let count = refs.len();
+
+        if ms > 200.0 {
+            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/references",
+                duration_ms = format!("{:.2}ms", ms),
+                references = count,
+                in_flight = remaining,
+                "⚠️ [LSP SLOW >200ms]"
+            );
+        } else {
+            tracing::info!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/references",
+                duration_ms = format!("{:.2}ms", ms),
+                references = count,
+                in_flight = remaining,
+                "✅ [LSP DONE]"
+            );
+        }
+
+        let locations: Vec<_> = refs.into_iter().map(|t| {
+            serde_json::json!({
+                "uri": format!("file://{}", t.path.display()),
+                "range": {
+                    "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                    "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                }
+            })
+        }).collect();
+
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": locations
+        });
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_definition(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "textDocument/definition",
+        file = %file_path.display(),
+        pos = format!("{}:{}", line + 1, col + 1),
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    let engine_arc = Arc::clone(engine_lock);
+
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let defs = {
+            // Hold the engine for the whole query: activating the session view and
+            // running the query under one lock keeps other sessions' buffers out and
+            // prevents a concurrent edit from cancelling this snapshot.
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, session = session_id, "query failed");
+                    Vec::new()
+                })
+            })
+            .await
+            .unwrap_or_default()
+        };
+
+        let duration = query_start.elapsed();
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let ms = duration.as_secs_f64() * 1000.0;
+        let count = defs.len();
+
+        if ms > 200.0 {
+            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/definition",
+                duration_ms = format!("{:.2}ms", ms),
+                targets = count,
+                in_flight = remaining,
+                "⚠️ [LSP SLOW >200ms]"
+            );
+        } else {
+            tracing::info!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/definition",
+                duration_ms = format!("{:.2}ms", ms),
+                targets = count,
+                in_flight = remaining,
+                "✅ [LSP DONE]"
+            );
+        }
+
+        let locations: Vec<_> = defs.into_iter().map(|t| {
+            serde_json::json!({
+                "uri": format!("file://{}", t.path.display()),
+                "range": {
+                    "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
+                    "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
+                }
+            })
+        }).collect();
+
+        let resp = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": locations
+        });
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+fn lsp_hover(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    params: &serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(|l| l.as_u64())
+        .unwrap_or(0) as u32;
+    let col = params
+        .get("position")
+        .and_then(|p| p.get("character"))
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0) as u32;
+    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+
+    let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    let query_start = Instant::now();
+
+    tracing::info!(
+        req = req_num,
+        session = view.session_id,
+        method = "textDocument/hover",
+        file = %file_path.display(),
+        pos = format!("{}:{}", line + 1, col + 1),
+        in_flight,
+        "🚀 [LSP START]"
+    );
+
+    // Acquire cheap snapshot (<1 µs) without holding mutex during query
+    let engine_arc = Arc::clone(engine_lock);
+
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let fp_clone = file_path.clone();
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+
+    tokio::task::spawn(async move {
+        let hover_res = {
+            // Hold the engine for the whole query: activating the session view and
+            // running the query under one lock keeps other sessions' buffers out and
+            // prevents a concurrent edit from cancelling this snapshot.
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.hover(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, session = session_id, "query failed");
+                    None
+                })
+            })
+            .await
+            .unwrap_or(None)
+        };
+
+        let duration = query_start.elapsed();
+        let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
+        let ms = duration.as_secs_f64() * 1000.0;
+        let found = hover_res.is_some();
+
+        if ms > 200.0 {
+            SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/hover",
+                duration_ms = format!("{:.2}ms", ms),
+                found,
+                in_flight = remaining,
+                "⚠️ [LSP SLOW >200ms]"
+            );
+        } else {
+            tracing::info!(
+                req = req_num,
+                session = session_id,
+                method = "textDocument/hover",
+                duration_ms = format!("{:.2}ms", ms),
+                found,
+                in_flight = remaining,
+                "✅ [LSP DONE]"
+            );
+        }
+
+        let resp = match hover_res {
+            Some(markup) => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "contents": {
+                        "kind": "markdown",
+                        "value": markup
+                    }
+                }
+            }),
+            None => serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": null
+            }),
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
 }
 
 /// Puts the user's toolchain directories (`~/.cargo/bin`, `~/go/bin`) first on PATH so remote
