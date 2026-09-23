@@ -250,6 +250,14 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **`lint --fix` for Python, TypeScript and C++; C++ lint with clang-tidy** (roadmap 7.2, #205).
+  - The linter's own fix mode runs on the node: `ruff check --fix`, `eslint --fix` / `biome
+    lint --write`, or `clang-tidy -fix`. The files it rewrote come back into the checkout, each
+    is named, and the lint runs again.
+  - `lint` on a CMake or Meson C++ project runs clang-tidy over its sources with the
+    compilation database. clang-tidy 22 is installed in user space (`uv tool install
+    clang-tidy`) on the Linux build nodes.
+  - Go's `go vet` has no fixes, and the report says so.
 - **impact finds tests by attribute and registration, and has a CI mode** (roadmap 8.1, #201).
   - A caller is a test by its attribute (`#[tokio::test]`, `#[rstest]`, `@Test`), by the gtest
     or Catch2 registration it sits in (`TEST(Price, Doubles)` becomes `Price.Doubles`, which
