@@ -2747,3 +2747,72 @@ async fn a_constant_every_caller_passes_moves_into_the_body() {
     assert!(format!("{err:#}").contains("used as a value"), "{err:#}");
     assert_eq!(ws.read("src/lib.rs"), with_value);
 }
+
+const TOTAL_FN: &str =
+    "pub mod util;\n\npub fn total(xs: &[u32]) -> u32 {\n    xs.iter().sum()\n}\n";
+const TOTAL_CALLER: &str = "pub fn report(xs: &[u32]) -> String {\n    let t: u32 = crate::total(xs);\n    format!(\"{t}\")\n}\n";
+
+/// A new return type and visibility are written into the declaration in the same edit as the
+/// parameters, and a caller the rewrite did not touch is type-checked against them: its error
+/// stops the write.
+#[tokio::test]
+async fn a_return_type_and_visibility_change_checks_every_caller() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", TOTAL_FN);
+    let util = write(&ws, "src/util.rs", TOTAL_CALLER);
+    commit(&ws);
+    let keep = [prod_code_mcp::signature::parse_param("xs").unwrap()];
+
+    // The caller's file is clean on disk and rejected against the proposal.
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let u = util.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/references" => answers::locations(&u, &[(2, 25)]),
+        "textDocument/diagnostic"
+            if params.to_string().contains("util.rs")
+                && !pulls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    .is_multiple_of(2) =>
+        {
+            serde_json::json!({ "kind": "full", "items": [
+                { "severity": 1, "code": "E0308", "message": "expected u32, found u64",
+                  "range": { "start": { "line": 1, "character": 17 }, "end": { "line": 1, "character": 33 } } }
+            ] })
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let modifiers = prod_code_mcp::signature::Modifiers {
+        returns: Some("u64".into()),
+        visibility: Some("pub(crate)".into()),
+    };
+    let change = prod_code_mcp::signature::change_with(
+        remote, &root, &lib, 3, 8, &keep, &modifiers, false, false,
+    )
+    .await
+    .expect("the dry run reports");
+    assert_eq!(change.returns, Some(("u32".into(), "u64".into())));
+    assert_eq!(change.visibility, Some(("pub".into(), "pub(crate)".into())));
+    let text = &change.rewritten.first().expect("the declaration's file").1;
+    assert!(
+        text.contains("pub(crate) fn total(xs: &[u32]) -> u64 {"),
+        "{text}"
+    );
+    assert!(
+        change
+            .diagnostics
+            .iter()
+            .any(|d| d.contains("expected u32, found u64") && d.contains("src/util.rs")),
+        "the caller is checked: {:?}",
+        change.diagnostics
+    );
+    let report = change.render(10_000);
+    assert!(report.contains("- returns: `u32` → `u64`"), "{report}");
+    assert!(
+        report.contains("- visibility: `pub` → `pub(crate)`"),
+        "{report}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), TOTAL_FN, "a dry run writes nothing");
+}

@@ -188,6 +188,15 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Change a function's return type and visibility (roadmap 7.1.1, #144): `code_change_signature`
+  takes `returns` and `visibility`, `prod-code change-signature` takes `--returns` and
+  `--visibility`:
+  - both are written into the declaration in the same edit as the parameter list. `()` removes
+    the return type, a type is added where there was none, and `private` removes the visibility;
+  - every file that calls the function now goes into the overlay check (`also_check`), not only
+    the files the rewrite touched. A body that no longer returns the new type and a caller that no
+    longer fits (`let t: u32 = total(xs)` against `-> u64`) are both reported, and nothing is
+    written while one remains.
 - Inline a parameter (roadmap 7.1.1, #142): `code_inline_parameter` (MCP) and `prod-code
   inline-parameter <file> <line> <col>`. When every call passes the same argument for a
   parameter, the argument moves into the body and the parameter goes:

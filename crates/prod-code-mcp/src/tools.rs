@@ -429,7 +429,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_change_signature".to_string(),
-            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`; changing the return type is not supported. Rust only; re-run your formatter afterwards."
+            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust only; re-run your formatter afterwards."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -442,6 +442,8 @@ pub fn list_tools() -> Vec<McpTool> {
                         "items": { "type": "string" },
                         "description": "The whole new parameter list, in order: `name` to keep, `name: Type = expression` to add; omit one to remove it. The receiver (`&self`) is never listed."
                     },
+                    "returns": { "type": "string", "description": "The return type the function should have (`()` removes it). Every file that calls the function is type-checked against it" },
+                    "visibility": { "type": "string", "description": "`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove the visibility" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Drop a parameter the body still uses, and write even when the result does not compile" }
@@ -1350,13 +1352,24 @@ async fn handle_change_signature(
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-    let mut change = crate::signature::change(
+    let modifiers = crate::signature::Modifiers {
+        returns: args
+            .get("returns")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        visibility: args
+            .get("visibility")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    let mut change = crate::signature::change_with(
         remote,
         workspace_root,
         &file_path,
         line,
         character,
         &params,
+        &modifiers,
         apply && !verify,
         force,
     )
