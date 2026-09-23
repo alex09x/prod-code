@@ -208,6 +208,19 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Apply the compiler's own fixes (roadmap 7.2, #158): `fix: true` on `code_check` / `code_lint`
+  and `prod-code check --fix` / `lint --fix` (Rust):
+  - every suggestion rustc or clippy marks `MachineApplicable` is applied to the checkout in one
+    transactional edit, with all of its parts. Other suggestions (`MaybeIncorrect`,
+    `HasPlaceholders`) never are;
+  - a suggestion that several targets report is applied once;
+  - a fix is skipped whole, and the report says why, if it touches a file outside the workspace,
+    overlaps a fix already taken, or targets a line that no longer reads as the compiler saw it;
+  - the check runs again after the fixes, and the report shows what was fixed, what was skipped
+    and what is left.
+
+  On a scratch crate, `lint --fix` removed an unused import, a needless `mut` and a
+  `len() == 0`, and clippy then passed. The whole run took 0.72 s.
 - Extract a trait from a chosen subset of methods (roadmap 7.1.2, #153): `code_extract_trait`
   (MCP) and `prod-code extract-trait <file> <line> <col> --methods a,b --name NAME`. rust-analyzer's
   `generate_trait_from_impl` takes the whole block, names the trait `NewTrait` and keeps it

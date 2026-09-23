@@ -250,6 +250,9 @@ enum Commands {
         /// Print the full report as JSON instead of text.
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// Apply the compiler's machine-applicable fixes, then check again (Rust).
+        #[arg(long, default_value_t = false)]
+        fix: bool,
     },
     /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
     Lint {
@@ -257,6 +260,9 @@ enum Commands {
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
         json: bool,
+        /// Apply the machine-applicable fixes, then lint again (Rust).
+        #[arg(long, default_value_t = false)]
+        fix: bool,
     },
     /// Run tests remotely (cargo test / go test -json), optionally filtered by name.
     Test {
@@ -1025,12 +1031,22 @@ async fn main() -> Result<()> {
             to,
             subtype,
         } => run_assist(remote, &file, line, col, to.as_deref(), Some(&id), subtype).await,
-        Commands::Check { timeout_secs, json } => {
-            run_verify(remote, VerifyKind::Check, None, timeout_secs, json).await
-        }
-        Commands::Lint { timeout_secs, json } => {
-            run_verify(remote, VerifyKind::Lint, None, timeout_secs, json).await
-        }
+        Commands::Check {
+            timeout_secs,
+            json,
+            fix: true,
+        } => run_fix(remote, VerifyKind::Check, timeout_secs, json).await,
+        Commands::Check {
+            timeout_secs, json, ..
+        } => run_verify(remote, VerifyKind::Check, None, timeout_secs, json).await,
+        Commands::Lint {
+            timeout_secs,
+            json,
+            fix: true,
+        } => run_fix(remote, VerifyKind::Lint, timeout_secs, json).await,
+        Commands::Lint {
+            timeout_secs, json, ..
+        } => run_verify(remote, VerifyKind::Lint, None, timeout_secs, json).await,
         Commands::Test {
             filter,
             timeout_secs,
@@ -2943,6 +2959,25 @@ async fn run_verify(
         print!("{}", report.render(200));
     }
     std::process::exit(if report.ok() { 0 } else { 1 });
+}
+
+/// `check --fix` / `lint --fix`: apply the compiler's machine-applicable fixes, then run again.
+async fn run_fix(
+    remote: SocketAddr,
+    kind: VerifyKind,
+    timeout_secs: u64,
+    json: bool,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let fixed =
+        prod_code_mcp::fixit::check_and_fix(remote, &root, Some(&cwd), kind, timeout_secs).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&fixed)?);
+    } else {
+        print!("{}", fixed.render(200));
+    }
+    std::process::exit(if fixed.ok() { 0 } else { 1 });
 }
 
 /// Run a command remotely inside this checkout's server workspace copy and mirror its output.
