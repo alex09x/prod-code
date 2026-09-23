@@ -521,6 +521,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     },
                     "returns": { "type": "string", "description": "The return type the function should have (`()` removes it). Every file that calls the function is type-checked against it" },
                     "visibility": { "type": "string", "description": "`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove the visibility" },
+                    "async": { "type": "boolean", "description": "`true` makes the function `async` and appends `.await` to every call; `false` removes both. A call that would await from a function that is not `async` blocks the write unless `force`. Not together with a change of the parameter order" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Drop a parameter the body still uses, and write even when the result does not compile" }
@@ -1586,6 +1587,7 @@ async fn handle_change_signature(
             .get("visibility")
             .and_then(|v| v.as_str())
             .map(str::to_string),
+        asyncness: args.get("async").and_then(|v| v.as_bool()),
     };
     let mut change = crate::signature::change_with(
         remote,

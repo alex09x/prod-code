@@ -736,6 +736,9 @@ enum Commands {
         /// Its visibility: `pub`, `pub(crate)`, `pub(super)`, or `private`.
         #[arg(long)]
         visibility: Option<String>,
+        /// `true` makes it `async` and awaits every call; `false` takes both away.
+        #[arg(long = "async")]
+        asyncness: Option<bool>,
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
@@ -1529,13 +1532,14 @@ async fn main() -> Result<()> {
             params,
             returns,
             visibility,
+            asyncness,
             path,
             verify,
             apply,
             force,
         } => {
             run_change_signature_cli(
-                remote, symbol, params, returns, visibility, path, verify, apply, force,
+                remote, symbol, params, returns, visibility, asyncness, path, verify, apply, force,
             )
             .await
         }
@@ -3380,6 +3384,7 @@ async fn run_change_signature_cli(
     params: Vec<String>,
     returns: Option<String>,
     visibility: Option<String>,
+    asyncness: Option<bool>,
     path: Option<String>,
     verify: Option<String>,
     apply: bool,
@@ -3391,6 +3396,9 @@ async fn run_change_signature_cli(
         serde_json::json!({ "symbol": symbol, "params": params, "apply": apply, "force": force });
     if let Some(returns) = returns {
         args["returns"] = serde_json::Value::String(returns);
+    }
+    if let Some(asyncness) = asyncness {
+        args["async"] = serde_json::Value::Bool(asyncness);
     }
     if let Some(visibility) = visibility {
         args["visibility"] = serde_json::Value::String(visibility);

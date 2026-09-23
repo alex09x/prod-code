@@ -2787,6 +2787,7 @@ async fn a_return_type_and_visibility_change_checks_every_caller() {
     let modifiers = prod_code_mcp::signature::Modifiers {
         returns: Some("u64".into()),
         visibility: Some("pub(crate)".into()),
+        asyncness: None,
     };
     let change = prod_code_mcp::signature::change_with(
         remote, &root, &lib, 3, 8, &keep, &modifiers, false, false,
@@ -3502,4 +3503,87 @@ async fn fields_and_their_methods_move_into_a_delegate() {
         ws.read("src/report.rs"),
         ACCOUNT_REPORT.replace("&a.city", "&a.address.city")
     );
+}
+
+const LOAD: &str = "pub fn load(id: u32) -> u32 {\n    id * 2\n}\n\npub async fn page(id: u32) -> u32 {\n    load(id) + 1\n}\n\npub async fn both(a: u32) -> u32 {\n    load(a) + load(a + 1)\n}\n\npub fn sync_caller() -> u32 {\n    load(3)\n}\n";
+
+/// Making a function `async` awaits every call; a call from a function that is not `async` is
+/// named and blocks the write unless forced; taking `async` away removes every `.await` again.
+#[tokio::test]
+async fn async_is_added_and_removed_with_every_await() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", LOAD);
+    commit(&ws);
+    let keep = [prod_code_mcp::signature::parse_param("id").unwrap()];
+    let script = || {
+        let l = lib.clone();
+        scripted_gateway(Arc::new(move |method, _| match method {
+            "textDocument/references" => {
+                answers::locations(&l, &[(6, 5), (10, 5), (10, 15), (14, 5)])
+            }
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let make = |asyncness| prod_code_mcp::signature::Modifiers {
+        asyncness: Some(asyncness),
+        ..Default::default()
+    };
+
+    let err = prod_code_mcp::signature::change_with(
+        script().await,
+        &root,
+        &lib,
+        1,
+        8,
+        &keep,
+        &make(true),
+        true,
+        false,
+    )
+    .await
+    .expect_err("a call from a function that is not async blocks the write");
+    assert!(format!("{err:#}").contains("src/lib.rs:14:5"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), LOAD);
+
+    let change = prod_code_mcp::signature::change_with(
+        script().await,
+        &root,
+        &lib,
+        1,
+        8,
+        &keep,
+        &make(true),
+        true,
+        true,
+    )
+    .await
+    .expect("forced");
+    assert_eq!(change.asyncness, Some((false, true)));
+    let awaited = ws.read("src/lib.rs");
+    for expected in [
+        "pub async fn load(id: u32) -> u32 {",
+        "    load(id).await + 1\n",
+        "    load(a).await + load(a + 1).await\n",
+        "    load(3).await\n",
+    ] {
+        assert!(awaited.contains(expected), "{expected}\n{awaited}");
+    }
+
+    let change = prod_code_mcp::signature::change_with(
+        script().await,
+        &root,
+        &lib,
+        1,
+        14,
+        &keep,
+        &make(false),
+        true,
+        false,
+    )
+    .await
+    .expect("async taken away");
+    assert_eq!(change.asyncness, Some((true, false)));
+    assert_eq!(ws.read("src/lib.rs"), LOAD);
 }
