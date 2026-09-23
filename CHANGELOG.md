@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Fixed
+- **validate reports a type or module that does not exist** (#181). rust-analyzer has no
+  diagnostic for an unresolved type path (rustc's E0412/E0433), so a file naming `NoSuchType`,
+  `missing_crate::Thing` or an item another crate does not export passed with 0 errors.
+  `cargo check` then rejected it. Diagnostics now read what rust-analyzer highlights as an
+  unresolved reference, and report each such path segment as `unresolved-path`, when:
+  - it starts its path, or it follows `crate`, `self`, `super` or a module;
+  - no `use` in an enclosing scope imports the name (a broken import is reported at the `use`).
+  A name missing from another crate is a warning, since that crate may hold code the analyzer
+  cannot see. A crate that `include!`s build-script output is one example.
+
+  On the three Rust repositories at hand (122 files), the only reports on unchanged code were
+  10 warnings in such a crate. `tools.rs` (10k lines) takes 1.09 s warm instead of 0.80 s.
 - **impact's first line no longer counts unknown callers as zero** (#170). When the Swift index
   could not be built, the header still said `0 caller(s), 0 test(s)` above the line saying they
   were unknown. It now says `callers and tests unknown`.
