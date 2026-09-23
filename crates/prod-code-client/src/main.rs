@@ -2575,30 +2575,17 @@ fn find_first_code_file(dir: &Path) -> Option<(PathBuf, u32, u32)> {
 /// Delete an unreferenced item through the remote analyzer and apply the edit locally.
 async fn run_safe_delete(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let cwd = env::current_dir()?;
-    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
-    let file_uri = Url::from_file_path(&abs_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
-        .to_string();
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri },
-        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) }
-    });
-    let started = std::time::Instant::now();
-    let edit = execute_lsp_query(remote, file, "prodCode/safeDelete", params).await?;
-    if edit.is_null() {
-        anyhow::bail!("safe delete produced no edits");
-    }
-    let touched = prod_code_mcp::refactor::apply_workspace_edit(&ws_root, &edit)?;
-    println!(
-        "deleted in {:.2}s; {} path(s) updated:",
-        started.elapsed().as_secs_f64(),
-        touched.len()
-    );
-    for path in touched {
-        println!("  {path}");
-    }
-    Ok(())
+    // The tool decides between deleting an item and removing a parameter with its arguments.
+    run_tool(
+        remote,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": abs_path.to_string_lossy(),
+            "line": line,
+            "character": col,
+        }),
+    )
+    .await
 }
 
 fn parse_line_col(spec: &str) -> Result<(u32, u32)> {
