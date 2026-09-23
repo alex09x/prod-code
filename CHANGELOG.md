@@ -269,9 +269,12 @@
     function does not return but the code after the duplicate reads (E0425).
   - rust-analyzer does not check borrows. So when a duplicate is replaced, `apply` runs `cargo
     check` in a shadow first. `--no-duplicates` extracts the selection alone.
-  - The call is read from the text before and after the extraction, and the result is checked
-    to rebuild it exactly. A line diff cannot be used here: it pairs the selection with the new
-    function's body, which repeats it.
+  - The call is read from the text before and after the extraction. The text before the
+    selection and the end of the file after the new function must be unchanged, and the rest of
+    the function that held the selection must come right before the new one; otherwise no
+    duplicate is tried. A line diff cannot be used here: it pairs the selection with the new
+    function's body, which repeats it. (An earlier version of this entry said the result was
+    checked to rebuild the text exactly. That comparison could never fail, and #192 removed it.)
 - **Every exec summary shows the CPU time and peak memory of the command** (roadmap 6.1/6.4,
   #180). The gateway reaps the command with `wait4` and sends `ExecExit.usage`: user and system
   CPU and the largest resident set of the command and its children. `prod-code exec` prints
