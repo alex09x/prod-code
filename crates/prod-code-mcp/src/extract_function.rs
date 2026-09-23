@@ -137,6 +137,79 @@ fn mentions(text: &str, word: &str) -> bool {
     })
 }
 
+/// The names the `let` statements in `code` bind: `let x`, `let mut x`, and the names in a
+/// tuple or struct pattern (`let (a, b)`, `let P { x, y: py }` binds `x` and `py`).
+pub fn bound_names(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, _) in code.match_indices("let") {
+        let whole = !code[..i].chars().next_back().is_some_and(is_ident)
+            && code[i + 3..].starts_with(char::is_whitespace);
+        if !whole {
+            continue;
+        }
+        let rest = &code[i + 3..];
+        let pattern_end = rest.find(['=', ';']).unwrap_or(rest.len());
+        let mut pattern = &rest[..pattern_end];
+        // `let x: T`: the type is not part of the pattern. A `:` inside braces is a field.
+        let mut depth = 0i32;
+        for (j, c) in pattern.char_indices() {
+            match c {
+                '(' | '{' | '[' | '<' => depth += 1,
+                ')' | '}' | ']' | '>' => depth -= 1,
+                ':' if depth == 0 => {
+                    pattern = &pattern[..j];
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let chars: Vec<(usize, char)> = pattern.char_indices().collect();
+        let mut k = 0;
+        while k < chars.len() {
+            let (s, c) = chars[k];
+            if !is_ident(c) {
+                k += 1;
+                continue;
+            }
+            let mut e = k;
+            while e < chars.len() && is_ident(chars[e].1) {
+                e += 1;
+            }
+            let end = chars.get(e).map_or(pattern.len(), |(i, _)| *i);
+            let word = &pattern[s..end];
+            let field = pattern[end..].trim_start().starts_with(':');
+            let named = !matches!(word, "mut" | "ref" | "_")
+                && !word.starts_with(|c: char| c.is_uppercase() || c.is_ascii_digit());
+            if named && !field {
+                out.push(word.to_string());
+            }
+            k = e;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A name the selection binds, the call does not bind again, and the code after the place
+/// ending at `to` in its function reads (#189). Such a place cannot take the call: the read
+/// would find an outer binding of the name, or none, and only the second is an error the
+/// analyzer reports.
+pub fn read_after_but_not_returned(
+    text: &str,
+    selection: &str,
+    call: &str,
+    to: usize,
+) -> Option<String> {
+    let returned = bound_names(call);
+    let (_, close) = crate::introduce_variable::enclosing_body(text, to.saturating_sub(1))?;
+    let after = &text[to.min(close)..close];
+    bound_names(selection)
+        .into_iter()
+        .filter(|name| !returned.contains(name))
+        .find(|name| mentions(after, name))
+}
+
 /// `text` with every whitespace run made one space, and for each byte of it the offset of the
 /// byte of `text` it stands for.
 pub fn normalized(text: &str) -> (String, Vec<usize>) {
@@ -437,7 +510,17 @@ pub async fn extract_function(
             } else if place.is_none() {
                 Some("the extraction itself changed this code".to_string())
             } else {
-                None
+                call.as_deref()
+                    .and_then(|call| {
+                        read_after_but_not_returned(&text, &text[start..end], call, to)
+                    })
+                    .map(|name| {
+                        format!(
+                            "the code after it reads `{name}`, which the new function does not \
+                             return; with the call there, `{name}` would be whatever it is before \
+                             it, or nothing"
+                        )
+                    })
             };
             let place = if reason.is_none() { place } else { None };
             found.push((
@@ -502,6 +585,27 @@ mod tests {
     use super::*;
 
     const THREE: &str = "pub fn invoice(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net + 5\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n        let net = gross - gross *  o.discount / 100;\n    net\n}\n\npub fn other(o: &Order) -> u32 {\n    let grossly = o.qty * o.price;\n    ungross(o)\n}\n";
+
+    #[test]
+    fn a_name_the_call_does_not_return_is_not_read_after_a_duplicate() {
+        assert_eq!(
+            bound_names(
+                "let gross = a; let mut n: u32 = 1; let (x, _y) = p; let P { f, g: h } = q; let _ = z;"
+            ),
+            vec!["_y", "f", "gross", "h", "n", "x"]
+        );
+        let selection = "let gross = o.qty * o.price;\n    let net = gross - 1;";
+        let call = "let net = net_price(o);";
+        let shadowed = "fn s(o: &O) -> u32 {\n    let gross = 1000;\n    let gross = o.qty * o.price;\n    let net = gross - 1;\n    gross - net\n}\n";
+        let to = shadowed.find("gross - 1;").unwrap() + "gross - 1;".len();
+        assert_eq!(
+            read_after_but_not_returned(shadowed, selection, call, to).as_deref(),
+            Some("gross")
+        );
+        let fine = "fn q(o: &O) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - 1;\n    net\n}\nfn later() { gross(); }\n";
+        let to = fine.find("gross - 1;").unwrap() + "gross - 1;".len();
+        assert_eq!(read_after_but_not_returned(fine, selection, call, to), None);
+    }
 
     #[test]
     fn duplicates_are_found_whitespace_aside_and_only_whole() {
