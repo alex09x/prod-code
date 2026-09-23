@@ -1077,6 +1077,43 @@ async fn code_validate_edits_checks_several_files_together() {
     assert!(text_of(&result).contains("2 file(s) checked together: 0 error(s), 0 warning(s)"));
 }
 
+/// A new file has nothing on disk to compare with; the analyzer's "type annotations needed" on
+/// its `#[derive(Deserialize)]` line is still not an error of the edit (#159).
+#[tokio::test]
+async fn a_new_file_is_not_refused_for_the_analyzers_derive_expansion() {
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub mod probe;\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+            { "severity": 1, "code": "E0282", "message": "type annotations needed",
+              "range": { "start": { "line": 2, "character": 2 }, "end": { "line": 2, "character": 8 } } }
+        ] }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({
+            "edits": [ {
+                "path": "src/probe.rs",
+                "new_text": "use serde::Deserialize;\n\n#[derive(Debug, Deserialize)]\npub struct Probe {\n    pub a: u32,\n}\n"
+            } ]
+        }),
+    )
+    .await
+    .expect("validation runs");
+    let text = text_of(&result);
+    assert!(!result.is_error, "{text}");
+    assert!(text.contains("src/probe.rs: 0 error(s)"), "{text}");
+    assert!(
+        text.contains("1 \"type annotations needed\" on a #[derive(...)] line are not counted"),
+        "{text}"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Refactors: rename, safe delete, assists, codemod.
 // ---------------------------------------------------------------------------------------

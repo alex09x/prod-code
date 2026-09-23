@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **Validate no longer refuses a new file for the analyzer's derive expansion** (#159).
+  rust-analyzer reports "type annotations needed" (E0282) at a `#[derive(Deserialize)]` line when
+  it cannot type its own expansion of the derive, and `cargo check` compiles the file. An existing
+  file subtracts this through its baseline. A new file has none, so validate rejected it.
+  `fixit.rs` was rejected with 10 such errors. An E0282 on a `#[derive(...)]` line is now set aside
+  in every validated file and listed apart ("… on a #[derive(...)] line are not counted"). Any
+  other code on that line, and an E0282 anywhere else, still counts.
 - **introduce_variable no longer changes what the code does in two cases** (#155). Both used to
   write a different program, and the type check accepted it:
   - a method call on a name the expression reads (`s.bump()` between two copies of `s.x + 1`)

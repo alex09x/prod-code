@@ -469,7 +469,9 @@ fn collect_sites(
                 .trim()
                 .to_string()
         };
-        for item in &report.items {
+        // A derive the analyzer cannot type is set aside by validation (#159); it still lands
+        // on an attribute line here, and is counted there.
+        for item in report.items.iter().chain(&report.in_derive) {
             if item.severity != "error" {
                 continue;
             }
