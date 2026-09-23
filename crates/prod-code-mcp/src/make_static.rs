@@ -256,7 +256,11 @@ pub async fn make_static(
                     "{site} `{}` is evaluated for what it does",
                     recv.trim()
                 ));
-                continue;
+                // `force` says dropping it is intended: the call is still rewritten, or it
+                // would call as a method what no longer takes `self` (#209).
+                if !force {
+                    continue;
+                }
             }
             edits.entry(path.clone()).or_default().push((
                 recv_start,
@@ -275,7 +279,9 @@ pub async fn make_static(
                     "{site} `{}` is evaluated for what it does",
                     first.trim()
                 ));
-                continue;
+                if !force {
+                    continue;
+                }
             }
             let remaining: Vec<&str> = args[1..].iter().map(|a| a.trim()).collect();
             edits.entry(path.clone()).or_default().push((

@@ -2190,7 +2190,7 @@ async fn safe_delete_removes_a_trait_method_parameter_everywhere() {
     assert!(now.contains("s.f(1)"), "{now}");
 }
 
-const MOVE_M: &str = "pub struct A {\n    pub n: u32,\n}\n\npub struct B {\n    pub m: u32,\n}\n\nimpl A {\n    pub fn sum(&self, b: &B) -> u32 {\n        self.n + b.m\n    }\n}\n\npub fn f(a: &A, b: &B) -> u32 {\n    a.sum(b)\n}\n";
+const MOVE_M: &str = "pub struct A {\n    pub n: u32,\n}\n\npub struct B {\n    pub m: u32,\n}\n\nimpl A {\n    pub fn sum(&self, b: &B) -> u32 {\n        self.n + b.m + { let b = 1; b }\n    }\n}\n\npub fn f(a: &A, b: &B) -> u32 {\n    a.sum(b)\n}\n";
 
 /// `code_move_method` reports the move, and with no inherent `impl` for the new type makes one
 /// right after the type's declaration.
@@ -2205,8 +2205,17 @@ async fn move_method_makes_an_impl_when_the_type_has_none() {
     let lib = write(&ws, "src/lib.rs", MOVE_M);
     commit(&ws);
     let l = lib.clone();
-    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "textDocument/definition" => answers::locations(&l, &[(5, 12)]),
+        // The parameter `b` (10:23) is used once; the inner `let b` is another binding (#207).
+        "textDocument/references"
+            if params
+                .pointer("/position/character")
+                .and_then(|c| c.as_u64())
+                == Some(22) =>
+        {
+            answers::locations(&l, &[(11, 18)])
+        }
         "textDocument/references" => answers::locations(&l, &[(16, 7)]),
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
@@ -2224,7 +2233,7 @@ async fn move_method_makes_an_impl_when_the_type_has_none() {
     assert!(text.contains("`A::sum` is now `B::sum`"), "{text}");
     let now = ws.read("src/lib.rs");
     assert!(
-        now.contains("pub struct B {\n    pub m: u32,\n}\n\nimpl B {\n    pub fn sum(&self, a: &A) -> u32 {\n        a.n + self.m\n    }\n}\n"),
+        now.contains("pub struct B {\n    pub m: u32,\n}\n\nimpl B {\n    pub fn sum(&self, a: &A) -> u32 {\n        a.n + self.m + { let b = 1; b }\n    }\n}\n"),
         "{now}"
     );
     assert!(now.contains("    b.sum(&a)\n"), "{now}");

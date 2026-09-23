@@ -2022,6 +2022,17 @@ async fn a_method_that_never_uses_self_becomes_an_associated_function() {
     );
     assert_eq!(ws.read("src/lib.rs"), TWICE);
 
+    // `force` drops the receiver's evaluation on purpose, so that call is rewritten too rather
+    // than left calling as a method what no longer takes `self` (#209).
+    let forced = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, true, true)
+        .await
+        .expect("force writes");
+    assert!(forced.applied);
+    let now = ws.read("src/lib.rs");
+    assert!(now.contains("    S::twice(3)\n"), "{now}");
+    assert!(!now.contains(".twice("), "{now}");
+    write(&ws, "src/lib.rs", TWICE);
+
     let refused = prod_code_mcp::make_static::make_static(remote, &root, &lib, 8, 12, false, false)
         .await
         .expect_err("`me` returns `self`");
@@ -3933,7 +3944,7 @@ async fn a_trait_method_parameter_goes_from_every_implementation_and_call() {
     assert!(forced.render(20_000).contains("[applied]"));
 }
 
-const MM_ORDER: &str = "pub mod tax;\n\npub struct Order {\n    pub total: u32,\n}\n\nimpl Order {\n    pub fn new(total: u32) -> Self {\n        Order { total }\n    }\n\n    /// The price with the tax applied.\n    pub fn price_with(&self, tax: &tax::Tax, extra: u32) -> u32 {\n        self.total + self.total * tax.rate / 100 + extra\n    }\n}\n\npub fn checkout(o: &Order, t: &tax::Tax) -> u32 {\n    o.price_with(t, 1) + Order::price_with(o, t, 2)\n}\n\npub fn fresh(t: &tax::Tax) -> u32 {\n    Order::new(1).price_with(t, 3)\n}\n";
+const MM_ORDER: &str = "pub mod tax;\n\npub struct Order {\n    pub total: u32,\n}\n\nimpl Order {\n    pub fn new(total: u32) -> Self {\n        Order { total }\n    }\n\n    /// The price with the tax applied.\n    pub fn price_with(&self, tax: &tax::Tax, extra: u32) -> u32 {\n        self.total + self.total * tax.rate / 100 + extra\n    }\n}\n\npub fn checkout(o: &Order, t: &tax::Tax) -> u32 {\n    o.price_with(t, 1) + Order::price_with(o, t, 2)\n}\n\npub fn fresh(t: &tax::Tax) -> u32 {\n    Order::new(1).price_with(t, 3)\n}\n\npub fn later(t: &tax::Tax) -> u32 {\n    Order::price_with(&Order::new(4), t, 5)\n}\n";
 const MM_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n    pub fn zero() -> Self {\n        Tax { rate: 0 }\n    }\n}\n";
 
 /// Moving `Order::price_with(&self, tax: &Tax, extra)` to `Tax`: the parameter becomes `&self`,
@@ -3954,9 +3965,17 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
     let tax = write(&ws, "src/tax.rs", MM_TAX);
     commit(&ws);
     let (l, t) = (lib.clone(), tax.clone());
-    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "textDocument/definition" => answers::locations(&t, &[(1, 12)]),
-        "textDocument/references" => answers::locations(&l, &[(19, 7), (19, 33), (23, 19)]),
+        // The parameter `tax` (13:30) is used once in the body; the method is called four times.
+        "textDocument/references"
+            if params.pointer("/position/character").and_then(|c| c.as_u64()) == Some(29) =>
+        {
+            answers::locations(&l, &[(14, 35)])
+        }
+        "textDocument/references" => {
+            answers::locations(&l, &[(19, 7), (19, 33), (23, 19), (27, 12)])
+        }
         "textDocument/documentSymbol" => serde_json::json!([{
             "name": "price_with", "kind": 6,
             "range": { "start": { "line": 12, "character": 4 }, "end": { "line": 14, "character": 5 } },
@@ -3991,7 +4010,14 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
         "fn price_with(&self, order: &crate::Order, extra: u32) -> u32"
     );
     assert_eq!(blocked.calls, 2);
-    assert_eq!(blocked.blocked.len(), 1, "{:?}", blocked.blocked);
+    assert_eq!(blocked.blocked.len(), 2, "{:?}", blocked.blocked);
+    // A path call swaps its first two arguments the same way (#207).
+    assert!(
+        blocked.blocked[1]
+            .contains("`&Order::new(4)` and `t` would be evaluated in the other order"),
+        "{:?}",
+        blocked.blocked
+    );
     assert!(
         blocked.blocked[0]
             .contains("`Order::new(1)` and `t` would be evaluated in the other order"),
@@ -4011,6 +4037,15 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
     );
     assert!(
         lib_now.contains("        Order { total }\n    }\n}\n"),
+        "{lib_now}"
+    );
+    assert!(
+        lib_now.contains("crate::tax::Tax::price_with(t, &Order::new(4), 5)"),
+        "{lib_now}"
+    );
+    // `force` rewrites a blocked call too, rather than leave it calling a method that moved.
+    assert!(
+        lib_now.contains("t.price_with(&Order::new(1), 3)"),
         "{lib_now}"
     );
     let tax_now = ws.read("src/tax.rs");

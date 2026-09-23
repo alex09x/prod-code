@@ -617,13 +617,6 @@ pub async fn move_method(
             && !body.contains(&format!("let mut {new_param}")),
         "`{name}` already has a `{new_param}`, the name the old receiver would take"
     );
-    anyhow::ensure!(
-        !body.contains(&format!("let {to_param}"))
-            && !body.contains(&format!("let mut {to_param}"))
-            && !body.contains(&format!("|{to_param}")),
-        "`{to_param}` is bound again inside `{name}`; the move would not know which uses are \
-         the parameter"
-    );
 
     // Where the target type is declared, and how each file spells the two types.
     let ty_offset = open
@@ -694,9 +687,33 @@ pub async fn move_method(
             params.push(d.raw.trim().to_string());
         }
     }
+    // The body's uses of the parameter, as the analyzer resolves them: another binding of the
+    // same name (`if let Some(tax)`, `for tax in`, a match arm) keeps its own uses (#207).
+    let param_at = open
+        + list
+            .match_indices(to_param)
+            .map(|(i, _)| i)
+            .find(|i| {
+                !list[..*i].chars().next_back().is_some_and(is_ident)
+                    && !list[i + to_param.len()..]
+                        .chars()
+                        .next()
+                        .is_some_and(is_ident)
+            })
+            .context("the parameter's name is not in the list")?;
+    let (pl, pc) = crate::signature::line_col_at(&text, param_at);
+    let mut param_uses: Vec<usize> = crate::signature::references(remote, root, file, pl, pc)
+        .await?
+        .into_iter()
+        .filter(|(path, _, _)| canon(path) == *file)
+        .filter_map(|(_, l, c)| crate::signature::offset_of(&text, l, c))
+        .filter(|at| body_open <= *at && *at <= body_close && text[*at..].starts_with(to_param))
+        .map(|at| at - body_open)
+        .collect();
+    param_uses.sort_unstable();
+    param_uses.dedup();
     let map = [
         ("self", new_param.as_str()),
-        (to_param, "self"),
         ("Self", owner_in_target.as_str()),
     ];
     let (item_start, span_end) = item_span(&text, name_at, body_close);
@@ -709,7 +726,14 @@ pub async fn move_method(
     let head = &text[item_start..name_at];
     let generics = &text[name_at + name.len()..open - 1];
     let between = swap_names(&text[close + 1..body_open], &map);
-    let new_body = swap_names(body, &map);
+    // The parameter's uses become a mark first, so the swap below does not see them, then `self`.
+    // No letter in it, so the swap cannot read a name inside it.
+    const MARK: &str = "\u{1}\u{2}\u{1}";
+    let mut marked = body.to_string();
+    for at in param_uses.iter().rev() {
+        marked.replace_range(*at..*at + to_param.len(), MARK);
+    }
+    let new_body = swap_names(&marked, &map).replace(MARK, "self");
     let method_text = format!(
         "{head}{name}{generics}({}){between}{new_body}\n",
         params.join(", ")
@@ -796,7 +820,11 @@ pub async fn move_method(
                     "{site}: `{recv}` and `{}` would be evaluated in the other order",
                     arg.trim()
                 ));
-                continue;
+                // `force` says the order does not matter: the call is still rewritten, or the
+                // method would be gone from under it.
+                if !force {
+                    continue;
+                }
             }
             let recv_expr = crate::to_method::receiver_of(&recv);
             let passed = match receiver.trim() {
@@ -829,6 +857,20 @@ pub async fn move_method(
                     "{site}: the call has fewer arguments than `{name}`"
                 ));
                 continue;
+            }
+            // The swap reorders the receiver's argument and the moved one: the same check as a
+            // method call's (#207).
+            if crate::make_static::receiver_has_effects(&args[0])
+                || crate::make_static::receiver_has_effects(&args[index + 1])
+            {
+                blocked.push(format!(
+                    "{site}: `{}` and `{}` would be evaluated in the other order",
+                    args[0].trim(),
+                    args[index + 1].trim()
+                ));
+                if !force {
+                    continue;
+                }
             }
             let mut new_args: Vec<String> = args.iter().map(|a| a.trim().to_string()).collect();
             new_args.swap(0, index + 1);

@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Fixed
+- **move_method: three gaps found by the review of the post about it** (#207).
+  - A path call (`Order::price_with(f(), g(), 2)`) swapped its arguments without the effects
+    check a method call gets. It is now blocked the same way.
+  - Only the uses the analyzer resolves to the moved parameter become `self`. Before, every
+    whole-word `tax` in the body did, including one bound again by `if let Some(tax)` or
+    `for tax in`. The textual rebinding check is gone.
+  - With `force`, a blocked call is rewritten too. Before, it was left calling a method that
+    had moved.
+- **make_static: `force` rewrites a blocked call too** (#209). A call whose receiver runs
+  something was left as `load().twice(3)` after `twice` stopped taking `self`, so the forced
+  result did not compile.
 - **`move` no longer pastes a method into a module as a free function** (#196). It cut
   `Order::price_with` out of its `impl` and appended it, still taking `&self`, after `impl
   Tax` in `src/tax.rs`. It now refuses and names `code_move_method`.
