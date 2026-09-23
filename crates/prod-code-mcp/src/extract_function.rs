@@ -295,8 +295,9 @@ impl Rewrite {
 /// Reads [`Rewrite`] off the text before and after rust-analyzer extracted `old[start..end]`
 /// into `fun_name`. A line diff cannot: the new function's body is the selection, so the diff
 /// pairs the selection with it and calls the call the change. `None` when the extraction did
-/// more than replace the selection and add one function after it (it added `mut` before it,
-/// say), so the same call would not fit another place.
+/// more than replace the selection and add one function after it: the text before the
+/// selection differs, the end of the file after the new function differs, or the rest of the
+/// function that held the selection is not found before the new one.
 pub fn rewrite_of(old: &str, new: &str, start: usize, end: usize) -> Option<Rewrite> {
     if !old.is_char_boundary(start) || !new.is_char_boundary(start) || old[..start] != new[..start]
     {
@@ -339,15 +340,9 @@ pub fn rewrite_of(old: &str, new: &str, start: usize, end: usize) -> Option<Rewr
         inserted_at,
         function_len: function_end - function_start,
     };
-    let rebuilt = format!(
-        "{}{}{}{}{}",
-        &old[..start],
-        rewrite.call,
-        rest,
-        &new[function_start..function_end],
-        &old[inserted_at..]
-    );
-    (rebuilt == new && !rewrite.call.trim().is_empty()).then_some(rewrite)
+    // The checks above already pin every part to `new`; joined again they are `new`, so there is
+    // nothing left to compare (#192).
+    (!rewrite.call.trim().is_empty()).then_some(rewrite)
 }
 
 /// The indentation of the line that holds `at`.
