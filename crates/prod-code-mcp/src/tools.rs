@@ -429,6 +429,8 @@ pub fn list_tools() -> Vec<McpTool> {
                     "end_character": { "type": "integer", "description": "1-based column just past the selection" },
                     "name": { "type": "string", "description": "Name of the new function" },
                     "duplicates": { "type": "boolean", "description": "Also replace the other places in the file with the same code (default true)" },
+                    "parameterize": { "type": "boolean", "description": "Also take places that differ from the selection only in literals (a number, a string, a char at the same position): each literal that differs becomes a parameter of the new function, typed as the analyzer types the selection's own, and every call passes its place's literal (default false)" },
+                    "other_files": { "type": "boolean", "description": "Also look in the crate's other files: a copy there calls the function through its module path, and the function becomes `pub(crate)` when that is needed (default false)" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it (always done when a duplicate is replaced)" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
@@ -2475,8 +2477,9 @@ async fn handle_extract_function(
         .get("duplicates")
         .and_then(|v| v.as_bool())
         .unwrap_or(true);
-    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let flag = |key: &str| args.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+    let apply = flag("apply");
+    let force = flag("force");
     let file_path = resolve_file_path(workspace_root, path_str);
     let mut done = crate::extract_function::extract_function(
         remote,
@@ -2486,6 +2489,8 @@ async fn handle_extract_function(
         (num("end_line")?, num("end_character")?),
         name,
         duplicates,
+        flag("parameterize"),
+        flag("other_files"),
     )
     .await?;
     // rust-analyzer does not check borrows: a duplicate whose call moves a value the code after

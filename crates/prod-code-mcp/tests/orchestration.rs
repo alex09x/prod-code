@@ -3664,6 +3664,8 @@ async fn an_extracted_function_replaces_the_duplicates_that_type_check() {
                 (9, 48),
                 name,
                 duplicates,
+                false,
+                false,
             )
             .await
         }
@@ -4105,4 +4107,113 @@ async fn an_associated_function_moves_to_a_named_type() {
     );
     assert!(now.contains("let make = Order::zero;"), "{now}");
     assert!(now.contains("Order::zero().rate + make().rate"), "{now}");
+}
+
+const ND_LIB: &str = "pub mod report;\n\npub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net + 5\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 50;\n    net\n}\n";
+/// What rust-analyzer's `extract_function` makes of lines 10-11 of `ND_LIB`.
+const ND_EXTRACTED: &str = "pub mod report;\n\npub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let net = fun_name(o);\n    net + 5\n}\n\nfn fun_name(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 50;\n    net\n}\n";
+const ND_REPORT: &str = "use crate::Order;\n\npub fn line(o: &Order) -> String {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    format!(\"{net}\")\n}\n";
+
+/// A near-duplicate that differs only in a literal (`/ 50`) and an exact copy in another file:
+/// the literal becomes `value: u32` (the type from the analyzer's hover on the selection's own
+/// literal), the selection passes `100`, `quote` passes `50`, the copy in `report.rs` calls the
+/// function through its module path, and the function becomes `pub(crate)` for it (#212).
+#[tokio::test]
+async fn near_duplicates_are_parameterized_and_other_files_call_through_the_module() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"nd\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", ND_LIB);
+    write(&ws, "src/report.rs", ND_REPORT);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "prodCode/applyAssist" => answers::whole_file(&l, ND_LIB, ND_EXTRACTED),
+        "textDocument/hover" => serde_json::json!({
+            "contents": { "kind": "markdown", "value": "```rust\nu32\n```\n---\nvalue of literal: ` 100 `" }
+        }),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let run = |parameterize: bool, other_files: bool| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::extract_function::extract_function(
+                remote,
+                &root,
+                &lib,
+                (10, 5),
+                (11, 48),
+                "net_price",
+                true,
+                parameterize,
+                other_files,
+            )
+            .await
+        }
+    };
+
+    // Without the flags, nothing else counts as a copy.
+    let plain = run(false, false).await.expect("it reports");
+    assert!(plain.duplicates.is_empty(), "{:?}", plain.duplicates);
+
+    let done = run(true, true).await.expect("it reports");
+    assert_eq!(done.parameters, vec!["value: u32".to_string()]);
+    assert_eq!(done.call, "let net = net_price(o, 100);");
+    let lines: Vec<(String, u32, bool, Vec<String>)> = done
+        .duplicates
+        .iter()
+        .map(|d| (d.file.clone(), d.line, d.replaced, d.passes.clone()))
+        .collect();
+    assert_eq!(
+        lines,
+        vec![
+            ("src/lib.rs".to_string(), 16, true, vec!["50".to_string()]),
+            ("src/report.rs".to_string(), 4, true, Vec::new()),
+        ]
+    );
+    let lib_text = &done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("lib.rs"))
+        .unwrap()
+        .1;
+    assert!(
+        lib_text.contains("pub(crate) fn net_price(o: &Order, value: u32) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / value;\n    net\n}"),
+        "{lib_text}"
+    );
+    assert!(
+        lib_text.contains(
+            "pub fn quote(o: &Order) -> u32 {\n    let net = net_price(o, 50);\n    net\n}"
+        ),
+        "{lib_text}"
+    );
+    let report = &done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("report.rs"))
+        .unwrap()
+        .1;
+    assert!(
+        report.contains("    let net = crate::net_price(o, 100);\n"),
+        "{report}"
+    );
+    let text = done.render();
+    assert!(
+        text.contains("new parameter(s) for the literals the copies differ in: value: u32"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- line 16: the same code, now the same call passing 50"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- src/report.rs:4: the same code, now the same call"),
+        "{text}"
+    );
 }
