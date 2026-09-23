@@ -207,7 +207,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_schema_rename".to_string(),
-            description: "Rename a schema field across every language that spells it: `order_id` in the .proto and in Rust, `OrderID` with a `json:\"order_id\"` tag in Go, `orderId` in TypeScript, the column in the SQL. All spellings (snake, camel, Pascal, Go's initialism form, SCREAMING, kebab) are found by a whole-word scan — that is discovery, not editing. Then every identifier is renamed by the analyzer of its own sub-project, so the change follows the symbol into files the scan never looked at; only what no analyzer owns (schema files, and the name inside string literals such as a json tag or an SQL query) is edited textually, at the positions that were found. Identifiers in comments are reported, not rewritten. The result is type-checked per project, and `apply` refuses to write a rename that does not compile. Nothing is written without `apply`."
+            description: "Rename a schema field across every language that spells it: `order_id` in the .proto and in Rust, `OrderID` with a `json:\"order_id\"` tag in Go, `orderId` in TypeScript, the column in the SQL. All spellings (snake, camel, Pascal, Go's initialism form, SCREAMING, kebab) are found by a whole-word scan — that is discovery, not editing. Then every identifier is renamed by the analyzer of its own sub-project, so the change follows the symbol into files the scan never looked at; only what no analyzer owns (schema files, and the name inside string literals such as a json tag or an SQL query) is edited textually, at the positions that were found. Identifiers in comments are reported, not rewritten. OpenAPI documents and GraphQL schemas are read for their structure: the field is rewritten where it is a key or a whole value (OpenAPI) or a name (GraphQL), and a description or comment that mentions it is listed instead. `repos` adds more repositories (a frontend next to this backend) to the same change: each is planned and checked by its own analyzers, and `apply` writes all of them or none. The result is type-checked per project, and `apply` refuses to write a rename that does not compile. Nothing is written without `apply`."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -215,6 +215,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "field": { "type": "string", "description": "The field as the schema spells it (`order_id`)" },
                     "to": { "type": "string", "description": "What it becomes (`trade_id`); spelled per language automatically" },
                     "path": { "type": "string", "description": "Only look under this directory (default: the whole workspace)" },
+                    "repos": { "type": "array", "items": { "type": "string" }, "description": "More repositories to rename in as one change (`../frontend`): paths, absolute or relative to this workspace. Each is planned and checked by its own analyzers, and `apply` writes all of them or none. Not with `path` or `verify`" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the rename (default false: report the diff and the checks only)" },
                     "force": { "type": "boolean", "description": "Allow a short name, a large number of occurrences, and writing a result that does not compile" }
@@ -2731,6 +2732,36 @@ async fn handle_schema_rename(
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let repos = match args.get("repos") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(list)) => list
+            .iter()
+            .map(|v| {
+                let path = v
+                    .as_str()
+                    .with_context(|| format!("repos takes paths, got {v}"))?;
+                let path = resolve_file_path(workspace_root, path);
+                std::fs::canonicalize(&path)
+                    .with_context(|| format!("repository {} cannot be read", path.display()))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(other) => anyhow::bail!("repos takes a list of paths, got {other}"),
+    };
+    if !repos.is_empty() {
+        anyhow::ensure!(
+            scope.is_none() && !verify,
+            "`path` and `verify` narrow or check one repository; drop them to rename across `repos`"
+        );
+        let mut roots = vec![workspace_root.to_path_buf()];
+        roots.extend(repos);
+        let done = crate::schema::rename_across(remote, &roots, field, to, apply, force).await?;
+        let text = done.render(6000);
+        return Ok(if done.clean() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        });
+    }
     let mut done = crate::schema::rename(
         remote,
         workspace_root,

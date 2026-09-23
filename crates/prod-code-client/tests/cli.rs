@@ -2054,6 +2054,14 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         &["impact", "--ci", "--depth", "1"][..],
         &["move-method", "src/lib.rs", "1", "8", "--to-type", "X"][..],
         &[
+            "schema-rename",
+            "order_id",
+            "--to",
+            "trade_id",
+            "--repo",
+            ".",
+        ][..],
+        &[
             "move-module",
             "src/lib.rs",
             "--to",

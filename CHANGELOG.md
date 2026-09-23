@@ -261,6 +261,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **schema-rename: OpenAPI and GraphQL by structure, and one change across repositories**
+  (roadmap 7.6, #216).
+  - An OpenAPI document (YAML or JSON with an `openapi` or `swagger` key) is rewritten only
+    where the field is a key (`order_id:`) or a whole value (`required: [order_id]`,
+    `name: order_id`). A GraphQL schema is rewritten only where the name is outside a `#`
+    comment, a string and a `"""` description. Mentions in prose are listed, and the summary
+    counts them under `openapi` and `graphql`.
+  - `--repo PATH` (repeatable; MCP `repos`) adds repositories to the same change. Each is
+    planned and checked by its own analyzers. `--apply` writes all of them or none: when one
+    cannot be written, the ones already written are put back.
 - **Typed runs: environment, streamed events and resource use** (roadmap 6.1, #214).
   - `check`, `lint`, `test` and `benchmarks` take `--env KEY=VALUE` (repeatable). The four MCP
     tools take `env` as an object (`{"RUST_BACKTRACE": "1"}`). It is refused with `fix`.

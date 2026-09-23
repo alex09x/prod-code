@@ -14,6 +14,12 @@
 //! what no analyzer owns — the schema files, and the field's name inside string literals such
 //! as a `json:` tag or an SQL query — is edited textually, at positions that were found, never
 //! by replacing a word everywhere. Anything left over is listed rather than guessed at.
+//!
+//! OpenAPI documents and GraphQL schemas are read for their structure, not as plain text. In
+//! OpenAPI the field is a key (`order_id:` under `properties`) or a whole value
+//! (`required: [order_id]`, `name: order_id`); a description that mentions it is prose. In
+//! GraphQL it is a name outside comments and description strings. Only the field is rewritten,
+//! and every mention is listed.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -267,6 +273,94 @@ fn kind_of(path: &Path) -> Kind {
     }
 }
 
+/// A schema format whose structure decides which spellings are the field and which are prose
+/// that mentions it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Schema {
+    OpenApi,
+    GraphQl,
+}
+
+/// Which schema format a file is, when it is one. An OpenAPI document is YAML or JSON with an
+/// `openapi` (or Swagger's `swagger`) key: at the start of a line in YAML, anywhere in JSON.
+fn schema_of(path: &Path, text: &str) -> Option<Schema> {
+    let keyed = |line: &str, key: &str| {
+        line.strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with(':'))
+    };
+    match kind_of(path) {
+        Kind::Text("graphql") => Some(Schema::GraphQl),
+        Kind::Text("yaml") => text
+            .lines()
+            .any(|l| keyed(l, "openapi") || keyed(l, "swagger"))
+            .then_some(Schema::OpenApi),
+        Kind::Text("json") => text
+            .lines()
+            .map(|l| l.trim_start_matches(|c: char| c == '{' || c.is_whitespace()))
+            .any(|l| keyed(l, "\"openapi\"") || keyed(l, "\"swagger\""))
+            .then_some(Schema::OpenApi),
+        _ => None,
+    }
+}
+
+/// What a file's occurrences are counted under: its schema format, or its language.
+fn label(path: &Path, text: &str) -> Option<&'static str> {
+    match (schema_of(path, text), kind_of(path)) {
+        (Some(Schema::OpenApi), _) => Some("openapi"),
+        (Some(Schema::GraphQl), _) => Some("graphql"),
+        (None, Kind::Code(l) | Kind::Text(l)) => Some(l),
+        (None, Kind::Skip) => None,
+    }
+}
+
+/// Is this occurrence the field itself, rather than a mention of it in prose?
+///
+/// In OpenAPI the field is a whole key or a whole scalar: what comes before it (past a quote
+/// and spaces) opens a key or a value (`:`, `-`, `[`, `,`, `{`, or nothing), and what comes after
+/// closes one (`:`, `,`, `]`, `}`, a comment, or nothing). `order_id:`, `- order_id`,
+/// `required: [id, order_id]` and `"order_id": {` qualify; `description: The order_id of…` does
+/// not. In GraphQL it is any name outside a `#` comment and a string or `"""` description.
+fn is_structural(schema: Schema, text: &str, o: &Occurrence) -> bool {
+    let line = text.lines().nth(o.line as usize - 1).unwrap_or("");
+    let chars: Vec<char> = line.chars().collect();
+    let start = (o.col as usize - 1).min(chars.len());
+    let end = (start + o.len).min(chars.len());
+    let before: String = chars[..start].iter().collect();
+    let after: String = chars[end..].iter().collect();
+    match schema {
+        Schema::OpenApi => {
+            let mut before = before.trim_end();
+            let mut after = after.as_str();
+            if let (Some(q @ ('"' | '\'')), Some(c)) = (before.chars().last(), after.chars().next())
+                && c == q
+            {
+                before = &before[..before.len() - 1];
+                after = &after[1..];
+            }
+            let before = before.trim();
+            let after = after.trim_start();
+            let opens = before.is_empty() || before.ends_with([':', '-', '[', ',', '{']);
+            let closes = after.is_empty() || after.starts_with([':', ',', ']', '}', '#']);
+            opens && closes
+        }
+        Schema::GraphQl => !o.in_string && !before.contains('#') && !in_block_string(text, o),
+    }
+}
+
+/// Is this occurrence inside a GraphQL block string (`"""…"""`, a description)?
+fn in_block_string(text: &str, o: &Occurrence) -> bool {
+    let mut quotes = 0;
+    for (n, line) in text.lines().enumerate() {
+        if n + 1 == o.line as usize {
+            let prefix: String = line.chars().take(o.col as usize - 1).collect();
+            quotes += prefix.matches("\"\"\"").count();
+            break;
+        }
+        quotes += line.matches("\"\"\"").count();
+    }
+    quotes % 2 == 1
+}
+
 /// Directories that never hold sources worth rewriting.
 const SKIP_DIRS: &[&str] = &[
     ".git",
@@ -442,7 +536,7 @@ pub async fn rename(
     }
     anyhow::ensure!(
         !found.is_empty(),
-        "`{field}` does not appear under {}",
+        "`{field}` {NOT_FOUND} {}",
         match display(root, area).as_str() {
             "" => "this workspace".to_string(),
             rel => rel.to_string(),
@@ -586,21 +680,32 @@ pub async fn rename(
     let mut remaining: BTreeMap<&'static str, usize> = BTreeMap::new();
     for (path, text) in &base {
         let kind = kind_of(path);
+        let language = label(path, text);
+        let schema = schema_of(path, text);
         let hits = scan(text, &variants, path);
         let mut edits = Vec::new();
         for o in &hits {
-            let language = match kind {
-                Kind::Code(l) | Kind::Text(l) => l,
-                Kind::Skip => continue,
+            let Some(language) = language else {
+                continue;
             };
-            let ours = matches!(kind, Kind::Text(_)) || o.in_string;
+            let (ours, why) = match (kind, schema) {
+                (Kind::Text(_), Some(schema)) => (
+                    is_structural(schema, text, o),
+                    match schema {
+                        Schema::OpenApi => " (prose in the OpenAPI document, not the field)",
+                        Schema::GraphQl => " (a GraphQL comment or description)",
+                    },
+                ),
+                (Kind::Text(_), None) => (true, ""),
+                _ => (o.in_string, ""),
+            };
             if ours {
                 *as_text.entry(language).or_default() += 1;
                 edits.push(edit_for(o, &variants[o.variant]));
             } else {
                 *remaining.entry(language).or_default() += 1;
                 left.push(format!(
-                    "{}:{}:{} `{}`",
+                    "{}:{}:{} `{}`{why}",
                     display(root, path),
                     o.line,
                     o.col,
@@ -630,7 +735,7 @@ pub async fn rename(
     let mut summary = Vec::new();
     let mut by_language: BTreeMap<&'static str, usize> = BTreeMap::new();
     for o in &found {
-        if let Kind::Code(l) | Kind::Text(l) = kind_of(&o.file) {
+        if let Some(l) = originals.get(&o.file).and_then(|text| label(&o.file, text)) {
             *by_language.entry(l).or_default() += 1;
         }
     }
@@ -703,28 +808,7 @@ pub async fn rename(
             diagnostics.len(),
             diagnostics.join("\n  ")
         );
-        let changes: Vec<serde_json::Value> = rewritten
-            .iter()
-            .map(|(path, new_text)| {
-                let old_lines = std::fs::read_to_string(path)
-                    .map(|t| t.lines().count())
-                    .unwrap_or(0);
-                serde_json::json!({
-                    "textDocument": { "uri": format!("file://{}", path.display()), "version": null },
-                    "edits": [ {
-                        "range": {
-                            "start": { "line": 0, "character": 0 },
-                            "end": { "line": old_lines, "character": 0 }
-                        },
-                        "newText": new_text
-                    } ]
-                })
-            })
-            .collect();
-        crate::refactor::apply_workspace_edit(
-            root,
-            &serde_json::json!({ "documentChanges": changes }),
-        )?;
+        write_rewritten(root, &rewritten)?;
         applied = true;
     }
 
@@ -736,6 +820,175 @@ pub async fn rename(
         summary,
         left,
         diagnostics,
+        applied,
+    })
+}
+
+/// What [`rename`] says when the field is nowhere in the area it searched.
+const NOT_FOUND: &str = "does not appear under";
+
+/// Writes every rewritten file of the checkout at `root` in one edit.
+fn write_rewritten(root: &Path, rewritten: &[(PathBuf, String)]) -> Result<()> {
+    let changes: Vec<serde_json::Value> = rewritten
+        .iter()
+        .map(|(path, new_text)| {
+            let old_lines = std::fs::read_to_string(path)
+                .map(|t| t.lines().count())
+                .unwrap_or(0);
+            serde_json::json!({
+                "textDocument": { "uri": format!("file://{}", path.display()), "version": null },
+                "edits": [ {
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": old_lines, "character": 0 }
+                    },
+                    "newText": new_text
+                } ]
+            })
+        })
+        .collect();
+    crate::refactor::apply_workspace_edit(
+        root,
+        &serde_json::json!({ "documentChanges": changes }),
+    )?;
+    Ok(())
+}
+
+/// A rename across several repositories: the backend that owns the schema and the frontends
+/// and services that read it.
+#[derive(Debug)]
+pub struct AcrossRepos {
+    /// One plan per repository the field appears in, in the order given.
+    pub repos: Vec<SchemaRename>,
+    /// The repositories it does not appear in.
+    pub missing: Vec<PathBuf>,
+    pub applied: bool,
+}
+
+impl AcrossRepos {
+    /// Every repository's analyzers accept its result.
+    pub fn clean(&self) -> bool {
+        self.repos.iter().all(|r| r.diagnostics.is_empty())
+    }
+
+    pub fn render(&self, diff_budget: usize) -> String {
+        let mut out = String::new();
+        let share = diff_budget / self.repos.len().max(1);
+        for repo in &self.repos {
+            out.push_str(&format!(
+                "## {}\n\n{}\n",
+                repo.root.display(),
+                repo.render(share)
+            ));
+        }
+        for root in &self.missing {
+            out.push_str(&format!(
+                "## {}\n\nthe field does not appear here\n\n",
+                root.display()
+            ));
+        }
+        out.push_str(&if self.applied {
+            format!("[applied to {} repositories together]\n", self.repos.len())
+        } else {
+            format!(
+                "nothing was written in any of the {} repositories; `apply: true` writes them all \
+                 or none\n",
+                self.repos.len() + self.missing.len()
+            )
+        });
+        out
+    }
+}
+
+/// Renames a schema field in several repositories as one change.
+///
+/// Each repository is planned and checked by its own analyzers, exactly as [`rename`] does for
+/// one. Nothing is written until every plan is ready, and with `apply` nothing is written unless
+/// every repository accepts its result (or `force`). The repositories are then written one
+/// after another; when one of them cannot be written, the ones already written are put back
+/// as they were, so the change lands in all of them or in none.
+pub async fn rename_across(
+    remote: SocketAddr,
+    roots: &[PathBuf],
+    field: &str,
+    to: &str,
+    apply: bool,
+    force: bool,
+) -> Result<AcrossRepos> {
+    let mut repos = Vec::new();
+    let mut missing = Vec::new();
+    for root in roots {
+        match rename(remote, root, field, to, false, force, None).await {
+            Ok(plan) => repos.push(plan),
+            Err(err) if format!("{err}").contains(NOT_FOUND) => missing.push(root.clone()),
+            Err(err) => return Err(err.context(format!("in {}", root.display()))),
+        }
+    }
+    anyhow::ensure!(
+        !repos.is_empty(),
+        "`{field}` does not appear in any of the {} repositories",
+        roots.len()
+    );
+    let mut applied = false;
+    if apply {
+        let errors: Vec<String> = repos
+            .iter()
+            .flat_map(|r| {
+                r.diagnostics
+                    .iter()
+                    .map(move |d| format!("{}: {d}", r.root.display()))
+            })
+            .collect();
+        anyhow::ensure!(
+            errors.is_empty() || force,
+            "the rename does not compile ({} error(s)); nothing was written in any repository. \
+             Pass `force: true` to write it anyway:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        );
+        let mut written: Vec<(PathBuf, String)> = Vec::new();
+        for repo in &repos {
+            let before: Vec<(PathBuf, String)> = repo
+                .rewritten
+                .iter()
+                .map(|(path, _)| {
+                    (
+                        path.clone(),
+                        std::fs::read_to_string(path).unwrap_or_default(),
+                    )
+                })
+                .collect();
+            if let Err(err) = write_rewritten(&repo.root, &repo.rewritten) {
+                let unrestored: Vec<String> = written
+                    .iter()
+                    .filter_map(|(path, text)| {
+                        std::fs::write(path, text)
+                            .err()
+                            .map(|e| format!("{}: {e}", path.display()))
+                    })
+                    .collect();
+                anyhow::ensure!(
+                    unrestored.is_empty(),
+                    "writing {} failed ({err:#}), and these files could not be put back:\n  {}",
+                    repo.root.display(),
+                    unrestored.join("\n  ")
+                );
+                return Err(err.context(format!(
+                    "writing {} failed; the repositories written before it were put back, so \
+                     nothing changed",
+                    repo.root.display()
+                )));
+            }
+            written.extend(before);
+        }
+        for repo in &mut repos {
+            repo.applied = true;
+        }
+        applied = true;
+    }
+    Ok(AcrossRepos {
+        repos,
+        missing,
         applied,
     })
 }
@@ -1054,6 +1307,54 @@ let order_id = 1;
             in_string: false,
         };
         assert!(in_comment(&texts, &hash), "in Python it is a comment");
+    }
+
+    #[test]
+    fn openapi_and_graphql_are_read_for_their_structure() {
+        let yaml = Path::new("/w/api/openapi.yaml");
+        let spec = "openapi: 3.0.3\ncomponents:\n  schemas:\n    Order:\n      required: [id, order_id]\n      properties:\n        order_id:\n          description: The order_id of the order\n        list:\n          - order_id # the key\n          - \"order_id\"\n      x-note: order_id, then\n";
+        assert_eq!(schema_of(yaml, spec), Some(Schema::OpenApi));
+        assert_eq!(schema_of(yaml, "name: order_id\n"), None);
+        assert_eq!(label(yaml, spec), Some("openapi"));
+        assert_eq!(label(yaml, "a: 1\n"), Some("yaml"));
+        let json = Path::new("/w/api/openapi.json");
+        let doc = "{\n  \"openapi\": \"3.1.0\",\n  \"required\": [\"order_id\"],\n  \"order_id\": {\"description\": \"the order_id\"}\n}\n";
+        assert_eq!(schema_of(json, doc), Some(Schema::OpenApi));
+        assert_eq!(schema_of(json, "{\"a\": 1}\n"), None);
+        let variants = variants("order_id", "trade_id");
+        let structural = |path: &Path, text: &str| -> Vec<(u32, bool)> {
+            let schema = schema_of(path, text).unwrap();
+            scan(text, &variants, path)
+                .iter()
+                .map(|o| (o.line, is_structural(schema, text, o)))
+                .collect()
+        };
+        assert_eq!(
+            structural(yaml, spec),
+            vec![
+                (5, true),
+                (7, true),
+                (8, false),
+                (10, true),
+                (11, true),
+                // `x-note: order_id, then` looks like a flow list: a whole value followed by a
+                // comma. Prose written that way is rewritten; the diff shows it.
+                (12, true),
+            ]
+        );
+        assert_eq!(
+            structural(json, doc),
+            vec![(3, true), (4, true), (4, false)]
+        );
+
+        let gql = Path::new("/w/schema.graphql");
+        let sdl = "type Order {\n  \"\"\"\n  Not the orderId of a trade.\n  \"\"\"\n  orderId: ID! # orderId is the key\n  \"the orderId\" total(orderId: ID): Int\n}\n";
+        assert_eq!(schema_of(gql, sdl), Some(Schema::GraphQl));
+        assert_eq!(label(gql, sdl), Some("graphql"));
+        assert_eq!(
+            structural(gql, sdl),
+            vec![(3, false), (5, true), (5, false), (6, false), (6, true)]
+        );
     }
 
     #[test]
