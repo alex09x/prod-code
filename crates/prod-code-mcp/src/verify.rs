@@ -13,6 +13,7 @@ pub enum VerifyKind {
     Check,
     Lint,
     Test,
+    Bench,
 }
 
 impl VerifyKind {
@@ -21,8 +22,75 @@ impl VerifyKind {
             VerifyKind::Check => "check",
             VerifyKind::Lint => "lint",
             VerifyKind::Test => "test",
+            VerifyKind::Bench => "bench",
         }
     }
+}
+
+/// One benchmark's result: its estimate and, when the harness gives one, the range around it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchResult {
+    pub name: String,
+    /// `2.3500 ns`, `1234 ns/iter`, `1234 ns/op`: as the harness prints it.
+    pub estimate: String,
+    /// `2.3499 ns .. 2.3502 ns` (criterion's interval) or `+/- 56` (libtest).
+    pub range: Option<String>,
+}
+
+/// The benchmark results in a run's output: criterion's `name time: [low estimate high]` (the
+/// name on the line before when it is long), libtest's `test name ... bench: N ns/iter (+/- M)`
+/// and Go's `BenchmarkName-8  N  T ns/op`.
+pub fn parse_bench_text(text: &str) -> Vec<BenchResult> {
+    let mut out = Vec::new();
+    let mut previous = "";
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(at) = t.find("time:") {
+            let inner = t[at + 5..]
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            let parts: Vec<&str> = inner.split_whitespace().collect();
+            let name = t[..at].trim();
+            let name = if name.is_empty() { previous } else { name };
+            if parts.len() == 6 && !name.is_empty() {
+                out.push(BenchResult {
+                    name: name.to_string(),
+                    estimate: format!("{} {}", parts[2], parts[3]),
+                    range: Some(format!(
+                        "{} {} .. {} {}",
+                        parts[0], parts[1], parts[4], parts[5]
+                    )),
+                });
+            }
+        } else if let Some(rest) = t.strip_prefix("test ")
+            && let Some((name, result)) = rest.split_once(" ... bench:")
+        {
+            let result = result.trim();
+            let (estimate, range) = match result.split_once('(') {
+                Some((e, r)) => (e.trim(), Some(r.trim_end_matches(')').trim().to_string())),
+                None => (result, None),
+            };
+            out.push(BenchResult {
+                name: name.trim().to_string(),
+                estimate: estimate.replace(',', ""),
+                range,
+            });
+        } else if t.starts_with("Benchmark") {
+            let words: Vec<&str> = t.split_whitespace().collect();
+            if words.len() >= 4 && words[3].ends_with("/op") {
+                out.push(BenchResult {
+                    name: words[0].to_string(),
+                    estimate: format!("{} {}", words[2], words[3]),
+                    range: None,
+                });
+            }
+        }
+        if !t.is_empty() && !t.starts_with("Benchmarking") {
+            previous = t;
+        }
+    }
+    out
 }
 
 /// One compiler or linter finding.
@@ -80,6 +148,9 @@ pub struct VerifyReport {
     /// The compiler's machine-applicable fixes (Rust check and lint), for `fix: true`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<crate::fixit::Fix>,
+    /// Benchmark results, for a `bench` run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub benches: Vec<BenchResult>,
 }
 
 impl VerifyReport {
@@ -120,6 +191,9 @@ impl VerifyReport {
                 self.tests_passed, self.tests_failed
             ));
         }
+        if self.kind == VerifyKind::Bench {
+            parts.push(format!("{} benchmark(s)", self.benches.len()));
+        }
         if !self.diagnostics.is_empty() {
             parts.push(format!(
                 "{} error(s), {} warning(s)",
@@ -149,6 +223,13 @@ impl VerifyReport {
                 "  ... {} more diagnostic(s)\n",
                 self.diagnostics.len() - max_items
             ));
+        }
+        for b in self.benches.iter().take(max_items) {
+            out.push_str(&format!("  {}  {}", b.name, b.estimate));
+            if let Some(range) = &b.range {
+                out.push_str(&format!("  [{range}]"));
+            }
+            out.push('\n');
         }
         for f in self.failures.iter().take(max_items) {
             out.push_str(&format!(
@@ -709,6 +790,8 @@ fn plan_command_basic(
             "warnings",
         ],
         ("rust", VerifyKind::Test) => vec!["cargo", "test", "--workspace"],
+        ("rust", VerifyKind::Bench) => vec!["cargo", "bench", "--workspace"],
+        ("go", VerifyKind::Bench) => vec!["go", "test", "-run", "^$", "-bench"],
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
         ("go", VerifyKind::Lint) => vec!["go", "vet", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
@@ -735,8 +818,14 @@ fn plan_command_basic(
                 cmd.push("--filter".to_string());
                 cmd.push(filter.to_string());
             }
+            ("rust", VerifyKind::Bench) => cmd.push(filter.to_string()),
             _ => {}
         }
+    }
+    // `go test -bench` takes the pattern right after it, then the packages.
+    if (language, kind) == ("go", VerifyKind::Bench) {
+        cmd.push(filter.filter(|f| !f.is_empty()).unwrap_or(".").to_string());
+        cmd.push("./...".to_string());
     }
     Ok(cmd)
 }
@@ -1513,6 +1602,7 @@ pub fn plan_xcode_command(kind: VerifyKind, scheme: Option<&str>) -> Result<Vec<
         VerifyKind::Check => "build",
         VerifyKind::Test => "test",
         VerifyKind::Lint => return Err(anyhow!("no lint command for Xcode projects")),
+        VerifyKind::Bench => return Err(anyhow!("no bench command for Xcode projects")),
     };
     let scheme_expr = match scheme.filter(|s| !s.is_empty()) {
         Some(s) => format!("'{}'", s.replace('\'', "'\\''")),
@@ -1591,11 +1681,16 @@ pub async fn run_verify(
 
     let mut diagnostics = Vec::new();
     let mut fixes = Vec::new();
+    let mut benches = Vec::new();
     let (mut tests_passed, mut tests_failed, mut failures) = (0, 0, Vec::new());
     match (language, kind) {
         ("rust", VerifyKind::Check) | ("rust", VerifyKind::Lint) => {
             diagnostics.extend(stdout.lines().filter_map(parse_cargo_json_line));
             fixes.extend(stdout.lines().flat_map(crate::fixit::parse_fixes));
+        }
+        (_, VerifyKind::Bench) => {
+            diagnostics.extend(parse_rustc_text(&stderr));
+            benches.extend(parse_bench_text(&format!("{stdout}\n{stderr}")));
         }
         ("rust", VerifyKind::Test) => {
             diagnostics.extend(parse_rustc_text(&stderr));
@@ -1700,6 +1795,7 @@ pub async fn run_verify(
         failures,
         tail: tail.text(),
         fixes,
+        benches,
     })
 }
 
@@ -1984,6 +2080,63 @@ expected 42, got 43\n\
     }
 
     #[test]
+    fn benchmark_results_are_read_from_criterion_libtest_and_go() {
+        let criterion = "Benchmarking sum 1000\nBenchmarking sum 1000: Warming up for 3.0000 s\nsum 1000                time:   [2.3499 ns 2.3500 ns 2.3502 ns]\na_benchmark_with_a_very_long_name\n                        time:   [10.1 µs 10.2 µs 10.4 µs]\n                        change: [-1.0% +0.5% +2.0%]\n";
+        let libtest = "test sort::big ... bench:       1,234 ns/iter (+/- 56)\n";
+        let go = "BenchmarkSum-8   \t 1000000\t      1234 ns/op\nPASS\n";
+        let found = parse_bench_text(&format!("{criterion}{libtest}{go}"));
+        let rows: Vec<(&str, &str, Option<&str>)> = found
+            .iter()
+            .map(|b| (b.name.as_str(), b.estimate.as_str(), b.range.as_deref()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("sum 1000", "2.3500 ns", Some("2.3499 ns .. 2.3502 ns")),
+                (
+                    "a_benchmark_with_a_very_long_name",
+                    "10.2 µs",
+                    Some("10.1 µs .. 10.4 µs")
+                ),
+                ("sort::big", "1234 ns/iter", Some("+/- 56")),
+                ("BenchmarkSum-8", "1234 ns/op", None),
+            ]
+        );
+        assert_eq!(
+            plan_command_basic("go", VerifyKind::Bench, None).unwrap(),
+            ["go", "test", "-run", "^$", "-bench", ".", "./..."]
+        );
+        assert_eq!(
+            plan_command_basic("rust", VerifyKind::Bench, Some("sum")).unwrap(),
+            ["cargo", "bench", "--workspace", "sum"]
+        );
+        let report = VerifyReport {
+            kind: VerifyKind::Bench,
+            language: "rust".into(),
+            command: vec!["cargo".into(), "bench".into()],
+            exit_code: Some(0),
+            timed_out: false,
+            duration_ms: 9000,
+            diagnostics: vec![],
+            tests_passed: 0,
+            tests_failed: 0,
+            failures: vec![],
+            tail: String::new(),
+            fixes: vec![],
+            benches: found,
+        };
+        let text = report.render(10);
+        assert!(
+            text.contains("rust bench: OK in 9.0s; 4 benchmark(s)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  sum 1000  2.3500 ns  [2.3499 ns .. 2.3502 ns]"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn plans_and_summary() {
         assert_eq!(
             plan_command("rust", VerifyKind::Test, Some("sync::"))
@@ -2013,6 +2166,7 @@ expected 42, got 43\n\
             }],
             tail: String::new(),
             fixes: vec![],
+            benches: vec![],
         };
         assert_eq!(
             report.summary(),

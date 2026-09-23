@@ -279,6 +279,15 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         fix: bool,
     },
+    /// Run the project's benchmarks remotely (cargo bench / go test -bench) with parsed results.
+    Benchmarks {
+        /// Benchmark name filter.
+        filter: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        timeout_secs: u64,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Run tests remotely (cargo test / go test -json), optionally filtered by name.
     Test {
         /// Test name filter (cargo test TESTNAME / go test -run).
@@ -1130,6 +1139,11 @@ async fn main() -> Result<()> {
             timeout_secs,
             json,
         } => run_verify(remote, VerifyKind::Test, filter, timeout_secs, json).await,
+        Commands::Benchmarks {
+            filter,
+            timeout_secs,
+            json,
+        } => run_verify(remote, VerifyKind::Bench, filter, timeout_secs, json).await,
         Commands::Exec {
             timeout_secs,
             no_pull,

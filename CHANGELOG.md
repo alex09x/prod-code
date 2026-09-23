@@ -226,6 +226,14 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Benchmarks with parsed results (roadmap 6.4, #178): MCP `code_benchmarks` and `prod-code
+  benchmarks [FILTER]`, a fourth kind next to check, lint and test.
+  - Rust runs `cargo bench --workspace [FILTER]` and Go runs `go test -run '^$' -bench FILTER
+    ./...`.
+  - The results are read from criterion (`time: [low estimate high]`, with a long name taken
+    from the line before), libtest (`N ns/iter (+/- M)`) and Go (`T ns/op`). Each comes out as
+    one line: name, estimate and range.
+  - `prod-code bench` is still the gateway's own load benchmark.
 - `async` in change_signature (roadmap 7.1.1, #176): `async: true|false` on
   `code_change_signature`, and `--async true|false` on the CLI.
   - `async` is added to the declaration, placed before `unsafe`, or taken away. Every call the
