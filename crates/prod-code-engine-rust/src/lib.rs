@@ -717,18 +717,19 @@ impl RustEngineSnapshot {
             exclude_locals: false,
         };
         let nodes = self.analysis.file_structure(&config, file_id)?;
+        // Only the item whose name is at the position. Falling back to the smallest item that
+        // merely contains it deleted a line of a function's body for a position on a parameter
+        // (#138): a position that names no item is refused instead.
         let node = nodes
             .iter()
             .filter(|n| n.navigation_range.contains_inclusive(offset))
-            .min_by_key(|n| n.node_range.len())
-            .or_else(|| {
-                nodes
-                    .iter()
-                    .filter(|n| n.node_range.contains_inclusive(offset))
-                    .min_by_key(|n| n.node_range.len())
-            });
+            .min_by_key(|n| n.node_range.len());
         let Some(node) = node else {
-            return Ok(Err("no deletable item at this position".to_string()));
+            return Ok(Err(
+                "no deletable item is named at this position; give the position of an item's \
+                 name (a parameter is removed with `code_change_signature`)"
+                    .to_string(),
+            ));
         };
         let start = usize::from(node.node_range.start());
         let mut end = usize::from(node.node_range.end());
@@ -2083,6 +2084,10 @@ impl PathTranslator {
         let refused = engine.safe_delete(&lib, 1, 8).unwrap().unwrap_err();
         assert!(refused.contains("1 usage(s)"), "{refused}");
         assert!(refused.contains("lib.rs:10:"), "{refused}");
+
+        // Inside a body, on no item's name: refused, and nothing of the body goes (#138).
+        let nothing = engine.safe_delete(&lib, 6, 5).unwrap().unwrap_err();
+        assert!(nothing.contains("no deletable item is named"), "{nothing}");
 
         let outcome = engine
             .safe_delete(&lib, 5, 8)

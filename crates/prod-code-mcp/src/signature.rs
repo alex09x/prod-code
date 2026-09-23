@@ -339,6 +339,75 @@ pub(crate) fn split_params(list: &str) -> Vec<String> {
         .collect()
 }
 
+/// A parameter of a function declaration at the 1-based `line`:`col` of `text`: the offset of
+/// the function's name, the parameter's name, and the names of the parameters that stay, in
+/// order. `None` when the position is not on a parameter's name.
+pub fn parameter_at(text: &str, line: u32, col: u32) -> Option<(usize, String, Vec<String>)> {
+    let at = offset_of(text, line, col)?;
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let start = text[..at]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_ident(*c))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let name: String = text[start..].chars().take_while(|c| is_ident(*c)).collect();
+    if name.is_empty() || name == "self" {
+        return None;
+    }
+    // The `(` that opens the list this name is in.
+    let mut depth = 0i32;
+    let open = text[..start].char_indices().rev().find_map(|(i, c)| {
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' if depth == 0 => return Some(i),
+            '(' | '[' | '{' => depth -= 1,
+            _ => {}
+        }
+        None
+    })?;
+    // `fn name<…>(`: the name before the generics, and `fn` before the name.
+    let mut head = text[..open].trim_end();
+    if head.ends_with('>') {
+        let mut angle = 0i32;
+        let cut = head.char_indices().rev().find_map(|(i, c)| {
+            match c {
+                '>' => angle += 1,
+                '<' => {
+                    angle -= 1;
+                    if angle == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            None
+        })?;
+        head = head[..cut].trim_end();
+    }
+    let fn_name_start = head
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_ident(*c))
+        .last()
+        .map(|(i, _)| i)?;
+    if !head[..fn_name_start].trim_end().ends_with("fn") {
+        return None;
+    }
+    let (_, list_open, list_close) = param_span(text, fn_name_start)?;
+    if list_open != open + 1 || at > list_close {
+        return None;
+    }
+    let (_, declared) = parse_declared(&text[list_open..list_close]);
+    declared.iter().find(|d| d.name == name)?;
+    let kept = declared
+        .iter()
+        .filter(|d| d.name != name)
+        .map(|d| d.name.clone())
+        .collect();
+    Some((fn_name_start, name, kept))
+}
+
 /// The receiver (`&self` and friends, kept verbatim) and the parameters of a parameter list.
 pub(crate) fn parse_declared(list: &str) -> (Option<String>, Vec<Declared>) {
     let mut receiver = None;
@@ -896,6 +965,25 @@ fn normalize(list: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_parameter_is_found_with_its_function_and_the_ones_that_stay() {
+        let t =
+            "impl S {\n    pub fn join<T: Into<String>>(&self, a: T, mut b: &str, c: u8) {}\n}\n";
+        let (fn_at, name, kept) = parameter_at(t, 2, 51).expect("`b` is a parameter");
+        assert_eq!(&t[fn_at..fn_at + 4], "join");
+        assert_eq!(name, "b");
+        assert_eq!(kept, ["a", "c"]);
+        // `a` is one too; the function's name and `self` are not.
+        assert_eq!(parameter_at(t, 2, 41).map(|p| p.1).as_deref(), Some("a"));
+        assert!(parameter_at(t, 2, 12).is_none());
+        assert!(parameter_at(t, 2, 35).is_none());
+        let call = "fn f(x: u8) {\n    g(x, 1);\n}\n";
+        assert!(
+            parameter_at(call, 2, 7).is_none(),
+            "an argument is not a parameter"
+        );
+    }
 
     #[test]
     fn parses_a_kept_parameter_and_a_new_one() {

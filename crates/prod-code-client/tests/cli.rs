@@ -847,8 +847,12 @@ async fn cli_performs_safe_delete_updating_local_file() {
     .await;
 
     let out = run_cli(&ws, gw.addr, &["safe-delete", "src/lib.rs", "5", "8"]).await;
-    assert!(out.status.success());
-    assert!(stdout_of(&out).contains("deleted in"));
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    assert!(
+        stdout_of(&out).contains("deleted; 1 path(s) updated"),
+        "{}",
+        stdout_of(&out)
+    );
     assert!(!ws.read("src/lib.rs").contains("calculate"));
 }
 

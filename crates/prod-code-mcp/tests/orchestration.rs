@@ -2583,3 +2583,75 @@ async fn a_boolean_field_or_local_is_inverted_with_every_read_and_write() {
             .expect_err("a u32 is not a boolean");
     assert!(format!("{err:#}").contains("`u32`, not `bool`"), "{err:#}");
 }
+
+const JOIN: &str = "pub fn join(a: &str, b: &str) -> String {\n    a.to_string()\n}\n\npub fn use_it() -> String {\n    join(\"x\", \"y\")\n}\n";
+
+/// Safe-deleting a parameter removes it from the declaration and its argument from every call,
+/// and is refused while the body still uses it.
+#[tokio::test]
+async fn safe_delete_at_a_parameter_removes_it_with_its_arguments() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", JOIN);
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let character = params
+            .pointer("/position/character")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        match method {
+            "prodCode/structuralReplace" => answers::whole_file(
+                &path,
+                JOIN,
+                &JOIN.replace("join(\"x\", \"y\")", "join(\"x\")"),
+            ),
+            // `a` (1:13) is used in the body; `b` (1:22) is not; `join` (1:8) is called once.
+            "textDocument/references" if character == 12 => answers::locations(&path, &[(2, 5)]),
+            "textDocument/references" if character == 21 => serde_json::json!([]),
+            "textDocument/references" => answers::locations(&path, &[(6, 5)]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let args = |character: u32| serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": character });
+
+    let refused = prod_code_mcp::tools::execute_tool(remote, &root, "code_safe_delete", args(13))
+        .await
+        .expect_err("`a` is still used by the body");
+    assert!(
+        format!("{refused:#}").contains("still used by the body"),
+        "{refused:#}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), JOIN);
+
+    let done = prod_code_mcp::tools::execute_tool(remote, &root, "code_safe_delete", args(22))
+        .await
+        .expect("`b` is removed");
+    assert!(!done.is_error, "{done:?}");
+    let written = ws.read("src/lib.rs");
+    assert!(
+        written.contains("pub fn join(a: &str) -> String {"),
+        "{written}"
+    );
+    assert!(written.contains("    join(\"x\")\n"), "{written}");
+
+    // Not a parameter, and the gateway has no edit for it: an error, not "deleted".
+    let nothing = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+    let none = prod_code_mcp::tools::execute_tool(
+        nothing,
+        &root,
+        "code_safe_delete",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 5 }),
+    )
+    .await
+    .expect("the tool answers");
+    assert!(none.is_error, "{none:?}");
+    assert_eq!(ws.read("src/lib.rs"), written);
+}

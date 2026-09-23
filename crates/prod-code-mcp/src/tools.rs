@@ -155,14 +155,15 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_safe_delete".to_string(),
-            description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. The edit is written into the checkout."
+            description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. At a parameter of a function, the parameter is removed together with its argument at every call site (the same rewrite as `code_change_signature`), refused while the body still uses it, and type-checked before it is written. The edit is written into the checkout."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line of the item's name" },
-                    "character": { "type": "integer", "description": "1-based column of the item's name" }
+                    "character": { "type": "integer", "description": "1-based column of the item's name" },
+                    "force": { "type": "boolean", "description": "For a parameter: remove it even when the body uses it or the result does not compile" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -3081,6 +3082,38 @@ async fn handle_safe_delete(
         .and_then(|v| v.as_u64())
         .context("Missing 'character' argument")? as u32;
     let file_path = resolve_file_path(workspace_root, path_str);
+    // A parameter goes from the declaration and from every call at once, through
+    // `change_signature`, which refuses while the body still uses it.
+    let text = std::fs::read_to_string(&file_path).unwrap_or_default();
+    if let Some((fn_at, name, kept)) = crate::signature::parameter_at(&text, line, character) {
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        let request = kept
+            .iter()
+            .map(|k| crate::signature::parse_param(k))
+            .collect::<Result<Vec<_>>>()?;
+        let (fl, fc) = crate::signature::line_col_at(&text, fn_at);
+        let change = crate::signature::change(
+            remote,
+            workspace_root,
+            &file_path,
+            fl,
+            fc,
+            &request,
+            true,
+            force,
+        )
+        .await
+        .with_context(|| format!("safe delete of the parameter `{name}` refused"))?;
+        let text = format!(
+            "the parameter `{name}` is removed, with its argument at every call\n\n{}",
+            change.render(6000)
+        );
+        return Ok(if change.diagnostics.is_empty() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        });
+    }
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
@@ -3105,6 +3138,13 @@ async fn handle_safe_delete(
         }
     };
     let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    // An answer with no edit is not a deletion: saying "deleted" would be a success that did
+    // nothing (#138).
+    if touched.is_empty() {
+        return Ok(McpToolCallResult::error(
+            "safe delete produced no edit; nothing was deleted".to_string(),
+        ));
+    }
     Ok(McpToolCallResult::text(format!(
         "deleted; {} path(s) updated in the checkout:\n{}",
         touched.len(),

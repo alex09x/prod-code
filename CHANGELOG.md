@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- **Safe delete at a parameter removes the parameter, not a line of the body** (#138). The engine
+  fell back to the smallest item containing the position when no item was named there, so
+  `safe-delete` on a parameter deleted the function's only expression and reported success.
+  Changes:
+  - at a parameter, `code_safe_delete` / `prod-code safe-delete` now remove it with its argument
+    at every call through `change_signature` (roadmap 7.1.1, cascading parameter removal),
+    refused while the body uses it and type-checked before writing;
+  - the engine refuses a position that names no item;
+  - an answer with no edit is reported as an error, not as "deleted; 0 path(s)";
+  - the CLI goes through the same tool.
 - **A removed local variable is not a stale reference** (#136). The multi-file check takes the
   names an edit removed from a diff of the document symbols, and rust-analyzer lists a
   function's `let` bindings among them. Removing two locals (`edit`, `touched`) from one function
