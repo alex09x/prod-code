@@ -548,6 +548,13 @@ enum Commands {
         /// Extract the selection alone; leave the same code elsewhere as it is.
         #[arg(long, default_value_t = false)]
         no_duplicates: bool,
+        /// Also take copies that differ only in literals; each differing literal becomes a
+        /// parameter of the new function.
+        #[arg(long, default_value_t = false)]
+        parameterize: bool,
+        /// Also look for copies in the crate's other files.
+        #[arg(long, default_value_t = false)]
+        other_files: bool,
         /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
         #[arg(long)]
         verify: Option<String>,
@@ -1449,6 +1456,8 @@ async fn main() -> Result<()> {
             to,
             name,
             no_duplicates,
+            parameterize,
+            other_files,
             verify,
             apply,
             force,
@@ -1466,6 +1475,8 @@ async fn main() -> Result<()> {
                 "end_character": end_col,
                 "name": name,
                 "duplicates": !no_duplicates,
+                "parameterize": parameterize,
+                "other_files": other_files,
                 "apply": apply,
                 "force": force,
             });

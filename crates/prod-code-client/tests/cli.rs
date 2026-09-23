@@ -2014,6 +2014,18 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
             "--verify",
             "compile",
         ][..],
+        &[
+            "extract-function",
+            "src/lib.rs",
+            "6",
+            "5",
+            "--to",
+            "6:7",
+            "--name",
+            "g",
+            "--parameterize",
+            "--other-files",
+        ][..],
     ] {
         let out = run_cli(&ws, gw.addr, args).await;
         assert_ne!(out.status.code(), Some(2), "{args:?}: {}", stderr_of(&out));

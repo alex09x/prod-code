@@ -261,6 +261,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **extract_function: near-duplicates and other files** (roadmap 7.1.2, #212).
+  - Copies are matched token for token, so whitespace no longer matters.
+  - With `parameterize` (`--parameterize`), a copy may differ from the selection in literals
+    of the same kind. Each literal that differs becomes a parameter, typed as the analyzer's
+    hover types the selection's own literal (`value: u32`), and every call passes its own
+    literal. The parameters are kept only if such a copy is.
+  - With `other_files` (`--other-files`), the crate's other files are searched. A copy there
+    calls the function through its module path (`crate::net_price(o, 100)`), and the function
+    becomes `pub(crate)`. A method is not offered across files.
+  - Each place is still type-checked before it is kept, now across every file it touches.
 - **diagnose suggests the compiler's fixes when the tests do not build** (roadmap 8.2, #206).
   - The dossier lists the machine-applicable fixes rustc has for the build errors, for example
     `src/lib.rs:10: mismatched types: consider borrowing here`.
