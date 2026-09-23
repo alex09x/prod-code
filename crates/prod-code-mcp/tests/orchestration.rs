@@ -2898,3 +2898,67 @@ async fn a_field_is_renamed_with_its_accessors_in_one_change() {
     assert!(text.contains("touches the same text"), "{text}");
     assert_eq!(ws.read("src/lib.rs"), CONN, "nothing was written");
 }
+
+/// A move into a module that does not exist yet creates the file and declares it in its parent,
+/// and the file the item left still gets the import it needs: the declaration is added after the
+/// imports, whose positions it would otherwise shift. A new directory with no module file of its
+/// own is refused.
+#[tokio::test]
+async fn a_move_into_a_new_module_creates_and_declares_it() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let source = "pub fn helper(x: u32) -> u32 {\n    x * 2\n}\n\npub fn run() -> u32 {\n    helper(21)\n}\n";
+    let lib = write(&ws, "src/lib.rs", source);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("helper", 12, 1, 3, 8),
+            answers::document_symbol("run", 12, 5, 7, 8),
+        ]),
+        "textDocument/references" => answers::locations(&l, &[(6, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let util = root.join("src/util.rs");
+    let moved = prod_code_mcp::move_item::move_item(remote, &root, &lib, 1, 8, &util, true, false)
+        .await
+        .expect("the move runs");
+    assert!(moved.applied);
+    assert_eq!(
+        moved.created,
+        Some(("src/util.rs".to_string(), "src/lib.rs".to_string()))
+    );
+    assert_eq!(
+        ws.read("src/util.rs"),
+        "pub fn helper(x: u32) -> u32 {\n    x * 2\n}\n"
+    );
+    let lib_now = ws.read("src/lib.rs");
+    assert!(lib_now.starts_with("pub mod util;\n"), "{lib_now}");
+    assert!(lib_now.contains("use crate::util::helper;"), "{lib_now}");
+    assert!(!lib_now.contains("fn helper"), "{lib_now}");
+
+    let remote = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+    let err = prod_code_mcp::move_item::move_item(
+        remote,
+        &root,
+        &lib,
+        5,
+        8,
+        &root.join("src/nowhere/deep.rs"),
+        true,
+        false,
+    )
+    .await
+    .expect_err("no module file declares `nowhere`");
+    assert!(
+        format!("{err:#}").contains("create the parent module first"),
+        "{err:#}"
+    );
+}

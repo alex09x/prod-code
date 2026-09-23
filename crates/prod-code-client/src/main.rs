@@ -594,7 +594,8 @@ enum Commands {
     Move {
         /// The item, by name (`snake_case`, `Session::open_text`).
         symbol: String,
-        /// The target module's file, e.g. `crates/x/src/fixture.rs`. It must already exist.
+        /// The target module's file, e.g. `crates/x/src/fixture.rs`. A file that does not exist
+        /// yet is created and declared in its parent module.
         #[arg(long = "to")]
         to: String,
         /// The file that declares it, when the name is ambiguous.

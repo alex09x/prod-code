@@ -188,6 +188,18 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Move into a module that does not exist yet (roadmap 7.1.1, #148): `code_move` / `prod-code move
+  --to src/util.rs` creates the file and declares it in its parent module, all in the same
+  change and the same overlay check:
+  - the parent is `src/lib.rs` or `src/main.rs` for `src/util.rs`, and `src/a.rs` or
+    `src/a/mod.rs` for `src/a/util.rs`;
+  - the declaration is `pub mod util;` for a `pub` item and `mod util;` otherwise, placed after
+    the parent's last `mod` line or at the top, and the blank line a cut item left there is
+    dropped;
+  - a new directory with no module file of its own is refused.
+
+  The declaration is added after the imports are rewritten, because inserting it first shifted
+  the positions the analyzer had given and the source file lost its `use`.
 - Rename a field with its accessors (roadmap 7.1.1, #146): `code_rename` takes `accessors`,
   `prod-code rename` takes `--accessors`. The methods of the field's struct named after it (`f`,
   `get_f`, `set_f`, `f_mut`, found in the symbol index by name and container) are renamed along
