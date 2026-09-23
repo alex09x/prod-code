@@ -47,6 +47,7 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "fix": { "type": "boolean", "description": "Rust: apply the compiler's machine-applicable fixes, then check again (default false)" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
@@ -60,6 +61,7 @@ pub fn list_tools() -> Vec<McpTool> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "fix": { "type": "boolean", "description": "Apply the fixes, then lint again (default false): Rust takes clippy's machine-applicable suggestions; Python, TypeScript and C++ run the linter's own fix mode (`ruff check --fix`, `eslint --fix` / `biome lint --write`, `clang-tidy -fix`) on the node and bring the rewritten files back; Go's `go vet` has none" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
@@ -74,6 +76,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "filter": { "type": "string", "description": "Benchmark name filter (cargo bench FILTER / go test -bench PATTERN)" },
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "path": { "type": "string", "description": "Narrow the run to a crate, package or nested project, as for code_test" }
                 }
@@ -87,6 +90,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "filter": { "type": "string", "description": "Test name filter (cargo test TESTNAME / go test -run)" },
+                    "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
@@ -3726,6 +3730,19 @@ async fn handle_check(
         .get("path")
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
+    let env = match args.get("env") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Object(map)) => map
+            .iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| (key.clone(), value.to_string()))
+                    .with_context(|| format!("env `{key}` must be a string, got {value}"))
+            })
+            .collect::<Result<Vec<_>>>()?,
+        Some(other) => anyhow::bail!("env must be an object of strings, got {other}"),
+    };
     let fix = args.get("fix").and_then(|v| v.as_bool()).unwrap_or(false);
     if fix
         && matches!(
@@ -3733,6 +3750,10 @@ async fn handle_check(
             crate::verify::VerifyKind::Check | crate::verify::VerifyKind::Lint
         )
     {
+        anyhow::ensure!(
+            env.is_empty(),
+            "env is not passed to a `fix` run; run without `fix` to set it"
+        );
         let fixed = crate::fixit::check_and_fix(
             remote,
             workspace_root,
@@ -3748,13 +3769,15 @@ async fn handle_check(
             McpToolCallResult::error(text)
         });
     }
-    let report = crate::verify::run_verify(
+    let report = crate::verify::run_verify_with(
         remote,
         workspace_root,
         hint.as_deref(),
         kind,
         filter.as_deref(),
         timeout_secs,
+        &env,
+        |_| {},
     )
     .await?;
     let text = report.render(40);

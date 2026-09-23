@@ -71,6 +71,10 @@ struct Script {
     exec_exit: Option<i32>,
     /// Files the command rewrote, sent back as the gateway does for a formatter.
     exec_changes: Vec<prod_code_protocol::FileDelta>,
+    /// What the command used, as the gateway reports it from `wait4`.
+    exec_usage: Option<prod_code_protocol::ExecUsage>,
+    /// The environment of every command the mock was asked to run.
+    exec_env: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     search_hits: Vec<SearchHit>,
     shadow_results: Vec<ShadowHypothesisResult>,
     read_file: Option<Vec<u8>>,
@@ -84,6 +88,8 @@ impl Default for Script {
             exec_stderr: Vec::new(),
             exec_exit: Some(0),
             exec_changes: Vec::new(),
+            exec_usage: None,
+            exec_env: Arc::default(),
             search_hits: Vec::new(),
             shadow_results: Vec::new(),
             read_file: Some(b"stub".to_vec()),
@@ -176,11 +182,17 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                     .await?;
             }
             WireMessage::ExecRequest(req) => {
-                if !script.exec_stdout.is_empty() {
+                script
+                    .exec_env
+                    .lock()
+                    .unwrap()
+                    .extend(req.env.iter().cloned());
+                // In small pieces, as a long run's output arrives: a line can be split anywhere.
+                for piece in script.exec_stdout.chunks(7) {
                     framed
                         .send(WireMessage::ExecChunk(ExecChunk {
                             stderr: false,
-                            data: Some(script.exec_stdout.clone()),
+                            data: Some(piece.to_vec()),
                         }))
                         .await?;
                 }
@@ -206,7 +218,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         server_workspace_root: req.client_workspace_root,
                         timed_out: false,
                         error: None,
-                        usage: None,
+                        usage: script.exec_usage,
                     }))
                     .await?;
             }
@@ -1861,6 +1873,87 @@ async fn code_test_parses_cargo_test_output() {
         "{}",
         text_of(&result)
     );
+}
+
+#[tokio::test]
+async fn code_test_passes_env_streams_each_result_and_reports_usage() {
+    let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
+    let usage = prod_code_protocol::ExecUsage {
+        cpu_user_ms: 1200,
+        cpu_sys_ms: 300,
+        max_rss_kb: 51200,
+    };
+    let script = Script {
+        exec_stdout: b"running 2 tests\ntest a::adds ... ok\ntest a::fails ... FAILED\n\ntest result: FAILED. 1 passed; 1 failed; 0 ignored\n".to_vec(),
+        exec_exit: Some(101),
+        exec_usage: Some(usage),
+        ..Script::default()
+    };
+    let seen = script.exec_env.clone();
+    let remote = mock_gateway(script).await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_test",
+        serde_json::json!({ "env": { "RUST_BACKTRACE": "1" } }),
+    )
+    .await
+    .expect("test runs");
+    assert!(result.is_error);
+    assert!(
+        seen.lock()
+            .unwrap()
+            .contains(&("RUST_BACKTRACE".to_string(), "1".to_string()))
+    );
+    let text = text_of(&result);
+    assert!(text.contains("1 passed, 1 failed"), "{text}");
+    assert!(text.contains(&usage.render()), "{text}");
+
+    for bad in [
+        serde_json::json!({ "env": { "RUST_BACKTRACE": 1 } }),
+        serde_json::json!({ "env": ["RUST_BACKTRACE=1"] }),
+        serde_json::json!({ "env": { "A": "1" }, "fix": true, "timeout_secs": 1 }),
+    ] {
+        let tool = if bad.get("fix").is_some() {
+            "code_check"
+        } else {
+            "code_test"
+        };
+        let err = execute_tool(remote, &ws.root(), tool, bad.clone())
+            .await
+            .expect_err(&format!("{bad} is refused"));
+        assert!(format!("{err}").contains("env"), "{err}");
+    }
+
+    // Each result is handed over as its line arrives, though the lines come in pieces.
+    let mut events = Vec::new();
+    let report = prod_code_mcp::verify::run_verify_with(
+        remote,
+        &ws.root(),
+        None,
+        prod_code_mcp::verify::VerifyKind::Test,
+        None,
+        0,
+        &[],
+        |event| events.push(event),
+    )
+    .await
+    .expect("test runs");
+    use prod_code_mcp::verify::RunEvent;
+    assert_eq!(
+        events,
+        vec![
+            RunEvent::Test {
+                name: "a::adds".into(),
+                ok: true
+            },
+            RunEvent::Test {
+                name: "a::fails".into(),
+                ok: false
+            },
+        ]
+    );
+    assert_eq!(report.usage, Some(usage));
 }
 
 #[tokio::test]

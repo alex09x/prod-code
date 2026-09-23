@@ -261,6 +261,14 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Typed runs: environment, streamed events and resource use** (roadmap 6.1, #214).
+  - `check`, `lint`, `test` and `benchmarks` take `--env KEY=VALUE` (repeatable). The four MCP
+    tools take `env` as an object (`{"RUST_BACKTRACE": "1"}`). It is refused with `fix`.
+  - `--events` prints one JSON line per diagnostic (cargo's JSON) and per test result
+    (`cargo test`, `go test -json`) as its line arrives, and then the report as the last line
+    (`{"event": "report", "report": …}`). Other runners report at the end only.
+  - The report carries the run's CPU time and peak RSS (`usage`), and its summary prints them:
+    `rust test: OK in 439.5s; 657 passed, 0 failed; cpu 911.5s user 68.2s sys, peak 7140 MB`.
 - **extract_function: near-duplicates and other files** (roadmap 7.1.2, #212).
   - Copies are matched token for token, so whitespace no longer matters.
   - With `parameterize` (`--parameterize`), a copy may differ from the selection in literals

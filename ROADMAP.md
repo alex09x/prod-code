@@ -170,7 +170,7 @@ still open is listed per item below: parameter removal across trait implementati
 
 ### Engineering Milestones
 
-- [~] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — basic `ExecRequest` / streamed `ExecChunk` / `ExecExit` shipped 2026-09-19 (argv, env, timeout). `ExecExit.usage` added 2026-09-23 (#180): CPU user/sys time and peak RSS of the command and its children, read with `wait4`.
+- [x] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — basic `ExecRequest` / streamed `ExecChunk` / `ExecExit` shipped 2026-09-19 (argv, env, timeout). `ExecExit.usage` added 2026-09-23 (#180): CPU user/sys time and peak RSS of the command and its children, read with `wait4`. Typed runs done 2026-09-23 (#214): `check`/`lint`/`test`/`benchmarks` take `--env` (MCP `env`); `--events` streams each diagnostic (cargo JSON) and test result (`cargo test`, `go test -json`) as a JSON line as it arrives, then the report; the report carries `usage`. vitest and pytest results come in the final report, not as events.
   - Define `RemoteExecRequest`:
     - `language`: `rust`, `go`, `cpp`, `typescript`, `python`, `swift`.
     - `command`: `check`, `test`, `lint`, `bench`, or custom runner command.

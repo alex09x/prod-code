@@ -213,10 +213,16 @@ async fn handle_client(
                         }))
                         .await?;
                 } else {
+                    // A variable the test set comes back as a passing test named after it.
+                    let mut stdout = String::new();
+                    for (key, value) in req.env.iter().filter(|(k, _)| k.starts_with("ECHO_")) {
+                        stdout.push_str(&format!("test {key}={value} ... ok\n"));
+                    }
+                    stdout.push_str("test result: ok. 1 passed; 0 failed\n");
                     framed
                         .send(WireMessage::ExecChunk(ExecChunk {
                             stderr: false,
-                            data: Some(b"test result: ok. 1 passed; 0 failed\n".to_vec()),
+                            data: Some(stdout.into_bytes()),
                         }))
                         .await?;
                     framed
@@ -226,7 +232,11 @@ async fn handle_client(
                             server_workspace_root: req.client_workspace_root,
                             timed_out: false,
                             error: None,
-                            usage: None,
+                            usage: Some(prod_code_protocol::ExecUsage {
+                                cpu_user_ms: 1500,
+                                cpu_sys_ms: 200,
+                                max_rss_kb: 10240,
+                            }),
                         }))
                         .await?;
                 }
@@ -907,6 +917,56 @@ async fn cli_runs_remote_check_lint_and_test_with_exit_codes() {
 
     let out_test_fail = run_cli(&ws, gw.addr, &["test"]).await;
     assert_eq!(out_test_fail.status.code(), Some(1));
+}
+
+#[tokio::test]
+async fn cli_test_sets_env_and_prints_events_then_the_report() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "test",
+            "--env",
+            "ECHO_A=1",
+            "--env",
+            "ECHO_B=x=y",
+            "--events",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let lines: Vec<serde_json::Value> = stdout_of(&out)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("every line is JSON"))
+        .collect();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        serde_json::json!({ "event": "test", "name": "ECHO_A=1", "ok": true })
+    );
+    assert_eq!(lines[1]["name"], "ECHO_B=x=y");
+    assert_eq!(lines[2]["event"], "report");
+    assert_eq!(lines[2]["report"]["usage"]["cpu_user_ms"], 1500);
+
+    let text = run_cli(&ws, gw.addr, &["test"]).await;
+    assert!(
+        stdout_of(&text).contains("cpu 1.5s user 0.2s sys, peak 10 MB"),
+        "{}",
+        stdout_of(&text)
+    );
+
+    let bad = run_cli(&ws, gw.addr, &["check", "--env", "NOEQUALS"]).await;
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(
+        stderr_of(&bad).contains("--env takes KEY=VALUE"),
+        "{}",
+        stderr_of(&bad)
+    );
+    let with_fix = run_cli(&ws, gw.addr, &["lint", "--fix", "--env", "A=1"]).await;
+    assert_eq!(with_fix.status.code(), Some(2));
 }
 
 #[tokio::test]

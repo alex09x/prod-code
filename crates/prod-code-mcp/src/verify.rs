@@ -151,6 +151,9 @@ pub struct VerifyReport {
     /// Benchmark results, for a `bench` run.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub benches: Vec<BenchResult>,
+    /// CPU time and peak memory of the command and its children, when the node could tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<prod_code_protocol::ExecUsage>,
 }
 
 impl VerifyReport {
@@ -200,6 +203,9 @@ impl VerifyReport {
                 self.errors(),
                 self.warnings()
             ));
+        }
+        if let Some(usage) = &self.usage {
+            parts.push(usage.render());
         }
         parts.join("; ")
     }
@@ -1674,6 +1680,50 @@ xcodebuild {action} -scheme \"$scheme\" -destination \"$dest\" -quiet 2>&1"
 }
 
 /// Runs the verification remotely and parses its output.
+/// Something a run reports while it runs: a diagnostic or a test's result, read from a line
+/// of its output as soon as the line arrives (cargo's JSON, cargo test's `test … ok`, `go test
+/// -json`). The parsed report at the end holds everything again.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum RunEvent {
+    Diagnostic(Diagnostic),
+    Test { name: String, ok: bool },
+}
+
+/// The event one line of `language`'s `kind` output carries, when it carries one.
+pub fn event_of_line(language: &str, kind: VerifyKind, line: &str) -> Option<RunEvent> {
+    match (language, kind) {
+        ("rust", VerifyKind::Check | VerifyKind::Lint) => {
+            parse_cargo_json_line(line).map(RunEvent::Diagnostic)
+        }
+        ("rust", VerifyKind::Test) => {
+            let rest = line.strip_prefix("test ")?;
+            let (name, outcome) = rest.rsplit_once(" ... ")?;
+            match outcome.trim() {
+                "ok" => Some(RunEvent::Test {
+                    name: name.to_string(),
+                    ok: true,
+                }),
+                "FAILED" => Some(RunEvent::Test {
+                    name: name.to_string(),
+                    ok: false,
+                }),
+                _ => None,
+            }
+        }
+        ("go", VerifyKind::Test) => {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            let name = v.get("Test")?.as_str()?.to_string();
+            match v.get("Action")?.as_str()? {
+                "pass" => Some(RunEvent::Test { name, ok: true }),
+                "fail" => Some(RunEvent::Test { name, ok: false }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub async fn run_verify(
     remote: SocketAddr,
     root: &Path,
@@ -1681,6 +1731,32 @@ pub async fn run_verify(
     kind: VerifyKind,
     filter: Option<&str>,
     timeout_secs: u64,
+) -> Result<VerifyReport> {
+    run_verify_with(
+        remote,
+        root,
+        project_hint,
+        kind,
+        filter,
+        timeout_secs,
+        &[],
+        |_| {},
+    )
+    .await
+}
+
+/// [`run_verify`] with extra environment for the command (`RUST_BACKTRACE=1`) and every
+/// [`RunEvent`] handed to `on_event` as its line arrives.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_verify_with(
+    remote: SocketAddr,
+    root: &Path,
+    project_hint: Option<&Path>,
+    kind: VerifyKind,
+    filter: Option<&str>,
+    timeout_secs: u64,
+    extra_env: &[(String, String)],
+    mut on_event: impl FnMut(RunEvent),
 ) -> Result<VerifyReport> {
     // A nested project of another language (a SwiftPM package in a Rust repository) is
     // verified in its own directory with its own tooling.
@@ -1707,18 +1783,33 @@ pub async fn run_verify(
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut tail = TailBuffer::new(8 * 1024);
+    let mut env = vec![
+        ("CARGO_TERM_COLOR".to_string(), "never".to_string()),
+        ("NO_COLOR".to_string(), "1".to_string()),
+    ];
+    env.extend(extra_env.iter().cloned());
+    // Complete stdout lines become events as they arrive; a line split across chunks waits.
+    let mut pending: Vec<u8> = Vec::new();
     let outcome = run_remote(
         remote,
         root,
         subdir.as_deref(),
         command.clone(),
-        vec![
-            ("CARGO_TERM_COLOR".to_string(), "never".to_string()),
-            ("NO_COLOR".to_string(), "1".to_string()),
-        ],
+        env,
         timeout_secs,
         false,
         |is_stderr, data| {
+            if !is_stderr {
+                pending.extend_from_slice(data);
+                while let Some(end) = pending.iter().position(|b| *b == b'\n') {
+                    let line: Vec<u8> = pending.drain(..=end).collect();
+                    if let Some(event) =
+                        event_of_line(language, kind, String::from_utf8_lossy(&line).trim_end())
+                    {
+                        on_event(event);
+                    }
+                }
+            }
             tail.push(data);
             if is_stderr {
                 stderr.extend_from_slice(data);
@@ -1851,6 +1942,7 @@ pub async fn run_verify(
         tail: tail.text(),
         fixes,
         benches,
+        usage: outcome.exit.usage,
     })
 }
 
@@ -2185,6 +2277,7 @@ expected 42, got 43\n\
             tail: String::new(),
             fixes: vec![],
             benches: found,
+            usage: None,
         };
         let text = report.render(10);
         assert!(
@@ -2228,6 +2321,7 @@ expected 42, got 43\n\
             tail: String::new(),
             fixes: vec![],
             benches: vec![],
+            usage: None,
         };
         assert_eq!(
             report.summary(),
@@ -2278,5 +2372,54 @@ expected 42, got 43\n\
         );
         tools.cpp = CppBuild::Make;
         assert!(plan_command_with(&tools, "cpp", VerifyKind::Lint, None).is_err());
+    }
+
+    #[test]
+    fn a_line_of_output_becomes_an_event_as_it_arrives() {
+        let json = r#"{"reason":"compiler-message","message":{"level":"error","code":{"code":"E0308"},"message":"mismatched types","spans":[{"file_name":"src/lib.rs","line_start":3,"column_start":5,"is_primary":true}],"children":[]}}"#;
+        assert!(matches!(
+            event_of_line("rust", VerifyKind::Check, json),
+            Some(RunEvent::Diagnostic(d)) if d.message == "mismatched types"
+        ));
+        assert_eq!(
+            event_of_line("rust", VerifyKind::Test, "test tests::adds ... ok"),
+            Some(RunEvent::Test {
+                name: "tests::adds".into(),
+                ok: true
+            })
+        );
+        assert_eq!(
+            event_of_line("rust", VerifyKind::Test, "test tests::fails ... FAILED"),
+            Some(RunEvent::Test {
+                name: "tests::fails".into(),
+                ok: false
+            })
+        );
+        assert_eq!(
+            event_of_line("rust", VerifyKind::Test, "test x ... ignored"),
+            None
+        );
+        assert_eq!(
+            event_of_line(
+                "go",
+                VerifyKind::Test,
+                r#"{"Action":"fail","Package":"p","Test":"TestX"}"#
+            ),
+            Some(RunEvent::Test {
+                name: "TestX".into(),
+                ok: false
+            })
+        );
+        assert_eq!(
+            event_of_line("go", VerifyKind::Test, r#"{"Action":"run","Test":"TestX"}"#),
+            None
+        );
+        assert_eq!(event_of_line("python", VerifyKind::Test, "PASSED"), None);
+        let text = serde_json::to_string(&RunEvent::Test {
+            name: "t".into(),
+            ok: true,
+        })
+        .unwrap();
+        assert_eq!(text, r#"{"event":"test","name":"t","ok":true}"#);
     }
 }
