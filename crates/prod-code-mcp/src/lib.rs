@@ -13,6 +13,7 @@ pub mod fixture;
 pub mod hot_reload;
 pub mod impact;
 pub mod lang;
+pub mod make_static;
 pub mod move_item;
 pub mod parameter_object;
 pub mod protocol;

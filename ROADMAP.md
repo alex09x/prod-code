@@ -238,7 +238,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     `wrap_return_type_in_result`, which rewrite the signature and the returned values but none of
     the callers; `invert_boolean`, `make_static` and `generify` are not offered at all
     (`convert_bool_to_enum` and `unwrap_type_to_generic_arg` are different refactorings). The
-    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`); the three that are not offered are still to build.
+    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`), and so did `make_static` (`code_make_static`); `invert_boolean` and `generify` are still to build.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -288,7 +288,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Enforces "Composition over Inheritance": wraps the base class in a private field and forwards inherited method calls.
     - *Not applicable as written* — Rust has no constructors; the useful half is generating a builder, which belongs with the generate assists. `refactor.replace_constructor_with_factory / builder(path, type_name)`:
       - Replaces raw struct instantiations with named static factory methods or a fluent builder pattern.
-    - `refactor.make_static / convert_to_method(path, function_name)` — not offered by rust-analyzer at a method, with or without `self` (probe of 2026-09-23); to build.
+    - [~] `refactor.make_static / convert_to_method(path, function_name)` — `make_static` shipped 2026-09-23 for Rust as `code_make_static` / `prod-code make-static <file> --line N --character C` (rust-analyzer offers nothing here): a method whose body never mentions `self` loses its receiver, `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument; a receiver that does something when evaluated (`load()?.method()`) is reported and blocks the write. The other direction, `convert_to_method`, is not built.
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
 
   - **7.1.4. Data Flow & Advanced Type-System Refactorings**:
