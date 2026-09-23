@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **Validation reports an unused import** (#134). rust-analyzer computes no diagnostic for an
+  unused import, so `validate` called a file with one clean while `clippy -D warnings` rejected
+  it. The analyzer does offer `remove_unused_imports` exactly on a `use` item that has an unused
+  name, so the Rust engine now asks each `use` item for its assists and reports the ones that
+  offer it as `unused_imports`, a warning, as rustc would.
 - **A re-exported name resolves to its definition** (#128). The workspace index lists a
   `pub use m::name;` next to the definition it names, and `--symbol name` called the pair
   ambiguous (for `scan_workspace_files` in this repository). A tie whose line is a `use`

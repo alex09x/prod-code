@@ -841,6 +841,7 @@ impl RustEngineSnapshot {
         let diagnostics =
             self.analysis
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
+        let unused_imports = self.unused_imports(file_id, &text);
         Ok(diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
@@ -862,7 +863,57 @@ impl RustEngineSnapshot {
                     unused: d.unused,
                 }
             })
+            .chain(unused_imports)
             .collect())
+    }
+
+    /// The `use` items of `file_id` that import something unused (#134). rust-analyzer computes
+    /// no diagnostic for an unused import — rustc does, and `-D warnings` rejects it — but it
+    /// offers `remove_unused_imports` exactly on a `use` item that has one. So each `use` item is
+    /// asked for its assists, and the ones that offer it are reported as rustc would.
+    fn unused_imports(&self, file_id: FileId, text: &str) -> Vec<FileDiagnostic> {
+        let (assist_config, diagnostics_config) = Self::assist_configs();
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        for line in text.split_inclusive('\n') {
+            let item_start = offset + (line.len() - line.trim_start().len());
+            offset += line.len();
+            let Some(path_start) = use_path_start(&text[item_start..]) else {
+                continue;
+            };
+            let at = TextSize::from((item_start + path_start) as u32);
+            let range = FileRange {
+                file_id,
+                range: TextRange::empty(at),
+            };
+            let Ok(assists) = self.analysis.assists_with_fixes(
+                &assist_config,
+                &diagnostics_config,
+                AssistResolveStrategy::None,
+                range,
+            ) else {
+                continue;
+            };
+            if !assists.iter().any(|a| a.id.0 == "remove_unused_imports") {
+                continue;
+            }
+            let end = text[item_start..]
+                .find(';')
+                .map_or(text.len(), |i| item_start + i + 1);
+            let (line_no, col) = offset_to_line_col(text, TextSize::from(item_start as u32));
+            let (end_line, end_col) = offset_to_line_col(text, TextSize::from(end as u32));
+            out.push(FileDiagnostic {
+                code: "unused_imports".to_string(),
+                message: "unused import".to_string(),
+                severity: "warning".to_string(),
+                line: line_no,
+                col,
+                end_line,
+                end_col,
+                unused: true,
+            });
+        }
+        out
     }
 
     /// The call-hierarchy item(s) at (line, col): the enclosing or referenced function.
@@ -1740,8 +1791,38 @@ fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     (line, col)
 }
 
+/// Where the path of a `use` item starts, when `item` (the text from the item's first
+/// non-blank character on) is one: `use a::b;`, `pub use`, `pub(crate) use`.
+fn use_path_start(item: &str) -> Option<usize> {
+    let mut rest = item;
+    if let Some(after) = rest.strip_prefix("pub") {
+        rest = match after.strip_prefix('(') {
+            Some(scoped) => &scoped[scoped.find(')')? + 1..],
+            None if after.starts_with(char::is_whitespace) => after,
+            None => return None,
+        };
+        rest = rest.trim_start();
+    }
+    let after_use = rest.strip_prefix("use")?;
+    let path = after_use.trim_start();
+    (after_use.starts_with(char::is_whitespace) && !path.is_empty())
+        .then(|| item.len() - path.len())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_use_item_is_found_behind_its_visibility() {
+        use super::use_path_start;
+        assert_eq!(use_path_start("use std::fmt;"), Some(4));
+        assert_eq!(use_path_start("pub use sync::scan;"), Some(8));
+        assert_eq!(use_path_start("pub(crate) use a::b;"), Some(15));
+        assert_eq!(use_path_start("pub(in crate::x) use a::b;"), Some(21));
+        assert_eq!(use_path_start("user.name = 1;"), None);
+        assert_eq!(use_path_start("pub fn used() {}"), None);
+        assert_eq!(use_path_start("public use"), None);
+    }
+
     #[test]
     fn prod_code_toml_maps_to_cargo_config() {
         use super::*;
