@@ -346,6 +346,25 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_introduce_variable".to_string(),
+            description: "Introduce a variable for an expression and replace every occurrence of it in the enclosing function, not only the selected one: `(w + 1)` three times becomes `let w1 = w + 1;` above the first and `w1` at each place. Give the selection (`line`/`character` to `end_line`/`end_character`) and `name`. Refused when evaluating once is not the same as evaluating at each place: the expression calls something, expands a macro, uses `?` or awaits, or a name it reads is assigned, mutably borrowed or rebound between the first occurrence and the last (or in a loop that runs a later one again). For one occurrence of such an expression use `code_assist` with `extract_variable`. Type-checked in one overlay before anything is written. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the expression" },
+                    "line": { "type": "integer", "description": "1-based line where the selection starts" },
+                    "character": { "type": "integer", "description": "1-based column where the selection starts" },
+                    "end_line": { "type": "integer", "description": "1-based line where the selection ends" },
+                    "end_character": { "type": "integer", "description": "1-based column just past the selection" },
+                    "name": { "type": "string", "description": "Name of the new variable" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character", "end_line", "end_character", "name"]
+            }),
+        },
+        McpTool {
             name: "code_wrap_return".to_string(),
             description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -914,6 +933,7 @@ pub async fn execute_tool(
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
+        "code_introduce_variable" => handle_introduce_variable(remote, workspace_root, &args).await,
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,
@@ -1982,6 +2002,47 @@ async fn handle_inline_parameter(
             McpToolCallResult::error(text)
         },
     )
+}
+
+async fn handle_introduce_variable(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::introduce_variable::introduce_variable(
+        remote,
+        workspace_root,
+        &file_path,
+        (num("line")?, num("character")?),
+        (num("end_line")?, num("end_character")?),
+        name,
+        apply,
+        force,
+    )
+    .await?;
+    let text = done.render();
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
 }
 
 async fn handle_wrap_return(

@@ -2962,3 +2962,117 @@ async fn a_move_into_a_new_module_creates_and_declares_it() {
         "{err:#}"
     );
 }
+
+const AREA: &str = "pub fn area(w: u32, h: u32) -> u32 {\n    let a = (w + 1) * (h + 1);\n    let b = (w + 1) * 2;\n    a + b + (w + 1)\n}\n";
+
+/// Every occurrence of the selected expression in the function reads the new variable, bound
+/// once above the first; an expression that calls, or reads a name that changes on the way
+/// (in a loop that runs a later occurrence again, too), is refused, and so is a result that
+/// does not compile.
+#[tokio::test]
+async fn a_variable_is_introduced_for_every_occurrence() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", AREA);
+    commit(&ws);
+    let clean = || {
+        scripted_gateway(Arc::new(move |method, _params| match method {
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let introduce = |remote, name: &'static str| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::introduce_variable::introduce_variable(
+                remote,
+                &root,
+                &lib,
+                (2, 13),
+                (2, 20),
+                name,
+                true,
+                false,
+            )
+            .await
+        }
+    };
+
+    let done = introduce(clean().await, "w1").await.expect("introduced");
+    assert_eq!((done.expression.as_str(), done.occurrences), ("w + 1", 3));
+    assert!(done.applied);
+    assert_eq!(
+        ws.read("src/lib.rs"),
+        "pub fn area(w: u32, h: u32) -> u32 {\n    let w1 = w + 1;\n    let a = w1 * (h + 1);\n    let b = w1 * 2;\n    a + b + w1\n}\n"
+    );
+    assert!(done.render().contains("-    let a = (w + 1) * (h + 1);"));
+
+    // The first occurrence is inside an `if`, the last after it: the binding goes above the
+    // statement that holds the `if`, where both can see it.
+    let nested = "pub fn area(w: u32, h: u32) -> u32 {\n    let a = if h > 2 {\n        (w + 1) * h\n    } else {\n        0\n    };\n    a + (w + 1)\n}\n";
+    std::fs::write(&lib, nested).unwrap();
+    prod_code_mcp::introduce_variable::introduce_variable(
+        clean().await,
+        &root,
+        &lib,
+        (3, 9),
+        (3, 16),
+        "w1",
+        true,
+        false,
+    )
+    .await
+    .expect("introduced above the `if`");
+    assert_eq!(
+        ws.read("src/lib.rs"),
+        "pub fn area(w: u32, h: u32) -> u32 {\n    let w1 = w + 1;\n    let a = if h > 2 {\n        w1 * h\n    } else {\n        0\n    };\n    a + w1\n}\n"
+    );
+
+    for (text, why) in [
+        (
+            AREA.replace("(w + 1)", "(w.pow(2))"),
+            "cannot be evaluated once",
+        ),
+        (
+            AREA.replace("    let b", "    let w = 3;\n    let b"),
+            "`w` changes",
+        ),
+        (
+            "pub fn area(mut w: u32, h: u32) -> u32 {\n    let a = (w + 1) * (h + 1);\n    while w < h {\n        let _ = (w + 1);\n        w += 2;\n    }\n    a\n}\n"
+                .to_string(),
+            "`w` changes",
+        ),
+    ] {
+        std::fs::write(&lib, &text).unwrap();
+        let err = introduce(clean().await, "w1")
+            .await
+            .expect_err("refused");
+        assert!(format!("{err:#}").contains(why), "{err:#}");
+        assert_eq!(ws.read("src/lib.rs"), text, "nothing was written");
+    }
+
+    // The analyzer's error in the proposal stops the write.
+    std::fs::write(&lib, AREA).unwrap();
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rejecting = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/diagnostic"
+            if pulls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2) =>
+        {
+            answers::no_diagnostics()
+        }
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [
+            { "severity": 1, "code": "E0425", "message": "cannot find value `w1` in this scope",
+              "range": { "start": { "line": 4, "character": 12 }, "end": { "line": 4, "character": 14 } } }
+        ] }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let err = introduce(rejecting, "w1")
+        .await
+        .expect_err("a result that does not compile is not written");
+    assert!(format!("{err:#}").contains("does not compile"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), AREA);
+    assert!(introduce(clean().await, "w 1").await.is_err());
+}

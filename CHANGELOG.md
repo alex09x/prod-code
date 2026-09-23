@@ -188,6 +188,18 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Introduce a variable for every occurrence (roadmap 7.1.2, #150): `code_introduce_variable`
+  (MCP) and `prod-code introduce-variable <file> <line> <col> --to LINE:COL --name NAME`.
+  rust-analyzer's `extract_variable` replaces only the selection. This replaces every whole-token
+  occurrence of the expression in the enclosing function:
+  - `let w1 = w + 1;` goes above the statement that holds the first occurrence, in the innermost
+    block that holds them all, so an occurrence inside an `if` and one after it both see it;
+  - the change is refused when evaluating once is not the same as evaluating at each place. That
+    is an expression that calls a function or method, expands a macro, uses `?` or awaits. It is
+    also a name the expression reads that is assigned, mutably borrowed, rebound or has a field
+    assigned between the binding and the last occurrence, or anywhere in a loop that runs a later
+    occurrence again;
+  - the result is type-checked in the overlay before anything is written.
 - Move into a module that does not exist yet (roadmap 7.1.1, #148): `code_move` / `prod-code move
   --to src/util.rs` creates the file and declares it in its parent module, all in the same
   change and the same overlay check:

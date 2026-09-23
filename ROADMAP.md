@@ -12,9 +12,8 @@ the pieces rust-analyzer does not offer are tools of their own — `move`, `intr
 `convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
 analyzer accepts (`convert`), and `invert_boolean` covers `bool` fields and variables. What is
 still open is listed per item below: parameter removal across trait implementations, `async` in
-`change_signature`, whole-file and method moves, `replace_all` for
-`introduce_variable`, a chosen subset of methods for `extract_trait`, and the helper type of
-`extract_delegate`.
+`change_signature`, whole-file and method moves, a chosen subset of methods for
+`extract_trait`, and the helper type of `extract_delegate`.
 
 ---
 
@@ -270,7 +269,7 @@ still open is listed per item below: parameter removal across trait implementati
     - [~] `refactor.extract_function(path, range, fn_name)` — via `code_assists` over a selection: `extract_function`. Duplicate detection across the workspace is not offered and is not planned separately; `code_codemod` finds structural duplicates.
       - Remote compiler analyzes variable captures, borrow checker constraints, and lifetimes, returning the extracted signature and replacement call site.
       - **Automated Duplicate Code Detection**: automatically scans the entire file and workspace for duplicate or structurally identical AST patterns, offering to parameterize and replace all instances in one operation.
-    - [~] `refactor.introduce_variable(path, range, var_name, replace_all)` — via `code_assists` over a selection: `extract_variable`.
+    - [x] `refactor.introduce_variable(path, range, var_name, replace_all)` — one occurrence via `code_assists` over a selection (`extract_variable`); every occurrence shipped 2026-09-23 (#150) as `code_introduce_variable` / `prod-code introduce-variable <file> <line> <col> --to LINE:COL --name …`: the binding goes above the statement that holds the first occurrence, in the innermost block that holds them all, and every whole-token occurrence in the function reads it. An expression that calls, expands a macro, uses `?` or awaits is refused. So is one whose names change between the binding and the last occurrence, or in a loop that runs a later occurrence again. Type-checked before writing.
       - Replaces selected expression with a local binding, with toggle to replace the single occurrence or all identical expressions.
     - [~] `refactor.extract_constant(path, range, const_name)` — via `code_assists` over a selection: `extract_constant` and `extract_static`.
       - Promotes magic numbers, string literals, or complex expressions to module-level or struct-level typed `const`/`static`.

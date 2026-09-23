@@ -423,6 +423,27 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Introduce a variable for an expression and replace every occurrence in the function.
+    IntroduceVariable {
+        /// The file that holds the expression.
+        file: PathBuf,
+        /// 1-based line where the selection starts.
+        line: u32,
+        /// 1-based column where the selection starts.
+        col: u32,
+        /// End of the selection as LINE:COL (1-based, just past the expression).
+        #[arg(long)]
+        to: String,
+        /// Name of the new variable.
+        #[arg(long)]
+        name: String,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Turn a method that never uses `self` into an associated function, with every call site.
     MakeStatic {
         /// The method by name (`Type::method`), or a file with `--line`.
@@ -1111,6 +1132,36 @@ async fn main() -> Result<()> {
                     "path": abs.to_string_lossy(),
                     "line": line,
                     "character": col,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
+        }
+        Commands::IntroduceVariable {
+            file,
+            line,
+            col,
+            to,
+            name,
+            apply,
+            force,
+        } => {
+            let (end_line, end_col) = to
+                .split_once(':')
+                .and_then(|(l, c)| Some((l.parse::<u32>().ok()?, c.parse::<u32>().ok()?)))
+                .context("--to takes LINE:COL")?;
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_introduce_variable",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
+                    "end_line": end_line,
+                    "end_character": end_col,
+                    "name": name,
                     "apply": apply,
                     "force": force,
                 }),
