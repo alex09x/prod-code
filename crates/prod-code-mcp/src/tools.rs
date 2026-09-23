@@ -348,6 +348,26 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_delegate".to_string(),
+            description: "Extract a delegate (Extract Class): the fields you name leave a struct for a new helper type the struct then holds, with the methods you name that use only those fields. The struct keeps a forwarding method of the same signature for each moved method, so callers do not change; every other access to a moved field goes through the new field (`a.city` becomes `a.address.city`, found through the analyzer's references), and every struct literal builds the helper. A literal or pattern with `..` is refused. Type-checked in one overlay before anything is written. Rust only; plain structs with named fields."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the struct" },
+                    "line": { "type": "integer", "description": "1-based line of the `struct` keyword" },
+                    "character": { "type": "integer", "description": "1-based column on that line" },
+                    "fields": { "type": "array", "items": { "type": "string" }, "description": "Fields that move into the helper" },
+                    "methods": { "type": "array", "items": { "type": "string" }, "description": "Methods that move with them (may use only those fields)" },
+                    "name": { "type": "string", "description": "Name of the helper type" },
+                    "field": { "type": "string", "description": "Name of the field that holds the helper" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character", "fields", "name", "field"]
+            }),
+        },
+        McpTool {
             name: "code_extract_trait".to_string(),
             description: "Extract a trait from the methods you name of an inherent `impl Type` block (rust-analyzer's `generate_trait_from_impl` takes every method, keeps the trait private and leaves callers in other modules without it in scope). The named methods move into `trait Name` and `impl Name for Type`; the rest stay inherent (the block goes when it empties). Doc comments go to the trait's declarations, attributes stay on the implementation, and the trait is as visible as the widest moved method. Every other file that references a moved method gets `use …::Name;`. Type-checked in one overlay before anything is written. Generic `impl` blocks and trait implementations are refused. Rust only."
                 .to_string(),
@@ -1015,6 +1035,57 @@ pub async fn execute_tool(
             })
         }
         "code_extract_trait" => handle_extract_trait(remote, workspace_root, &args).await,
+        "code_extract_delegate" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let list = |key: &str| -> Vec<String> {
+                args.get(key)
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|m| m.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let text = |key: &str| -> Result<String> {
+                args.get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let num = |key: &str| -> Result<u32> {
+                args.get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let done = crate::extract_delegate::extract_delegate(
+                remote,
+                workspace_root,
+                &file_path,
+                num("line")?,
+                num("character")?,
+                &list("fields"),
+                &list("methods"),
+                &text("name")?,
+                &text("field")?,
+                apply,
+                force,
+            )
+            .await?;
+            let out = done.render();
+            Ok(if done.diagnostics.is_empty() {
+                McpToolCallResult::text(out)
+            } else {
+                McpToolCallResult::error(out)
+            })
+        }
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,

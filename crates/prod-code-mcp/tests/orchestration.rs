@@ -3394,3 +3394,112 @@ async fn an_accumulator_loop_becomes_an_iterator_chain() {
         "pub fn total(prices: &[u64]) -> u64 {\n    let mut sum: u64 = prices.iter().map(|p| p * 2).sum();\n    sum += 1;\n    sum\n}\n"
     );
 }
+
+const ACCOUNT_LIB: &str = "pub mod report;\n\n#[derive(Debug, Clone)]\npub struct Account {\n    pub owner: String,\n    pub street: String,\n    pub city: String,\n    balance: u64,\n}\n\nimpl Account {\n    pub fn new(owner: &str, street: &str, city: &str) -> Self {\n        Account {\n            owner: owner.into(),\n            street: street.into(),\n            city: city.into(),\n            balance: 0,\n        }\n    }\n\n    pub fn address(&self) -> String {\n        format!(\"{}, {}\", self.street, self.city)\n    }\n\n    pub fn moves_to(&mut self, city: &str) {\n        self.city = city.to_string();\n    }\n\n    pub fn deposit(&mut self, n: u64) {\n        self.balance += n;\n    }\n\n    pub fn label(&self) -> String {\n        format!(\"{} ({})\", self.owner, self.city)\n    }\n}\n";
+const ACCOUNT_REPORT: &str = "use crate::Account;\n\npub fn city_of(a: &Account) -> &str {\n    &a.city\n}\n\npub fn line(a: &Account) -> String {\n    a.address()\n}\n";
+
+/// Two fields and the two methods that use only them move into `Address`; the struct forwards
+/// to it, the literal builds it, and the accesses elsewhere (in the same file and in another)
+/// go through the new field, while the moved methods keep `self.city`. A result the analyzer
+/// rejects is not written.
+#[tokio::test]
+async fn fields_and_their_methods_move_into_a_delegate() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", ACCOUNT_LIB);
+    let report = write(&ws, "src/report.rs", ACCOUNT_REPORT);
+    commit(&ws);
+    let script = |rejects: bool| {
+        let (l, r) = (lib.clone(), report.clone());
+        let pulls = Arc::new(std::sync::Mutex::new(std::collections::HashMap::<
+            String,
+            usize,
+        >::new()));
+        scripted_gateway(Arc::new(move |method, params| match method {
+            // `street` is declared on line 6, `city` on line 7.
+            "textDocument/references" => {
+                match params.pointer("/position/line").and_then(|v| v.as_u64()) {
+                    Some(5) => answers::locations(&l, &[(15, 13), (22, 32)]),
+                    Some(6) => {
+                        let mut all =
+                            answers::locations(&l, &[(16, 13), (22, 45), (26, 14), (34, 45)]);
+                        if let (Some(a), Some(b)) = (
+                            all.as_array_mut(),
+                            answers::locations(&r, &[(4, 8)]).as_array(),
+                        ) {
+                            a.extend(b.iter().cloned());
+                        }
+                        all
+                    }
+                    _ => serde_json::json!([]),
+                }
+            }
+            "textDocument/diagnostic"
+                if !rejects || !uri_of(params).ends_with("src/report.rs") || {
+                    let mut seen = pulls.lock().unwrap();
+                    let n = seen.entry(uri_of(params)).or_insert(0);
+                    *n += 1;
+                    *n == 1
+                } =>
+            {
+                answers::no_diagnostics()
+            }
+            "textDocument/diagnostic" => {
+                answers::error_at(4, 8, "E0609", "no field `city` on type `&Account`")
+            }
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let run = |remote, apply| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::extract_delegate::extract_delegate(
+                remote,
+                &root,
+                &lib,
+                4,
+                5,
+                &["street".to_string(), "city".to_string()],
+                &["address".to_string(), "moves_to".to_string()],
+                "Address",
+                "address",
+                apply,
+                false,
+            )
+            .await
+        }
+    };
+
+    let err = run(script(true).await, true)
+        .await
+        .expect_err("a result that does not compile is not written");
+    assert!(format!("{err:#}").contains("does not compile"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), ACCOUNT_LIB);
+    assert_eq!(ws.read("src/report.rs"), ACCOUNT_REPORT);
+
+    let done = run(script(false).await, true).await.expect("extracted");
+    assert!(done.applied);
+    assert_eq!(done.accesses, 2);
+    let paths: Vec<&String> = done.rewritten.iter().map(|(p, _)| p).collect();
+    assert_eq!(paths.len(), 2, "{paths:?}");
+    let lib_now = ws.read("src/lib.rs");
+    for expected in [
+        "    pub owner: String,\n    pub address: Address,\n    balance: u64,\n}",
+        "pub struct Address {\n    pub street: String,\n    pub city: String,\n}",
+        "    pub fn moves_to(&mut self, city: &str) {\n        self.city = city.to_string();\n    }",
+        "            address: Address { street: street.into(), city: city.into() },",
+        "        self.address.moves_to(city)",
+        "format!(\"{} ({})\", self.owner, self.address.city)",
+    ] {
+        assert!(lib_now.contains(expected), "{expected}\n---\n{lib_now}");
+    }
+    assert_eq!(
+        ws.read("src/report.rs"),
+        ACCOUNT_REPORT.replace("&a.city", "&a.address.city")
+    );
+}
