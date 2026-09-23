@@ -731,6 +731,19 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_prune_orphans".to_string(),
+            description: "Remove every orphan the dead-code scan finds (unreferenced, not exported, not reachable through a trait) with the analyzer's safe delete, all in one edit. The whole result is type-checked in one overlay before anything is written. Deletions that overlap another are left for the next run, and so is what these removals orphan: run it again until it finds nothing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "max_files": { "type": "integer", "description": "Stop after this many source files (default 400)" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report what would be removed and the type check)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_source".to_string(),
             description: "Read a source file that exists only on the gateway host: standard library sources, dependency registries (cargo, go mod cache, node_modules, site-packages) and SDK headers — the files that code_definition points at outside the checkout. Optionally a window of lines around one line."
                 .to_string(),
@@ -966,6 +979,23 @@ pub async fn execute_tool(
         "code_change_signature" => handle_change_signature(remote, workspace_root, &args).await,
         "code_generate_fixture" => handle_generate_fixture(remote, workspace_root, &args).await,
         "code_dead_code" => handle_dead_code(remote, workspace_root, &args).await,
+        "code_prune_orphans" => {
+            let max_files = args
+                .get("max_files")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(400) as usize;
+            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let pruned =
+                crate::prune::prune_orphans(remote, workspace_root, max_files, apply, force)
+                    .await?;
+            let text = pruned.render();
+            Ok(if pruned.diagnostics.is_empty() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            })
+        }
         "code_source" => handle_source(remote, &args).await,
         "code_references" => handle_references(remote, workspace_root, &args).await,
 

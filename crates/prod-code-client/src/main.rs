@@ -196,6 +196,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Remove every orphan the dead-code scan finds, in one type-checked edit: prod-code prune [--apply]
+    Prune {
+        /// Stop after this many source files
+        #[arg(long, default_value_t = 400)]
+        max_files: usize,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Show a source file that lives on the gateway (std, registry, SDK): prod-code source <path> [--line N] [--context K]
     Source {
         path: String,
@@ -981,6 +993,18 @@ async fn main() -> Result<()> {
             max_files,
             json,
         } => run_dead_code(remote, include_exported, max_files, json).await,
+        Commands::Prune {
+            max_files,
+            apply,
+            force,
+        } => {
+            run_tool(
+                remote,
+                "code_prune_orphans",
+                serde_json::json!({ "max_files": max_files, "apply": apply, "force": force }),
+            )
+            .await
+        }
         Commands::Diagnostics { file, json } => run_diagnostics(remote, &file, None, json).await,
         Commands::Diagnose {
             filter,

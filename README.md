@@ -89,6 +89,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_hover` · `code_type_at` | signature, type and docs |
 | `code_impact` | blast radius of a change: the functions it touches, their callers, the tests that cover them |
 | `code_dead_code` | unreferenced functions, methods and types |
+| `code_prune_orphans` | every orphan the dead-code scan finds removed with safe delete, in one type-checked edit |
 
 **Change it safely**
 
@@ -141,7 +142,7 @@ has to grep for a line number:
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
 fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | inline-parameter | introduce-variable | extract-trait | invert-boolean | generify | hover | def | refs | callers | callees |
+extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | inline-parameter | introduce-variable | extract-trait | prune | invert-boolean | generify | hover | def | refs | callers | callees |
 impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
 diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
 cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a

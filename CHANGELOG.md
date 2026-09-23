@@ -215,6 +215,19 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Prune orphans (roadmap 8.6, #162): `code_prune_orphans` (MCP) and `prod-code prune [--apply]
+  [--force]`:
+  - everything on the dead-code scan's `dead` list is removed with the analyzer's safe delete.
+    Exported symbols and methods a trait may reach are left alone;
+  - each answer is reduced to the lines it really changes, and the answers are merged into one
+    edit. The engine answers a deletion by replacing the whole file, so without the reduction
+    any two deletions in one file overlapped. A deletion that still overlaps another waits for
+    the next run;
+  - the whole result is type-checked in one overlay, and written in one transactional edit only
+    when it is clean (or with `force`).
+
+  On a scratch crate, the first run removed `leftover` and `struct Unused`. That made `helper`
+  an orphan, and the second run removed it. The third found nothing, and `cargo check` passed.
 - Apply the compiler's own fixes (roadmap 7.2, #158): `fix: true` on `code_check` / `code_lint`
   and `prod-code check --fix` / `lint --fix` (Rust):
   - every suggestion rustc or clippy marks `MachineApplicable` is applied to the checkout in one

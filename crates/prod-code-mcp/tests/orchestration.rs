@@ -3241,3 +3241,82 @@ async fn a_trait_is_extracted_from_the_methods_named_with_its_callers_imports() 
         "{err:#}"
     );
 }
+
+const ORPHANS: &str = "pub fn used() -> u32 {\n    helper()\n}\n\nfn helper() -> u32 {\n    1\n}\n\nfn leftover() -> u32 {\n    2\n}\n\nstruct Unused {\n    a: u32,\n}\n";
+
+/// Every orphan the scan finds goes in one edit, even when the analyzer answers each deletion
+/// with the whole file replaced; a public function and a referenced one stay, and a result the
+/// analyzer rejects is not written.
+#[tokio::test]
+async fn orphans_are_pruned_in_one_checked_edit() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", ORPHANS);
+    commit(&ws);
+    let without_leftover = ORPHANS.replace("fn leftover() -> u32 {\n    2\n}\n\n", "");
+    let without_unused = ORPHANS.replace("struct Unused {\n    a: u32,\n}\n", "");
+    let script = |rejects: bool| {
+        let (l, left, unused) = (
+            lib.clone(),
+            without_leftover.clone(),
+            without_unused.clone(),
+        );
+        let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        scripted_gateway(Arc::new(move |method, params| {
+            let line = params.pointer("/position/line").and_then(|v| v.as_u64());
+            match method {
+                "textDocument/documentSymbol" => serde_json::json!([
+                    answers::document_symbol("used", 12, 1, 3, 8),
+                    answers::document_symbol("helper", 12, 5, 7, 4),
+                    answers::document_symbol("leftover", 12, 9, 11, 4),
+                    answers::document_symbol("Unused", 23, 13, 15, 8),
+                ]),
+                "textDocument/references" => match line {
+                    Some(4) => answers::locations(&l, &[(2, 5)]),
+                    _ => serde_json::json!([]),
+                },
+                "prodCode/safeDelete" => match line {
+                    Some(8) => answers::whole_file(&l, ORPHANS, &left),
+                    Some(12) => answers::whole_file(&l, ORPHANS, &unused),
+                    _ => serde_json::Value::Null,
+                },
+                "textDocument/diagnostic"
+                    if !rejects
+                        || pulls
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            .is_multiple_of(2) =>
+                {
+                    answers::no_diagnostics()
+                }
+                "textDocument/diagnostic" => {
+                    answers::error_at(2, 5, "E0425", "cannot find function `helper`")
+                }
+                _ => serde_json::Value::Null,
+            }
+        }))
+    };
+
+    let err = prod_code_mcp::prune::prune_orphans(script(true).await, &root, 50, true, false)
+        .await
+        .expect_err("a result that does not compile is not written");
+    assert!(format!("{err:#}").contains("does not compile"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), ORPHANS);
+
+    let pruned = prod_code_mcp::prune::prune_orphans(script(false).await, &root, 50, true, false)
+        .await
+        .expect("pruned");
+    let names: Vec<&str> = pruned.removed.iter().map(|d| d.name.as_str()).collect();
+    assert_eq!(names, ["leftover", "Unused"]);
+    assert!(pruned.skipped.is_empty(), "{:?}", pruned.skipped);
+    assert!(pruned.applied);
+    assert_eq!(
+        ws.read("src/lib.rs"),
+        "pub fn used() -> u32 {\n    helper()\n}\n\nfn helper() -> u32 {\n    1\n}\n\n"
+    );
+    assert!(pruned.render().contains("2 orphan(s)"));
+}
