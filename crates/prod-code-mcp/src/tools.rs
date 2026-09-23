@@ -42,24 +42,26 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_check".to_string(),
-            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine."
+            description: "Compile-check the whole workspace on the remote gateway (cargo check / go build) and return structured compiler errors and warnings with file:line:col. Nothing runs on the local machine. `fix: true` (Rust) applies every fix the compiler marks machine-applicable to the checkout in one edit, then checks again and reports what was fixed, what was skipped and why, and what is left."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "fix": { "type": "boolean", "description": "Rust: apply the compiler's machine-applicable fixes, then check again (default false)" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
         },
         McpTool {
             name: "code_lint".to_string(),
-            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings / go vet) and return structured findings with file:line:col."
+            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings / go vet) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "fix": { "type": "boolean", "description": "Rust: apply the machine-applicable fixes, then lint again (default false)" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
@@ -3221,6 +3223,23 @@ async fn handle_check(
         .get("path")
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
+    let fix = args.get("fix").and_then(|v| v.as_bool()).unwrap_or(false);
+    if fix && kind != crate::verify::VerifyKind::Test {
+        let fixed = crate::fixit::check_and_fix(
+            remote,
+            workspace_root,
+            hint.as_deref(),
+            kind,
+            timeout_secs,
+        )
+        .await?;
+        let text = fixed.render(40);
+        return Ok(if fixed.ok() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        });
+    }
     let report = crate::verify::run_verify(
         remote,
         workspace_root,

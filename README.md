@@ -122,7 +122,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 
 | tool | what it does |
 |---|---|
-| `code_check` · `code_lint` · `code_test` | build, lint and test on the node with parsed diagnostics; `path` narrows to one crate, package or directory |
+| `code_check` · `code_lint` · `code_test` | build, lint and test on the node with parsed diagnostics; `path` narrows to one crate, package or directory; `fix: true` applies the compiler's machine-applicable fixes and checks again (Rust) |
 | `code_exec` | any command in the workspace copy; formatters, generators and lockfiles are written back |
 | `code_diagnose_failure` | run the tests and, for each failure, the failing site, its callers and what changed |
 

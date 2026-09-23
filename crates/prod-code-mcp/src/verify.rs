@@ -77,6 +77,9 @@ pub struct VerifyReport {
     pub failures: Vec<TestFailure>,
     /// Tail of the raw combined output, for anything the parsers did not understand.
     pub tail: String,
+    /// The compiler's machine-applicable fixes (Rust check and lint), for `fix: true`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fixes: Vec<crate::fixit::Fix>,
 }
 
 impl VerifyReport {
@@ -1587,10 +1590,12 @@ pub async fn run_verify(
     let stderr = String::from_utf8_lossy(&stderr);
 
     let mut diagnostics = Vec::new();
+    let mut fixes = Vec::new();
     let (mut tests_passed, mut tests_failed, mut failures) = (0, 0, Vec::new());
     match (language, kind) {
         ("rust", VerifyKind::Check) | ("rust", VerifyKind::Lint) => {
             diagnostics.extend(stdout.lines().filter_map(parse_cargo_json_line));
+            fixes.extend(stdout.lines().flat_map(crate::fixit::parse_fixes));
         }
         ("rust", VerifyKind::Test) => {
             diagnostics.extend(parse_rustc_text(&stderr));
@@ -1694,6 +1699,7 @@ pub async fn run_verify(
         tests_failed,
         failures,
         tail: tail.text(),
+        fixes,
     })
 }
 
@@ -2006,6 +2012,7 @@ expected 42, got 43\n\
                 output: "boom\n".into(),
             }],
             tail: String::new(),
+            fixes: vec![],
         };
         assert_eq!(
             report.summary(),
