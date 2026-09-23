@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **An assist refused inside a macro call says so** (#99). Inside a macro call's input
+  rust-analyzer offers few refactorings — inside `tokio::select!` only `inline_macro` — and the
+  refusal said only "not offered here; available: inline_macro". It now names the macro and says
+  to move the code out into a function first, which is how the gateway's 1,400-line
+  `select!` arm had to be split (#86).
 - **An analyzer panic no longer fails a whole validation** (#94). rust-analyzer panics on some
   valid code (a `move` closure passed to `std::thread::scope`, for one), and the panic came back
   as `query task failed: task N panicked`, which failed `validate` and every write tool without
