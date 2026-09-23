@@ -250,6 +250,10 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **diagnose suggests the compiler's fixes when the tests do not build** (roadmap 8.2, #206).
+  - The dossier lists the machine-applicable fixes rustc has for the build errors, for example
+    `src/lib.rs:10: mismatched types: consider borrowing here`.
+  - It names `prod-code check --fix`, which applies them.
 - **`lint --fix` for Python, TypeScript and C++; C++ lint with clang-tidy** (roadmap 7.2, #205).
   - The linter's own fix mode runs on the node: `ruff check --fix`, `eslint --fix` / `biome
     lint --write`, or `clang-tidy -fix`. The files it rewrote come back into the checkout, each

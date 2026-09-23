@@ -55,6 +55,10 @@ pub struct DossierReport {
     pub dossiers: Vec<FailureDossier>,
     /// Compiler diagnostics when the tests did not even build.
     pub build_errors: Vec<String>,
+    /// The compiler's own machine-applicable fixes for those build errors, `file:line: what`
+    /// (Rust), which `prod-code check --fix` applies.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_fixes: Vec<String>,
     pub tail: String,
 }
 
@@ -76,6 +80,14 @@ impl DossierReport {
             out.push_str("build errors:\n");
             for e in &self.build_errors {
                 out.push_str(&format!("  {e}\n"));
+            }
+        }
+        if !self.suggested_fixes.is_empty() {
+            out.push_str(
+                "suggested fixes (the compiler's own, machine-applicable; `prod-code check --fix` applies them):\n",
+            );
+            for f in &self.suggested_fixes {
+                out.push_str(&format!("  {f}\n"));
             }
         }
         for d in &self.dossiers {
@@ -256,6 +268,25 @@ fn git_diff_of(root: &Path, file: &str) -> Option<String> {
     }
 }
 
+/// The error-level fixes among `fixes`, one line each: `file:line: message`.
+pub fn suggested(fixes: &[crate::fixit::Fix]) -> Vec<String> {
+    let mut out: Vec<String> = fixes
+        .iter()
+        .filter(|f| f.level == "error")
+        .filter_map(|f| {
+            let first = f.edits.first()?;
+            Some(format!(
+                "{}:{}: {}",
+                first.file,
+                first.line,
+                f.message.lines().next().unwrap_or("")
+            ))
+        })
+        .collect();
+    out.dedup();
+    out
+}
+
 /// Runs the tests (all, or `filter`) and builds a dossier for every failure.
 pub async fn diagnose(
     remote: SocketAddr,
@@ -287,6 +318,23 @@ pub async fn diagnose(
             )
         })
         .collect();
+    // Tests that do not build fail for a reason the compiler may already know how to fix: its
+    // machine-applicable suggestions for the errors are the fixes to suggest.
+    let suggested_fixes = if build_errors.is_empty() || report.language != "rust" {
+        Vec::new()
+    } else {
+        run_verify(
+            remote,
+            root,
+            Some(root),
+            VerifyKind::Check,
+            None,
+            timeout_secs,
+        )
+        .await
+        .map(|check| suggested(&check.fixes))
+        .unwrap_or_default()
+    };
     let mut dossiers = Vec::new();
     if !report.failures.is_empty() {
         let mut session = LspSession::open(remote, root, None).await.ok();
@@ -408,6 +456,7 @@ pub async fn diagnose(
         tests_failed: report.tests_failed,
         dossiers,
         build_errors,
+        suggested_fixes,
         tail: report.tail.clone(),
     })
 }
@@ -498,6 +547,31 @@ mod tests {
                 ("src/lib.rs".to_string(), 3),
                 ("t.py".to_string(), 2)
             ]
+        );
+    }
+
+    #[test]
+    fn only_the_fixes_for_errors_are_suggested() {
+        let fix = |level: &str, message: &str| crate::fixit::Fix {
+            level: level.to_string(),
+            code: None,
+            message: message.to_string(),
+            edits: vec![crate::fixit::Edit {
+                file: "src/lib.rs".into(),
+                start: 0,
+                end: 1,
+                line: 4,
+                line_text: None,
+                replacement: String::new(),
+            }],
+        };
+        assert_eq!(
+            suggested(&[
+                fix("error", "mismatched types\nconsider borrowing"),
+                fix("warning", "unused variable"),
+                fix("error", "mismatched types\nconsider borrowing"),
+            ]),
+            vec!["src/lib.rs:4: mismatched types".to_string()]
         );
     }
 }

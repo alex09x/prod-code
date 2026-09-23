@@ -805,10 +805,22 @@ async fn dossier_report_render_says_no_failures_when_the_run_was_clean() {
         tests_failed: 0,
         dossiers: vec![],
         build_errors: vec![],
+        suggested_fixes: vec![],
         tail: String::new(),
     };
 
     assert!(report.render().contains("no failures"));
+
+    // Tests that did not build: the compiler's own fixes for the errors are suggested.
+    let broken = DossierReport {
+        build_errors: vec!["mismatched types (src/lib.rs:4)".to_string()],
+        suggested_fixes: vec!["src/lib.rs:4: mismatched types".to_string()],
+        ..report
+    };
+    let text = broken.render();
+    assert!(text.contains("suggested fixes"), "{text}");
+    assert!(text.contains("  src/lib.rs:4: mismatched types"), "{text}");
+    assert!(text.contains("prod-code check --fix"), "{text}");
 }
 
 /// [`FailureSite`] and [`FailureDossier`] are plain data the tools above assemble; `render`
@@ -840,6 +852,7 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
             }],
         }],
         build_errors: vec![],
+        suggested_fixes: vec![],
         tail: String::new(),
     };
 
