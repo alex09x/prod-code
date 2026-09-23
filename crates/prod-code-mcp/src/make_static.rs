@@ -198,11 +198,17 @@ pub async fn make_static(
         !mentions(&text[body_open..body_close], "self"),
         "`{name}` uses `self`; only a method that never does can lose its receiver"
     );
-    let (owner, _, _, _) = crate::extract_field::impl_blocks(&text)
+    let (owner, impl_at, impl_open, _) = crate::extract_field::impl_blocks(&text)
         .into_iter()
         .filter(|(_, _, o, c)| *o < start && start < *c)
         .min_by_key(|(_, _, o, c)| c - o)
         .context("the method is not inside an `impl` block")?;
+    // A trait decides whether its methods take a receiver; an implementation cannot drop it.
+    anyhow::ensure!(
+        !text[impl_at..impl_open].contains(" for "),
+        "`{name}` implements a trait method, and the trait decides whether it takes `self`; \
+         change the trait instead"
+    );
 
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     edits

@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- **`code_make_static` refuses a method in a trait `impl`** (#113). The trait decides whether its
+  methods take a receiver; an implementation that dropped it would no longer implement the trait,
+  and the first version would have dropped it. Found while writing the post that describes the
+  tool, where the claim that "the check reports it" could not be backed.
 - **The coverage gate no longer fails on a file with no code** (#102). A crate root of `pub mod`
   and `pub use` lines has no regions, and naming it failed the whole run with "no coverage data"
   after a seven-minute instrumented build, whose report was a temporary file. Such a file is
