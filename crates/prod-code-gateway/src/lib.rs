@@ -1296,7 +1296,8 @@ async fn refresh_engines(
     }
 }
 
-/// Kills the command and everything it spawned (its process group), then the child itself.
+/// Kills a tokio child and everything it spawned (its process group), then the child itself:
+/// shadow runs, which let tokio reap their children.
 fn kill_exec_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
@@ -1332,6 +1333,7 @@ pub async fn run_exec(
         server_workspace_root: workspace_str.clone(),
         timed_out: false,
         error: Some(error),
+        usage: None,
     };
     if !workspace.is_dir() {
         framed
@@ -1367,18 +1369,21 @@ pub async fn run_exec(
         }
         _ => workspace.clone(),
     };
-    let mut cmd = tokio::process::Command::new(program);
+    // A std child, reaped here with `wait4` so its resource use comes back with the exit
+    // status (#180); tokio only gets the pipes.
+    let mut cmd = std::process::Command::new(program);
     cmd.args(args)
         .current_dir(&run_dir)
         .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(std::process::Stdio::piped());
     // Own process group, so a timeout or client disconnect can take down the whole tree
     // (cargo -> test binary -> its helpers), not just the direct child.
-    #[cfg(unix)]
-    cmd.process_group(0);
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
@@ -1399,7 +1404,11 @@ pub async fn run_exec(
     // rapidfire (lock-free MPSC): stdout and stderr readers fan in, the session task drains.
     let (tx, mut rx) = rapidfire::mpsc::bounded::<ExecChunk>(256);
     let mut readers = Vec::new();
-    if let Some(mut out) = child.stdout.take() {
+    if let Some(mut out) = child
+        .stdout
+        .take()
+        .and_then(|o| tokio::process::ChildStdout::from_std(o).ok())
+    {
         let tx = tx.clone();
         readers.push(tokio::spawn(async move {
             let mut buf = vec![0u8; 16 * 1024];
@@ -1420,7 +1429,11 @@ pub async fn run_exec(
             }
         }));
     }
-    if let Some(mut err) = child.stderr.take() {
+    if let Some(mut err) = child
+        .stderr
+        .take()
+        .and_then(|e| tokio::process::ChildStderr::from_std(e).ok())
+    {
         let tx = tx.clone();
         readers.push(tokio::spawn(async move {
             let mut buf = vec![0u8; 16 * 1024];
@@ -1442,6 +1455,17 @@ pub async fn run_exec(
         }));
     }
     drop(tx);
+    // Reaped on a blocking thread; the pid stays ours to kill until then.
+    let pid = child.id();
+    let exited = Arc::new(std::sync::Mutex::new(false));
+    let (exit_tx, mut exit_rx) = tokio::sync::oneshot::channel();
+    {
+        let exited = exited.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = exit_tx.send(wait_with_usage(pid as i32, &exited));
+            drop(child);
+        });
+    }
 
     let timeout = std::time::Duration::from_secs(if req.timeout_secs == 0 {
         EXEC_DEFAULT_TIMEOUT_SECS
@@ -1458,17 +1482,17 @@ pub async fn run_exec(
                 Ok(chunk) => framed.send(WireMessage::ExecChunk(chunk)).await?,
                 Err(_) => chunks_open = false,
             },
-            exit = child.wait(), if status.is_none() => {
-                status = Some(exit);
+            exit = &mut exit_rx, if status.is_none() => {
+                status = Some(exit.ok().flatten());
             }
-            _ = tokio::time::sleep_until(deadline), if !timed_out => {
+            _ = tokio::time::sleep_until(deadline), if !timed_out && status.is_none() => {
                 timed_out = true;
-                kill_exec_tree(&mut child);
+                kill_exec_group(pid, &exited);
             }
             incoming = framed.next(), if status.is_none() => match incoming {
                 Some(Ok(WireMessage::Ping)) => framed.send(WireMessage::Pong).await?,
                 Some(Ok(WireMessage::Disconnect { .. })) | None => {
-                    kill_exec_tree(&mut child);
+                    kill_exec_group(pid, &exited);
                     tracing::info!(workspace = %workspace_str, "🛠️ [EXEC] client left; command killed");
                     return Ok(());
                 }
@@ -1482,7 +1506,13 @@ pub async fn run_exec(
     for reader in readers {
         let _ = reader.await;
     }
-    let exit_code = status.and_then(|s| s.ok()).and_then(|s| s.code());
+    let (exit_code, usage) = match status.flatten() {
+        Some((raw, usage)) => {
+            use std::os::unix::process::ExitStatusExt;
+            (std::process::ExitStatus::from_raw(raw).code(), Some(usage))
+        }
+        None => (None, None),
+    };
     let duration_ms = start.elapsed().as_millis() as u64;
     tracing::info!(
         workspace = %workspace_str,
@@ -1536,9 +1566,86 @@ pub async fn run_exec(
             server_workspace_root: workspace_str,
             timed_out,
             error: None,
+            usage,
         }))
         .await?;
     Ok(())
+}
+
+/// What `wait4` says about a finished child: its raw wait status and what it and the
+/// descendants it waited for used.
+fn wait_with_usage(
+    pid: i32,
+    exited: &std::sync::Mutex<bool>,
+) -> Option<(i32, prod_code_protocol::ExecUsage)> {
+    // Wait for the exit without reaping, so that until `exited` is set under the lock the pid
+    // can only be this child's, running or a zombie: a kill cannot reach a recycled pid.
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid value for `waitid` to fill in.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is valid for writes; WNOWAIT leaves the child to be reaped below.
+        let got = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if got == 0 {
+            break;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return None;
+        }
+    }
+    let mut done = exited.lock().unwrap_or_else(|e| e.into_inner());
+    *done = true;
+    let mut status: libc::c_int = 0;
+    // SAFETY: an all-zero `rusage` is a valid value for `wait4` to fill in.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    loop {
+        // SAFETY: `status` and `usage` are valid for writes for the duration of the call, and
+        // `pid` is a child of this process that nothing else waits for.
+        let got = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
+        if got == pid {
+            break;
+        }
+        if got == -1 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return None;
+    }
+    let ms = |t: libc::timeval| t.tv_sec as u64 * 1000 + t.tv_usec as u64 / 1000;
+    // Linux reports the peak in KiB, macOS in bytes.
+    let max_rss_kb = if cfg!(target_os = "macos") {
+        usage.ru_maxrss as u64 / 1024
+    } else {
+        usage.ru_maxrss as u64
+    };
+    Some((
+        status,
+        prod_code_protocol::ExecUsage {
+            cpu_user_ms: ms(usage.ru_utime),
+            cpu_sys_ms: ms(usage.ru_stime),
+            max_rss_kb,
+        },
+    ))
+}
+
+/// Kills the process group led by `pid` (the command and everything it spawned), and `pid`
+/// itself, unless the child has already exited: then the pid may no longer be its own.
+fn kill_exec_group(pid: u32, exited: &std::sync::Mutex<bool>) {
+    let done = exited.lock().unwrap_or_else(|e| e.into_inner());
+    if *done {
+        return;
+    }
+    let _ = std::process::Command::new("kill")
+        .args(["-9", "--", &format!("-{pid}")])
+        .status();
+    let _ = std::process::Command::new("kill")
+        .args(["-9", &pid.to_string()])
+        .status();
 }
 
 /// Apply batch file synchronization to server workspace storage.

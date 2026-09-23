@@ -129,6 +129,7 @@ async fn run_remote_streams_output_and_writes_back_pulled_files() {
                 server_workspace_root: "/srv/ws".to_string(),
                 timed_out: false,
                 error: None,
+                usage: None,
             }))
             .await
             .unwrap();

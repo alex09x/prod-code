@@ -209,6 +209,7 @@ async fn handle_client(
                             server_workspace_root: req.client_workspace_root,
                             timed_out: false,
                             error: None,
+                            usage: None,
                         }))
                         .await?;
                 } else {
@@ -225,6 +226,7 @@ async fn handle_client(
                             server_workspace_root: req.client_workspace_root,
                             timed_out: false,
                             error: None,
+                            usage: None,
                         }))
                         .await?;
                 }

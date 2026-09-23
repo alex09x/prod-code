@@ -1288,6 +1288,11 @@ async fn the_gateway_runs_commands_and_hypotheses() {
         failed.contains("out"),
         "and so is what it printed: {failed}"
     );
+    // What it used comes back with the exit status, from `wait4` (#180).
+    assert!(
+        failed.contains(" (cpu ") && failed.contains(" MB)"),
+        "the summary carries the command's CPU time and peak memory: {failed}"
+    );
 
     // A command that outstays its timeout is killed, and the tree it started with it.
     let timed_out = prod_code_mcp::tools::execute_tool(

@@ -785,6 +785,7 @@ async fn exec_gateway(
                 server_workspace_root,
                 timed_out: false,
                 error: None,
+                usage: None,
             }))
             .await;
         let _ = framed.next().await;

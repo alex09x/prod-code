@@ -170,7 +170,7 @@ still open is listed per item below: parameter removal across trait implementati
 
 ### Engineering Milestones
 
-- [~] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — basic `ExecRequest` / streamed `ExecChunk` / `ExecExit` shipped 2026-09-19 (argv, env, timeout).
+- [~] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — basic `ExecRequest` / streamed `ExecChunk` / `ExecExit` shipped 2026-09-19 (argv, env, timeout). `ExecExit.usage` added 2026-09-23 (#180): CPU user/sys time and peak RSS of the command and its children, read with `wait4`.
   - Define `RemoteExecRequest`:
     - `language`: `rust`, `go`, `cpp`, `typescript`, `python`, `swift`.
     - `command`: `check`, `test`, `lint`, `bench`, or custom runner command.
@@ -197,7 +197,7 @@ still open is listed per item below: parameter removal across trait implementati
   - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
 
-- [~] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Benchmarks followed on 2026-09-23 (#178). `prod-code benchmarks [FILTER]` and MCP `code_benchmarks` run `cargo bench --workspace` or `go test -run '^$' -bench`. The results are parsed from criterion (estimate and interval, with a long name read from the line before), libtest (`ns/iter (+/- N)`) and Go (`ns/op`). `prod-code bench` stays the gateway's own load benchmark. Remaining: CPU/RSS in the summary.
+- [x] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Benchmarks followed on 2026-09-23 (#178). `prod-code benchmarks [FILTER]` and MCP `code_benchmarks` run `cargo bench --workspace` or `go test -run '^$' -bench`. The results are parsed from criterion (estimate and interval, with a long name read from the line before), libtest (`ns/iter (+/- N)`) and Go (`ns/op`). `prod-code bench` stays the gateway's own load benchmark. CPU and peak RSS in the exec summary followed on 2026-09-23 (#180).
   - **Client CLI Commands**:
     - `prod-code check`: remote compilation check across any language with instant terminal diagnostics.
     - `prod-code test [FILTER]`: remote test runner with real-time test output streaming.
