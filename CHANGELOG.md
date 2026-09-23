@@ -247,6 +247,18 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **safe_delete removes a trait method's parameter everywhere** (roadmap 7.1.1, #194). This
+  works on a parameter in the trait or in an implementation (`_unused` counts too):
+  - the parameter goes by position from the trait's declaration and from every
+    implementation the analyzer lists;
+  - every call loses the argument. A method call passes it at that position; a path call
+    (`Shape::area(c, …)`) passes the receiver first;
+  - nothing is written while a body uses the parameter, while an argument would be dropped
+    that does something (a call, a macro, `?`, `.await`), or while the method is used as a
+    value. `force` overrides that;
+  - the whole change is type-checked first.
+  Before, this failed with "its declaration … is no longer in src/lib.rs exactly once". The
+  trait's declaration and an implementation had the same text.
 - **A whole module moves to another parent** (roadmap 7.1.1, #188): MCP `code_move_module` and
   `prod-code move-module src/a/b.rs --to src/c/b.rs [--verify compile] [--apply]`. `a::b`
   becomes `c::b`:

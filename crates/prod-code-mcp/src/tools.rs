@@ -3824,6 +3824,34 @@ async fn handle_safe_delete(
     let text = std::fs::read_to_string(&file_path).unwrap_or_default();
     if let Some((fn_at, name, kept)) = crate::signature::parameter_at(&text, line, character) {
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        // A trait method's parameter goes from the trait, every implementation and every call,
+        // by its position (#194).
+        if crate::trait_param::owner_of(&text, fn_at).is_some() {
+            let (_, open, close) = crate::signature::param_span(&text, fn_at)
+                .context("the method has no parameter list")?;
+            let (_, declared) = crate::signature::parse_declared(&text[open..close]);
+            let index = declared
+                .iter()
+                .position(|d| d.name == name)
+                .context("the parameter is not in the method's list")?;
+            let done = crate::trait_param::remove_parameter(
+                remote,
+                workspace_root,
+                &file_path,
+                fn_at,
+                index,
+                true,
+                force,
+            )
+            .await
+            .with_context(|| format!("safe delete of the parameter `{name}` refused"))?;
+            let text = done.render(6000);
+            return Ok(if done.applied && done.diagnostics.is_empty() {
+                McpToolCallResult::text(text)
+            } else {
+                McpToolCallResult::error(text)
+            });
+        }
         let request = kept
             .iter()
             .map(|k| crate::signature::parse_param(k))

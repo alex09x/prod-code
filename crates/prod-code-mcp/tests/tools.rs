@@ -2139,3 +2139,40 @@ async fn move_module_reports_then_moves_the_file() {
     assert_eq!(ws.read("src/c.rs"), "pub mod b;\n\npub fn g() {}\n");
     assert_eq!(ws.read("src/a.rs"), "");
 }
+
+const TRAIT_ONE: &str = "pub trait T {\n    fn f(&self, a: u8, b: u8) -> u8;\n}\n\npub struct S;\n\nimpl T for S {\n    fn f(&self, a: u8, _b: u8) -> u8 {\n        a\n    }\n}\n\npub fn g(s: &S) -> u8 {\n    s.f(1, 2)\n}\n";
+
+/// `code_safe_delete` on a trait method's parameter removes it from the trait, the
+/// implementation and the call, by position (#194).
+#[tokio::test]
+async fn safe_delete_removes_a_trait_method_parameter_everywhere() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", TRAIT_ONE);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/implementation" => answers::locations(&l, &[(8, 8)]),
+        "textDocument/references" => answers::locations(&l, &[(8, 8), (14, 7)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_safe_delete",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 24 }),
+    )
+    .await
+    .expect("it runs");
+    let text = text_of(&result);
+    assert!(
+        text.contains("leaves `T::f`: 2 declaration(s), 1 call(s)"),
+        "{text}"
+    );
+    assert!(text.contains("[applied]"), "{text}");
+    let now = ws.read("src/lib.rs");
+    assert!(now.contains("fn f(&self, a: u8) -> u8;"), "{now}");
+    assert!(now.contains("fn f(&self, a: u8) -> u8 {"), "{now}");
+    assert!(now.contains("s.f(1)"), "{now}");
+}
