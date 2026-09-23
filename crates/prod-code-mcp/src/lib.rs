@@ -28,6 +28,7 @@ pub mod shadow;
 pub mod signature;
 pub mod slice;
 pub mod sync;
+pub mod to_method;
 pub mod tools;
 pub mod type_migration;
 pub mod verify;

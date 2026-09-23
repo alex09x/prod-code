@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 542 tests | 5 min |
+| `cargo test --workspace` — 548 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
@@ -105,6 +105,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_generify` | a parameter's concrete type turned into a bounded type parameter, every file that calls it type-checked against the new signature |
 | `code_invert_boolean` | a predicate renamed to its opposite, its body negated, every caller unchanged in effect |
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
+| `code_convert_to_method` | an associated function turned into a method: its first parameter becomes `self`, `Type::f(&x, a)` becomes `x.f(a)` |
 | `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |
 | `code_extract_field` | an expression in a method turned into a field of its type, initialised wherever the type is built |
 | `code_encapsulate_field` | a public field made private, every read and write outside its file turned into a getter or setter call |
@@ -137,7 +138,7 @@ has to grep for a line number:
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
 fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | invert-boolean | generify | hover | def | refs | callers | callees |
+extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | invert-boolean | generify | hover | def | refs | callers | callees |
 impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
 diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
 cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a

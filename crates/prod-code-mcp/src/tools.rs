@@ -312,6 +312,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_convert_to_method".to_string(),
+            description: "Turn an associated function into a method, with every call site: the other direction of `code_make_static`. Give the function's name position (or `symbol`). Its first parameter, whose type must be the `impl`'s own type (`T`, `&T`, `&mut T` or `Self`), becomes the receiver (`self`, `&self`, `&mut self`); the parameter's uses in the body become `self`, as the analyzer resolves them; and `Type::f(first, rest)` becomes `first.f(rest)`, with a leading `&` or `&mut` dropped because method syntax borrows by itself. Nothing is dropped or reordered — the receiver is evaluated first, as the first argument was. The function used as a value (`Type::f`) and a call inside the function itself are left as they are: a method is still reachable by its path. A function in a trait `impl` and a free function are refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function" },
+                    "line": { "type": "integer", "description": "1-based line of the function's name" },
+                    "character": { "type": "integer", "description": "1-based column of the function's name" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_wrap_return".to_string(),
             description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -870,6 +886,7 @@ pub async fn execute_tool(
         "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
+        "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,
         "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
@@ -1819,6 +1836,66 @@ async fn handle_make_static(
     let clean = done.diagnostics.is_empty()
         && done.blocked.is_empty()
         && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_convert_to_method(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
+    };
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::to_method::convert_to_method(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -3196,6 +3273,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_encapsulate_field",
     "code_wrap_return",
     "code_make_static",
+    "code_convert_to_method",
     "code_invert_boolean",
     "code_generify",
     "code_definition",

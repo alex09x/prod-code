@@ -2386,3 +2386,85 @@ async fn a_migration_converts_what_type_checks_and_reports_the_rest() {
     assert_eq!(dropped.sites.len(), 2, "{:?}", dropped.sites);
     assert!(dropped.render(10).contains("none was kept"));
 }
+
+const COUNTER: &str = "pub struct Counter {\n    pub n: u32,\n}\n\nimpl Counter {\n    pub fn bump(c: &mut Counter, by: u32) -> u32 {\n        c.n += by;\n        if by > 10 {\n            return Counter::bump(c, by - 10);\n        }\n        c.n\n    }\n}\n\npub fn run(items: &mut [Counter]) -> u32 {\n    let mut c = Counter { n: 1 };\n    Counter::bump(&mut c, 2);\n    let f = Counter::bump;\n    f(&mut c, 1) + crate::Counter::bump(&mut items[0], 3)\n}\n";
+
+/// An associated function becomes a method: the first parameter becomes the receiver and its uses
+/// in the body `self`, a path call becomes a method call on its first argument with the borrow
+/// dropped, and the function used as a value and the call inside the function itself are left
+/// alone, both still valid. A trait's function and a free function are refused.
+#[tokio::test]
+async fn an_associated_function_becomes_a_method_with_every_call() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", COUNTER);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let character = params
+            .pointer("/position/character")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        match method {
+            // The parameter `c` (6:17): its uses in the body, one of them in the recursive call.
+            "textDocument/references" if character == 16 => {
+                answers::locations(&l, &[(7, 9), (9, 34), (11, 9)])
+            }
+            // The function `bump`: the recursive call, two path calls and one use as a value.
+            "textDocument/references" => {
+                answers::locations(&l, &[(9, 29), (17, 14), (18, 22), (19, 36)])
+            }
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let done = prod_code_mcp::to_method::convert_to_method(remote, &root, &lib, 6, 12, true, false)
+        .await
+        .expect("the change runs");
+    assert_eq!(
+        (done.parameter.as_str(), done.receiver.as_str()),
+        ("c: &mut Counter", "&mut self")
+    );
+    assert_eq!(done.renamed_uses, 3);
+    assert_eq!(done.rewritten_calls, 2);
+    assert_eq!(done.unchanged.len(), 2, "{:?}", done.unchanged);
+    assert!(done.unchanged.iter().any(|u| u.contains("used as a value")));
+    assert!(
+        done.unchanged
+            .iter()
+            .any(|u| u.contains("inside `bump` itself"))
+    );
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    assert!(
+        written.contains("pub fn bump(&mut self, by: u32) -> u32 {\n        self.n += by;"),
+        "{written}"
+    );
+    assert!(
+        written.contains("return Counter::bump(self, by - 10);"),
+        "{written}"
+    );
+    assert!(written.contains("\n    c.bump(2);\n"), "{written}");
+    assert!(written.contains("let f = Counter::bump;"), "{written}");
+    assert!(written.contains("items[0].bump(3)"), "{written}");
+
+    let refused = write(
+        &ws,
+        "src/other.rs",
+        "pub struct S;\n\npub trait T {\n    fn f(s: &S);\n}\n\nimpl T for S {\n    fn f(s: &S) {}\n}\n\npub fn free(s: &S) {}\n\nimpl S {\n    pub fn g(x: u32) {}\n}\n",
+    );
+    for (line, col, why) in [
+        (8, 8, "implements a trait function"),
+        (11, 8, "not inside an `impl` block"),
+        (14, 12, "is not `S`, `&S` or `&mut S`"),
+    ] {
+        let remote = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+        let err = prod_code_mcp::to_method::convert_to_method(
+            remote, &root, &refused, line, col, false, false,
+        )
+        .await
+        .expect_err("refused");
+        assert!(format!("{err:#}").contains(why), "{err:#}");
+    }
+}
