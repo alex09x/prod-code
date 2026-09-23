@@ -53,20 +53,83 @@ enum Commands {
         /// Optional subpath to sync (defaults to entire workspace).
         path: Option<PathBuf>,
     },
-    /// Jump to symbol definition: prod-code def <file> <line> <col>
-    Def { file: PathBuf, line: u32, col: u32 },
-    /// Inspect symbol type & docs: prod-code hover <file> <line> <col>
-    Hover { file: PathBuf, line: u32, col: u32 },
-    /// Find all references to symbol: prod-code refs <file> <line> <col>
-    Refs { file: PathBuf, line: u32, col: u32 },
-    /// Who calls the function at a position: prod-code callers <file> <line> <col>
-    Callers { file: PathBuf, line: u32, col: u32 },
-    /// What the function at a position calls: prod-code callees <file> <line> <col>
-    Callees { file: PathBuf, line: u32, col: u32 },
-    /// Implementations of the trait / interface at a position: prod-code impls <file> <line> <col>
-    Impls { file: PathBuf, line: u32, col: u32 },
-    /// List document outline symbols: prod-code symbols <file>
-    Symbols { file: PathBuf },
+    /// Jump to symbol definition: prod-code def <file> <line> <col>, or --symbol NAME
+    Def {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// Inspect symbol type & docs: prod-code hover <file> <line> <col>, or --symbol NAME
+    Hover {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// Find all references to symbol: prod-code refs <file> <line> <col>, or --symbol NAME
+    Refs {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// Who calls the function at a position: prod-code callers <file> <line> <col>, or --symbol NAME
+    Callers {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// What the function at a position calls: prod-code callees <file> <line> <col>, or --symbol NAME
+    Callees {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// Implementations of the trait / interface at a position: prod-code impls <file> <line> <col>, or --symbol NAME
+    Impls {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
+    /// Declarations named like a query across the workspace: prod-code symbols <name>. Given an
+    /// existing file instead, its outline (the same as `prod-code outline <file>`).
+    Symbols { target: String },
+    /// The declarations of a file, nested: prod-code outline <file>
+    Outline { file: PathBuf },
     /// Blast radius of the uncommitted changes: changed functions, their callers and the affected tests
     Impact {
         /// Git ref to diff against (default: working tree vs HEAD)
@@ -110,6 +173,10 @@ enum Commands {
         /// Path of the proposed content; stdin when omitted
         #[arg(long)]
         from: Option<PathBuf>,
+        /// Another proposed file, checked together with the first in one overlay: FILE=NEW.
+        /// Repeat it for each file of a multi-file change.
+        #[arg(long = "with", value_name = "FILE=NEW")]
+        with: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -241,7 +308,6 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Change what a function takes, with every call site.
     /// Change a declared type and report every site that no longer fits.
     MigrateType {
         /// The declaration by name, or a file with `--line`. A struct field is rarely in the
@@ -408,6 +474,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Change what a function takes — reorder, add, remove parameters — with every call site.
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
         symbol: String,
@@ -600,17 +667,91 @@ async fn main() -> Result<()> {
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
-        Commands::Def { file, line, col } => run_definition(remote, &file, line, col).await,
-        Commands::Hover { file, line, col } => run_hover(remote, &file, line, col).await,
-        Commands::Refs { file, line, col } => run_references(remote, &file, line, col).await,
-        Commands::Callers { file, line, col } => {
-            run_call_hierarchy(remote, &file, line, col, true).await
+        Commands::Def {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_definition", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_definition(remote, &file, line, col).await
+            }
+        },
+        Commands::Hover {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_hover", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_hover(remote, &file, line, col).await
+            }
+        },
+        Commands::Refs {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_references", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_references(remote, &file, line, col).await
+            }
+        },
+        Commands::Callers {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_callers", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_call_hierarchy(remote, &file, line, col, true).await
+            }
+        },
+        Commands::Callees {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_callees", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_call_hierarchy(remote, &file, line, col, false).await
+            }
+        },
+        Commands::Impls {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_implementations", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                run_implementations(remote, &file, line, col).await
+            }
+        },
+        Commands::Symbols { target } => {
+            if Path::new(&target).is_file() {
+                run_symbols(remote, Path::new(&target)).await
+            } else {
+                run_tool(
+                    remote,
+                    "code_symbols",
+                    serde_json::json!({ "query": target }),
+                )
+                .await
+            }
         }
-        Commands::Callees { file, line, col } => {
-            run_call_hierarchy(remote, &file, line, col, false).await
-        }
-        Commands::Impls { file, line, col } => run_implementations(remote, &file, line, col).await,
-        Commands::Symbols { file } => run_symbols(remote, &file).await,
+        Commands::Outline { file } => run_symbols(remote, &file).await,
         Commands::Source {
             path,
             line,
@@ -633,7 +774,12 @@ async fn main() -> Result<()> {
             timeout_secs,
             json,
         } => run_diagnose(remote, filter.as_deref(), timeout_secs, json).await,
-        Commands::Validate { file, from, json } => {
+        Commands::Validate {
+            file,
+            from,
+            with,
+            json,
+        } => {
             let text = match from {
                 Some(path) => std::fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?,
@@ -643,7 +789,11 @@ async fn main() -> Result<()> {
                     buf
                 }
             };
-            run_diagnostics(remote, &file, Some(text), json).await
+            if with.is_empty() {
+                run_diagnostics(remote, &file, Some(text), json).await
+            } else {
+                run_validate_together(remote, &file, text, &with, json).await
+            }
         }
         Commands::Rename {
             file,
@@ -1528,6 +1678,80 @@ async fn run_diagnose(
 
 /// Diagnostics of a file as it is, or as it would be with `proposed` content (nothing is
 /// written). Exits 1 when there are errors.
+/// The position a command was given, when it was not given `--symbol`.
+fn position(
+    file: Option<PathBuf>,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<(PathBuf, u32, u32)> {
+    match (file, line, col) {
+        (Some(file), Some(line), Some(col)) => Ok((file, line, col)),
+        _ => anyhow::bail!("give <file> <line> <col>, or --symbol NAME"),
+    }
+}
+
+/// Runs one MCP tool from the current checkout and prints what it says; exit 1 on an error.
+async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let result = prod_code_mcp::tools::execute_tool(remote, &root, tool, args).await?;
+    for content in &result.content {
+        let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+        println!("{text}");
+    }
+    if result.is_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// A position command given `--symbol`: the MCP tool resolves the name, exactly as for an agent.
+async fn run_by_symbol(remote: SocketAddr, tool: &str, symbol: &str) -> Result<()> {
+    run_tool(remote, tool, serde_json::json!({ "symbol": symbol })).await
+}
+
+/// Several proposed files checked together in one overlay, so a change to one is judged against
+/// the proposed state of the others (a constant added in one file and imported in another).
+async fn run_validate_together(
+    remote: SocketAddr,
+    file: &Path,
+    text: String,
+    with: &[String],
+    json: bool,
+) -> Result<()> {
+    let abs = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let first = abs(file);
+    let cwd = env::current_dir()?;
+    let root = find_workspace_root(&first).unwrap_or(cwd);
+    let mut edits = vec![(first, text)];
+    for pair in with {
+        let (target, from) = pair
+            .split_once('=')
+            .with_context(|| format!("--with takes FILE=NEW, got `{pair}`"))?;
+        let new_text =
+            std::fs::read_to_string(from).with_context(|| format!("failed to read {from}"))?;
+        edits.push((abs(Path::new(target)), new_text));
+    }
+    let started = std::time::Instant::now();
+    let reports = prod_code_mcp::diagnostics::validate_texts(remote, &root, &edits, &[]).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+    } else {
+        for report in &reports {
+            print!("{}", report.render());
+        }
+        eprintln!(
+            "[prod-code] {} file(s) analysed together in {:.2}s",
+            edits.len(),
+            started.elapsed().as_secs_f64()
+        );
+    }
+    if reports.iter().any(|r| !r.ok()) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn run_diagnostics(
     remote: SocketAddr,
     file: &Path,

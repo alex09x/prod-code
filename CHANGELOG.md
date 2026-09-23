@@ -123,6 +123,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- The CLI reaches what the MCP tools already did (#93). `def`, `hover`, `refs`, `callers`,
+  `callees` and `impls` take `--symbol NAME` instead of `<file> <line> <col>`.
+  `prod-code symbols <name>` searches declarations by name; `symbols <file>` still outlines an
+  existing file, and `prod-code outline <file>` does so by its own name. `prod-code validate
+  FILE --from NEW --with OTHER=NEW2 …` checks several proposed files together in one overlay,
+  so a constant added in one file and re-exported in another is not reported as unresolved.
+  `change-signature` has its own help line, which had been printed under `migrate-type`.
 - Extract a field (roadmap 7.1.2): `code_extract_field` (MCP) and `prod-code extract-field
   <file> <line> <col> --to LINE:COL --name <field> --type <T>` promote an expression inside a
   method into a field of the type the method belongs to. The method reads `self.<field>`

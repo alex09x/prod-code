@@ -131,10 +131,14 @@ has to grep for a line number:
 { "name": "code_callers", "arguments": { "symbol": "Metrics::record" } }
 ```
 
-The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod | fixture | change-signature | schema-rename | hover |
-def | refs | callers | callees | impls | symbols | validate | diagnostics | check | lint | test |
-exec | impact | diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run |
-source | status | cluster | metrics`.
+The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
+fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
+extract-parameter | extract-field | encapsulate-field | hover | def | refs | callers | callees |
+impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
+diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
+cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a
+position, `prod-code symbols <name>` finds a declaration by name, and `prod-code validate FILE
+--from NEW --with OTHER=NEW2` checks a multi-file change in one overlay.
 
 ## Three things worth seeing
 
