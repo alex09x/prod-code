@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 536 tests | 5 min |
+| `cargo test --workspace` — 542 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
@@ -101,7 +101,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
-| `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done |
+| `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done; with `convert`, `.into()` written wherever the analyzer accepts it |
 | `code_generify` | a parameter's concrete type turned into a bounded type parameter, every file that calls it type-checked against the new signature |
 | `code_invert_boolean` | a predicate renamed to its opposite, its body negated, every caller unchanged in effect |
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |

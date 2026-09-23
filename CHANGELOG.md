@@ -133,6 +133,21 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Type migration writes conversions (roadmap 7.1.4, #119): `code_migrate_type` takes `convert`,
+  `prod-code migrate-type` takes `--convert`. At every site where the old and new types meet
+  (an E0308 naming both, on one line) `.into()` is written — parenthesized unless the expression
+  is a path, a call chain or a literal — and the overlay is type-checked again. A conversion whose
+  line still has an error is taken back and its site is reported as tried; the rest are checked
+  again, up to four rounds. If the kept conversions cause an error anywhere that was not in the
+  original report, none is kept and the report says why. `apply` writes the declaration with the
+  kept conversions. On a scratch crate, `u32` → `u64` converted the two widenings and left the
+  four narrowings, and `String` → `Box<str>` converted both sites, with `cargo check` agreeing in
+  both cases. Diagnostics now carry the end of their range internally. The analyzer's range for
+  a method call is the method's name alone, so it is extended over the argument list. Type names
+  are compared as the analyzer spells them: path prefixes at any depth are stripped, which also
+  fixes `Vec<std::string::String>`, and the `Global` allocator argument is dropped.
+- The scripted test gateway shows notifications (`didOpen`, `didChange`) to its script, so a
+  test can answer diagnostics from the text it was actually sent.
 - Make a parameter generic (roadmap 7.1.4, #117): `code_generify` (MCP) and `prod-code generify
   <function> --param NAME --bound TRAIT [--as T]`. The parameter's type becomes a type parameter
   with the given bound — `fn total(v: &Vec<u32>)` becomes `fn total<T: AsRef<[u32]>>(v: &T)` — with

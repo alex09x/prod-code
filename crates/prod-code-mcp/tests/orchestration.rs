@@ -1255,6 +1255,7 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
         "std::time::Duration",
         false,
         false,
+        false,
     )
     .await
     {
@@ -1309,6 +1310,7 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
         3,
         9,
         "std::time::Duration",
+        false,
         true,
         false,
     )
@@ -1326,6 +1328,7 @@ async fn a_migration_reports_the_work_and_refuses_to_write_half_of_it() {
         3,
         9,
         "std::time::Duration",
+        false,
         true,
         true,
     )
@@ -2234,4 +2237,152 @@ async fn a_generic_parameter_keeps_its_reference_and_every_caller_is_checked() {
     );
     assert!(msg.contains("caller.rs"), "{msg}");
     assert_eq!(ws.read("src/lib.rs"), before);
+}
+
+const LIMITS: &str =
+    "pub struct L {\n    pub t: u32,\n}\n\npub fn build(secs: u32) -> L {\n    L { t: secs }\n}\n";
+const KEEP: &str = "pub fn keep(l: &crate::L) -> u32 {\n    l.t\n}\n";
+
+/// A diagnostic the way rust-analyzer sends it, 1-based line, 0-based columns.
+fn mismatch(code: &str, message: &str, line: u32, from: u32, to: u32) -> serde_json::Value {
+    serde_json::json!({ "severity": 1, "code": code, "message": message,
+        "range": { "start": { "line": line - 1, "character": from },
+                   "end": { "line": line - 1, "character": to } } })
+}
+
+/// Converting a migration's sites: the widening one gets `.into()` because the analyzer accepts
+/// it there, the narrowing one is tried, rejected, taken back and reported as tried, and a set of
+/// conversions that breaks something elsewhere is dropped whole.
+#[tokio::test]
+async fn a_migration_converts_what_type_checks_and_reports_the_rest() {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", LIMITS);
+    let keep = write(&ws, "src/keep.rs", KEEP);
+    commit(&ws);
+
+    // The script plays the analyzer from the text it was sent: the field's declared type decides
+    // what the two files say, and `.into()` is accepted where `From` exists (u32 -> u64) and
+    // rejected where it does not (u64 -> u32).
+    let texts: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+    let breaks_elsewhere = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (k, t, b) = (
+        keep.clone(),
+        Arc::clone(&texts),
+        Arc::clone(&breaks_elsewhere),
+    );
+    let script: Answer = Arc::new(move |method: &str, params: &serde_json::Value| {
+        let uri = uri_of(params);
+        match method {
+            "textDocument/didOpen" => {
+                let text = params
+                    .pointer("/textDocument/text")
+                    .and_then(|v| v.as_str());
+                t.lock()
+                    .unwrap()
+                    .insert(uri, text.unwrap_or("").to_string());
+                serde_json::Value::Null
+            }
+            "textDocument/didChange" => {
+                let text = params
+                    .pointer("/contentChanges/0/text")
+                    .and_then(|v| v.as_str());
+                t.lock()
+                    .unwrap()
+                    .insert(uri, text.unwrap_or("").to_string());
+                serde_json::Value::Null
+            }
+            "textDocument/references" => answers::locations(&k, &[(2, 7)]),
+            "textDocument/diagnostic" => {
+                let texts = t.lock().unwrap();
+                let lib_text = texts
+                    .iter()
+                    .find(|(u, _)| u.ends_with("src/lib.rs"))
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or_default();
+                let wide = lib_text.contains("pub t: u64");
+                let this = texts.get(&uri).cloned().unwrap_or_default();
+                let mut items = Vec::new();
+                if uri.ends_with("src/lib.rs") && wide {
+                    if this.contains("L { t: secs }") {
+                        items.push(mismatch("E0308", "expected u64, found u32", 6, 11, 15));
+                    }
+                    if this.contains("secs.into()") && b.load(std::sync::atomic::Ordering::SeqCst) {
+                        items.push(mismatch("E0282", "type annotations needed", 1, 11, 12));
+                    }
+                }
+                if uri.ends_with("src/keep.rs") && wide {
+                    if this.contains("l.t.into()") {
+                        items.push(mismatch(
+                            "E0277",
+                            "the trait bound `u32: From<u64>` is not satisfied",
+                            2,
+                            4,
+                            14,
+                        ));
+                    } else {
+                        items.push(mismatch("E0308", "expected u32, found u64", 2, 4, 7));
+                    }
+                }
+                serde_json::json!({ "kind": "full", "items": items })
+            }
+            _ => serde_json::Value::Null,
+        }
+    });
+    let remote = scripted_gateway(Arc::clone(&script)).await;
+
+    let done =
+        prod_code_mcp::type_migration::migrate(remote, &root, &lib, 2, 9, "u64", true, true, true)
+            .await
+            .expect("the migration runs");
+    assert_eq!(done.converted.len(), 1, "{:?}", done.converted);
+    assert_eq!(
+        (
+            done.converted[0].was.as_str(),
+            done.converted[0].now.as_str()
+        ),
+        ("secs", "secs.into()")
+    );
+    assert_eq!(done.sites.len(), 1, "{:?}", done.sites);
+    assert_eq!(done.sites[0].file, "src/keep.rs");
+    assert!(
+        done.sites[0]
+            .suggestion
+            .as_deref()
+            .is_some_and(|s| s.contains("was tried here")),
+        "{:?}",
+        done.sites[0]
+    );
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    assert!(written.contains("pub t: u64,"), "{written}");
+    assert!(written.contains("L { t: secs.into() }"), "{written}");
+    assert_eq!(
+        ws.read("src/keep.rs"),
+        KEEP,
+        "a rejected conversion is not written"
+    );
+
+    // The same conversion, when it breaks another line, is not kept.
+    std::fs::write(&lib, LIMITS).unwrap();
+    breaks_elsewhere.store(true, std::sync::atomic::Ordering::SeqCst);
+    let remote = scripted_gateway(script).await;
+    let dropped = prod_code_mcp::type_migration::migrate(
+        remote, &root, &lib, 2, 9, "u64", true, false, false,
+    )
+    .await
+    .expect("the dry run reports");
+    assert!(dropped.converted.is_empty(), "{:?}", dropped.converted);
+    assert!(
+        dropped
+            .conversion_note
+            .as_deref()
+            .is_some_and(|n| n.contains("cause an error elsewhere") && n.contains("src/lib.rs:1")),
+        "{:?}",
+        dropped.conversion_note
+    );
+    assert_eq!(dropped.sites.len(), 2, "{:?}", dropped.sites);
+    assert!(dropped.render(10).contains("none was kept"));
 }

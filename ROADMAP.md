@@ -3,15 +3,15 @@
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
 **Where it stands** (v0.2.2, 2026-09-23): 43 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — 536 tests, and every file a change touches held at or
+four — three Linux and one macOS for Swift — 542 tests, and every file a change touches held at or
 above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
 **7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
 `code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
 the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
 `extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static`,
-`invert_boolean` and `generify`. What is still missing: the automatic half of `type_migration`
-(conversions injected at the sites that no longer fit), `convert_to_method` (the other direction of
-`make_static`), and `invert_boolean` for `bool` fields and variables.
+`invert_boolean` and `generify`. `type_migration` writes the conversions the analyzer accepts
+(`convert`). What is still missing: `convert_to_method` (the other direction of `make_static`),
+and `invert_boolean` for `bool` fields and variables.
 
 ---
 
@@ -227,8 +227,8 @@ the pieces rust-analyzer does not offer are tools of their own — `move`, `intr
     by asking the running analyzer for its actions at that kind of position; the assist id named
     is what it answered. What is left to build is four items, listed under **Still to build**,
     plus the ones marked *not applicable to Rust*.
-  - **Still to build**: the automatic half of `type_migration` (the constraint graph and
-    conversion injection). `introduce_parameter_object`, `extract_parameter`, `extract_field`,
+  - **Still to build**: nothing of the original list. The conversion half of `type_migration`
+    shipped 2026-09-23 (#119). `introduce_parameter_object`, `extract_parameter`, `extract_field`,
     the reporting half of `type_migration` and the workspace half of `encapsulate_field`
     shipped 2026-09-22. Nothing in rust-analyzer offers
     these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
@@ -295,7 +295,7 @@ the pieces rust-analyzer does not offer are tools of their own — `move`, `intr
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
 
   - **7.1.4. Data Flow & Advanced Type-System Refactorings**:
-    - [~] `refactor.type_migration(path, symbol, target_type)` — half of it shipped 2026-09-22 for Rust: `code_migrate_type` / `prod-code migrate-type` rewrite the declared type (field, parameter, return type, annotated `let`) in memory, type-check the workspace in one overlay, and report every site that no longer fits with its source line, suggesting the conversion where the error names both types. The whole-program constraint graph and automatic conversion injection are NOT done: the report is the deliverable, and `apply` writes only the declaration, refusing while sites remain.
+    - [x] `refactor.type_migration(path, symbol, target_type)` — shipped for Rust: `code_migrate_type` / `prod-code migrate-type` rewrite the declared type (field, parameter, return type, annotated `let`) in memory, type-check the workspace in one overlay, and report every site that no longer fits with its source line, suggesting the conversion where the error names both types (2026-09-22). With `convert` (2026-09-23, #119) `.into()` is written at every site where the old and new types meet and the overlay is checked again: a conversion stays only where the analyzer accepts it, a rejected one is taken back and its site reported as tried, and a set that causes an error anywhere else is dropped whole. `u32` → `u64` converts the widening sites and leaves the narrowing ones; `String` → `Box<str>` converts every site. Deliberately not done: a whole-program constraint graph that migrates the variables and signatures a value flows through. A site that should be migrated too is reported, and migrating it is its own run, with its own report.
       - Whole-program type migration: changes a symbol's type (e.g. `u32` -> `u64`, `String` -> `Uuid`, `T` -> `Option<T>` or `Result<T, E>`).
       - Solves whole-program data-flow constraint graph: computes transitively affected variables, return signatures, function parameters, and call sites.
       - Automatically injects necessary type conversions (`.into()`, `Some(...)`, `?`) or returns a guided conflict dossier for ambiguous coercions.
