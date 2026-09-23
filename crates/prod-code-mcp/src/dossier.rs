@@ -29,6 +29,20 @@ pub struct FailureDossier {
     pub test: String,
     pub output: String,
     pub sites: Vec<FailureSite>,
+    /// Changed functions whose callers reach this test, nearest first, with the hops and the
+    /// diff of their file when no site above already shows it.
+    #[serde(default)]
+    pub suspects: Vec<Suspect>,
+}
+
+/// A changed function on the path to a failing test.
+#[derive(Debug, Clone, Serialize)]
+pub struct Suspect {
+    pub function: String,
+    pub file: String,
+    pub line: u32,
+    pub hops: usize,
+    pub diff: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -84,6 +98,27 @@ impl DossierReport {
                     out.push_str(diff);
                     if !diff.ends_with('\n') {
                         out.push('\n');
+                    }
+                }
+            }
+            if !d.suspects.is_empty() {
+                out.push_str("suspects (changed functions that reach this test, nearest first):\n");
+                for s in &d.suspects {
+                    out.push_str(&format!(
+                        "  • {}  {}:{}  ({} call{} away)\n",
+                        s.function,
+                        s.file,
+                        s.line,
+                        s.hops,
+                        if s.hops == 1 { "" } else { "s" }
+                    ));
+                }
+                for s in &d.suspects {
+                    if let Some(diff) = &s.diff {
+                        out.push_str(&format!("changed in {}:\n{diff}", s.file));
+                        if !diff.ends_with('\n') {
+                            out.push('\n');
+                        }
                     }
                 }
             }
@@ -328,10 +363,30 @@ pub async fn diagnose(
                 test: failure.name.clone(),
                 output: failure.output.clone(),
                 sites,
+                suspects: Vec::new(),
             });
         }
         if let Some(session) = session {
             session.close().await;
+        }
+        // Which changed function reaches which failing test, through the callers graph.
+        if let Ok(impact) = crate::impact::analyze(remote, root, None, 4).await {
+            for d in &mut dossiers {
+                let shown: BTreeSet<String> = d.sites.iter().map(|s| s.file.clone()).collect();
+                let mut diffed = BTreeSet::new();
+                d.suspects = crate::impact::suspects_for(&impact.reaches, &d.test)
+                    .into_iter()
+                    .map(|(sym, hops)| Suspect {
+                        diff: (!shown.contains(&sym.file) && diffed.insert(sym.file.clone()))
+                            .then(|| git_diff_of(root, &sym.file))
+                            .flatten(),
+                        function: sym.name,
+                        file: sym.file,
+                        line: sym.line,
+                        hops,
+                    })
+                    .collect();
+            }
         }
     }
     let changed_files: Vec<String> = std::process::Command::new("git")

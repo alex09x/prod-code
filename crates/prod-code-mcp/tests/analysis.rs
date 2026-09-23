@@ -9,7 +9,7 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_mcp::dead_code::{self, DeadCodeReport, DeadItem};
-use prod_code_mcp::dossier::{self, DossierReport, FailureDossier, FailureSite};
+use prod_code_mcp::dossier::{self, DossierReport, FailureDossier, FailureSite, Suspect};
 use prod_code_mcp::impact::{self, ImpactReport, Symbol};
 use prod_code_protocol::{
     ExecChunk, ExecExit, ExecRequest, HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec,
@@ -216,6 +216,7 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
         ]),
         unattributed_files: vec!["Cargo.toml".to_string()],
         index: None,
+        reaches: vec![],
     };
 
     let text = report.render();
@@ -246,6 +247,7 @@ async fn impact_report_render_says_when_no_test_reaches_the_change() {
         test_command: None,
         unattributed_files: vec![],
         index: None,
+        reaches: vec![],
     };
 
     let text = report.render();
@@ -273,6 +275,7 @@ async fn impact_report_says_when_the_index_could_not_be_built() {
         test_command: None,
         unattributed_files: vec![],
         index: Some(build(ok)),
+        reaches: vec![],
     };
 
     let built = report(true).render();
@@ -394,6 +397,46 @@ async fn analyze_walks_the_call_hierarchy_from_a_changed_function_to_the_test_th
             "--".to_string(),
             "it_calls_wrapper".to_string()
         ])
+    );
+    // The test is two calls from the changed function: `helper` <- `wrapper` <- the test.
+    assert_eq!(
+        report.reaches,
+        vec![impact::Reach {
+            test: sym("it_calls_wrapper", "src/lib.rs", 12, 8),
+            changed: sym("helper", "src/lib.rs", 1, 8),
+            hops: 2,
+        }]
+    );
+    assert_eq!(
+        impact::suspects_for(&report.reaches, "tests::it_calls_wrapper"),
+        vec![(sym("helper", "src/lib.rs", 1, 8), 2)]
+    );
+    assert!(impact::suspects_for(&report.reaches, "tests::other").is_empty());
+}
+
+/// Two changed functions reach one test: the nearer is listed first, each once, and a
+/// qualified or call-style test name matches the bare one.
+#[tokio::test]
+async fn suspects_are_the_nearest_changed_functions_first() {
+    let reach = |test: &str, changed: &str, hops| impact::Reach {
+        test: sym(test, "src/lib.rs", 20, 8),
+        changed: sym(changed, "src/math.rs", 1, 8),
+        hops,
+    };
+    let reaches = [
+        reach("doubles", "add", 3),
+        reach("doubles", "scale", 1),
+        reach("doubles", "add", 2),
+        reach("triples", "mul", 1),
+    ];
+    let names: Vec<(String, usize)> = impact::suspects_for(&reaches, "tests::doubles")
+        .into_iter()
+        .map(|(s, h)| (s.name, h))
+        .collect();
+    assert_eq!(names, [("scale".to_string(), 1), ("add".to_string(), 2)]);
+    assert_eq!(
+        impact::suspects_for(&[reach("testAdds()", "add", 1)], "MathTests.testAdds()").len(),
+        1
     );
 }
 
@@ -782,6 +825,13 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
                 callers: vec!["main".to_string()],
                 diff: Some("@@ -1,1 +1,1 @@\n-old\n+new\n".to_string()),
             }],
+            suspects: vec![Suspect {
+                function: "add".to_string(),
+                file: "src/math.rs".to_string(),
+                line: 1,
+                hops: 2,
+                diff: Some("@@ -2 +2 @@\n-    a + b\n+    a + b + 1\n".to_string()),
+            }],
         }],
         build_errors: vec![],
         tail: String::new(),
@@ -793,6 +843,10 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
     assert!(text.contains("--- src/lib.rs:3  in f"));
     assert!(text.contains("callers: main"));
     assert!(text.contains("changed in the working tree:\n@@ -1,1 +1,1 @@"));
+    assert!(text.contains(
+        "suspects (changed functions that reach this test, nearest first):\n  • add  src/math.rs:1  (2 calls away)"
+    ));
+    assert!(text.contains("changed in src/math.rs:\n@@ -2 +2 @@"));
 }
 
 /// An unreachable gateway is reported as a run that failed to start, not a panic or a hang.

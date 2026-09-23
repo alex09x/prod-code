@@ -223,6 +223,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Suspects in a failure dossier (roadmap 8.2, #168). `code_diagnose_failure` / `prod-code diagnose`
+  now list, for each failing test, the changed functions whose callers graph reaches it. The
+  nearest come first, each with the number of calls between it and the test, and with the diff
+  of its file when no failure site already shows it. On a scratch crate, `add` and `scale` both
+  changed in `src/math.rs`. Only `add` was listed for the failing `doubles` (2 calls away:
+  `add` <- `double` <- `doubles`). `impact` now walks from each changed function separately,
+  caching the analyzer's answers, and reports which test each walk reached (`reaches`).
 - Loops into iterator chains (roadmap 7.1.5, #164): `code_loop_to_iterator` (MCP) and `prod-code
   loop-to-iterator <file> <line> <col>`. A `for` loop whose body only builds up the variable
   declared by the `let mut` just above it becomes one statement:
