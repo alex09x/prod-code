@@ -2509,8 +2509,8 @@ async fn handle_check(
 
 /// rust-analyzer writes a prelude item an assist introduces by its full path — an extracted
 /// function returns `std::prelude::v1::Result<T, anyhow::Error>` in a file that imports
-/// `anyhow::Result` (#97). Where the assist added such paths to a file that had none, the path
-/// is dropped and the result checked in the overlay; the shorter spelling is used only when the
+/// `anyhow::Result` (#97). On the lines the assist wrote, the path is dropped and the result
+/// checked in the overlay; the shorter spelling is used only when the
 /// analyzer accepts it, and rust-analyzer's own otherwise. Returns the edit to apply and how
 /// many paths were shortened.
 async fn prefer_names_in_scope(
@@ -2526,14 +2526,21 @@ async fn prefer_names_in_scope(
     let mut shortened = 0usize;
     let mut shorter = Vec::with_capacity(planned.len());
     for (path, text) in planned {
+        // Only lines the assist wrote: a line that was already in the file keeps its spelling,
+        // whatever it says.
         let before = std::fs::read_to_string(&path).unwrap_or_default();
-        let added = text.matches(PRELUDE).count();
-        if added > 0 && !before.contains(PRELUDE) {
-            shortened += added;
-            shorter.push((path, text.replace(PRELUDE, "")));
-        } else {
-            shorter.push((path, text));
+        let old_lines: std::collections::HashSet<&str> = before.lines().collect();
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            let body = line.trim_end_matches('\n');
+            if body.contains(PRELUDE) && !old_lines.contains(body) {
+                shortened += body.matches(PRELUDE).count();
+                out.push_str(&line.replace(PRELUDE, ""));
+            } else {
+                out.push_str(line);
+            }
         }
+        shorter.push((path, out));
     }
     if shortened == 0 {
         return Ok((edit, 0));
