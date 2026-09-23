@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **A removed local variable is not a stale reference** (#136). The multi-file check takes the
+  names an edit removed from a diff of the document symbols, and rust-analyzer lists a
+  function's `let` bindings among them. Removing two locals (`edit`, `touched`) from one function
+  flagged 51 lines of other files, each with its own `let edit`. Symbols of kind `Variable` no
+  longer count; the same check now reports none.
 - **Validation reports an unused import** (#134). rust-analyzer computes no diagnostic for an
   unused import, so `validate` called a file with one clean while `clippy -D warnings` rejected
   it. The analyzer does offer `remove_unused_imports` exactly on a `use` item that has an unused
