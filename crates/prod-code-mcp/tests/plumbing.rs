@@ -302,6 +302,7 @@ async fn search_returns_the_gateways_hits() {
                 indexed_declarations: 12,
                 took_ms: 4,
                 error: None,
+                dense: None,
             }))
             .await
             .unwrap();
@@ -345,6 +346,7 @@ async fn search_reports_when_the_gateway_refuses_the_query() {
                 indexed_declarations: 0,
                 took_ms: 0,
                 error: Some("index not ready".to_string()),
+                dense: None,
             }))
             .await
             .unwrap();

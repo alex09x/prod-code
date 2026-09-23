@@ -231,6 +231,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         indexed_declarations: script.search_hits.len(),
                         took_ms: 2,
                         error: None,
+                        dense: None,
                     }))
                     .await?;
             }

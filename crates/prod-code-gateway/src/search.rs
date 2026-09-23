@@ -12,13 +12,17 @@
 //! built on first use, kept per workspace, and rebuilt for a file whose size or modification
 //! time changed. Ranking is BM25 over those four fields with the name weighted highest.
 //!
-//! What this is not: it does not embed anything, so a query that shares no words with the
-//! code or its comments will not find it. The dense half of 8.4 is still open.
+//! A question that shares no word with the code finds nothing lexically, so there is a dense
+//! half too (`crate::embed`): every declaration also gets a vector from a sentence-embedding
+//! model, computed in the background after the index is built, and a question is ranked both
+//! ways. The two rankings are fused by reciprocal rank. Until a declaration has its vector only
+//! the lexical half can find it, and without a model the search is lexical only.
 
-use prod_code_protocol::{SearchHit, SearchRequest, SearchResponse};
-use std::collections::HashMap;
+use crate::embed::Embed;
+use prod_code_protocol::{DenseStatus, SearchHit, SearchRequest, SearchResponse};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// Declarations kept per file; a file with more is truncated (generated code, big tables).
@@ -29,6 +33,14 @@ const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_DOC_LINES: usize = 12;
 /// Hits returned when the caller does not say.
 pub const DEFAULT_LIMIT: usize = 10;
+/// How deep each half's ranking goes before the two are fused.
+const POOL: usize = 50;
+/// Reciprocal-rank fusion's constant: a hit at rank r scores 1 / (RRF_K + r) in each list.
+const RRF_K: f64 = 60.0;
+/// Declarations embedded per model call.
+const EMBED_BATCH: usize = 64;
+/// Characters of a declaration handed to the model.
+const MAX_PASSAGE_CHARS: usize = 1000;
 
 /// One indexed declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +63,8 @@ struct Indexed {
     decl: Declaration,
     fields: Fields,
     len: f64,
+    /// The dense vector, once the background pass has computed it.
+    vector: Option<Vec<f32>>,
 }
 
 impl Indexed {
@@ -62,7 +76,24 @@ impl Indexed {
             tokenize(&decl.doc),
         );
         let len = (fields.0.len() + fields.1.len() + fields.2.len() + fields.3.len()) as f64;
-        Self { decl, fields, len }
+        Self {
+            decl,
+            fields,
+            len,
+            vector: None,
+        }
+    }
+
+    /// What the model reads for this declaration: its kind, its name as words, where it lives,
+    /// its signature and its doc comment.
+    fn passage(&self) -> String {
+        let d = &self.decl;
+        let mut text = format!("{} {}", d.kind, self.fields.0.join(" "));
+        if let Some(container) = &d.container {
+            text.push_str(&format!(" in {container}"));
+        }
+        text.push_str(&format!(". {}. {}", d.signature, d.doc));
+        text.chars().take(MAX_PASSAGE_CHARS).collect()
     }
 }
 
@@ -96,39 +127,149 @@ impl WorkspaceIndex {
     }
 }
 
-/// Every workspace's index, built lazily and kept until the gateway stops.
-#[derive(Default)]
+/// The embedding model: not looked for yet, loaded, or known to be missing.
+enum Model {
+    Unloaded(PathBuf),
+    Ready(Box<dyn Embed>),
+    Missing,
+}
+
+/// Every workspace's index, built lazily and kept until the gateway stops. Cloning shares it.
+#[derive(Clone)]
 pub struct SearchIndexes {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
     by_workspace: Mutex<HashMap<PathBuf, WorkspaceIndex>>,
+    model: Mutex<Model>,
+    /// Workspaces a background pass is embedding right now.
+    embedding: Mutex<HashSet<PathBuf>>,
+}
+
+impl Default for SearchIndexes {
+    fn default() -> Self {
+        Self::with(Model::Missing)
+    }
+}
+
+/// What one search found, and over how much.
+pub struct Found {
+    pub hits: Vec<SearchHit>,
+    pub files: usize,
+    pub declarations: usize,
+    /// `None` when there is no model: the ranking was lexical only.
+    pub dense: Option<DenseStatus>,
 }
 
 impl SearchIndexes {
+    /// Lexical search only.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Refreshes the workspace's index against the files on disk and runs the query.
-    /// Returns the hits, how many files were indexed and how many declarations they hold.
-    pub fn search(
-        &self,
-        root: &Path,
-        query: &str,
-        limit: usize,
-        subpath: Option<&str>,
-    ) -> (Vec<SearchHit>, usize, usize) {
-        let mut guard = self.by_workspace.lock().unwrap_or_else(|e| e.into_inner());
-        let index = guard.entry(root.to_path_buf()).or_default();
-        if !index.built {
-            refresh(root, index);
-            index.built = true;
-        } else if !index.pending.is_empty() {
-            let pending = std::mem::take(&mut index.pending);
-            for rel in pending {
-                reindex_one(root, index, &rel);
+    /// Lexical and dense search, with the model in `dir` loaded on the first query. A missing or
+    /// broken model leaves the search lexical.
+    pub fn with_model_dir(dir: PathBuf) -> Self {
+        Self::with(Model::Unloaded(dir))
+    }
+
+    /// Lexical and dense search with this embedder.
+    pub fn with_embedder(embedder: Box<dyn Embed>) -> Self {
+        Self::with(Model::Ready(embedder))
+    }
+
+    fn with(model: Model) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                by_workspace: Mutex::new(HashMap::new()),
+                model: Mutex::new(model),
+                embedding: Mutex::new(HashSet::new()),
+            }),
+        }
+    }
+
+    /// Refreshes the workspace's index against the files on disk and runs the query, both
+    /// ways when there is a model. Declarations without a vector are embedded in the
+    /// background afterwards.
+    pub fn search(&self, root: &Path, query: &str, limit: usize, subpath: Option<&str>) -> Found {
+        let query_vector = self.inner.query_vector(query);
+        let found = {
+            let mut guard = self.inner.lock_indexes();
+            let index = guard.entry(root.to_path_buf()).or_default();
+            if !index.built {
+                refresh(root, index);
+                index.built = true;
+            } else if !index.pending.is_empty() {
+                let pending = std::mem::take(&mut index.pending);
+                for rel in pending {
+                    reindex_one(root, index, &rel);
+                }
+            }
+            let embedded = index.declarations().filter(|d| d.vector.is_some()).count();
+            let with_vectors = query_vector.as_deref().filter(|_| embedded > 0);
+            Found {
+                hits: rank_with(index, query, with_vectors, limit, subpath),
+                files: index.files.len(),
+                declarations: index.len(),
+                dense: query_vector.as_ref().map(|_| DenseStatus {
+                    used: embedded > 0,
+                    embedded,
+                }),
+            }
+        };
+        if found
+            .dense
+            .as_ref()
+            .is_some_and(|d| d.embedded < found.declarations)
+        {
+            self.embed_in_background(root);
+        }
+        found
+    }
+
+    /// Starts a background pass that embeds every declaration of the workspace still without a
+    /// vector, unless one is already running for it.
+    fn embed_in_background(&self, root: &Path) {
+        {
+            let mut running = self
+                .inner
+                .embedding
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if !running.insert(root.to_path_buf()) {
+                return;
             }
         }
-        let hits = rank(index, query, limit, subpath);
-        (hits, index.files.len(), index.len())
+        let inner = Arc::clone(&self.inner);
+        let root = root.to_path_buf();
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let mut done = 0usize;
+            loop {
+                let n = inner.embed_pending(&root, EMBED_BATCH);
+                if n == 0 {
+                    break;
+                }
+                done += n;
+            }
+            tracing::info!(
+                "embedded {done} declaration(s) of {} in {:.1}s",
+                root.display(),
+                started.elapsed().as_secs_f64()
+            );
+            inner
+                .embedding
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&root);
+        });
+    }
+
+    /// Embeds up to `max` declarations of the workspace that have no vector yet, in the calling
+    /// thread. Returns how many got one.
+    pub fn embed_pending(&self, root: &Path, max: usize) -> usize {
+        self.inner.embed_pending(root, max)
     }
 
     /// Records that these workspace-relative paths were written or deleted, so the next query
@@ -138,7 +279,7 @@ impl SearchIndexes {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut guard = self.by_workspace.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock_indexes();
         let Some(index) = guard.get_mut(root) else {
             return;
         };
@@ -152,10 +293,95 @@ impl SearchIndexes {
 
     /// Drops a workspace's index (its engine was evicted or its directory pruned).
     pub fn forget(&self, root: &Path) {
-        self.by_workspace
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(root);
+        self.inner.lock_indexes().remove(root);
+    }
+}
+
+impl Inner {
+    fn lock_indexes(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, WorkspaceIndex>> {
+        self.by_workspace.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The model, loaded on first use. `None` when there is none or it failed; the failure is
+    /// logged once and the search stays lexical.
+    fn model(&self) -> std::sync::MutexGuard<'_, Model> {
+        let mut model = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if let Model::Unloaded(dir) = &*model {
+            *model = match crate::embed::OnnxEmbedder::load(dir) {
+                Ok(loaded) => {
+                    tracing::info!("embedding model loaded from {}", dir.display());
+                    Model::Ready(Box::new(loaded))
+                }
+                Err(err) => {
+                    tracing::warn!("no dense search: {err:#}");
+                    Model::Missing
+                }
+            };
+        }
+        model
+    }
+
+    fn query_vector(&self, query: &str) -> Option<Vec<f32>> {
+        match &mut *self.model() {
+            Model::Ready(model) => model
+                .query(query)
+                .map_err(|err| tracing::warn!("embedding the query failed: {err:#}"))
+                .ok(),
+            _ => None,
+        }
+    }
+
+    fn embed_pending(&self, root: &Path, max: usize) -> usize {
+        // What to embed, taken under the index lock and computed without it, so queries go on.
+        let batch: Vec<(String, (u64, u64), usize, String)> = {
+            let guard = self.lock_indexes();
+            let Some(index) = guard.get(root) else {
+                return 0;
+            };
+            index
+                .files
+                .iter()
+                .flat_map(|(rel, entry)| {
+                    entry
+                        .decls
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, d)| d.vector.is_none())
+                        .map(move |(i, d)| (rel.clone(), entry.stamp, i, d.passage()))
+                })
+                .take(max)
+                .collect()
+        };
+        if batch.is_empty() {
+            return 0;
+        }
+        let texts: Vec<String> = batch.iter().map(|(_, _, _, text)| text.clone()).collect();
+        let vectors = match &mut *self.model() {
+            Model::Ready(model) => match model.passages(&texts) {
+                Ok(vectors) => vectors,
+                Err(err) => {
+                    tracing::warn!("embedding declarations failed: {err:#}");
+                    return 0;
+                }
+            },
+            _ => return 0,
+        };
+        let mut guard = self.lock_indexes();
+        let Some(index) = guard.get_mut(root) else {
+            return 0;
+        };
+        let mut installed = 0;
+        for ((rel, stamp, i, _), vector) in batch.into_iter().zip(vectors) {
+            // A file reindexed meanwhile has new declarations; they wait for the next batch.
+            if let Some(entry) = index.files.get_mut(&rel)
+                && entry.stamp == stamp
+                && let Some(decl) = entry.decls.get_mut(i)
+            {
+                decl.vector = Some(vector);
+                installed += 1;
+            }
+        }
+        installed
     }
 }
 
@@ -648,29 +874,98 @@ const W_CONTAINER: f64 = 1.5;
 const W_SIGNATURE: f64 = 1.2;
 const W_DOC: f64 = 1.0;
 
-/// BM25 over the four fields of every declaration, best first.
+/// The lexical ranking alone.
+#[cfg(test)]
 fn rank(
     index: &WorkspaceIndex,
     query: &str,
     limit: usize,
     subpath: Option<&str>,
 ) -> Vec<SearchHit> {
-    let terms = tokenize(query);
-    if terms.is_empty() {
-        return Vec::new();
-    }
-    // A test's name repeats every word of the thing it tests, so on a question about that
-    // thing it outranks the thing itself. Tests are searched only when the question is about
-    // tests.
+    rank_with(index, query, None, limit, subpath)
+}
+
+/// The declarations a question can find: those under `subpath`, and tests only when the
+/// question is about tests. A test's name repeats every word of the thing it tests, so on a
+/// question about that thing it would outrank the thing itself.
+fn candidates<'a>(
+    index: &'a WorkspaceIndex,
+    terms: &[String],
+    subpath: Option<&str>,
+) -> Vec<&'a Indexed> {
     let wants_tests = terms
         .iter()
         .any(|t| matches!(t.as_str(), "test" | "spec" | "fixture" | "mock"));
-    let docs: Vec<&Indexed> = index
+    index
         .declarations()
         .filter(|d| subpath.is_none_or(|p| d.decl.file.starts_with(p)))
         .filter(|d| wants_tests || !d.decl.is_test)
+        .collect()
+}
+
+/// The lexical ranking, and the dense one when a query vector is given, fused by reciprocal
+/// rank: a declaration scores 1 / (60 + its rank) in each list it is in.
+fn rank_with(
+    index: &WorkspaceIndex,
+    query: &str,
+    query_vector: Option<&[f32]>,
+    limit: usize,
+    subpath: Option<&str>,
+) -> Vec<SearchHit> {
+    let terms = tokenize(query);
+    let docs = candidates(index, &terms, subpath);
+    let mut lists = vec![lexical(&docs, &terms)];
+    if let Some(q) = query_vector {
+        lists.push(dense(&docs, q));
+    }
+    let mut fused: Vec<(f64, &Declaration)> = Vec::new();
+    for list in &lists {
+        for (rank, decl) in list.iter().take(POOL).enumerate() {
+            let score = 1.0 / (RRF_K + rank as f64 + 1.0);
+            match fused.iter_mut().find(|(_, d)| std::ptr::eq(*d, *decl)) {
+                Some((total, _)) => *total += score,
+                None => fused.push((score, decl)),
+            }
+        }
+    }
+    fused.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.file.cmp(&b.1.file))
+            .then_with(|| a.1.line.cmp(&b.1.line))
+    });
+    fused
+        .into_iter()
+        .take(limit.max(1))
+        .map(|(_score, d)| SearchHit {
+            file: d.file.clone(),
+            line: d.line,
+            kind: d.kind.clone(),
+            name: d.name.clone(),
+            container: d.container.clone(),
+            signature: d.signature.clone(),
+            doc: first_sentence(&d.doc),
+        })
+        .collect()
+}
+
+/// The declarations with a vector, by cosine with the question's.
+fn dense<'a>(docs: &[&'a Indexed], query: &[f32]) -> Vec<&'a Declaration> {
+    let mut scored: Vec<(f32, &Declaration)> = docs
+        .iter()
+        .filter_map(|d| {
+            d.vector
+                .as_deref()
+                .map(|v| (crate::embed::dot(query, v), &d.decl))
+        })
         .collect();
-    if docs.is_empty() {
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.into_iter().take(POOL).map(|(_, d)| d).collect()
+}
+
+/// BM25 over the four fields of every declaration, best first.
+fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
+    if terms.is_empty() || docs.is_empty() {
         return Vec::new();
     }
     // Document frequency per term, over declarations rather than files.
@@ -683,7 +978,7 @@ fn rank(
             }
         }
         for t in present {
-            for term in &terms {
+            for term in terms {
                 if term == t {
                     *df.entry(term.as_str()).or_insert(0) += 1;
                 }
@@ -700,7 +995,7 @@ fn rank(
         let len = doc.len;
         let mut score = 0.0;
         let mut matched = 0usize;
-        for term in &terms {
+        for term in terms {
             let tf = W_NAME * count(name, term)
                 + W_CONTAINER * count(container, term)
                 + W_SIGNATURE * count(signature, term)
@@ -727,19 +1022,7 @@ fn rank(
             .then_with(|| a.1.file.cmp(&b.1.file))
             .then_with(|| a.1.line.cmp(&b.1.line))
     });
-    scored
-        .into_iter()
-        .take(limit.max(1))
-        .map(|(_score, d)| SearchHit {
-            file: d.file.clone(),
-            line: d.line,
-            kind: d.kind.clone(),
-            name: d.name.clone(),
-            container: d.container.clone(),
-            signature: d.signature.clone(),
-            doc: first_sentence(&d.doc),
-        })
-        .collect()
+    scored.into_iter().map(|(_score, d)| d).collect()
 }
 
 fn count(tokens: &[String], term: &str) -> f64 {
@@ -785,6 +1068,7 @@ pub fn run_search(
             error: Some(format!(
                 "workspace {workspace_str} is not synced to this gateway"
             )),
+            dense: None,
         };
     }
     if req.query.trim().is_empty() {
@@ -795,6 +1079,7 @@ pub fn run_search(
             indexed_declarations: 0,
             took_ms: 0,
             error: Some("empty query".to_string()),
+            dense: None,
         };
     }
     let started = Instant::now();
@@ -804,14 +1089,15 @@ pub fn run_search(
         req.limit
     };
     let subpath = req.subpath.as_deref().filter(|p| !p.is_empty());
-    let (hits, files, decls) = indexes.search(&workspace, &req.query, limit, subpath);
+    let found = indexes.search(&workspace, &req.query, limit, subpath);
     SearchResponse {
         server_workspace_root: workspace_str,
-        hits,
-        indexed_files: files,
-        indexed_declarations: decls,
+        hits: found.hits,
+        indexed_files: found.files,
+        indexed_declarations: found.declarations,
         took_ms: started.elapsed().as_millis() as u64,
         error: None,
+        dense: found.dense,
     }
 }
 
@@ -1025,6 +1311,137 @@ impl Metrics {
         );
         assert!(rank(&index, "kubernetes ingress certificate rotation", 5, None).is_empty());
         assert!(rank(&index, "", 5, None).is_empty());
+    }
+
+    /// Stands in for the model: a text's vector counts the concepts its words belong to, so
+    /// "restore the connection" and "re-establishes the socket" meet without sharing a word.
+    struct Concepts;
+
+    fn concept_vector(text: &str) -> Vec<f32> {
+        const CONCEPTS: [&[&str]; 3] = [
+            &["reconnect", "restore", "re-establish", "again"],
+            &["socket", "connection", "link", "websocket"],
+            &["color", "colour", "hex", "paint"],
+        ];
+        let lower = text.to_lowercase();
+        let mut v: Vec<f32> = CONCEPTS
+            .iter()
+            .map(|words| words.iter().filter(|w| lower.contains(*w)).count() as f32)
+            .collect();
+        v.push(0.1);
+        crate::embed::normalize(&mut v);
+        v
+    }
+
+    impl Embed for Concepts {
+        fn passages(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+            Ok(texts.iter().map(|t| concept_vector(t)).collect())
+        }
+
+        fn query(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(concept_vector(text))
+        }
+    }
+
+    /// Waits for the background pass, which the first search starts.
+    fn embedded(indexes: &SearchIndexes, root: &Path, query: &str) -> Found {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            indexes.embed_pending(root, 100);
+            let found = indexes.search(root, query, 5, None);
+            let dense = found.dense.as_ref().expect("there is a model");
+            if dense.embedded == found.declarations || Instant::now() > deadline {
+                return found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_question_sharing_no_words_is_found_by_meaning_once_embedded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("net.rs"),
+            "/// Re-establishes the socket after the link drops.\npub fn reconnect_on_close() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("paint.rs"),
+            "/// Reads a hex colour such as #ff8800.\npub fn parse_colour(s: &str) {}\n",
+        )
+        .unwrap();
+        let question = "restore the connection when the server goes away";
+
+        let lexical_only = SearchIndexes::new().search(root, question, 5, None);
+        assert!(lexical_only.hits.is_empty());
+        assert!(lexical_only.dense.is_none());
+
+        let indexes = SearchIndexes::with_embedder(Box::new(Concepts));
+        let first = indexes.search(root, question, 5, None);
+        assert_eq!(first.declarations, 2);
+        let found = embedded(&indexes, root, question);
+        let dense = found.dense.as_ref().unwrap();
+        assert!(dense.used);
+        assert_eq!(dense.embedded, 2);
+        assert_eq!(found.hits[0].name, "reconnect_on_close", "{:?}", found.hits);
+
+        // A file that changes loses its vectors until the next pass embeds it again.
+        std::fs::write(
+            root.join("net.rs"),
+            "/// Re-establishes the socket after the link drops, again.\npub fn reconnect_on_close() {}\npub fn close() {}\n",
+        )
+        .unwrap();
+        indexes.invalidate(root, ["net.rs"]);
+        let found = embedded(&indexes, root, question);
+        assert_eq!(found.declarations, 3);
+        assert_eq!(found.dense.as_ref().unwrap().embedded, 3);
+        assert_eq!(found.hits[0].name, "reconnect_on_close");
+
+        // Nothing to embed once every declaration has its vector, and nothing for an unknown
+        // workspace.
+        assert_eq!(indexes.embed_pending(root, 100), 0);
+        assert_eq!(
+            indexes.embed_pending(Path::new("/no/such/workspace"), 100),
+            0
+        );
+        indexes.forget(root);
+        assert_eq!(indexes.embed_pending(root, 100), 0);
+    }
+
+    #[test]
+    fn a_declaration_both_halves_find_outranks_one_found_by_one() {
+        let mut index = WorkspaceIndex::default();
+        let mut decls = index_decls(
+            "a.rs",
+            "/// Reconnects the websocket.\npub fn reconnect_socket() {}\n/// Reconnects the database pool.\npub fn reconnect_pool() {}\n/// Paints the hex colour.\npub fn paint() {}\n",
+        );
+        for d in &mut decls {
+            d.vector = Some(concept_vector(&d.passage()));
+        }
+        assert!(decls[0].passage().contains("reconnect socket"));
+        assert!(decls[0].passage().contains("Reconnects the websocket."));
+        index.files.insert(
+            "a.rs".to_string(),
+            FileEntry {
+                stamp: (0, 0),
+                decls,
+            },
+        );
+        let query = "reconnect the link";
+        let q = concept_vector(query);
+        let lexical = rank(&index, query, 5, None);
+        assert_eq!(lexical.len(), 2, "both say reconnect: {lexical:?}");
+        let fused = rank_with(&index, query, Some(&q), 5, None);
+        assert_eq!(fused[0].name, "reconnect_socket", "{fused:?}");
+        assert_eq!(
+            fused.len(),
+            3,
+            "the dense half ranks everything with a vector"
+        );
+        // A question of stopwords alone still has a dense answer.
+        assert!(rank(&index, "the", 5, None).is_empty());
+        assert!(!rank_with(&index, "the", Some(&q), 5, None).is_empty());
     }
 
     #[test]

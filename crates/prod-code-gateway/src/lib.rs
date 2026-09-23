@@ -6,6 +6,7 @@
 
 pub mod backend;
 pub mod detect;
+pub mod embed;
 pub mod memory;
 mod metrics;
 pub mod search;
@@ -157,7 +158,7 @@ impl ServerState {
             next_session_id: AtomicU64::new(1),
             active_sessions: AtomicUsize::new(0),
             shadow_root: shadow::default_root(&storage_root),
-            search_indexes: search::SearchIndexes::new(),
+            search_indexes: search::SearchIndexes::with_model_dir(embed::model_dir(&storage_root)),
             storage_root,
             workspace_manager: Arc::new(WorkspaceManager::new()),
             advertise: tokio::sync::RwLock::new(String::new()),

@@ -61,21 +61,41 @@ pub async fn search(
     }
 }
 
+/// How the ranking was made: by words only, or by words and meaning, and how much of the
+/// index has its vectors yet.
+fn ranking(resp: &SearchResponse) -> String {
+    match resp.dense {
+        None => "lexical only: the gateway has no embedding model, so a question sharing no words with the code or its comments finds nothing".to_string(),
+        Some(d) if d.embedded >= resp.indexed_declarations => {
+            "ranked by words and by meaning".to_string()
+        }
+        Some(d) => format!(
+            "ranked by words{}; {} of {} declarations embedded so far, the rest in the background",
+            if d.used { " and by meaning" } else { " only" },
+            d.embedded,
+            resp.indexed_declarations
+        ),
+    }
+}
+
 /// One line per hit, best first, with the doc sentence that earned it.
 pub fn render(resp: &SearchResponse, query: &str) -> String {
     if resp.hits.is_empty() {
         return format!(
-            "no declaration matches `{query}` ({} declarations in {} files searched; the index is lexical, so a question sharing no words with the code or its comments finds nothing)",
-            resp.indexed_declarations, resp.indexed_files
+            "no declaration matches `{query}` ({} declarations in {} files searched; {})",
+            resp.indexed_declarations,
+            resp.indexed_files,
+            ranking(resp)
         );
     }
     let mut out = format!(
-        "{} hit(s) for `{}` in {} ms ({} declarations, {} files)\n",
+        "{} hit(s) for `{}` in {} ms ({} declarations, {} files; {})\n",
         resp.hits.len(),
         query,
         resp.took_ms,
         resp.indexed_declarations,
-        resp.indexed_files
+        resp.indexed_files,
+        ranking(resp)
     );
     for (i, hit) in resp.hits.iter().enumerate() {
         let container = hit
@@ -113,6 +133,7 @@ mod tests {
             indexed_declarations: 2400,
             took_ms: 7,
             error: None,
+            dense: None,
         }
     }
 
@@ -148,7 +169,27 @@ mod tests {
             text.contains("no declaration matches `kubernetes ingress`"),
             "{text}"
         );
-        assert!(text.contains("lexical"), "{text}");
+        assert!(text.contains("lexical only"), "{text}");
+        let mut partial = resp(Vec::new());
+        partial.dense = Some(prod_code_protocol::DenseStatus {
+            used: false,
+            embedded: 0,
+        });
+        let text = render(&partial, "kubernetes ingress");
+        assert!(
+            text.contains("ranked by words only; 0 of 2400 declarations embedded so far"),
+            "{text}"
+        );
+        partial.dense = Some(prod_code_protocol::DenseStatus {
+            used: true,
+            embedded: 2400,
+        });
+        assert!(render(&partial, "q").contains("ranked by words and by meaning)"));
+        partial.dense = Some(prod_code_protocol::DenseStatus {
+            used: true,
+            embedded: 1200,
+        });
+        assert!(render(&partial, "q").contains("by meaning; 1200 of 2400"));
     }
 
     #[test]

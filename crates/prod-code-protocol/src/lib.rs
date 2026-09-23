@@ -6,8 +6,8 @@ pub mod path;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    ANALYZER_PANIC_CODE, ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecMetric,
-    ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse,
+    ANALYZER_PANIC_CODE, ClusterResponse, DenseStatus, ExecChanges, ExecChunk, ExecExit,
+    ExecMetric, ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse,
     LoadedWorkspaceInfo, MetricsRequest, MetricsResponse, NodeGossip, PROTOCOL_VERSION,
     PURPOSE_VALIDATION, PeerInfo, PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest,
     ReadFileResponse, SearchHit, SearchRequest, SearchResponse, ShadowHypothesis,
