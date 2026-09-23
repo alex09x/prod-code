@@ -258,6 +258,25 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_wrap_return".to_string(),
+            description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function" },
+                    "line": { "type": "integer", "description": "1-based line of the function's name" },
+                    "character": { "type": "integer", "description": "1-based column of the function's name" },
+                    "wrapper": { "type": "string", "enum": ["option", "result"], "description": "What the return type becomes wrapped in" },
+                    "error": { "type": "string", "description": "For `result`: the error type, such as `anyhow::Error` or `String`" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when a caller cannot propagate or the result does not compile" }
+                },
+                "required": ["wrapper"]
+            }),
+        },
+        McpTool {
             name: "code_extract_parameter".to_string(),
             description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the analyzer when it gives one in a shape this can read, otherwise pass `type`. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports. Rust only."
                 .to_string(),
@@ -795,6 +814,7 @@ pub async fn execute_tool(
         "code_encapsulate_field" => handle_encapsulate_field(remote, workspace_root, &args).await,
         "code_migrate_type" => handle_migrate_type(remote, workspace_root, &args).await,
         "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
+        "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
         "code_introduce_parameter_object" => {
             handle_introduce_parameter_object(remote, workspace_root, &args).await
@@ -1538,6 +1558,76 @@ async fn handle_extract_field(
         ty,
         init,
         replace_all,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_wrap_return(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
+    };
+    let wrapper = crate::wrap_return::Wrapper::parse(
+        args.get("wrapper")
+            .and_then(|v| v.as_str())
+            .context("Missing 'wrapper' argument: `option` or `result`")?,
+    )?;
+    let error = args.get("error").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::wrap_return::wrap(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        wrapper,
+        error,
         apply && !verify,
         force,
     )
@@ -2864,6 +2954,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_introduce_parameter_object",
     "code_migrate_type",
     "code_encapsulate_field",
+    "code_wrap_return",
     "code_definition",
     "code_references",
     "code_hover",

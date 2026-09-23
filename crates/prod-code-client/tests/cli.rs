@@ -1711,3 +1711,53 @@ async fn every_subcommand_has_its_own_help_line() {
         "{text}"
     );
 }
+
+#[tokio::test]
+async fn cli_wraps_a_return_type_and_names_the_caller_that_cannot_propagate() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn plain() -> u32 {\n    5\n}\n\npub fn caller() -> u32 {\n    plain()\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let (l1, l2) = (lib.clone(), lib.clone());
+    let gw = MockGateway::start(move |method, _| match method {
+        "prodCode/applyAssist" => answers::whole_file(
+            &l1,
+            "pub fn plain() -> u32 {\n    5\n}\n\npub fn caller() -> u32 {\n    plain()\n}\n",
+            "pub fn plain() -> Option<u32> {\n    Some(5)\n}\n\npub fn caller() -> u32 {\n    plain()\n}\n",
+        ),
+        "textDocument/references" => answers::locations(&l2, &[(6, 5)]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "wrap-return",
+            "src/lib.rs",
+            "--line",
+            "1",
+            "--character",
+            "8",
+            "--wrapper",
+            "option",
+        ],
+    )
+    .await;
+    assert!(!out.status.success(), "a blocked caller is an error exit");
+    let text = stdout_of(&out);
+    assert!(text.contains("now returns: `Option<u32>`"), "{text}");
+    assert!(text.contains("the caller returns `u32`"), "{text}");
+    assert!(
+        ws.read("src/lib.rs").contains("-> u32 {\n    5"),
+        "nothing written"
+    );
+}

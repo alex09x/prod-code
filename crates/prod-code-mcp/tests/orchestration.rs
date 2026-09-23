@@ -1857,3 +1857,104 @@ async fn a_field_that_cannot_be_extracted_is_refused_and_a_full_pattern_blocks_t
     assert_eq!(ws.read("src/app.rs"), source);
     assert_eq!(ws.read("src/store.rs"), STORE_WITH_LIMIT);
 }
+
+const COUNT: &str = "pub fn count(n: u32) -> u32 {\n    if n == 0 {\n        return 0;\n    }\n    count(n - 1) + 1\n}\n\npub fn twice() -> Option<u32> {\n    Some(count(2) * 2)\n}\n";
+const COUNT_WRAPPED: &str = "pub fn count(n: u32) -> Option<u32> {\n    if n == 0 {\n        return Some(0);\n    }\n    Some(count(n - 1) + 1)\n}\n\npub fn twice() -> Option<u32> {\n    Some(count(2) * 2)\n}\n";
+
+/// Wrapping a return type, end to end: rust-analyzer's assist rewrites the declaration, a caller
+/// in another file that returns `Option` gets `?`, so does one later in the same file (whose
+/// position the assist moved), the recursive call inside the function is left for a person, and a
+/// caller that returns a plain `u32` blocks the write until `force`.
+#[tokio::test]
+async fn wrapping_a_return_type_propagates_where_callers_can_and_names_the_rest() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod app;\npub mod count;\n");
+    let count = write(&ws, "src/count.rs", COUNT);
+    let app_source = "use crate::count::count;\n\npub fn more() -> Option<u32> {\n    Some(count(3) + 1)\n}\n\npub fn total() -> u32 {\n    count(4)\n}\n";
+    let app = write(&ws, "src/app.rs", app_source);
+    commit(&ws);
+
+    let (c, a) = (count.clone(), app.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "prodCode/applyAssist" => answers::whole_file(&c, COUNT, COUNT_WRAPPED),
+        "textDocument/references" => {
+            locations_in(&[(&c, &[(5, 5), (9, 10)]), (&a, &[(4, 10), (8, 5)])])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let run = |apply: bool, force: bool| {
+        let (root, count) = (root.clone(), count.clone());
+        async move {
+            prod_code_mcp::wrap_return::wrap(
+                remote,
+                &root,
+                &count,
+                1,
+                8,
+                prod_code_mcp::wrap_return::Wrapper::Option,
+                None,
+                apply,
+                force,
+            )
+            .await
+        }
+    };
+
+    let done = run(false, false).await.expect("the dry run reports");
+    assert_eq!(done.function, "count");
+    assert_eq!(
+        (done.was.as_str(), done.now.as_str()),
+        ("u32", "Option<u32>")
+    );
+    assert_eq!(done.propagated, 2, "twice() and more()");
+    assert_eq!(done.blocked.len(), 1, "{:?}", done.blocked);
+    assert!(
+        done.blocked[0].contains("src/app.rs:8:5") && done.blocked[0].contains("returns `u32`")
+    );
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(done.unmatched[0].contains("inside `count` itself"));
+    let new_count = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("count.rs"))
+        .unwrap()
+        .1
+        .clone();
+    assert!(new_count.contains("Some(count(2)? * 2)"), "{new_count}");
+    assert!(
+        new_count.contains("pub fn count(n: u32) -> Option<u32>"),
+        "{new_count}"
+    );
+    let new_app = done
+        .rewritten
+        .iter()
+        .find(|(p, _)| p.ends_with("app.rs"))
+        .unwrap()
+        .1
+        .clone();
+    assert!(
+        new_app.contains("Some(count(3)? + 1)") && new_app.contains("    count(4)\n"),
+        "{new_app}"
+    );
+
+    let err = run(true, false)
+        .await
+        .expect_err("a blocked caller stops the write");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/app.rs"), app_source);
+
+    let forced = run(true, true).await.expect("force writes");
+    assert!(forced.applied);
+    assert!(ws.read("src/app.rs").contains("Some(count(3)? + 1)"));
+}

@@ -29,6 +29,7 @@ pub mod tools;
 pub mod type_migration;
 pub mod verify;
 pub mod watch;
+pub mod wrap_return;
 
 pub use protocol::{MCP_PROTOCOL_VERSION, SERVER_NAME, SERVER_VERSION};
 pub use sync::scan_workspace_files;
