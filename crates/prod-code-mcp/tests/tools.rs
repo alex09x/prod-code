@@ -2216,3 +2216,26 @@ async fn move_method_makes_an_impl_when_the_type_has_none() {
     );
     assert!(now.contains("    b.sum(&a)\n"), "{now}");
 }
+
+/// `code_move_method` needs to know where to: a parameter for a method, a type for an
+/// associated function, and exactly one of them.
+#[tokio::test]
+async fn move_method_asks_for_a_parameter_or_a_type() {
+    let ws = workspace();
+    write(&ws, "src/lib.rs", MOVE_M);
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |_, _| serde_json::Value::Null)).await;
+    for args in [
+        serde_json::json!({ "path": "src/lib.rs", "line": 10, "character": 12 }),
+        serde_json::json!({ "path": "src/lib.rs", "line": 10, "character": 12, "to_param": "b", "to_type": "B" }),
+    ] {
+        let err = execute_tool(remote, &ws.root(), "code_move_method", args)
+            .await
+            .map(|r| text_of(&r))
+            .unwrap_or_else(|e| format!("{e:#}"));
+        assert!(
+            err.contains("`to_param`") && err.contains("`to_type`"),
+            "{err}"
+        );
+    }
+}

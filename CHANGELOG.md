@@ -250,6 +250,17 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **An associated function moves to another type** (roadmap 7.1.1, #198): `prod-code
+  move-method FILE LINE COL --to-type Order` (MCP `code_move_method` with `to_type`).
+  - The type is found by name, and an ambiguous name is refused with the candidates.
+  - `Self` in the function is spelled as the old type (`crate::tax::Tax`).
+  - The function joins the new type's `impl`, or a new one after the type. An `impl` it
+    leaves empty is removed, with the blank line above it.
+  - Every path to it, called or used as a value, names the new type.
+  - When a name in the body resolves only where the function was, the report says to import
+    or spell it.
+  The `move` refusal now names both forms: `--to-param` for a method, `--to-type` for an
+  associated function.
 - **A method moves to the type of one of its parameters** (roadmap 7.1.1, #196): MCP
   `code_move_method` and `prod-code move-method FILE LINE COL --to-param NAME [--apply]`.
   `Order::price_with(&self, tax: &Tax, extra)` becomes `Tax::price_with(&self, order:

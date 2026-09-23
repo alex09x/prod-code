@@ -315,7 +315,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_make_static".to_string(),
-            description: "Turn a method that never uses `self` into an associated function, with every call site. Give the method's name position (or `symbol`). The receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument. A receiver that does something when it is evaluated — a call, `?`, `.await`, a macro or an index, as in `load()?.method()` — cannot be dropped silently, so that call site is reported and nothing is written while one remains, unless `force`. A method whose body mentions `self` is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+            description: "Turn a method that never uses `self` into an associated function, with every call site. Give the method's name position (or `symbol`). The receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument. A receiver that does something when it is evaluated — a call, `?`, `.await`, a macro or an index, as in `load()?.method()` — cannot be dropped silently, so that call site is reported and nothing is written while one remains, unless `force`. A method whose body mentions `self` is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. An associated function (no `self`) moves with `to_type` instead: into that type's `impl`, with `Self` spelled out and every `Old::f` path, called or used as a value, naming the new type. Rust only."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -565,10 +565,11 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the method's name" },
                     "character": { "type": "integer", "description": "1-based column of the method's name" },
                     "to_param": { "type": "string", "description": "The parameter whose type the method moves to" },
+                    "to_type": { "type": "string", "description": "For an associated function (no `self`): the struct or enum it moves to; every `Old::f` path becomes `New::f`" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when something blocks it or it does not compile" }
                 },
-                "required": ["path", "line", "character", "to_param"]
+                "required": ["path", "line", "character"]
             }),
         },
         McpTool {
@@ -2344,23 +2345,45 @@ async fn handle_move_method(
             .map(|v| v as u32)
             .with_context(|| format!("Missing '{key}' argument"))
     };
-    let to_param = args
-        .get("to_param")
-        .and_then(|v| v.as_str())
-        .context("Missing 'to_param' argument: the parameter whose type the method moves to")?;
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    let done = crate::move_method::move_method(
-        remote,
-        workspace_root,
-        &resolve_file_path(workspace_root, path_str),
-        num("line")?,
-        num("character")?,
-        to_param,
-        apply,
-        force,
-    )
-    .await?;
+    let file = resolve_file_path(workspace_root, path_str);
+    let (line, character) = (num("line")?, num("character")?);
+    let done = match (
+        args.get("to_param").and_then(|v| v.as_str()),
+        args.get("to_type").and_then(|v| v.as_str()),
+    ) {
+        (Some(to_param), None) => {
+            crate::move_method::move_method(
+                remote,
+                workspace_root,
+                &file,
+                line,
+                character,
+                to_param,
+                apply,
+                force,
+            )
+            .await?
+        }
+        (None, Some(to_type)) => {
+            crate::move_method::move_associated_function(
+                remote,
+                workspace_root,
+                &file,
+                line,
+                character,
+                to_type,
+                apply,
+                force,
+            )
+            .await?
+        }
+        _ => anyhow::bail!(
+            "give `to_param` (a method: the parameter whose type it moves to) or `to_type` (an \
+             associated function: the type it moves to), one of them"
+        ),
+    };
     let text = done.render(8000);
     Ok(if done.diagnostics.is_empty() && done.blocked.is_empty() {
         McpToolCallResult::text(text)

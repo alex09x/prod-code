@@ -768,7 +768,10 @@ enum Commands {
         col: u32,
         /// The parameter whose type the method moves to.
         #[arg(long = "to-param")]
-        to_param: String,
+        to_param: Option<String>,
+        /// For an associated function (no `self`): the type it moves to.
+        #[arg(long = "to-type")]
+        to_type: Option<String>,
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -1641,23 +1644,25 @@ async fn main() -> Result<()> {
             line,
             col,
             to_param,
+            to_type,
             apply,
             force,
         } => {
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                remote,
-                "code_move_method",
-                serde_json::json!({
-                    "path": abs.to_string_lossy(),
-                    "line": line,
-                    "character": col,
-                    "to_param": to_param,
-                    "apply": apply,
-                    "force": force,
-                }),
-            )
-            .await
+            let mut args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "line": line,
+                "character": col,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(to_param) = to_param {
+                args["to_param"] = serde_json::Value::String(to_param);
+            }
+            if let Some(to_type) = to_type {
+                args["to_type"] = serde_json::Value::String(to_type);
+            }
+            run_tool(remote, "code_move_method", args).await
         }
         Commands::MoveModule {
             file,

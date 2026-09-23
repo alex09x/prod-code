@@ -700,9 +700,9 @@ pub async fn move_item(
         .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close)
     {
         anyhow::bail!(
-            "`{name}` is a method of `{owner}`; move it to the type of one of its parameters \
-             with `code_move_method` (`prod-code move-method <file> <line> <col> --to-param \
-             <name>`)"
+            "`{name}` belongs to `impl {owner}`; move it to another type with \
+             `code_move_method` (`prod-code move-method <file> <line> <col>` with `--to-param \
+             <name>` for a method, `--to-type <Type>` for an associated function)"
         );
     }
     // A `mod x;` line declares a module whose code is in its own file; cutting the line would
