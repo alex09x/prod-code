@@ -2507,6 +2507,53 @@ async fn handle_check(
     })
 }
 
+/// rust-analyzer writes a prelude item an assist introduces by its full path — an extracted
+/// function returns `std::prelude::v1::Result<T, anyhow::Error>` in a file that imports
+/// `anyhow::Result` (#97). On the lines the assist wrote, the path is dropped and the result
+/// checked in the overlay; the shorter spelling is used only when the
+/// analyzer accepts it, and rust-analyzer's own otherwise. Returns the edit to apply and how
+/// many paths were shortened.
+async fn prefer_names_in_scope(
+    remote: SocketAddr,
+    root: &Path,
+    edit: serde_json::Value,
+) -> Result<(serde_json::Value, usize)> {
+    const PRELUDE: &str = "std::prelude::v1::";
+    let (planned, moves_files) = crate::refactor::planned_texts(root, &edit)?;
+    if moves_files {
+        return Ok((edit, 0));
+    }
+    let mut shortened = 0usize;
+    let mut shorter = Vec::with_capacity(planned.len());
+    for (path, text) in planned {
+        // Only lines the assist wrote: a line that was already in the file keeps its spelling,
+        // whatever it says.
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        let old_lines: std::collections::HashSet<&str> = before.lines().collect();
+        let mut out = String::with_capacity(text.len());
+        for line in text.split_inclusive('\n') {
+            let body = line.trim_end_matches('\n');
+            if body.contains(PRELUDE) && !old_lines.contains(body) {
+                shortened += body.matches(PRELUDE).count();
+                out.push_str(&line.replace(PRELUDE, ""));
+            } else {
+                out.push_str(line);
+            }
+        }
+        shorter.push((path, out));
+    }
+    if shortened == 0 {
+        return Ok((edit, 0));
+    }
+    let reports = crate::diagnostics::validate_texts(remote, root, &shorter, &[]).await?;
+    if reports.iter().any(|r| r.errors > 0) {
+        return Ok((edit, 0));
+    }
+    let files: std::collections::BTreeMap<std::path::PathBuf, String> =
+        shorter.into_iter().collect();
+    Ok((crate::signature::whole_file_edit(&files), shortened))
+}
+
 async fn handle_assists(
     remote: SocketAddr,
     workspace_root: &Path,
@@ -2566,12 +2613,20 @@ async fn handle_assists(
                 return Ok(McpToolCallResult::error(format!("assist refused: {e:#}")));
             }
         };
+        let (edit, respelled) = prefer_names_in_scope(remote, workspace_root, edit).await?;
         let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-        return Ok(McpToolCallResult::text(format!(
+        let mut text = format!(
             "applied `{id}`; {} path(s) updated in the checkout:\n{}",
             touched.len(),
             touched.join("\n")
-        )));
+        );
+        if respelled > 0 {
+            text.push_str(&format!(
+                "\n\n{respelled} `std::prelude::v1::` path(s) the assist wrote are spelled as the \
+                 name already in scope; the analyzer accepts the shorter spelling"
+            ));
+        }
+        return Ok(McpToolCallResult::text(text));
     }
     let list = execute_lsp_query(
         remote,

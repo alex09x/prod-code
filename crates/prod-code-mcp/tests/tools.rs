@@ -1220,6 +1220,90 @@ async fn code_safe_delete_removes_an_unreferenced_item() {
     assert_eq!(std::fs::read_to_string(&lib).unwrap(), "");
 }
 
+const WITH_PRELUDE: &str = "fn g() -> std::prelude::v1::Option<u8> {\n    None\n}\n";
+
+/// A file that already mentions the prelude path — in a comment, or code that spells it on
+/// purpose — keeps those lines as they are; only the lines the assist wrote are shortened.
+#[tokio::test]
+async fn only_the_lines_an_assist_wrote_are_respelled() {
+    let ws = workspace();
+    let before = "// std::prelude::v1::Option is spelled out here on purpose\nfn g() {}\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    let after =
+        format!("// std::prelude::v1::Option is spelled out here on purpose\n{WITH_PRELUDE}");
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => answers::whole_file(&path, before, &after),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_assist",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 4, "id": "some_assist" }),
+    )
+    .await
+    .expect("the assist runs");
+    assert!(
+        text_of(&result).contains("1 `std::prelude::v1::` path(s)"),
+        "{}",
+        text_of(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "// std::prelude::v1::Option is spelled out here on purpose\nfn g() -> Option<u8> {\n    None\n}\n"
+    );
+}
+
+/// An assist that spells a prelude item by its full path gets the name in scope instead, when the
+/// analyzer accepts it (#97), and keeps rust-analyzer's spelling when it does not.
+#[tokio::test]
+async fn an_assists_prelude_path_is_shortened_only_when_the_analyzer_accepts_it() {
+    for accepted in [true, false] {
+        let ws = workspace();
+        let lib = write(&ws, "src/lib.rs", "fn g() {}\n");
+        commit(&ws);
+        let path = lib.clone();
+        let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let remote = scripted_gateway(Arc::new(move |method, _| match method {
+            "prodCode/applyAssist" => answers::whole_file(&path, "fn g() {}\n", WITH_PRELUDE),
+            "textDocument/diagnostic"
+                if accepted
+                    || pulls
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        .is_multiple_of(2) =>
+            {
+                answers::no_diagnostics()
+            }
+            "textDocument/diagnostic" => {
+                answers::error_at(1, 11, "E0412", "cannot find type `Option` in this scope")
+            }
+            _ => serde_json::Value::Null,
+        }))
+        .await;
+        let result = execute_tool(
+            remote,
+            &ws.root(),
+            "code_assist",
+            serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 4, "id": "some_assist" }),
+        )
+        .await
+        .expect("the assist runs");
+        let text = text_of(&result);
+        let written = std::fs::read_to_string(&lib).unwrap();
+        if accepted {
+            assert_eq!(written, "fn g() -> Option<u8> {\n    None\n}\n");
+            assert!(text.contains("1 `std::prelude::v1::` path(s)"), "{text}");
+        } else {
+            assert_eq!(written, WITH_PRELUDE, "the analyzer's spelling is kept");
+            assert!(!text.contains("std::prelude"), "{text}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn code_assists_lists_actions_or_says_there_are_none() {
     let ws = workspace();
