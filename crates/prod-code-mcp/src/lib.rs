@@ -10,6 +10,7 @@ pub mod exec;
 pub mod extract_field;
 pub mod extract_parameter;
 pub mod fixture;
+pub mod generify;
 pub mod hot_reload;
 pub mod impact;
 pub mod invert_boolean;
