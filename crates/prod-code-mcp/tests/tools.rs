@@ -2333,3 +2333,49 @@ async fn validate_edits_takes_a_diff_or_a_workspace_edit() {
         text_of(&result)
     );
 }
+
+/// A caller the analyzer does not flag and whose name is not `test…` is still a test when an
+/// attribute above it says so (`#[tokio::test]`), and `code_impact` lists it (#201).
+#[tokio::test]
+async fn code_impact_finds_a_test_by_its_attribute() {
+    const WITH_CHECK: &str = "pub fn a() -> i32 {\n    1\n}\n\n#[cfg(test)]\nmod checks {\n    #[tokio::test]\n    async fn prices() {\n        super::a();\n    }\n}\n";
+    let ws = rust_workspace(WITH_CHECK);
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        &WITH_CHECK.replacen("    1\n", "    10\n", 1),
+    );
+    let uri = format!("file://{}", std::fs::canonicalize(&lib).unwrap().display());
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("a", 12, 1, 3, 8)])
+        }
+        "textDocument/prepareCallHierarchy" => serde_json::json!([{
+            "name": "a", "kind": 12, "uri": uri,
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 1 } },
+            "selectionRange": { "start": { "line": 0, "character": 7 }, "end": { "line": 0, "character": 8 } }
+        }]),
+        "callHierarchy/incomingCalls" => serde_json::json!([{
+            "from": {
+                "name": "prices", "kind": 12, "uri": uri,
+                "range": { "start": { "line": 7, "character": 4 }, "end": { "line": 9, "character": 5 } },
+                "selectionRange": { "start": { "line": 7, "character": 13 }, "end": { "line": 7, "character": 19 } }
+            },
+            "fromRanges": [{ "start": { "line": 8, "character": 15 }, "end": { "line": 8, "character": 16 } }]
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_impact",
+        serde_json::json!({ "depth": 2 }),
+    )
+    .await
+    .expect("the analysis runs");
+    let text = text_of(&result);
+    assert!(text.contains("1 test(s)"), "{text}");
+    assert!(text.contains("• prices  src/lib.rs:8"), "{text}");
+    assert!(text.contains("cargo test --workspace -- prices"), "{text}");
+}

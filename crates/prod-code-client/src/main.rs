@@ -146,6 +146,11 @@ enum Commands {
         /// Run the affected tests afterwards
         #[arg(long)]
         run: bool,
+        /// For CI: run the affected tests, or the whole suite when the selection cannot be
+        /// trusted; write a Markdown summary to `$GITHUB_STEP_SUMMARY` when it is set; exit
+        /// with the tests' status
+        #[arg(long, conflicts_with = "run")]
+        ci: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1114,8 +1119,9 @@ async fn main() -> Result<()> {
             base,
             depth,
             run,
+            ci,
             json,
-        } => run_impact(remote, base.as_deref(), depth, run, json).await,
+        } => run_impact(remote, base.as_deref(), depth, run, ci, json).await,
         Commands::DeadCode {
             include_exported,
             max_files,
@@ -2255,6 +2261,7 @@ async fn run_impact(
     base: Option<&str>,
     depth: usize,
     run: bool,
+    ci: bool,
     json: bool,
 ) -> Result<()> {
     use std::io::Write;
@@ -2271,8 +2278,54 @@ async fn run_impact(
             started.elapsed().as_secs_f64()
         );
     }
-    if run {
-        let Some(command) = report.test_command.clone() else {
+    // CI runs the selection only when it can be trusted, the whole suite otherwise (#201).
+    let (command, why) = if ci {
+        let full = || {
+            prod_code_mcp::verify::plan_command_with(
+                &prod_code_mcp::verify::detect_tools(&root),
+                &report.language,
+                prod_code_mcp::verify::VerifyKind::Test,
+                None,
+            )
+            .ok()
+        };
+        match (report.full_suite_reason(), report.test_command.clone()) {
+            (Some(reason), _) => (full(), format!("the whole suite, because {reason}")),
+            (None, Some(selected)) => (
+                Some(selected),
+                format!("{} test(s) that reach the change", report.tests.len()),
+            ),
+            (None, None) if report.changed.is_empty() => (None, "no function changed".to_string()),
+            (None, None) if report.tests.is_empty() => {
+                (None, "no test reaches the changed functions".to_string())
+            }
+            (None, None) => (
+                full(),
+                "the whole suite, because this language's tests cannot be selected".to_string(),
+            ),
+        }
+    } else {
+        (report.test_command.clone(), String::new())
+    };
+    if ci {
+        println!("[prod-code impact --ci] {why}");
+        if let Ok(path) = env::var("GITHUB_STEP_SUMMARY") {
+            use std::io::Write as _;
+            let summary = report.ci_summary(command.as_deref(), &why);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+            {
+                let _ = f.write_all(summary.as_bytes());
+            }
+        }
+        if command.is_none() {
+            return Ok(());
+        }
+    }
+    if run || ci {
+        let Some(command) = command else {
             println!("nothing to run");
             return Ok(());
         };

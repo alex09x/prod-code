@@ -1991,6 +1991,7 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         &["prune", "--max-files", "5"][..],
         &["move-method", "src/lib.rs", "1", "8", "--to-param", "x"][..],
         &["validate", "--diff", "no-such.patch"][..],
+        &["impact", "--ci", "--depth", "1"][..],
         &["move-method", "src/lib.rs", "1", "8", "--to-type", "X"][..],
         &[
             "move-module",

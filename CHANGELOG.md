@@ -250,6 +250,14 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **impact finds tests by attribute and registration, and has a CI mode** (roadmap 8.1, #201).
+  - A caller is a test by its attribute (`#[tokio::test]`, `#[rstest]`, `@Test`), by the gtest
+    or Catch2 registration it sits in (`TEST(Price, Doubles)` becomes `Price.Doubles`, which
+    `ctest -R` selects), or as a `test*` method of a `unittest.TestCase`. Pytest is given that
+    file on the command line, because it would not collect it by name.
+  - `prod-code impact --ci` runs the selection, or the whole suite when the selection cannot
+    be trusted, and says which and why. It writes a Markdown summary to
+    `$GITHUB_STEP_SUMMARY`, and exits with the tests' status.
 - **validate takes a diff or a WorkspaceEdit** (roadmap 7.7, #200): `prod-code validate --diff
   PATCH` (`-` for stdin), and `code_validate_edits` with `diff` or `workspace_edit`.
   - Each hunk is applied in memory to the file on disk: at the line its header gives, or at

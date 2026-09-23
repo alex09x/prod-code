@@ -63,6 +63,52 @@ pub struct IndexBuild {
 }
 
 impl ImpactReport {
+    /// Why the selection cannot be trusted and the whole suite should run instead: lines changed
+    /// outside any function, or an index that could not be built. `None` when it can.
+    pub fn full_suite_reason(&self) -> Option<String> {
+        if self.index.as_ref().is_some_and(|b| !b.ok) {
+            return Some("the analyzer's index could not be built, so callers are unknown".into());
+        }
+        if !self.unattributed_files.is_empty() {
+            return Some(format!(
+                "lines changed outside any function in {}",
+                self.unattributed_files.join(", ")
+            ));
+        }
+        None
+    }
+
+    /// The Markdown a CI job shows for this analysis and the command it ran (`why` says why
+    /// that command), for `$GITHUB_STEP_SUMMARY`.
+    pub fn ci_summary(&self, command: Option<&[String]>, why: &str) -> String {
+        let mut out = format!(
+            "### prod-code impact of `{}`\n\n{} changed file(s), {} changed function(s), {} test(s) reached.\n\n",
+            self.base,
+            self.changed_files.len(),
+            self.changed.len(),
+            self.tests.len()
+        );
+        if !self.changed.is_empty() {
+            out.push_str("| changed function | file |\n|---|---|\n");
+            for s in &self.changed {
+                out.push_str(&format!("| `{}` | `{}:{}` |\n", s.name, s.file, s.line));
+            }
+            out.push('\n');
+        }
+        if !self.tests.is_empty() {
+            out.push_str("Tests that reach them:\n\n");
+            for s in &self.tests {
+                out.push_str(&format!("- `{}` (`{}:{}`)\n", s.name, s.file, s.line));
+            }
+            out.push('\n');
+        }
+        match command {
+            Some(c) => out.push_str(&format!("Ran `{}`: {why}.\n", c.join(" "))),
+            None => out.push_str(&format!("Ran nothing: {why}.\n")),
+        }
+        out
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::new();
         let unindexed = self.index.as_ref().is_some_and(|b| !b.ok);
@@ -269,6 +315,94 @@ fn collect_functions(symbols: &[serde_json::Value], out: &mut Vec<(String, u32, 
     }
 }
 
+/// What the text around a caller's declaration says about it being a test, beyond its name:
+/// a test attribute above it (`#[test]`, `#[tokio::test]`, `@Test`), a test registration it
+/// sits in (`TEST(Suite, Name)`, `TEST_F`, `TEST_CASE("…")`), or, for Python, a `test*` method
+/// of a `unittest.TestCase` class. `Some(name)` is a test, under the name its runner selects
+/// it by (`Suite.Name` for a gtest registration); `None` is not one as far as the text shows.
+pub fn test_marker(language: &str, text: &str, line: u32, name: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let at = (line as usize).checked_sub(1)?;
+    let here = *lines.get(at)?;
+    let bare = name
+        .split('(')
+        .next()
+        .unwrap_or(name)
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(name);
+    // The attribute lines right above the declaration, nearest first.
+    let above = || {
+        lines[..at].iter().rev().map(|l| l.trim()).take_while(|l| {
+            let attribute = l.starts_with("#[") || l.starts_with('@') || l.starts_with("///");
+            // `@Test func adds()` is a declaration of its own, not an attribute of the next.
+            let declares = [" fn ", "func ", "def "].iter().any(|k| l.contains(k));
+            attribute && !declares
+        })
+    };
+    match language {
+        "rust" => {
+            let attribute = |l: &str| {
+                l.starts_with("#[")
+                    && (l.contains("test]")
+                        || l.contains("test(")
+                        || l.contains("::test")
+                        || l.starts_with("#[rstest")
+                        || l.starts_with("#[test_case"))
+            };
+            (above().any(attribute) || attribute(here.trim())).then(|| name.to_string())
+        }
+        "swift" => (above().any(|l| l.starts_with("@Test")) || here.contains("@Test"))
+            .then(|| name.to_string()),
+        "cpp" => lines[at.saturating_sub(2)..=at]
+            .iter()
+            .rev()
+            .find_map(|l| registration(l)),
+        "python" => {
+            if !bare.starts_with("test") {
+                return None;
+            }
+            let indent = here.len() - here.trim_start().len();
+            lines[..at]
+                .iter()
+                .rev()
+                .find(|l| {
+                    let t = l.trim_start();
+                    t.starts_with("class ") && l.len() - t.len() < indent
+                })
+                .filter(|class| class.contains("TestCase"))
+                .map(|_| name.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The test a gtest or Catch2 registration on `line` declares: `TEST(Suite, Name)` → `Suite.Name`,
+/// `TEST_CASE("adds")` → `adds`.
+pub fn registration(line: &str) -> Option<String> {
+    let t = line.trim_start();
+    for macro_name in ["TYPED_TEST_P", "TYPED_TEST", "TEST_F", "TEST_P", "TEST"] {
+        if let Some(rest) = t.strip_prefix(macro_name)
+            && let Some(args) = rest.trim_start().strip_prefix('(')
+        {
+            let args = args.split(')').next()?;
+            let (suite, test) = args.split_once(',')?;
+            let (suite, test) = (suite.trim(), test.trim());
+            let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '_');
+            return (ok(suite) && ok(test)).then(|| format!("{suite}.{test}"));
+        }
+    }
+    for macro_name in ["TEST_CASE", "SCENARIO"] {
+        if let Some(rest) = t.strip_prefix(macro_name)
+            && let Some(args) = rest.trim_start().strip_prefix('(')
+        {
+            let quoted = args.trim_start().strip_prefix('"')?;
+            return quoted.split('"').next().map(str::to_string);
+        }
+    }
+    None
+}
+
 /// Whether a caller is a test by name or file conventions of `language`.
 pub fn looks_like_test(language: &str, name: &str, file: &str) -> bool {
     let lower = file.to_ascii_lowercase();
@@ -345,6 +479,12 @@ pub fn test_command(
                 None,
             )
             .ok()?;
+            // A test file pytest would not collect by its name (a `TestCase` in
+            // `checks/check_price.py`) is collected when it is named on the command line.
+            let mut files: Vec<&str> = tests.iter().map(|t| t.file.as_str()).collect();
+            files.sort_unstable();
+            files.dedup();
+            c.extend(files.iter().map(|f| f.to_string()));
             c.push("-k".to_string());
             c.push(names.join(" or "));
             c
@@ -380,6 +520,14 @@ pub fn test_command(
             }
             c
         }
+        // ctest selects by the registered name (`Suite.Name`, a Catch2 description).
+        "cpp" => crate::verify::plan_command_with(
+            tools,
+            "cpp",
+            crate::verify::VerifyKind::Test,
+            Some(&format!("^({})$", names.join("|"))),
+        )
+        .ok()?,
         _ => return None,
     })
 }
@@ -606,7 +754,15 @@ async fn incoming_calls(
             .get("isTest")
             .and_then(|t| t.as_bool())
             .unwrap_or(false);
-        let is_test = flagged || looks_like_test(language, &name, &file);
+        let mut is_test = flagged || looks_like_test(language, &name, &file);
+        // Beyond names: an attribute, a registration macro, a `TestCase` class (#201).
+        if !is_test
+            && let Ok(text) = std::fs::read_to_string(root.join(&file))
+            && let Some(test_name) = test_marker(language, &text, line, &name)
+        {
+            is_test = true;
+            name = test_name;
+        }
         out.push((
             Symbol {
                 name,
@@ -695,7 +851,14 @@ mod tests {
         );
         let py = test_command("python", &tools, &[t("test_a")]).unwrap();
         assert!(py.ends_with(&["-k".to_string(), "test_a".to_string()]));
-        assert!(test_command("cpp", &tools, &[t("x")]).is_none());
+        // ctest selects registered tests by name (#201).
+        let cpp = test_command("cpp", &tools, &[t("Price.Doubles"), t("adds up")])
+            .unwrap()
+            .join(" ");
+        assert!(
+            cpp.contains("ctest") && cpp.contains("-R '^(Price.Doubles|adds up)$'"),
+            "{cpp}"
+        );
         let ts = test_command("typescript", &tools, &[t("tests/a.test.ts"), t("adds")]).unwrap();
         assert!(ts.ends_with(&[
             "tests/a.test.ts".to_string(),
@@ -703,5 +866,90 @@ mod tests {
             "adds".to_string()
         ]));
         assert!(test_command("go", &tools, &[]).is_none());
+    }
+
+    #[test]
+    fn a_test_is_found_by_attribute_registration_or_test_case_class() {
+        let rust =
+            "mod checks {\n    #[tokio::test]\n    async fn prices() {}\n    fn helper() {}\n}\n";
+        assert_eq!(
+            test_marker("rust", rust, 3, "prices").as_deref(),
+            Some("prices")
+        );
+        assert_eq!(test_marker("rust", rust, 4, "helper"), None);
+        let swift = "@Test func adds() {}\nfunc plain() {}\n";
+        assert!(test_marker("swift", swift, 1, "adds()").is_some());
+        assert!(test_marker("swift", swift, 2, "plain()").is_none());
+        let cpp = "#include <gtest/gtest.h>\nTEST(Price, Doubles) {\n  EXPECT_EQ(price(2, 3), 6);\n}\nTEST_CASE(\"adds up\") {\n}\n";
+        assert_eq!(
+            test_marker("cpp", cpp, 2, "TestBody").as_deref(),
+            Some("Price.Doubles")
+        );
+        assert_eq!(
+            test_marker("cpp", cpp, 3, "TestBody").as_deref(),
+            Some("Price.Doubles")
+        );
+        assert_eq!(test_marker("cpp", cpp, 5, "x").as_deref(), Some("adds up"));
+        assert_eq!(
+            registration("TEST_F(Suite, Name)"),
+            Some("Suite.Name".into())
+        );
+        assert_eq!(registration("TEST(, x)"), None);
+        let py = "import unittest\n\nclass PriceChecks(unittest.TestCase):\n    def test_doubles(self):\n        pass\n\n    def helper(self):\n        pass\n\nclass Other:\n    def test_not(self):\n        pass\n";
+        assert!(test_marker("python", py, 4, "test_doubles").is_some());
+        assert!(test_marker("python", py, 7, "helper").is_none());
+        assert!(test_marker("python", py, 11, "test_not").is_none());
+        assert!(test_marker("go", "func TestX(t *testing.T) {}\n", 1, "TestX").is_none());
+        assert!(test_marker("rust", "", 9, "x").is_none());
+    }
+
+    #[test]
+    fn the_whole_suite_runs_when_the_selection_cannot_be_trusted() {
+        let mut report = ImpactReport {
+            language: "rust".into(),
+            base: "HEAD".into(),
+            changed_files: vec!["src/lib.rs".into()],
+            changed: vec![Symbol {
+                name: "price".into(),
+                file: "src/lib.rs".into(),
+                line: 3,
+                col: 8,
+            }],
+            callers: Vec::new(),
+            tests: vec![Symbol {
+                name: "prices".into(),
+                file: "src/lib.rs".into(),
+                line: 9,
+                col: 8,
+            }],
+            test_command: None,
+            unattributed_files: Vec::new(),
+            index: None,
+            reaches: Vec::new(),
+        };
+        assert_eq!(report.full_suite_reason(), None);
+        let summary = report.ci_summary(Some(&["cargo".into(), "test".into()]), "the selection");
+        assert!(
+            summary.contains("| `price` | `src/lib.rs:3` |"),
+            "{summary}"
+        );
+        assert!(summary.contains("- `prices` (`src/lib.rs:9`)"), "{summary}");
+        assert!(
+            summary.contains("Ran `cargo test`: the selection."),
+            "{summary}"
+        );
+        assert!(
+            report
+                .ci_summary(None, "no test reaches them")
+                .contains("Ran nothing")
+        );
+        report.unattributed_files = vec!["Cargo.toml".into()];
+        assert!(report.full_suite_reason().unwrap().contains("Cargo.toml"));
+        report.index = Some(IndexBuild {
+            command: "swift build".into(),
+            ok: false,
+            duration_ms: 1,
+        });
+        assert!(report.full_suite_reason().unwrap().contains("index"));
     }
 }
