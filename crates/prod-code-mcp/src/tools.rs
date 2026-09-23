@@ -329,6 +329,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_inline_parameter".to_string(),
+            description: "Inline a parameter that every caller passes the same constant for: the value is bound at the top of the body (`let max: u32 = LIMIT;`), and the parameter leaves the declaration and its argument every call. Give the parameter's position. The value must mean the same in the body as at the call — a literal, a constant, or a path (`Mode::Fast`); a lowercase name may be a local of the caller and is refused, and so are calls that pass different values (each is listed). The function used as a value, or a call inside the function itself, blocks the write unless `force`. Type-checked in one overlay before anything is written. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function" },
+                    "line": { "type": "integer", "description": "1-based line of the parameter's name" },
+                    "character": { "type": "integer", "description": "1-based column of the parameter's name" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when a reference is not a call or the result does not compile" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
             name: "code_wrap_return".to_string(),
             description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -894,6 +910,7 @@ pub async fn execute_tool(
         "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
+        "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,
@@ -1913,6 +1930,44 @@ async fn handle_convert_to_method(
     } else {
         McpToolCallResult::error(text)
     })
+}
+
+async fn handle_inline_parameter(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::inline_parameter::inline_parameter(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        apply,
+        force,
+    )
+    .await?;
+    let text = done.render(6000);
+    Ok(
+        if done.diagnostics.is_empty() && done.unmatched.is_empty() {
+            McpToolCallResult::text(text)
+        } else {
+            McpToolCallResult::error(text)
+        },
+    )
 }
 
 async fn handle_wrap_return(

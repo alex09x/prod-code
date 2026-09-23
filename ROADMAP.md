@@ -2,8 +2,8 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.2.2, 2026-09-23): 44 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — 556 tests, and every file a change touches held at or
+**Where it stands** (v0.2.2, 2026-09-23): 45 MCP tools, five nodes' worth of cluster reduced to
+four — three Linux and one macOS for Swift — 565 tests, and every file a change touches held at or
 above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
 **7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
 `code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
@@ -260,7 +260,7 @@ and modifiers in `change_signature`, whole-file and method moves, `replace_all` 
       - Moves structs, functions, classes, or files to new modules, packages, or namespaces.
       - Moves static members to another type; moves instance methods to a target parameter type (e.g. `fn foo(bar: &Bar)` -> `Bar::foo()`).
       - Automatically rewrites and cleans all `use` / `import` statements and qualified path references throughout the workspace.
-    - [~] `refactor.inline(path, symbol)` — via `code_assists`: `inline_local_variable` and `promote_local_to_const` at a local, `inline_into_callers` and `inline_call` at a function. Inline Parameter has no assist and is part of `change_signature`'s job.
+    - [x] `refactor.inline(path, symbol)` — via `code_assists`: `inline_local_variable` and `promote_local_to_const` at a local, `inline_into_callers` and `inline_call` at a function. Inline Parameter shipped 2026-09-23 (#142) as `code_inline_parameter` / `prod-code inline-parameter <file> <line> <col>`: when every call passes the same literal, constant or path for a parameter, the value is bound at the top of the body (`let max: u32 = LIMIT;`) and the parameter leaves the declaration and every call; calls that disagree, a lowercase value that may be the caller's local, the function used as a value and a call inside the function itself are refused. Type-checked before writing.
       - Inline Function/Method: substitutes call sites with the function body, rebinding parameters and handling early returns.
       - Inline Variable/Constant: inlines computed expressions into usage sites and eliminates redundant bindings.
       - Inline Parameter: eliminates parameter by inlining constant values across all callers.

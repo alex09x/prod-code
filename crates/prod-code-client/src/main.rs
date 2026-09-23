@@ -405,6 +405,21 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Inline a parameter every caller passes the same constant for: the value moves into the body.
+    InlineParameter {
+        /// The file that declares the function.
+        file: PathBuf,
+        /// 1-based line of the parameter's name.
+        line: u32,
+        /// 1-based column of the parameter's name.
+        col: u32,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when a reference is not a call or the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Turn a method that never uses `self` into an associated function, with every call site.
     MakeStatic {
         /// The method by name (`Type::method`), or a file with `--line`.
@@ -1069,6 +1084,27 @@ async fn main() -> Result<()> {
                 args["verify"] = serde_json::Value::String(verify);
             }
             run_tool(remote, "code_convert_to_method", args).await
+        }
+        Commands::InlineParameter {
+            file,
+            line,
+            col,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_inline_parameter",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
         }
         Commands::MakeStatic {
             symbol,

@@ -2655,3 +2655,95 @@ async fn safe_delete_at_a_parameter_removes_it_with_its_arguments() {
     assert!(none.is_error, "{none:?}");
     assert_eq!(ws.read("src/lib.rs"), written);
 }
+
+const CLAMP: &str = "pub const LIMIT: u32 = 10;\n\npub fn clamp(x: u32, max: u32) -> u32 {\n    if x > max { max } else { x }\n}\n\npub fn a(v: u32) -> u32 {\n    clamp(v, LIMIT)\n}\n\npub fn b(v: u32) -> u32 {\n    clamp(v + 1, LIMIT)\n}\n";
+
+/// Inlining a parameter every caller passes the same constant for: the value is bound at the top
+/// of the body and the argument leaves every call. Calls that disagree, a value that may be the
+/// caller's local, and the function used as a value are refused.
+#[tokio::test]
+async fn a_constant_every_caller_passes_moves_into_the_body() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", CLAMP);
+    commit(&ws);
+    let script = |refs: Vec<(u32, u32)>| {
+        let l = lib.clone();
+        scripted_gateway(Arc::new(move |method, _params| match method {
+            "textDocument/references" => answers::locations(&l, &refs),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }))
+    };
+
+    let done = prod_code_mcp::inline_parameter::inline_parameter(
+        script(vec![(8, 5), (12, 5)]).await,
+        &root,
+        &lib,
+        3,
+        22,
+        true,
+        false,
+    )
+    .await
+    .expect("the parameter is inlined");
+    assert_eq!(
+        (
+            done.parameter.as_str(),
+            done.value.as_str(),
+            done.rewritten_calls
+        ),
+        ("max", "LIMIT", 2)
+    );
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    for expected in [
+        "pub fn clamp(x: u32) -> u32 {\n    let max: u32 = LIMIT;\n    if x > max",
+        "    clamp(v)\n",
+        "    clamp(v + 1)\n",
+    ] {
+        assert!(written.contains(expected), "{expected}\n{written}");
+    }
+
+    // The calls disagree, or pass the caller's own local, or use the function as a value.
+    for (text, why) in [
+        (
+            CLAMP.replace("clamp(v + 1, LIMIT)", "clamp(v + 1, 20)"),
+            "do not agree on `max`",
+        ),
+        (
+            CLAMP.replace("LIMIT)", "limit)"),
+            "may name something of the caller's",
+        ),
+    ] {
+        std::fs::write(&lib, &text).unwrap();
+        let err = prod_code_mcp::inline_parameter::inline_parameter(
+            script(vec![(8, 5), (12, 5)]).await,
+            &root,
+            &lib,
+            3,
+            22,
+            true,
+            false,
+        )
+        .await
+        .expect_err("refused");
+        assert!(format!("{err:#}").contains(why), "{err:#}");
+        assert_eq!(ws.read("src/lib.rs"), text, "nothing was written");
+    }
+    let with_value = format!("{CLAMP}\npub fn value() -> fn(u32, u32) -> u32 {{\n    clamp\n}}\n");
+    std::fs::write(&lib, &with_value).unwrap();
+    let err = prod_code_mcp::inline_parameter::inline_parameter(
+        script(vec![(8, 5), (12, 5), (16, 5)]).await,
+        &root,
+        &lib,
+        3,
+        22,
+        true,
+        false,
+    )
+    .await
+    .expect_err("the function used as a value blocks the write");
+    assert!(format!("{err:#}").contains("used as a value"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), with_value);
+}
