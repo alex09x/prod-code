@@ -45,7 +45,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 4;
+pub const RELEVANCE_VERSION: u32 = 5;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,7 +633,8 @@ pub fn prepare_workspace_sync_for(
     let mut files = Vec::new();
 
     for (relative_path, deleted) in changes {
-        if !filter.includes(&relative_path) || !is_relevant_code_or_manifest_file(&relative_path) {
+        // Every path here came from git: tracked, or untracked and not ignored.
+        if !filter.includes(&relative_path) || !is_synced_git_path(&relative_path) {
             continue;
         }
 
@@ -1086,7 +1087,102 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
     }
 }
 
+/// Whether a file git lists — tracked, or untracked and not ignored — is mirrored to the gateway.
+///
+/// Everything git would check out goes, whatever its extension: test fixtures, snapshots,
+/// `include_bytes!` data, `.github/` (#123). An extension allowlist made sense for a directory
+/// walk, which cannot tell a fixture from a dataset; git can, because an ignored file is not
+/// listed. What stays out is what [`is_relevant_code_or_manifest_file`] keeps out by directory —
+/// data trees, build output, vendored dependencies — and `.git` itself. The size limits are
+/// applied where the file is read.
+pub fn is_synced_git_path(rel_path: &str) -> bool {
+    if is_relevant_code_or_manifest_file(rel_path) {
+        return true;
+    }
+    let path = Path::new(rel_path);
+    let mut under_code_dir = false;
+    for component in path.parent().into_iter().flat_map(Path::components) {
+        let std::path::Component::Normal(dir) = component else {
+            continue;
+        };
+        let dir = dir.to_string_lossy();
+        if dir == ".git" {
+            return false;
+        }
+        if matches!(dir.as_ref(), "crates" | "packages" | "src") {
+            under_code_dir = true;
+        }
+        if matches!(dir.as_ref(), "target" | "node_modules" | "__pycache__") {
+            return false;
+        }
+        if !under_code_dir
+            && matches!(
+                dir.as_ref(),
+                "vendor"
+                    | "dist"
+                    | "build"
+                    | "results"
+                    | "samples"
+                    | "artifacts"
+                    | "dogfood-output"
+                    | "data"
+                    | "dataset"
+                    | "datasets"
+                    | "corpus"
+                    | "traces"
+                    | "state"
+                    | "research"
+                    | "benchmarks"
+                    | "benchmark"
+            )
+        {
+            return false;
+        }
+    }
+    path.file_name().and_then(|n| n.to_str()) != Some(".DS_Store")
+}
+
+/// The files git lists under `dir` — tracked, and untracked but not ignored — relative to `root`,
+/// or `None` when `root` is not in a git checkout.
+fn git_listed_files(root: &Path, dir: &Path) -> Option<Vec<String>> {
+    let rel = dir.strip_prefix(root).ok()?;
+    let spec = if rel.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        rel.to_string_lossy().into_owned()
+    };
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+        ])
+        .arg(spec)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let mut files: Vec<String> = output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect();
+    files.sort();
+    files.dedup();
+    Some(files)
+}
+
 /// Scan workspace directory and generate FileDelta list, filtering out build artifacts and VCS.
+///
+/// In a git checkout the list is git's (see [`is_synced_git_path`]); elsewhere the directory is
+/// walked and filtered by [`is_relevant_code_or_manifest_file`].
 pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<FileDelta>> {
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let target_dir = match subpath {
@@ -1113,12 +1209,50 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
             .unwrap_or(&target_dir)
             .to_string_lossy()
             .to_string();
-        if is_relevant_code_or_manifest_file(&rel_path) {
+        let listed_by_git = git_listed_files(&canonical_root, &target_dir)
+            .is_some_and(|listed| listed.contains(&rel_path));
+        if is_relevant_code_or_manifest_file(&rel_path)
+            || (listed_by_git && is_synced_git_path(&rel_path))
+        {
             let content = std::fs::read(&target_dir)?;
             deltas.push(FileDelta {
                 relative_path: rel_path,
                 content: Some(content),
                 is_executable: false,
+            });
+        }
+        return Ok(deltas);
+    }
+
+    if let Some(listed) = git_listed_files(&canonical_root, &target_dir) {
+        for rel_path in listed {
+            if !is_synced_git_path(&rel_path) {
+                continue;
+            }
+            let full_path = canonical_root.join(&rel_path);
+            let Ok(metadata) = full_path.metadata() else {
+                continue; // listed by git, deleted on disk
+            };
+            if !metadata.is_file()
+                || metadata.len() > MAX_FILE_SIZE
+                || (rel_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
+            {
+                continue;
+            }
+            let Ok(content) = std::fs::read(&full_path) else {
+                continue;
+            };
+            #[cfg(unix)]
+            let is_executable = {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let is_executable = false;
+            deltas.push(FileDelta {
+                relative_path: rel_path,
+                content: Some(content),
+                is_executable,
             });
         }
         return Ok(deltas);
@@ -1812,6 +1946,133 @@ mod tests {
             (Some("swift".to_string()), Some("swift"))
         );
         assert_eq!(engine_project(root, root), (None, Some("rust")));
+    }
+
+    /// What git lists is mirrored whatever its extension; data trees, build output and `.git`
+    /// are not (#123).
+    #[test]
+    fn a_file_git_lists_is_synced_whatever_its_extension() {
+        for synced in [
+            "tests/fixtures/ref/case/snapshot.txt",
+            "tests/fixtures/ref/case/input.recording",
+            "tests/fixtures/capture.bin",
+            ".github/workflows/ci.yml",
+            "docs/notes.md",
+            "src/main.rs",
+            "crates/x/data/table.csv",
+        ] {
+            assert!(is_synced_git_path(synced), "{synced} should be synced");
+        }
+        for kept_out in [
+            ".git/config",
+            "target/debug/app",
+            "web/node_modules/x/index.js",
+            "data/prices.csv",
+            "research/bench.jsonl",
+            "vendor/lib/x.c",
+            "fixtures/.DS_Store",
+        ] {
+            assert!(!is_synced_git_path(kept_out), "{kept_out} should stay out");
+        }
+    }
+
+    fn git(root: &Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// A checkout with fixtures of every kind: all of them reach the gateway, a git-ignored file
+    /// does not, and neither does a data tree (#123).
+    #[test]
+    fn fixtures_of_any_kind_reach_the_gateway_and_ignored_files_do_not() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        if !git(&root, &["init", "-q"]) {
+            return; // no git here
+        }
+        let files: &[(&str, &[u8])] = &[
+            ("Cargo.toml", b"[package]\nname = \"f\"\n"),
+            ("src/lib.rs", b"pub fn f() {}\n"),
+            ("tests/fixtures/case/snapshot.txt", b"snapshot\n"),
+            ("tests/fixtures/case/input.recording", b"rec"),
+            ("tests/fixtures/capture.bin", &[0u8, 159, 146, 150]),
+            (".github/workflows/ci.yml", b"on: push\n"),
+            ("data/big.csv", b"a,b\n"),
+            ("scratch.log", b"ignored\n"),
+            (".gitignore", b"*.log\n"),
+        ];
+        for (rel, body) in files {
+            std::fs::create_dir_all(root.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(root.join(rel), body).unwrap();
+        }
+        // Half committed, half untracked: both are git's to list.
+        assert!(git(
+            &root,
+            &["add", "Cargo.toml", "src", "tests/fixtures/case"]
+        ));
+        assert!(git(
+            &root,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "init"
+            ]
+        ));
+
+        let mut paths: Vec<String> = scan_workspace_files(&root, None)
+            .unwrap()
+            .into_iter()
+            .map(|d| d.relative_path)
+            .collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            [
+                ".github/workflows/ci.yml",
+                ".gitignore",
+                "Cargo.toml",
+                "src/lib.rs",
+                "tests/fixtures/capture.bin",
+                "tests/fixtures/case/input.recording",
+                "tests/fixtures/case/snapshot.txt",
+            ]
+        );
+        let fixtures = scan_workspace_files(&root, Some(Path::new("tests/fixtures"))).unwrap();
+        assert_eq!(
+            fixtures.len(),
+            3,
+            "a path limits the scan to what is under it"
+        );
+        let bin = fixtures
+            .iter()
+            .find(|d| d.relative_path.ends_with("capture.bin"))
+            .unwrap();
+        assert_eq!(bin.content.as_deref(), Some(&[0u8, 159, 146, 150][..]));
+
+        // The sync plan, first contact: the same files.
+        clear_sync_cache(&root);
+        let plan = prepare_workspace_sync(&root, None).unwrap();
+        let mut planned: Vec<&str> = plan
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
+        planned.sort();
+        assert!(
+            planned.contains(&"tests/fixtures/capture.bin"),
+            "{planned:?}"
+        );
+        assert!(planned.contains(&".github/workflows/ci.yml"), "{planned:?}");
+        assert!(!planned.contains(&"scratch.log"), "{planned:?}");
+        assert!(!planned.contains(&"data/big.csv"), "{planned:?}");
+        clear_sync_cache(&root);
     }
 
     #[test]
