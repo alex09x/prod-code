@@ -28,6 +28,7 @@ pub mod move_item;
 pub mod move_method;
 pub mod move_module;
 pub mod parameter_object;
+pub mod patch;
 pub mod protocol;
 pub mod prune;
 pub mod refactor;

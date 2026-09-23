@@ -698,7 +698,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_validate_edits".to_string(),
-            description: "Check several proposed file contents TOGETHER before writing any of them: all edits are placed in one private analyzer overlay, then diagnostics are reported per file, so a change in one file is judged against the proposed state of the others (a changed signature and its updated callers). `also_check` lists unchanged files that might break (callers of the edited symbols). Nothing is written anywhere."
+            description: "Check several proposed file contents TOGETHER before writing any of them: all edits are placed in one private analyzer overlay, then diagnostics are reported per file, so a change in one file is judged against the proposed state of the others (a changed signature and its updated callers). The change can be given as whole files (`edits`), as a unified diff (`diff`, e.g. `git diff` output: each hunk is applied in memory where it says, or where its old lines moved to, and a hunk that fits nowhere is refused by number), or as an LSP WorkspaceEdit (`workspace_edit`). `also_check` lists unchanged files that might break (callers of the edited symbols). Nothing is written anywhere."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -715,6 +715,8 @@ pub fn list_tools() -> Vec<McpTool> {
                             "required": ["path", "new_text"]
                         }
                     },
+                    "diff": { "type": "string", "description": "The change as a unified diff (`git diff` output), instead of `edits`" },
+                    "workspace_edit": { "type": "object", "description": "The change as an LSP WorkspaceEdit (`changes` or `documentChanges`), instead of `edits`" },
                     "also_check": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -2983,25 +2985,48 @@ async fn handle_validate_edits(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let edits: Vec<(std::path::PathBuf, String)> = args
-        .get("edits")
-        .and_then(|v| v.as_array())
-        .context("Missing 'edits' argument")?
-        .iter()
-        .map(|e| {
-            let path = e
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("edit without 'path'")?;
-            let text = e
-                .get("new_text")
-                .and_then(|v| v.as_str())
-                .with_context(|| format!("edit for {path} without 'new_text'"))?;
-            Ok((resolve_file_path(workspace_root, path), text.to_string()))
-        })
-        .collect::<Result<_>>()?;
+    // A patch or a WorkspaceEdit becomes whole files first: the overlay takes files.
+    let mut notes = String::new();
+    let edits: Vec<(std::path::PathBuf, String)> =
+        if let Some(diff) = args.get("diff").and_then(|v| v.as_str()) {
+            let patched = crate::patch::apply(workspace_root, diff)?;
+            for gone in &patched.deleted {
+                notes.push_str(&format!(
+                    "{} is deleted by the diff; what still uses it is not checked here\n",
+                    gone.strip_prefix(workspace_root).unwrap_or(gone).display()
+                ));
+            }
+            patched.texts
+        } else if let Some(edit) = args.get("workspace_edit") {
+            let (planned, moves) = crate::refactor::planned_texts(workspace_root, edit)?;
+            if moves {
+                notes.push_str(
+                "the edit also creates, renames or deletes files; those parts are not checked\n",
+            );
+            }
+            planned
+        } else {
+            args.get("edits")
+                .and_then(|v| v.as_array())
+                .context("Missing 'edits' argument (or `diff`, or `workspace_edit`)")?
+                .iter()
+                .map(|e| {
+                    let path = e
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .context("edit without 'path'")?;
+                    let text = e
+                        .get("new_text")
+                        .and_then(|v| v.as_str())
+                        .with_context(|| format!("edit for {path} without 'new_text'"))?;
+                    Ok((resolve_file_path(workspace_root, path), text.to_string()))
+                })
+                .collect::<Result<_>>()?
+        };
     if edits.is_empty() {
-        return Ok(McpToolCallResult::error("'edits' is empty".to_string()));
+        return Ok(McpToolCallResult::error(
+            "the change touches no file that can be checked".to_string(),
+        ));
     }
     let also_check: Vec<std::path::PathBuf> = args
         .get("also_check")
@@ -3018,7 +3043,7 @@ async fn handle_validate_edits(
     let errors: usize = reports.iter().map(|r| r.errors).sum();
     let warnings: usize = reports.iter().map(|r| r.warnings).sum();
     let mut text = format!(
-        "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n",
+        "{} file(s) checked together: {errors} error(s), {warnings} warning(s)\n{notes}",
         reports.len()
     );
     for report in &reports {
