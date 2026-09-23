@@ -2107,3 +2107,131 @@ async fn inverting_a_predicate_keeps_every_caller_doing_what_it_did() {
     .expect_err("refused");
     assert!(format!("{err:#}").contains("calls itself"), "{err:#}");
 }
+
+const TOTAL: &str = "pub fn total(v: &Vec<u32>) -> u32 {\n    v.as_ref().iter().sum()\n}\n\npub fn pair<A: Clone>(a: A, b: String) -> (A, String) {\n    (a, b)\n}\n";
+
+/// Making a parameter generic: its type becomes a bounded type parameter with the reference in
+/// front of it kept, a function that already has generics gets one more, and the files that call it
+/// are checked against the new signature — a caller the analyzer rejects stops the write.
+#[tokio::test]
+async fn a_generic_parameter_keeps_its_reference_and_every_caller_is_checked() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", TOTAL);
+    let caller = write(
+        &ws,
+        "src/caller.rs",
+        "pub fn g() -> u32 {\n    crate::total(&vec![1, 2])\n}\n",
+    );
+    commit(&ws);
+    let c = caller.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => answers::locations(&c, &[(2, 12)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done = prod_code_mcp::generify::generify(
+        remote,
+        &root,
+        &lib,
+        1,
+        8,
+        "v",
+        "AsRef<[u32]>",
+        "T",
+        true,
+        false,
+    )
+    .await
+    .expect("the change runs");
+    assert_eq!(done.was, "fn total(v: &Vec<u32>)");
+    assert_eq!(done.now, "fn total<T: AsRef<[u32]>>(v: &T)");
+    assert_eq!(done.callers_checked, 1);
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    assert!(
+        written.contains("pub fn total<T: AsRef<[u32]>>(v: &T) -> u32 {"),
+        "{written}"
+    );
+
+    let c = caller.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => answers::locations(&c, &[(2, 12)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done = prod_code_mcp::generify::generify(
+        remote,
+        &root,
+        &lib,
+        5,
+        8,
+        "b",
+        "Into<String>",
+        "S",
+        false,
+        false,
+    )
+    .await
+    .expect("the dry run reports");
+    assert_eq!(done.now, "fn pair<A: Clone, S: Into<String>>(a: A, b: S)");
+    assert!(!done.applied);
+
+    for (param, bound, name, why) in [
+        ("b", "Clone", "A", "already has a generic parameter `A`"),
+        ("c", "Clone", "T", "has no parameter `c`"),
+    ] {
+        let remote = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+        let err = prod_code_mcp::generify::generify(
+            remote, &root, &lib, 5, 8, param, bound, name, false, false,
+        )
+        .await
+        .expect_err("refused");
+        assert!(format!("{err:#}").contains(why), "{err:#}");
+    }
+
+    // The caller's file is clean on disk and rejected in the proposal.
+    let c = caller.clone();
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/references" => answers::locations(&c, &[(2, 12)]),
+        "textDocument/diagnostic"
+            if params.to_string().contains("caller.rs")
+                && !pulls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    .is_multiple_of(2) =>
+        {
+            serde_json::json!({ "kind": "full", "items": [
+                { "severity": 1, "code": "E0277", "message": "the trait bound `Vec<i32>: Into<String>` is not satisfied",
+                  "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 16 } } }
+            ] })
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let before = ws.read("src/lib.rs");
+    let err = prod_code_mcp::generify::generify(
+        remote,
+        &root,
+        &lib,
+        5,
+        8,
+        "b",
+        "Into<String>",
+        "S",
+        true,
+        false,
+    )
+    .await
+    .expect_err("a caller the bound does not cover stops the write");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("nothing was written") && msg.contains("E0277"),
+        "{msg}"
+    );
+    assert!(msg.contains("caller.rs"), "{msg}");
+    assert_eq!(ws.read("src/lib.rs"), before);
+}

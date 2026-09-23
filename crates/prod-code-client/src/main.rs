@@ -332,6 +332,32 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Make a parameter generic: its concrete type becomes a bounded type parameter.
+    Generify {
+        /// The function by name, or a file with `--line`.
+        symbol: String,
+        /// The parameter to make generic.
+        #[arg(long)]
+        param: String,
+        /// The trait bound, such as `AsRef<[u32]>`.
+        #[arg(long)]
+        bound: String,
+        /// The new type parameter's name.
+        #[arg(long = "as", default_value = "T")]
+        type_param: String,
+        /// 1-based line, when the first argument is a file path.
+        #[arg(long)]
+        line: Option<u32>,
+        /// 1-based column of the function's name, with `--line`.
+        #[arg(long, default_value_t = 1)]
+        character: u32,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Invert a predicate: a new name, the opposite meaning, and every caller unchanged in effect.
     InvertBoolean {
         /// The function by name, or a file with `--line`.
@@ -925,6 +951,33 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_migrate_type_cli(remote, symbol, to, line, character, path, apply, force).await,
+        Commands::Generify {
+            symbol,
+            param,
+            bound,
+            type_param,
+            line,
+            character,
+            apply,
+            force,
+        } => {
+            let mut args = serde_json::json!({
+                "param": param,
+                "bound": bound,
+                "type_param": type_param,
+                "apply": apply,
+                "force": force,
+            });
+            match line {
+                Some(line) => {
+                    args["path"] = serde_json::Value::String(symbol);
+                    args["line"] = serde_json::Value::from(line);
+                    args["character"] = serde_json::Value::from(character);
+                }
+                None => args["symbol"] = serde_json::Value::String(symbol),
+            }
+            run_tool(remote, "code_generify", args).await
+        }
         Commands::InvertBoolean {
             symbol,
             new_name,

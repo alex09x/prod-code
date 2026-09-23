@@ -2,13 +2,16 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.2.2, 2026-09-22): 33 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — and every file in the workspace at or above 80% of
-regions (87.2% overall, 422 tests). One epic is open: **7.1**, the refactoring catalog, and most
-of what an agent reaches for in it already works through `code_assists`, `code_rename`,
-`code_safe_delete`, `code_change_signature` and `code_codemod`. What is genuinely missing there
-is `refactor.move` (a symbol to another module, imports and all), `type_migration` and
-`introduce_parameter_object`.
+**Where it stands** (v0.2.2, 2026-09-23): 43 MCP tools, five nodes' worth of cluster reduced to
+four — three Linux and one macOS for Swift — 536 tests, and every file a change touches held at or
+above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
+**7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
+`code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
+the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
+`extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static`,
+`invert_boolean` and `generify`. What is still missing: the automatic half of `type_migration`
+(conversions injected at the sites that no longer fit), `convert_to_method` (the other direction of
+`make_static`), and `invert_boolean` for `bool` fields and variables.
 
 ---
 
@@ -238,7 +241,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     `wrap_return_type_in_result`, which rewrite the signature and the returned values but none of
     the callers; `invert_boolean`, `make_static` and `generify` are not offered at all
     (`convert_bool_to_enum` and `unwrap_type_to_generic_arg` are different refactorings). The
-    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`), and so did `make_static` (`code_make_static`) and `invert_boolean` (`code_invert_boolean`); `generify` is still to build.
+    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`), and so did `make_static` (`code_make_static`) and `invert_boolean` (`code_invert_boolean`); `generify` (`code_generify`) followed, so all five are built.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -299,7 +302,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     - [x] `refactor.invert_boolean(path, symbol)` — shipped 2026-09-23 for Rust as `code_invert_boolean` / `prod-code invert-boolean <file> --line N --character C --to NEW` (rust-analyzer offers only `convert_bool_to_enum`, a different refactoring): a function returning `bool` gets the new name, its body returns the negation (every `return` of the function, not of a closure or nested `fn`), every call gains a `!` or loses the one it had, a call followed by `.`, `?` or an index is parenthesized, a reference that is not a call is named, and a recursive predicate is refused. Functions only; a `bool` field or variable is not covered.
       - Inverts boolean variable, field, or function predicate (e.g. `is_valid` -> `is_invalid`, `has_access` -> `access_revoked`).
       - Flips internal return expressions and inverts every single caller/usage with `!` negation across the entire monorepo.
-    - `refactor.generify(path, symbol)` — not offered; to build.
+    - [x] `refactor.generify(path, symbol)` — shipped 2026-09-23 for Rust as `code_generify` / `prod-code generify <function> --param NAME --bound TRAIT [--as T]` (#117; rust-analyzer offers only `unwrap_type_to_generic_arg`, a different refactoring): the parameter's type becomes a type parameter with the given bound, a reference in front of it is kept (`&Vec<u32>` → `&T`), a function that already has generics gets one more, and a type parameter name already in use is refused. Callers are not rewritten — the type argument is inferred — but every file that calls the function is type-checked in the same overlay, which catches both a body that needs more than the bound and a caller that stops compiling unedited (a `"x".into()` that took its target from the old type). The bound is the user's choice; nothing is inferred from the body.
       - Introduces generic type parameters `<T>` where concrete or dynamic types were used, updating callers with explicit or inferred type arguments.
     - [x] `refactor.wrap_return_value(path, symbol, wrapper_type)` — shipped 2026-09-23 for Rust as `code_wrap_return` / `prod-code wrap-return <file> --line N --character C --wrapper option|result [--error TYPE]`: rust-analyzer's `wrap_return_type_in_option` / `_in_result` rewrite the signature and the returned values (the `_` error type filled in with `error`), every caller that already returns the same wrapper gets `?`, and every other caller is reported with its line and blocks the write; a recursive call is left for a person. Type-checked in one overlay, `verify: "compile"` available.
       - Wraps function return types into `Result<T, Error>`, `Option<T>`, or custom envelopes, updating all return statements and wrapping call sites with `?` or `match`.

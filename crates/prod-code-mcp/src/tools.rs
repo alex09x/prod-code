@@ -258,6 +258,25 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_generify".to_string(),
+            description: "Make a parameter generic: its concrete type becomes a type parameter with the bound it must satisfy (`fn total(v: &Vec<u32>)` → `fn total<T: AsRef<[u32]>>(v: &T)`). Give the function's name position (or `symbol`), the `param` and the `bound`; `type_param` names the new parameter (default `T`, refused if the function already has one of that name). A reference in front of the type is kept. Callers do not change — the type argument is inferred — but every file that calls the function is checked against the new signature in the same overlay, so a body that uses more than the bound promises, or a caller whose type does not satisfy it, is reported before anything is written. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function" },
+                    "line": { "type": "integer", "description": "1-based line of the function's name" },
+                    "character": { "type": "integer", "description": "1-based column of the function's name" },
+                    "param": { "type": "string", "description": "The parameter to make generic" },
+                    "bound": { "type": "string", "description": "The trait bound, such as `AsRef<[u32]>` or `std::fmt::Display + Clone`" },
+                    "type_param": { "type": "string", "description": "The new type parameter's name (default `T`)" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the new signature and the check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["param", "bound"]
+            }),
+        },
+        McpTool {
             name: "code_invert_boolean".to_string(),
             description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -851,6 +870,7 @@ pub async fn execute_tool(
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
+        "code_generify" => handle_generify(remote, workspace_root, &args).await,
         "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
         "code_introduce_parameter_object" => {
             handle_introduce_parameter_object(remote, workspace_root, &args).await
@@ -1625,6 +1645,57 @@ async fn handle_extract_field(
         text.push_str(&gate.text);
     }
     Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_generify(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
+    };
+    let param = args
+        .get("param")
+        .and_then(|v| v.as_str())
+        .context("Missing 'param' argument: the parameter to make generic")?;
+    let bound = args
+        .get("bound")
+        .and_then(|v| v.as_str())
+        .context("Missing 'bound' argument: the trait the type must satisfy")?;
+    let type_param = args
+        .get("type_param")
+        .and_then(|v| v.as_str())
+        .unwrap_or("T");
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::generify::generify(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        param,
+        bound,
+        type_param,
+        apply,
+        force,
+    )
+    .await?;
+    let text = done.render();
+    Ok(if done.diagnostics.is_empty() {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)
@@ -3120,6 +3191,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_wrap_return",
     "code_make_static",
     "code_invert_boolean",
+    "code_generify",
     "code_definition",
     "code_references",
     "code_hover",

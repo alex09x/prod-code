@@ -133,6 +133,15 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Make a parameter generic (roadmap 7.1.4, #117): `code_generify` (MCP) and `prod-code generify
+  <function> --param NAME --bound TRAIT [--as T]`. The parameter's type becomes a type parameter
+  with the given bound — `fn total(v: &Vec<u32>)` becomes `fn total<T: AsRef<[u32]>>(v: &T)` — with
+  the reference kept and the new parameter appended to any generics the function already has. A
+  name already in use, an `impl`/`dyn` type and a missing parameter are refused. Callers are not
+  edited, since the type argument is inferred, but every file that calls the function is
+  type-checked with the new signature in one overlay, and an error stops the write unless `force`:
+  a body that uses more than the bound promises, or a caller that no longer compiles as it is,
+  such as `label("all".into())` once `label` takes a `D: Display`.
 - Invert a predicate (roadmap 7.1.4, #115): `code_invert_boolean` (MCP) and `prod-code
   invert-boolean <file> --line N --character C --to NEW`. A function returning `bool` gets the new
   name and returns the negation of what it returned — in place for a one-expression body, as a

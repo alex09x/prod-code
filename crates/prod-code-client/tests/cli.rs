@@ -1840,3 +1840,49 @@ async fn cli_inverts_a_predicate_and_its_call() {
     assert!(text.contains("+    !(x > 0)"), "{text}");
     assert!(text.contains("+    !is_off(x)"), "{text}");
 }
+
+#[tokio::test]
+async fn cli_makes_a_parameter_generic() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn show(x: &u32) -> String {\n    x.to_string()\n}\n",
+        ),
+    ]);
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "generify",
+            "src/lib.rs",
+            "--line",
+            "1",
+            "--character",
+            "8",
+            "--param",
+            "x",
+            "--bound",
+            "std::fmt::Display",
+            "--as",
+            "D",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(
+        text.contains("now: `fn show<D: std::fmt::Display>(x: &D)`"),
+        "{text}"
+    );
+    assert!(text.contains("nothing was written"), "{text}");
+}
