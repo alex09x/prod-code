@@ -238,7 +238,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     `wrap_return_type_in_result`, which rewrite the signature and the returned values but none of
     the callers; `invert_boolean`, `make_static` and `generify` are not offered at all
     (`convert_bool_to_enum` and `unwrap_type_to_generic_arg` are different refactorings). The
-    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`), and so did `make_static` (`code_make_static`); `invert_boolean` and `generify` are still to build.
+    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`), and so did `make_static` (`code_make_static`) and `invert_boolean` (`code_invert_boolean`); `generify` is still to build.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -296,7 +296,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Whole-program type migration: changes a symbol's type (e.g. `u32` -> `u64`, `String` -> `Uuid`, `T` -> `Option<T>` or `Result<T, E>`).
       - Solves whole-program data-flow constraint graph: computes transitively affected variables, return signatures, function parameters, and call sites.
       - Automatically injects necessary type conversions (`.into()`, `Some(...)`, `?`) or returns a guided conflict dossier for ambiguous coercions.
-    - `refactor.invert_boolean(path, symbol)` — not offered (the analyzer offers `convert_bool_to_enum`, a different refactoring); to build.
+    - [x] `refactor.invert_boolean(path, symbol)` — shipped 2026-09-23 for Rust as `code_invert_boolean` / `prod-code invert-boolean <file> --line N --character C --to NEW` (rust-analyzer offers only `convert_bool_to_enum`, a different refactoring): a function returning `bool` gets the new name, its body returns the negation (every `return` of the function, not of a closure or nested `fn`), every call gains a `!` or loses the one it had, a call followed by `.`, `?` or an index is parenthesized, a reference that is not a call is named, and a recursive predicate is refused. Functions only; a `bool` field or variable is not covered.
       - Inverts boolean variable, field, or function predicate (e.g. `is_valid` -> `is_invalid`, `has_access` -> `access_revoked`).
       - Flips internal return expressions and inverts every single caller/usage with `!` negation across the entire monorepo.
     - `refactor.generify(path, symbol)` — not offered; to build.

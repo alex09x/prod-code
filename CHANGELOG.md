@@ -133,6 +133,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Invert a predicate (roadmap 7.1.4, #115): `code_invert_boolean` (MCP) and `prod-code
+  invert-boolean <file> --line N --character C --to NEW`. A function returning `bool` gets the new
+  name and returns the negation of what it returned — in place for a one-expression body, as a
+  block otherwise, and at every `return` of the function (not of a closure or a nested `fn`).
+  Every call becomes `!new(…)`, a call that had a `!` loses it, and a call followed by `.`, `?` or
+  an index is parenthesized. A reference that is not a call is named, since under the new name it
+  would mean the opposite; a recursive predicate is refused. Type-checked in one overlay.
 - Make a method static (roadmap 7.1.3, #111): `code_make_static` (MCP) and `prod-code
   make-static <file> --line N --character C`. A method whose body never mentions `self` loses its
   receiver; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)`
