@@ -106,6 +106,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_invert_boolean` | a predicate, a `bool` field or a `bool` variable renamed to its opposite, every read and write unchanged in effect |
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
 | `code_inline_parameter` | a parameter every caller passes the same constant for, moved into the body and out of every call |
+| `code_introduce_variable` | an expression bound once (`let w1 = w + 1;`) and every occurrence of it in the function replaced, refused when evaluating once would change what the code does |
 | `code_convert_to_method` | an associated function turned into a method: its first parameter becomes `self`, `Type::f(&x, a)` becomes `x.f(a)` |
 | `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |
 | `code_extract_field` | an expression in a method turned into a field of its type, initialised wherever the type is built |
@@ -139,7 +140,7 @@ has to grep for a line number:
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
 fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | inline-parameter | invert-boolean | generify | hover | def | refs | callers | callees |
+extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | convert-to-method | inline-parameter | introduce-variable | invert-boolean | generify | hover | def | refs | callers | callees |
 impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
 diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
 cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a
