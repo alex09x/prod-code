@@ -3713,3 +3713,130 @@ async fn an_extracted_function_replaces_the_duplicates_that_type_check() {
     assert_eq!(written.matches("net_price(o)").count(), 2, "{written}");
     assert!(done.render().contains("[applied]"));
 }
+
+const MM_LIB: &str = "pub mod a;\npub mod c;\n\nuse crate::a::{b, uses};\n\npub fn top() -> u32 {\n    b::inner() + crate::a::b::inner() + uses()\n}\n";
+const MM_A: &str = "pub mod b;\n\npub(crate) fn helper() -> u32 {\n    1\n}\n\npub fn uses() -> u32 {\n    b::inner()\n}\n";
+const MM_B: &str = "pub mod deep;\n\nuse super::helper;\n\npub fn inner() -> u32 {\n    helper() + super::helper()\n}\n";
+const MM_DEEP: &str = "pub fn d() -> u32 {\n    super::inner()\n}\n";
+const MM_C: &str =
+    "use crate::a::b;\n\npub fn c_uses() -> u32 {\n    b::inner() + super::a::b::inner()\n}\n";
+
+/// Moving the module `a::b` (with its submodule `deep`) to `c::b`: the files move, the
+/// declaration goes from `a` to `c`, a qualified path gets the new parent, a grouped import is
+/// narrowed and the module imported on its own, a bare `b` in the old parent gets an import, the
+/// import in the new parent that would clash is dropped, and `super::` in the moved file becomes
+/// `crate::a::`. `move` on the `mod b;` line refuses and names the module move.
+#[tokio::test]
+async fn a_module_moves_with_its_files_and_every_path_to_it() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"mm\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", MM_LIB);
+    let a = write(&ws, "src/a.rs", MM_A);
+    let b = write(&ws, "src/a/b.rs", MM_B);
+    write(&ws, "src/a/b/deep.rs", MM_DEEP);
+    let c = write(&ws, "src/c.rs", MM_C);
+    commit(&ws);
+
+    let (l, a2, c2) = (lib.clone(), a.clone(), c.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => locations_in(&[
+            (&l, &[(4, 16), (7, 5), (7, 28)]),
+            (&a2, &[(8, 5)]),
+            (&c2, &[(1, 15), (4, 5), (4, 28)]),
+        ]),
+        "textDocument/documentSymbol" => serde_json::json!([{
+            "name": "b", "kind": 2,
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } },
+            "selectionRange": { "start": { "line": 0, "character": 8 }, "end": { "line": 0, "character": 9 } }
+        }]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let refused = prod_code_mcp::move_item::move_item(
+        remote,
+        &root,
+        &a,
+        1,
+        9,
+        &root.join("src/c/b.rs"),
+        false,
+        false,
+    )
+    .await
+    .expect_err("a module is not an item");
+    assert!(
+        format!("{refused:#}").contains("move-module"),
+        "{refused:#}"
+    );
+
+    let mut done =
+        prod_code_mcp::move_module::move_module(remote, &root, &b, &root.join("src/c/b.rs"))
+            .await
+            .expect("the dry run reports");
+    assert_eq!(done.from_module, "mm::a::b");
+    assert_eq!(done.to_module, "mm::c::b");
+    assert_eq!(
+        done.moved,
+        vec![
+            ("src/a/b.rs".to_string(), "src/c/b.rs".to_string()),
+            ("src/a/b/deep.rs".to_string(), "src/c/b/deep.rs".to_string()),
+        ]
+    );
+    assert!(done.diagnostics.is_empty(), "{:?}", done.diagnostics);
+    let text_of = |rel: &str| {
+        done.rewritten
+            .iter()
+            .find(|(p, _)| p.ends_with(rel))
+            .map(|(_, t)| t.clone())
+            .unwrap_or_else(|| panic!("{rel} not rewritten: {:?}", done.rewritten))
+    };
+    assert_eq!(
+        text_of("src/lib.rs"),
+        "pub mod a;\npub mod c;\n\nuse crate::a::{uses};\nuse crate::c::b;\n\npub fn top() -> u32 {\n    b::inner() + crate::c::b::inner() + uses()\n}\n"
+    );
+    assert_eq!(
+        text_of("src/a.rs"),
+        "use crate::c::b;\n\npub(crate) fn helper() -> u32 {\n    1\n}\n\npub fn uses() -> u32 {\n    b::inner()\n}\n"
+    );
+    assert_eq!(
+        text_of("src/c.rs"),
+        "pub mod b;\n\npub fn c_uses() -> u32 {\n    b::inner() + crate::c::b::inner()\n}\n"
+    );
+    assert_eq!(
+        text_of("src/c/b.rs"),
+        "pub mod deep;\n\nuse crate::a::helper;\n\npub fn inner() -> u32 {\n    helper() + crate::a::helper()\n}\n"
+    );
+    assert_eq!(text_of("src/c/b/deep.rs"), MM_DEEP);
+    let rendered = done.render(20_000);
+    assert!(rendered.contains("src/a/b.rs -> src/c/b.rs"), "{rendered}");
+    assert!(
+        rendered.contains("2 `super::` now `crate::a::`"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("nothing was written"), "{rendered}");
+    assert_eq!(ws.read("src/a.rs"), MM_A);
+
+    done.write(false).expect("a clean move writes");
+    assert!(!root.join("src/a/b.rs").exists());
+    assert!(!root.join("src/a").exists(), "the empty directory goes too");
+    assert_eq!(ws.read("src/c/b/deep.rs"), MM_DEEP);
+    assert!(ws.read("src/c.rs").starts_with("pub mod b;\n"));
+    assert!(done.render(20_000).contains("[applied]"));
+
+    let again = prod_code_mcp::move_module::move_module(
+        remote,
+        &root,
+        &root.join("src/c/b.rs"),
+        &root.join("src/c/b.rs"),
+    )
+    .await
+    .expect_err("the target exists");
+    assert!(format!("{again:#}").contains("already exists"), "{again:#}");
+}

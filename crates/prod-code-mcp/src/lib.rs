@@ -25,6 +25,7 @@ pub mod lang;
 pub mod loop_to_iterator;
 pub mod make_static;
 pub mod move_item;
+pub mod move_module;
 pub mod parameter_object;
 pub mod protocol;
 pub mod prune;

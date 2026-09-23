@@ -758,6 +758,24 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Move a whole module to another parent (`a::b` becomes `c::b`), with its file, its
+    /// submodules and every path to it.
+    MoveModule {
+        /// The module's file, e.g. `src/a/b.rs` or `src/a/b/mod.rs`.
+        file: PathBuf,
+        /// Where the module's file goes, e.g. `src/c/b.rs`.
+        #[arg(long = "to")]
+        to: PathBuf,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Write the move instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Change what a function takes — reorder, add, remove parameters — with every call site.
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
@@ -1600,6 +1618,30 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_move_cli(remote, symbol, to, path, verify, apply, force).await,
+        Commands::MoveModule {
+            file,
+            to,
+            verify,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            let to = if to.is_absolute() {
+                to
+            } else {
+                std::env::current_dir()?.join(to)
+            };
+            let mut args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "to": to.to_string_lossy(),
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(verify) = verify {
+                args["verify"] = serde_json::Value::String(verify);
+            }
+            run_tool(remote, "code_move_module", args).await
+        }
         Commands::ChangeSignature {
             symbol,
             params,
