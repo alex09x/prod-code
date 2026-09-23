@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Fixed
+- **impact on Swift no longer says no test reaches a change it never looked at** (#166). The
+  macOS node runs Swift 5.10, whose sourcekit-lsp finds a caller in another file only through
+  the index a build leaves. Before any build, `impact` answered "affected tests: none reach the
+  changed functions", and an agent would skip the tests. Two changes:
+  - for a Swift package, `impact` first runs `swift build --build-tests` on the node, which is
+    incremental (4.9 s on a scratch package with no `.build`), and says so in the report;
+  - when that build fails, the report says the callers and tests are unknown and to run the full
+    suite, instead of none.
 - **Validate no longer refuses a new file for the analyzer's derive expansion** (#159).
   rust-analyzer reports "type annotations needed" (E0282) at a `#[derive(Deserialize)]` line when
   it cannot type its own expansion of the derive, and `cargo check` compiles the file. An existing

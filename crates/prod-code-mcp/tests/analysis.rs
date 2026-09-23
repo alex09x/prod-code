@@ -215,6 +215,7 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
             "it works".to_string(),
         ]),
         unattributed_files: vec!["Cargo.toml".to_string()],
+        index: None,
     };
 
     let text = report.render();
@@ -244,12 +245,53 @@ async fn impact_report_render_says_when_no_test_reaches_the_change() {
         tests: vec![],
         test_command: None,
         unattributed_files: vec![],
+        index: None,
     };
 
     let text = report.render();
 
     assert!(text.contains("affected tests: none reach the changed functions"));
     assert!(!text.contains("run:"));
+}
+
+/// Swift finds callers only through the index a build leaves: the report says which build ran,
+/// and when it failed, no test reaching the change means unknown, not none (#166).
+#[tokio::test]
+async fn impact_report_says_when_the_index_could_not_be_built() {
+    let build = |ok| impact::IndexBuild {
+        command: "swift build --build-tests".to_string(),
+        ok,
+        duration_ms: 900,
+    };
+    let report = |ok| ImpactReport {
+        language: "swift".to_string(),
+        base: "HEAD".to_string(),
+        changed_files: vec!["Sources/MathKit/Math.swift".to_string()],
+        changed: vec![sym("plus(_:_:)", "Sources/MathKit/Math.swift", 1, 13)],
+        callers: vec![],
+        tests: vec![],
+        test_command: None,
+        unattributed_files: vec![],
+        index: Some(build(ok)),
+    };
+
+    let built = report(true).render();
+    assert!(
+        built.contains("index: `swift build --build-tests` (0.9s)"),
+        "{built}"
+    );
+    assert!(built.contains("affected tests: none reach the changed functions"));
+
+    let failed = report(false).render();
+    assert!(
+        failed.contains("failed, so the analyzer has no index"),
+        "{failed}"
+    );
+    assert!(
+        failed.contains("affected tests: unknown (no index)"),
+        "{failed}"
+    );
+    assert!(!failed.contains("none reach"), "{failed}");
 }
 
 /// `test_command` for Swift strips the `()` a call-hierarchy name carries.
