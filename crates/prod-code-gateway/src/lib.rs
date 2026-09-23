@@ -2904,7 +2904,16 @@ fn lsp_call_hierarchy(
                 hierarchy_query(&engine, &m, &fp_clone, line + 1, col + 1)
             })
             .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("query task failed: {e}")))
+            .unwrap_or_else(|e| {
+                // A panic in the analyzer while checking a file is the analyzer's, not the
+                // request's: the file simply could not be checked. As an error the whole
+                // validation failed; as one diagnostic it is reported and the rest goes on (#94).
+                if e.is_panic() && method_name == "textDocument/diagnostic" {
+                    Ok(analyzer_panic_report(&panic_message(e.into_panic())))
+                } else {
+                    Err(anyhow::anyhow!("query task failed: {e}"))
+                }
+            })
         };
         let ms = query_start.elapsed().as_secs_f64() * 1000.0;
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
@@ -2921,6 +2930,34 @@ fn lsp_call_hierarchy(
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
     });
+}
+
+/// Code of the diagnostic that stands for a file the analyzer panicked on.
+pub const ANALYZER_PANIC: &str = prod_code_protocol::ANALYZER_PANIC_CODE;
+
+/// The text of a panic payload, when it is one of the two shapes `panic!` produces.
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_else(|| "no message".to_string())
+}
+
+/// The diagnostics report for a file the analyzer panicked on: one error at its top that says
+/// nothing in it was checked, and what check remains.
+fn analyzer_panic_report(message: &str) -> serde_json::Value {
+    serde_json::json!({ "kind": "full", "items": [ {
+        "range": lsp_range(1, 1, 1, 1),
+        "severity": 1,
+        "code": ANALYZER_PANIC,
+        "source": "prod-code",
+        "message": format!(
+            "rust-analyzer panicked while checking this file, so nothing in it was checked: \
+             {message}. The compiler is the check that remains (`verify: \"compile\"`, or \
+             `code_check`)."
+        ),
+    } ] })
 }
 
 fn lsp_safe_delete(
@@ -4428,5 +4465,30 @@ mod tests {
             fresh,
             "the probe's answer is what the next caller gets"
         );
+    }
+}
+
+#[cfg(test)]
+mod analyzer_panic_tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_is_reported_as_one_unchecked_file_not_as_a_failed_request() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("escaping bound vars".to_string());
+        let message = panic_message(payload);
+        assert_eq!(message, "escaping bound vars");
+        assert_eq!(panic_message(Box::new("static text")), "static text");
+        assert_eq!(panic_message(Box::new(42u8)), "no message");
+
+        let report = analyzer_panic_report(&message);
+        let items = report["items"].as_array().expect("items");
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["severity"], 1);
+        assert_eq!(items[0]["code"], ANALYZER_PANIC);
+        assert_eq!(items[0]["range"]["start"]["line"], 0);
+        let text = items[0]["message"].as_str().unwrap();
+        assert!(text.contains("nothing in it was checked"), "{text}");
+        assert!(text.contains("escaping bound vars"), "{text}");
+        assert!(text.contains("verify"), "{text}");
     }
 }

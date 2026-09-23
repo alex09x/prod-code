@@ -132,6 +132,10 @@ pub struct HandshakeRequest {
     pub purpose: Option<String>,
 }
 
+/// Code of the diagnostic a gateway reports for a file the analyzer panicked on (#94): the file
+/// was not checked at all. It is never set aside as a diagnostic the file already had.
+pub const ANALYZER_PANIC_CODE: &str = "prod-code::analyzer-panic";
+
 /// [`HandshakeRequest::purpose`] of a session that only validates proposed texts.
 pub const PURPOSE_VALIDATION: &str = "validation";
 

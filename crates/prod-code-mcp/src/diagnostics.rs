@@ -126,6 +126,12 @@ fn set_aside_preexisting(
     }
     let items = std::mem::take(&mut report.items);
     for d in items {
+        // A file the analyzer panicked on was not checked; that it was not checked before the
+        // edit either does not make it checked now (#94).
+        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE) {
+            report.items.push(d);
+            continue;
+        }
         match old.get_mut(&identity(&d, text)) {
             Some(n) if *n > 0 => {
                 *n -= 1;
@@ -639,6 +645,27 @@ mod tests {
         assert!(
             shown.contains("2 diagnostic(s) the file already had before this edit are not counted: 2× type annotations needed [E0282]"),
             "{shown}"
+        );
+    }
+
+    #[test]
+    fn a_file_the_analyzer_could_not_check_is_never_set_aside() {
+        let text = "fn a() {}\n";
+        let panic = DocDiagnostic {
+            code: Some(prod_code_protocol::ANALYZER_PANIC_CODE.to_string()),
+            ..diagnostic(
+                "error",
+                "rust-analyzer panicked while checking this file",
+                1,
+            )
+        };
+        let before = report_of(vec![panic.clone()]);
+        let mut report = report_of(vec![panic]);
+        set_aside_preexisting(&mut report, text, &before, text);
+        assert!(report.preexisting.is_empty());
+        assert_eq!(
+            report.errors, 1,
+            "still an error: nothing in the file was checked"
         );
     }
 
