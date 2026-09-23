@@ -13,6 +13,7 @@ pub mod fixture;
 pub mod generify;
 pub mod hot_reload;
 pub mod impact;
+pub mod inline_parameter;
 pub mod invert_boolean;
 pub mod invert_value;
 pub mod lang;

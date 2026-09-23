@@ -188,6 +188,18 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Inline a parameter (roadmap 7.1.1, #142): `code_inline_parameter` (MCP) and `prod-code
+  inline-parameter <file> <line> <col>`. When every call passes the same argument for a
+  parameter, the argument moves into the body and the parameter goes:
+  - the body starts with `let max: u32 = LIMIT;`;
+  - the parameter leaves the declaration, and its argument leaves every call (method syntax and
+    a path call with a receiver are counted correctly);
+  - only an argument that means the same in the body is accepted: a literal, an `ALL_CAPS`
+    constant, a CamelCase value or a path. A lowercase name may be the caller's local, and the
+    analyzer would not necessarily report it unresolved;
+  - calls that disagree are listed with their values, and the function used as a value or
+    called inside itself blocks the write;
+  - the result is type-checked before anything is written.
 - Invert a boolean field or local variable (roadmap 7.1.4, #132): `code_invert_boolean` and
   `prod-code invert-boolean` accept a `bool` field or a `let` binding besides a function
   (`crates/prod-code-mcp/src/invert_value.rs`):
