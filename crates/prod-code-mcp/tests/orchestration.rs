@@ -3320,3 +3320,77 @@ async fn orphans_are_pruned_in_one_checked_edit() {
     );
     assert!(pruned.render().contains("2 orphan(s)"));
 }
+
+const SUM_LOOP: &str = "pub fn total(prices: &[u64]) -> u64 {\n    let mut sum = 0;\n    for p in prices {\n        sum += p * 2;\n    }\n    sum += 1;\n    sum\n}\n";
+
+/// The loop becomes a chain over `prices.iter()` (the analyzer says `prices` is a reference),
+/// typed with the accumulator's type; the analyzer asks for `mut` because the variable changes
+/// after the loop, so the second attempt keeps it. A result it rejects is not written.
+#[tokio::test]
+async fn an_accumulator_loop_becomes_an_iterator_chain() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", SUM_LOOP);
+    commit(&ws);
+    // Per file, pulls alternate between the text on disk and the proposal.
+    let script = |proposals: Vec<serde_json::Value>| {
+        let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        scripted_gateway(Arc::new(move |method, params| match method {
+            "textDocument/hover" => {
+                match params.pointer("/position/line").and_then(|v| v.as_u64()) {
+                    Some(1) => answers::hover("```rust\nlet mut sum: u64\n```"),
+                    Some(2) => answers::hover("```rust\nprices: &[u64]\n```"),
+                    _ => serde_json::Value::Null,
+                }
+            }
+            "textDocument/diagnostic" => {
+                let n = pulls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if n.is_multiple_of(2) {
+                    answers::no_diagnostics()
+                } else {
+                    proposals
+                        .get(n / 2)
+                        .cloned()
+                        .unwrap_or_else(answers::no_diagnostics)
+                }
+            }
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let need_mut = answers::error_at(6, 5, "need-mut", "cannot mutate immutable variable `sum`");
+
+    let err = prod_code_mcp::loop_to_iterator::loop_to_iterator(
+        script(vec![
+            need_mut.clone(),
+            answers::error_at(2, 20, "E0599", "no method"),
+        ])
+        .await,
+        &root,
+        &lib,
+        3,
+        5,
+        true,
+        false,
+    )
+    .await
+    .expect_err("a result that does not compile is not written");
+    assert!(format!("{err:#}").contains("does not compile"), "{err:#}");
+    assert_eq!(ws.read("src/lib.rs"), SUM_LOOP);
+
+    let done = prod_code_mcp::loop_to_iterator::loop_to_iterator(
+        script(vec![need_mut]).await,
+        &root,
+        &lib,
+        3,
+        5,
+        true,
+        false,
+    )
+    .await
+    .expect("rewritten");
+    assert!(done.applied);
+    assert_eq!(
+        ws.read("src/lib.rs"),
+        "pub fn total(prices: &[u64]) -> u64 {\n    let mut sum: u64 = prices.iter().map(|p| p * 2).sum();\n    sum += 1;\n    sum\n}\n"
+    );
+}
