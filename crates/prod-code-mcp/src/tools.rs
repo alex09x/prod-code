@@ -182,6 +182,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "character": { "type": "integer", "description": "1-based column/character number" },
                     "new_name": { "type": "string", "description": "New identifier" },
                     "accessors": { "type": "boolean", "description": "At a field: also rename the methods of its struct's `impl` blocks named after it (`f`, `get_f`, `set_f`, `f_mut`), with every call, merged into one change" },
+                    "comments": { "type": "boolean", "description": "Also replace the old name where it stands as a whole word in comments, and its snake_case form in the names of test functions (`order_total_rounds` -> `trade_total_rounds`), in every file the rename touches; one change, type-checked. Not with a rename that moves files" },
                     "force": { "type": "boolean", "description": "Write the rename even when the result does not compile" }
                 },
                 "required": ["path", "line", "character", "new_name"]
@@ -3224,7 +3225,40 @@ async fn handle_rename(
     // that is already declared in the same scope is renamed into a second definition (#98), so
     // the result is checked in the overlay like every other write, and refused if it breaks.
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    let (planned, moves_files) = crate::refactor::planned_texts(workspace_root, &edit)?;
+    let (mut planned, moves_files) = crate::refactor::planned_texts(workspace_root, &edit)?;
+    // The old name in comments and test names, in every file the rename touches.
+    let comments = args
+        .get("comments")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let mut mentioned = crate::rename_mentions::Mentions::default();
+    if comments {
+        if moves_files {
+            return Ok(McpToolCallResult::error(
+                "`comments` is not supported with a rename that moves files; rename first, then \
+                 run it again at the new name"
+                    .to_string(),
+            ));
+        }
+        let text = std::fs::read_to_string(&file_path).unwrap_or_default();
+        let at = crate::signature::offset_of(&text, line, character).unwrap_or(0);
+        let start = text[..at]
+            .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .map_or(0, |i| i + 1);
+        let old: String = text[start..]
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !planned.iter().any(|(p, _)| *p == file_path) {
+            planned.push((file_path.clone(), text.clone()));
+        }
+        for (_, t) in planned.iter_mut() {
+            let (rewritten, found) = crate::rename_mentions::rewrite(t, &old, &new_name);
+            mentioned.comments += found.comments;
+            mentioned.tests.extend(found.tests);
+            *t = rewritten;
+        }
+    }
     let reports = crate::diagnostics::validate_texts(remote, workspace_root, &planned, &[]).await?;
     let errors: Vec<String> = reports
         .iter()
@@ -3256,12 +3290,33 @@ async fn handle_rename(
             errors.join("\n  ")
         )));
     }
-    let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    // With `comments` the texts are no longer the analyzer's edit alone: write them whole.
+    let touched = if comments {
+        let files: std::collections::BTreeMap<std::path::PathBuf, String> = planned
+            .into_iter()
+            .filter(|(p, t)| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true))
+            .collect();
+        crate::refactor::apply_workspace_edit(
+            workspace_root,
+            &crate::signature::whole_file_edit(&files),
+        )?
+    } else {
+        crate::refactor::apply_workspace_edit(workspace_root, &edit)?
+    };
     let mut text = format!(
         "renamed to `{new_name}`; {} path(s) updated in the checkout:\n{}",
         touched.len(),
         touched.join("\n")
     );
+    if comments {
+        text.push_str(&format!(
+            "\n\nin comments: {} mention(s) of the old name replaced",
+            mentioned.comments
+        ));
+        for (from, to) in &mentioned.tests {
+            text.push_str(&format!("\ntest renamed: `{from}` -> `{to}`"));
+        }
+    }
     if !errors.is_empty() {
         text.push_str(&format!(
             "\n\nwritten with `force`, although the analyzer reports {} error(s):\n  {}",

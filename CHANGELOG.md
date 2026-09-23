@@ -226,6 +226,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Rename follows the old name into comments and test names (roadmap 7.1.1, #174): `comments:
+  true` on `code_rename`, `prod-code rename … --comments`. In every file the rename touches:
+  - the old name is replaced where it stands as a whole word in a comment (`Orders` stays);
+  - its snake_case form is replaced between underscores in the name of a test function (one with
+    `#[test]`, `#[tokio::test]` or another attribute ending in `test`). `order_total_rounds_up`
+    becomes `trade_total_rounds_up`; `reorder_lines` stays.
+
+  The report counts the comment mentions and lists each test renamed, and the whole change is
+  type-checked with the rename. A rename that moves files is refused with `comments`, and the
+  words around the name are not adjusted ("an `Trade`").
 - Extract a delegate (roadmap 7.1.2, #172): `code_extract_delegate` (MCP) and `prod-code
   extract-delegate <file> <line> <col> --fields a,b --methods m,n --name Helper --field helper`.
   rust-analyzer offers delegates for one field at a time. This moves a group:
