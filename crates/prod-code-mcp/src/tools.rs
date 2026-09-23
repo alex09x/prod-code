@@ -555,6 +555,23 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_move_method".to_string(),
+            description: "Move a method to the type of one of its parameters: `Order::price_with(&self, tax: &Tax)` becomes `Tax::price_with(&self, order: &Order)`. Give the method's name position and `to_param`. The parameter becomes the receiver, borrowed as it was (`&Tax` -> `&self`); the old receiver becomes a parameter in its place, typed as it was borrowed; in the body `self` becomes that parameter, the parameter becomes `self`, and `Self` is spelled out. The method goes into the new type's inherent `impl` (one is made after the type when there is none), and every call swaps the two: `o.price_with(t, 1)` -> `t.price_with(&o, 1)`, `Order::price_with(o, t, 1)` -> `Tax::price_with(t, o, 1)`. A call whose receiver or argument does something (the order they run in would change), a method used as a value, a recursive method, a trait implementation and a generic `impl` are refused. Type-checked in one overlay first; nothing is written without `apply`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the method" },
+                    "line": { "type": "integer", "description": "1-based line of the method's name" },
+                    "character": { "type": "integer", "description": "1-based column of the method's name" },
+                    "to_param": { "type": "string", "description": "The parameter whose type the method moves to" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when something blocks it or it does not compile" }
+                },
+                "required": ["path", "line", "character", "to_param"]
+            }),
+        },
+        McpTool {
             name: "code_change_signature".to_string(),
             description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1148,6 +1165,7 @@ pub async fn execute_tool(
         }
         "code_move" => handle_move(remote, workspace_root, &args).await,
         "code_move_module" => handle_move_module(remote, workspace_root, &args).await,
+        "code_move_method" => handle_move_method(remote, workspace_root, &args).await,
         "code_change_signature" => handle_change_signature(remote, workspace_root, &args).await,
         "code_generate_fixture" => handle_generate_fixture(remote, workspace_root, &args).await,
         "code_dead_code" => handle_dead_code(remote, workspace_root, &args).await,
@@ -2305,6 +2323,46 @@ async fn handle_extract_trait(
     .await?;
     let text = done.render();
     Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_move_method(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let to_param = args
+        .get("to_param")
+        .and_then(|v| v.as_str())
+        .context("Missing 'to_param' argument: the parameter whose type the method moves to")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let done = crate::move_method::move_method(
+        remote,
+        workspace_root,
+        &resolve_file_path(workspace_root, path_str),
+        num("line")?,
+        num("character")?,
+        to_param,
+        apply,
+        force,
+    )
+    .await?;
+    let text = done.render(8000);
+    Ok(if done.diagnostics.is_empty() && done.blocked.is_empty() {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)

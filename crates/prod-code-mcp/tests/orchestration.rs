@@ -3932,3 +3932,91 @@ async fn a_trait_method_parameter_goes_from_every_implementation_and_call() {
     assert!(now.contains("c.area(1) + Shape::area(c, 3)"), "{now}");
     assert!(forced.render(20_000).contains("[applied]"));
 }
+
+const MM_ORDER: &str = "pub mod tax;\n\npub struct Order {\n    pub total: u32,\n}\n\nimpl Order {\n    pub fn new(total: u32) -> Self {\n        Order { total }\n    }\n\n    /// The price with the tax applied.\n    pub fn price_with(&self, tax: &tax::Tax, extra: u32) -> u32 {\n        self.total + self.total * tax.rate / 100 + extra\n    }\n}\n\npub fn checkout(o: &Order, t: &tax::Tax) -> u32 {\n    o.price_with(t, 1) + Order::price_with(o, t, 2)\n}\n\npub fn fresh(t: &tax::Tax) -> u32 {\n    Order::new(1).price_with(t, 3)\n}\n";
+const MM_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n    pub fn zero() -> Self {\n        Tax { rate: 0 }\n    }\n}\n";
+
+/// Moving `Order::price_with(&self, tax: &Tax, extra)` to `Tax`: the parameter becomes `&self`,
+/// the receiver becomes `order: &crate::Order`, the body swaps the two, the method joins
+/// `impl Tax`, a method call and a path call swap receiver and argument, and a call whose
+/// receiver is `Order::new(1)` blocks the write (the two would run in the other order) until
+/// `force`. `move` on the method refuses and names the method move.
+#[tokio::test]
+async fn a_method_moves_to_the_type_of_its_parameter() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"mm\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", MM_ORDER);
+    let tax = write(&ws, "src/tax.rs", MM_TAX);
+    commit(&ws);
+    let (l, t) = (lib.clone(), tax.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/definition" => answers::locations(&t, &[(1, 12)]),
+        "textDocument/references" => answers::locations(&l, &[(19, 7), (19, 33), (23, 19)]),
+        "textDocument/documentSymbol" => serde_json::json!([{
+            "name": "price_with", "kind": 6,
+            "range": { "start": { "line": 12, "character": 4 }, "end": { "line": 14, "character": 5 } },
+            "selectionRange": { "start": { "line": 12, "character": 11 }, "end": { "line": 12, "character": 21 } }
+        }]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let refused =
+        prod_code_mcp::move_item::move_item(remote, &root, &lib, 13, 12, &tax, false, false)
+            .await
+            .expect_err("a method is not a free item");
+    assert!(
+        format!("{refused:#}").contains("move-method"),
+        "{refused:#}"
+    );
+
+    let run = |apply: bool, force: bool| {
+        let (root, lib) = (root.clone(), lib.clone());
+        async move {
+            prod_code_mcp::move_method::move_method(
+                remote, &root, &lib, 13, 12, "tax", apply, force,
+            )
+            .await
+        }
+    };
+    let blocked = run(true, false).await.expect("it reports");
+    assert_eq!(
+        blocked.signature,
+        "fn price_with(&self, order: &crate::Order, extra: u32) -> u32"
+    );
+    assert_eq!(blocked.calls, 2);
+    assert_eq!(blocked.blocked.len(), 1, "{:?}", blocked.blocked);
+    assert!(
+        blocked.blocked[0]
+            .contains("`Order::new(1)` and `t` would be evaluated in the other order"),
+        "{:?}",
+        blocked.blocked
+    );
+    assert!(!blocked.applied);
+    assert_eq!(ws.read("src/lib.rs"), MM_ORDER);
+
+    let forced = run(true, true).await.expect("force writes");
+    assert!(forced.applied);
+    let lib_now = ws.read("src/lib.rs");
+    assert!(!lib_now.contains("fn price_with"), "{lib_now}");
+    assert!(
+        lib_now.contains("t.price_with(&o, 1) + crate::tax::Tax::price_with(t, o, 2)"),
+        "{lib_now}"
+    );
+    assert!(
+        lib_now.contains("        Order { total }\n    }\n}\n"),
+        "{lib_now}"
+    );
+    let tax_now = ws.read("src/tax.rs");
+    assert!(
+        tax_now.contains("    }\n\n    /// The price with the tax applied.\n    pub fn price_with(&self, order: &crate::Order, extra: u32) -> u32 {\n        order.total + order.total * self.rate / 100 + extra\n    }\n}\n"),
+        "{tax_now}"
+    );
+    assert!(forced.render(20_000).contains("[applied]"));
+}

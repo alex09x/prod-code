@@ -758,6 +758,24 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Move a method to the type of one of its parameters, swapping receiver and argument.
+    MoveMethod {
+        /// The file that declares the method.
+        file: PathBuf,
+        /// 1-based line of the method's name.
+        line: u32,
+        /// 1-based column of the method's name.
+        col: u32,
+        /// The parameter whose type the method moves to.
+        #[arg(long = "to-param")]
+        to_param: String,
+        /// Write the change instead of only reporting it.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when something blocks it or it does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Move a whole module to another parent (`a::b` becomes `c::b`), with its file, its
     /// submodules and every path to it.
     MoveModule {
@@ -1618,6 +1636,29 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => run_move_cli(remote, symbol, to, path, verify, apply, force).await,
+        Commands::MoveMethod {
+            file,
+            line,
+            col,
+            to_param,
+            apply,
+            force,
+        } => {
+            let abs = std::fs::canonicalize(&file).unwrap_or(file);
+            run_tool(
+                remote,
+                "code_move_method",
+                serde_json::json!({
+                    "path": abs.to_string_lossy(),
+                    "line": line,
+                    "character": col,
+                    "to_param": to_param,
+                    "apply": apply,
+                    "force": force,
+                }),
+            )
+            .await
+        }
         Commands::MoveModule {
             file,
             to,

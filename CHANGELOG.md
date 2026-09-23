@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- **`move` no longer pastes a method into a module as a free function** (#196). It cut
+  `Order::price_with` out of its `impl` and appended it, still taking `&self`, after `impl
+  Tax` in `src/tax.rs`. It now refuses and names `code_move_method`.
 - **extract_function no longer replaces a duplicate whose later code reads a shadowed name**
   (#189). The selection binds `gross`, and the new function does not return it. Where the code
   after a duplicate still reads `gross` and an outer `gross` exists, the call type-checked and
@@ -247,6 +250,19 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **A method moves to the type of one of its parameters** (roadmap 7.1.1, #196): MCP
+  `code_move_method` and `prod-code move-method FILE LINE COL --to-param NAME [--apply]`.
+  `Order::price_with(&self, tax: &Tax, extra)` becomes `Tax::price_with(&self, order:
+  &crate::Order, extra)`:
+  - `tax` is the receiver now, borrowed as it was;
+  - `self` becomes a parameter in its place, typed as it was borrowed;
+  - the body swaps the two, and `Self` is spelled out;
+  - the method joins `impl Tax`, or a new `impl` right after the type;
+  - calls swap receiver and argument: `o.price_with(t, 1)` → `t.price_with(&o, 1)`, and
+    `Order::price_with(o, t, 2)` → `crate::tax::Tax::price_with(t, o, 2)`. `&o` is right even
+    when `o` is a reference, because `&&Order` coerces to `&Order`;
+  - a call whose receiver or argument does something blocks the write, since the order they
+    run in would change, until `force`. So do recursion and a use as a value.
 - **safe_delete removes a trait method's parameter everywhere** (roadmap 7.1.1, #194). This
   works on a parameter in the trait or in an implementation (`_unused` counts too):
   - the parameter goes by position from the trait's declaration and from every

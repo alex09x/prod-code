@@ -692,6 +692,19 @@ pub async fn move_item(
     let symbols = document_symbols(remote, root, file).await?;
     let (name, decl_start, decl_end) =
         span_at(&symbols, line).with_context(|| format!("no declaration at line {line}"))?;
+    // A method belongs to its `impl`; pasted into a module it is a free function with a
+    // `self` it cannot have (#196).
+    let decl_offset = crate::signature::offset_of(&source_text, decl_start, 1).unwrap_or(0);
+    if let Some((owner, _, _, _)) = crate::extract_field::impl_blocks(&source_text)
+        .into_iter()
+        .find(|(_, _, open, close)| *open < decl_offset && decl_offset < *close)
+    {
+        anyhow::bail!(
+            "`{name}` is a method of `{owner}`; move it to the type of one of its parameters \
+             with `code_move_method` (`prod-code move-method <file> <line> <col> --to-param \
+             <name>`)"
+        );
+    }
     // A `mod x;` line declares a module whose code is in its own file; cutting the line would
     // move nothing of it (#188).
     let module_declaration = format!("mod {name};");
