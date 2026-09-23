@@ -169,7 +169,10 @@ pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec
         })
         .collect();
     match apply_unguarded(&root, edit) {
-        Ok(touched) => Ok(touched),
+        Ok(touched) => {
+            remember_applied(&root, &before);
+            Ok(touched)
+        }
         Err(err) => {
             let restored = restore(&root, &before);
             crate::sync::forget_synced_files(&root, &paths);
@@ -178,6 +181,48 @@ pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec
             )))
         }
     }
+}
+
+/// What each file held before the last edit applied to it, and what the edit left there.
+type Applied = std::collections::HashMap<std::path::PathBuf, (String, Vec<u8>)>;
+
+fn applied() -> &'static std::sync::Mutex<Applied> {
+    static APPLIED: std::sync::OnceLock<std::sync::Mutex<Applied>> = std::sync::OnceLock::new();
+    APPLIED.get_or_init(Default::default)
+}
+
+/// Records, for every file an edit rewrote, the text it had before and the bytes it has now, so a
+/// report rendered after the write can still show what changed (#122).
+fn remember_applied(root: &Path, before: &[(String, Option<Vec<u8>>)]) {
+    let Ok(mut map) = applied().lock() else {
+        return;
+    };
+    for (rel, old) in before {
+        let abs = root.join(rel);
+        let Ok(now) = std::fs::read(&abs) else {
+            continue;
+        };
+        let old = old
+            .as_deref()
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default();
+        map.insert(abs, (old, now));
+    }
+}
+
+/// The text a file had before the edit that produced what is on disk now: what a report shows as
+/// the old side of its diff. When no edit wrote the file, or the file has changed since, that is
+/// simply what is on disk.
+pub fn text_before_apply(path: &Path) -> String {
+    let current = std::fs::read(path).unwrap_or_default();
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if let Ok(map) = applied().lock()
+        && let Some((old, written)) = map.get(&canonical).or_else(|| map.get(path))
+        && *written == current
+    {
+        return old.clone();
+    }
+    String::from_utf8_lossy(&current).into_owned()
 }
 
 /// Every checkout-relative path an edit renames, creates, deletes or rewrites, in the order the
@@ -410,6 +455,30 @@ mod tests {
         let outside = serde_json::json!({ "changes": { "file:///etc/hosts": [] } });
         assert!(apply_workspace_edit(&root, &outside).is_err());
         crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A report rendered after an edit was written still has the old text to diff against (#122),
+    /// and a file changed again since, by anything, is read as it is.
+    #[test]
+    fn the_text_before_an_applied_edit_is_kept_until_the_file_changes_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        let lib = root.join("src/lib.rs");
+        std::fs::write(&lib, "pub fn old() {}\n").unwrap();
+        assert_eq!(text_before_apply(&lib), "pub fn old() {}\n");
+
+        let edit = serde_json::json!({ "changes": { format!("file://{}", lib.display()): [
+            { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } },
+              "newText": "pub fn new() {}\n" }
+        ] } });
+        apply_workspace_edit(&root, &edit).unwrap();
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "pub fn new() {}\n");
+        assert_eq!(text_before_apply(&lib), "pub fn old() {}\n");
+
+        std::fs::write(&lib, "pub fn later() {}\n").unwrap();
+        assert_eq!(text_before_apply(&lib), "pub fn later() {}\n");
     }
 
     /// A multi-file edit either lands whole or not at all. The second write here cannot happen —

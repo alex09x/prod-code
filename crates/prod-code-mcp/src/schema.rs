@@ -67,7 +67,7 @@ impl SchemaRename {
         let mut body = String::new();
         let mut changed = 0usize;
         for (path, new_text) in &self.rewritten {
-            let old = std::fs::read_to_string(path).unwrap_or_default();
+            let old = crate::refactor::text_before_apply(Path::new(path));
             let rel = display(&self.root, path);
             let diff = similar::TextDiff::from_lines(&old, new_text);
             changed += diff

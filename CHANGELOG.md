@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **An applied edit's report shows its diff again** (#122). Every write tool rendered its diff by
+  reading the old text from disk, after `apply` had already written the new one, so an applied
+  change reported "0 changed line(s)" and no hunks. `refactor::apply_workspace_edit` now keeps,
+  per file, the text before the edit and the bytes it wrote, and `refactor::text_before_apply`
+  returns that old text while the file still holds exactly what the edit wrote (and the file as
+  it is otherwise). The twelve renderers were moved onto it with `prod-code codemod`. Found while
+  applying `convert_to_method` on a scratch crate.
 - **`code_make_static` refuses a method in a trait `impl`** (#113). The trait decides whether its
   methods take a receiver; an implementation that dropped it would no longer implement the trait,
   and the first version would have dropped it. Found while writing the post that describes the

@@ -2080,6 +2080,13 @@ async fn inverting_a_predicate_keeps_every_caller_doing_what_it_did() {
     assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
     assert!(done.unmatched[0].contains("used as a value"));
     assert!(done.applied);
+    // The report of an applied edit still shows what changed (#122).
+    let report = done.render(10_000);
+    assert!(
+        report.contains("-pub fn is_even(n: u32) -> bool {")
+            && report.contains("+pub fn is_odd(n: u32) -> bool {"),
+        "{report}"
+    );
     let written = ws.read("src/lib.rs");
     assert!(
         written.contains("pub fn is_odd(n: u32) -> bool {\n    !{"),
