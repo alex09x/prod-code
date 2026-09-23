@@ -346,6 +346,24 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_trait".to_string(),
+            description: "Extract a trait from the methods you name of an inherent `impl Type` block (rust-analyzer's `generate_trait_from_impl` takes every method, keeps the trait private and leaves callers in other modules without it in scope). The named methods move into `trait Name` and `impl Name for Type`; the rest stay inherent (the block goes when it empties). Doc comments go to the trait's declarations, attributes stay on the implementation, and the trait is as visible as the widest moved method. Every other file that references a moved method gets `use …::Name;`. Type-checked in one overlay before anything is written. Generic `impl` blocks and trait implementations are refused. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the `impl` block" },
+                    "line": { "type": "integer", "description": "1-based line of the `impl` header (or any line inside the block)" },
+                    "character": { "type": "integer", "description": "1-based column on that line" },
+                    "methods": { "type": "array", "items": { "type": "string" }, "description": "Names of the methods that move into the trait" },
+                    "name": { "type": "string", "description": "Name of the new trait" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character", "methods", "name"]
+            }),
+        },
+        McpTool {
             name: "code_introduce_variable".to_string(),
             description: "Introduce a variable for an expression and replace every occurrence of it in the enclosing function, not only the selected one: `(w + 1)` three times becomes `let w1 = w + 1;` above the first and `w1` at each place. Give the selection (`line`/`character` to `end_line`/`end_character`) and `name`. Refused when evaluating once is not the same as evaluating at each place: the expression calls something, expands a macro, uses `?` or awaits, or a name it reads is assigned, mutably borrowed or rebound between the first occurrence and the last (or in a loop that runs a later one again). For one occurrence of such an expression use `code_assist` with `extract_variable`. Type-checked in one overlay before anything is written. Rust only."
                 .to_string(),
@@ -934,6 +952,7 @@ pub async fn execute_tool(
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
         "code_introduce_variable" => handle_introduce_variable(remote, workspace_root, &args).await,
+        "code_extract_trait" => handle_extract_trait(remote, workspace_root, &args).await,
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,
@@ -2036,6 +2055,55 @@ async fn handle_inline_parameter(
             McpToolCallResult::error(text)
         },
     )
+}
+
+async fn handle_extract_trait(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument")?;
+    let methods: Vec<String> = args
+        .get("methods")
+        .and_then(|v| v.as_array())
+        .context("Missing 'methods' argument")?
+        .iter()
+        .filter_map(|m| m.as_str().map(str::to_string))
+        .collect();
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::extract_trait::extract_trait(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        &methods,
+        name,
+        apply,
+        force,
+    )
+    .await?;
+    let text = done.render();
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
 }
 
 async fn handle_introduce_variable(

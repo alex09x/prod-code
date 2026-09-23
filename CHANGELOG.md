@@ -196,6 +196,18 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Extract a trait from a chosen subset of methods (roadmap 7.1.2, #153): `code_extract_trait`
+  (MCP) and `prod-code extract-trait <file> <line> <col> --methods a,b --name NAME`. rust-analyzer's
+  `generate_trait_from_impl` takes the whole block, names the trait `NewTrait` and keeps it
+  private. Every caller in another module then fails with E0599. This tool does four things:
+  - moves only the named methods into `trait Name` and `impl Name for Type`, right after the block.
+    The rest stay inherent, and the block goes when nothing is left in it;
+  - puts doc comments on the trait's declarations and keeps attributes on the implementation.
+    The trait is as visible as the widest moved method;
+  - adds `use crate::…::Name;` to every other file that references a moved method, spelled with
+    the crate's name from another crate;
+  - type-checks every touched file in one overlay before anything is written. Generic `impl`
+    blocks and trait implementations are refused.
 - Introduce a variable for every occurrence (roadmap 7.1.2, #150): `code_introduce_variable`
   (MCP) and `prod-code introduce-variable <file> <line> <col> --to LINE:COL --name NAME`.
   rust-analyzer's `extract_variable` replaces only the selection. This replaces every whole-token
