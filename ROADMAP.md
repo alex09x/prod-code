@@ -231,10 +231,14 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
     the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
     overlay before writing.
-  - **Probed and not offered** on 2026-09-22, so also to-build but low priority:
-    `invert_if_to_guard`, `generify`, `wrap_return_value`, `invert_boolean`, `make_static`.
-    rust-analyzer may have an assist for some of these behind a trigger the probe did not hit;
-    what is certain is that an agent pointed at the obvious position is offered nothing.
+  - **Probed again on 2026-09-23** with an example of each shape in a scratch crate
+    (`prod-code assists <file> <line> <col>` at each position):
+    `invert_if_to_guard` is offered as `convert_to_guarded_return` at an `if let` / `if` that
+    ends the function; `wrap_return_value` is half offered, as `wrap_return_type_in_option` and
+    `wrap_return_type_in_result`, which rewrite the signature and the returned values but none of
+    the callers; `invert_boolean`, `make_static` and `generify` are not offered at all
+    (`convert_bool_to_enum` and `unwrap_type_to_generic_arg` are different refactorings). The
+    caller half of `wrap_return_value`, and the three that are not offered, are still to build.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -284,7 +288,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Enforces "Composition over Inheritance": wraps the base class in a private field and forwards inherited method calls.
     - *Not applicable as written* — Rust has no constructors; the useful half is generating a builder, which belongs with the generate assists. `refactor.replace_constructor_with_factory / builder(path, type_name)`:
       - Replaces raw struct instantiations with named static factory methods or a fluent builder pattern.
-    - `refactor.make_static / convert_to_method(path, function_name)`:
+    - `refactor.make_static / convert_to_method(path, function_name)` — not offered by rust-analyzer at a method, with or without `self` (probe of 2026-09-23); to build.
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
 
   - **7.1.4. Data Flow & Advanced Type-System Refactorings**:
@@ -292,16 +296,16 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Whole-program type migration: changes a symbol's type (e.g. `u32` -> `u64`, `String` -> `Uuid`, `T` -> `Option<T>` or `Result<T, E>`).
       - Solves whole-program data-flow constraint graph: computes transitively affected variables, return signatures, function parameters, and call sites.
       - Automatically injects necessary type conversions (`.into()`, `Some(...)`, `?`) or returns a guided conflict dossier for ambiguous coercions.
-    - `refactor.invert_boolean(path, symbol)`:
+    - `refactor.invert_boolean(path, symbol)` — not offered (the analyzer offers `convert_bool_to_enum`, a different refactoring); to build.
       - Inverts boolean variable, field, or function predicate (e.g. `is_valid` -> `is_invalid`, `has_access` -> `access_revoked`).
       - Flips internal return expressions and inverts every single caller/usage with `!` negation across the entire monorepo.
-    - `refactor.generify(path, symbol)`:
+    - `refactor.generify(path, symbol)` — not offered; to build.
       - Introduces generic type parameters `<T>` where concrete or dynamic types were used, updating callers with explicit or inferred type arguments.
-    - `refactor.wrap_return_value(path, symbol, wrapper_type)`:
+    - [~] `refactor.wrap_return_value(path, symbol, wrapper_type)` — half of it via `code_assists` at the return type: `wrap_return_type_in_option` and `wrap_return_type_in_result` rewrite the signature and every returned value. No caller is touched, so every call site stops compiling; that half needs a tool.
       - Wraps function return types into `Result<T, Error>`, `Option<T>`, or custom envelopes, updating all return statements and wrapping call sites with `?` or `match`.
 
   - **7.1.5. Modernization & Control Flow Transformations**:
-    - `refactor.invert_if_to_guard(path, range)`:
+    - [x] `refactor.invert_if_to_guard(path, range)` — via `code_assists` at an `if let` or `if` that ends a function or a loop body: `convert_to_guarded_return` (probe of 2026-09-23).
       - Flips conditional branches to early returns (`guard clauses`), reducing nested block indentation depth from 5+ levels to 1.
     - *Not applicable to Rust* — a `match` on an enum is the idiom, not a smell to remove. `refactor.replace_conditional_with_polymorphism(path, range)`:
       - Replaces large `match`/`switch`/`if-else` cascades on enum/type tags with polymorphic trait/interface method dispatch.
