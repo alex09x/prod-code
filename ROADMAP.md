@@ -192,12 +192,12 @@ still open is listed per item below: parameter removal across trait implementati
     - Python: pre-warmed `.venv` wheels and pycache.
   - Because code deltas are synced incrementally in < 2 ms, only modified files trigger re-compilation; dependencies stay permanently warm in server RAM.
 
-- [~] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19).
+- [~] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19). Process-group supervision was checked on 2026-09-23. Each exec runs in its own process group (`process_group(0)`), and the whole tree is killed on a timeout or a client disconnect. `bash -c '(sleep 283 &); sleep 282'` left no process on the node after a 3 s timeout, and none when the client was killed.
   - Isolated build artifacts per worktree session to eliminate build cache lock contention across concurrent agents.
   - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
 
-- [~] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Remaining: `bench`, CPU/RSS in the summary.
+- [~] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Benchmarks followed on 2026-09-23 (#178). `prod-code benchmarks [FILTER]` and MCP `code_benchmarks` run `cargo bench --workspace` or `go test -run '^$' -bench`. The results are parsed from criterion (estimate and interval, with a long name read from the line before), libtest (`ns/iter (+/- N)`) and Go (`ns/op`). `prod-code bench` stays the gateway's own load benchmark. Remaining: CPU/RSS in the summary.
   - **Client CLI Commands**:
     - `prod-code check`: remote compilation check across any language with instant terminal diagnostics.
     - `prod-code test [FILTER]`: remote test runner with real-time test output streaming.

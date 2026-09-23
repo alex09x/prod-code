@@ -67,6 +67,19 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_benchmarks".to_string(),
+            description: "Run the project's benchmarks on the remote gateway (cargo bench / go test -bench) and return each result parsed: name, estimate and range (criterion's interval, libtest's +/-, Go's ns/op). `filter` selects benchmarks by name."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "filter": { "type": "string", "description": "Benchmark name filter (cargo bench FILTER / go test -bench PATTERN)" },
+                    "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
+                    "path": { "type": "string", "description": "Narrow the run to a crate, package or nested project, as for code_test" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_test".to_string(),
             description: "Run tests on the remote gateway (cargo test / go test -json / pytest / vitest / …), optionally filtered by test name, and return pass/fail counts plus the output of each failed test. `path` narrows the run to the Cargo crate, Go package tree or pytest directory/file containing it."
                 .to_string(),
@@ -971,7 +984,7 @@ pub async fn execute_tool(
         "code_assists" | "code_assist" => {
             handle_assists(remote, workspace_root, tool_name, &args).await
         }
-        "code_check" | "code_lint" | "code_test" => {
+        "code_check" | "code_lint" | "code_test" | "code_benchmarks" => {
             handle_check(remote, workspace_root, tool_name, &args).await
         }
         "code_rename" => handle_rename(remote, workspace_root, &args).await,
@@ -3413,6 +3426,7 @@ async fn handle_check(
     let kind = match tool_name {
         "code_check" => crate::verify::VerifyKind::Check,
         "code_lint" => crate::verify::VerifyKind::Lint,
+        "code_benchmarks" => crate::verify::VerifyKind::Bench,
         _ => crate::verify::VerifyKind::Test,
     };
     let filter = args
@@ -3429,7 +3443,12 @@ async fn handle_check(
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
     let fix = args.get("fix").and_then(|v| v.as_bool()).unwrap_or(false);
-    if fix && kind != crate::verify::VerifyKind::Test {
+    if fix
+        && matches!(
+            kind,
+            crate::verify::VerifyKind::Check | crate::verify::VerifyKind::Lint
+        )
+    {
         let fixed = crate::fixit::check_and_fix(
             remote,
             workspace_root,
