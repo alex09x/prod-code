@@ -1990,6 +1990,14 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         &["loop-to-iterator", "src/lib.rs", "5", "1"][..],
         &["prune", "--max-files", "5"][..],
         &[
+            "move-module",
+            "src/lib.rs",
+            "--to",
+            "src/x/lib.rs",
+            "--verify",
+            "compile",
+        ][..],
+        &[
             "extract-function",
             "src/lib.rs",
             "6",

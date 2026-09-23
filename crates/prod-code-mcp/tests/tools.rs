@@ -2095,3 +2095,47 @@ async fn extract_function_alone_names_the_function_and_writes() {
         "{now}"
     );
 }
+
+/// `code_move_module` reports a module move, then writes it with `apply`: the file moves, the
+/// declaration goes to the new parent, and the old file is gone.
+#[tokio::test]
+async fn move_module_reports_then_moves_the_file() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"mm\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod a;\npub mod c;\n");
+    write(&ws, "src/a.rs", "pub mod b;\n");
+    write(&ws, "src/a/b.rs", "pub fn f() {}\n");
+    write(&ws, "src/c.rs", "pub fn g() {}\n");
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let args = |apply: bool| serde_json::json!({ "path": "src/a/b.rs", "to": "src/c/b.rs", "apply": apply });
+    let dry = execute_tool(remote, &ws.root(), "code_move_module", args(false))
+        .await
+        .expect("the dry run reports");
+    let text = text_of(&dry);
+    assert!(text.contains("src/a/b.rs -> src/c/b.rs"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+    assert!(ws.root().join("src/a/b.rs").exists());
+
+    let written = execute_tool(remote, &ws.root(), "code_move_module", args(true))
+        .await
+        .expect("it writes");
+    assert!(
+        text_of(&written).contains("[applied]"),
+        "{}",
+        text_of(&written)
+    );
+    assert!(!ws.root().join("src/a/b.rs").exists());
+    assert_eq!(ws.read("src/c/b.rs"), "pub fn f() {}\n");
+    assert_eq!(ws.read("src/c.rs"), "pub mod b;\n\npub fn g() {}\n");
+    assert_eq!(ws.read("src/a.rs"), "");
+}

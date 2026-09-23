@@ -539,6 +539,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_move_module".to_string(),
+            description: "Move a whole module to another parent: `a::b` becomes `c::b`. Give the module's file (`path`, e.g. `src/a/b.rs` or `src/a/b/mod.rs`) and where its file goes (`to`, e.g. `src/c/b.rs`); the name stays. The file moves with the directory of its submodules; the `mod b;` declaration (with its attributes and doc comment) leaves the old parent and is declared in the new one with the same visibility; every path the analyzer lists as naming the module is spelled anew (a qualified path gets the new parent, a bare use in the old parent gets an import, a grouped import is narrowed and the module imported on its own line, an import in the new parent that would clash with the declaration is dropped); `super::` in the moved file becomes the old parent's absolute path. The whole change is type-checked in one overlay first, so something private to the old parent that the module used is reported, not written. `verify: \"compile\"` adds `cargo check`. Nothing is written without `apply`. Rust, ordinary crate layout only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The module's file, e.g. `src/a/b.rs` or `src/a/b/mod.rs`" },
+                    "to": { "type": "string", "description": "Where the module's file goes, e.g. `src/c/b.rs`; its parent module must exist" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the move (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "to"]
+            }),
+        },
+        McpTool {
             name: "code_change_signature".to_string(),
             description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust only; re-run your formatter afterwards."
                 .to_string(),
@@ -1131,6 +1147,7 @@ pub async fn execute_tool(
             handle_introduce_parameter_object(remote, workspace_root, &args).await
         }
         "code_move" => handle_move(remote, workspace_root, &args).await,
+        "code_move_module" => handle_move_module(remote, workspace_root, &args).await,
         "code_change_signature" => handle_change_signature(remote, workspace_root, &args).await,
         "code_generate_fixture" => handle_generate_fixture(remote, workspace_root, &args).await,
         "code_dead_code" => handle_dead_code(remote, workspace_root, &args).await,
@@ -2288,6 +2305,64 @@ async fn handle_extract_trait(
     .await?;
     let text = done.render();
     Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_move_module(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument: the module's file")?;
+    let to_str = args
+        .get("to")
+        .and_then(|v| v.as_str())
+        .context("Missing 'to' argument: where the module's file goes")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let mut done = crate::move_module::move_module(
+        remote,
+        workspace_root,
+        &resolve_file_path(workspace_root, path_str),
+        &resolve_file_path(workspace_root, to_str),
+    )
+    .await?;
+    let gate = if verify {
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &done.rewritten,
+                done.diagnostics.is_empty(),
+                false,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let compiles = gate.as_ref().is_none_or(|g| g.passed);
+    // The gate only judges: the move also deletes the files it left, which only `write` does.
+    if apply && (compiles || force) {
+        done.write(force)?;
+    }
+    let clean = done.diagnostics.is_empty() && compiles;
+    let mut text = done.render(8000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+        if apply && !compiles && !force {
+            text.push_str("\nnothing was written: the compiler rejects it. Pass `force: true` to write it anyway.\n");
+        }
+    }
+    Ok(if clean {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)

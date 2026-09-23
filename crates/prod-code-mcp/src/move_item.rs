@@ -692,6 +692,20 @@ pub async fn move_item(
     let symbols = document_symbols(remote, root, file).await?;
     let (name, decl_start, decl_end) =
         span_at(&symbols, line).with_context(|| format!("no declaration at line {line}"))?;
+    // A `mod x;` line declares a module whose code is in its own file; cutting the line would
+    // move nothing of it (#188).
+    let module_declaration = format!("mod {name};");
+    if source_text
+        .lines()
+        .skip(decl_start.saturating_sub(1) as usize)
+        .take((decl_end + 1).saturating_sub(decl_start) as usize)
+        .any(|l| l.trim_end().ends_with(&module_declaration))
+    {
+        anyhow::bail!(
+            "`{name}` is a module with its own file; move the module with `code_move_module` \
+             (`prod-code move-module <its file> --to <new file>`)"
+        );
+    }
     let start = with_doc_comment(&source_text, decl_start);
     let (source_new, item) = cut(&source_text, start, decl_end);
     let (target_with_imports, carried) = carry_imports(&source_text, &item, &target_text);

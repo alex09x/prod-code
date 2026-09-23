@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- **`move` no longer moves a module as a one-line item** (#188). On `mod b;` it cut the line,
+  pasted it into a new file as `pub mod b;` and requalified callers to `c::b::b`. It now refuses
+  and names `code_move_module`.
 - **validate reports a type or module that does not exist** (#181). rust-analyzer has no
   diagnostic for an unresolved type path (rustc's E0412/E0433), so a file naming `NoSuchType`,
   `missing_crate::Thing` or an item another crate does not export passed with 0 errors.
@@ -238,6 +241,17 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **A whole module moves to another parent** (roadmap 7.1.1, #188): MCP `code_move_module` and
+  `prod-code move-module src/a/b.rs --to src/c/b.rs [--verify compile] [--apply]`. `a::b`
+  becomes `c::b`:
+  - the file moves, with the directory of its submodules (`src/a/b/…` to `src/c/b/…`);
+  - `pub mod b;` leaves `a` and is declared in `c` with its attributes and doc comment;
+  - every path the analyzer lists as naming the module is spelled anew. A qualified one gets
+    the new parent. A bare `b` in the old parent, or `b` in a grouped import, gets its own
+    `use`. An import in `c` that would clash with the new declaration is dropped;
+  - `super::` in the moved file meant `a`, so it becomes `crate::a::`;
+  - the whole change is type-checked in one overlay first, and the old files and the empty
+    directory are removed only when it is written.
 - **extract_function names the function and replaces the selection's duplicates** (roadmap
   7.1.2, #186): MCP `code_extract_function` and `prod-code extract-function FILE LINE COL --to
   L:C --name NAME`.
