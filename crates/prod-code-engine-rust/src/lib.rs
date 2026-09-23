@@ -5,9 +5,9 @@ use ra_ap_cfg::{CfgAtom, CfgDiff};
 use ra_ap_ide::{
     AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig, DiagnosticsConfig,
     FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
-    GotoImplementationConfig, HighlightConfig, HoverConfig, HoverDocFormat, NavigationTarget,
-    RaFixtureConfig, RenameConfig, SingleResolve, StructureNodeKind, SymbolKind, TextRange,
-    TextSize,
+    GotoImplementationConfig, HighlightConfig, HlTag, HoverConfig, HoverDocFormat,
+    NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve, StructureNodeKind, SymbolKind,
+    TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -843,6 +843,12 @@ impl RustEngineSnapshot {
             self.analysis
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
         let unused_imports = self.unused_imports(file_id, &text);
+        let covered: Vec<TextRange> = diagnostics
+            .iter()
+            .filter(|d| d.range.file_id == file_id)
+            .map(|d| d.range.range)
+            .collect();
+        let unresolved = self.unresolved_paths(file_id, &text, &covered);
         Ok(diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
@@ -865,7 +871,129 @@ impl RustEngineSnapshot {
                 }
             })
             .chain(unused_imports)
+            .chain(unresolved)
             .collect())
+    }
+
+    /// Paths in `file_id` that name nothing (#181): rustc's "cannot find type" (E0412) and
+    /// "failed to resolve" (E0433). rust-analyzer computes no diagnostic for them; it only
+    /// highlights a name it cannot resolve as an unresolved reference. Such a path segment is
+    /// reported when it starts its path, or when what qualifies it is a module or a crate,
+    /// whose contents are known without inference. A segment after a type (`T::Item`) is left
+    /// alone, and so is anything inside an attribute, a macro call (tokens, not paths) or a
+    /// range another diagnostic already covers, such as code a `#[cfg]` turns off.
+    fn unresolved_paths(
+        &self,
+        file_id: FileId,
+        text: &str,
+        covered: &[TextRange],
+    ) -> Vec<FileDiagnostic> {
+        use ra_ap_syntax::AstNode;
+        use ra_ap_syntax::ast::{self, PathSegmentKind};
+        let config = HighlightConfig {
+            strings: false,
+            comments: false,
+            punctuation: false,
+            specialize_punctuation: false,
+            operator: false,
+            specialize_operator: false,
+            inject_doc_comment: false,
+            macro_bang: false,
+            syntactic_name_ref_highlighting: false,
+            ra_fixture: RaFixtureConfig::default(),
+        };
+        let (Ok(highlights), Ok(file)) = (
+            self.analysis.highlight(config, file_id),
+            self.analysis.parse(file_id),
+        ) else {
+            return Vec::new();
+        };
+        let tags: HashMap<TextRange, HlTag> = highlights
+            .into_iter()
+            .map(|h| (h.range, h.highlight.tag))
+            .collect();
+        let unresolved = |name: &ast::NameRef| {
+            tags.get(&name.syntax().text_range()) == Some(&HlTag::UnresolvedReference)
+        };
+        let mut out = Vec::new();
+        for segment in file
+            .syntax()
+            .descendants()
+            .filter_map(ast::PathSegment::cast)
+        {
+            let Some(PathSegmentKind::Name(name)) = segment.kind() else {
+                continue;
+            };
+            let range = name.syntax().text_range();
+            // A workspace loaded without the sysroot resolves no `std`; that is its setting,
+            // not the edit's error.
+            if !unresolved(&name)
+                || matches!(name.text().as_str(), "std" | "core" | "alloc")
+                || covered.iter().any(|c| c.intersect(range).is_some())
+                || segment
+                    .syntax()
+                    .ancestors()
+                    .any(|n| n.kind() == ra_ap_syntax::SyntaxKind::ATTR)
+            {
+                continue;
+            }
+            if imported_in_scope(segment.syntax(), name.text().as_str()) {
+                continue;
+            }
+            let path = segment.parent_path();
+            let qualified_by_module = match path.qualifier() {
+                None => true,
+                Some(qualifier) => match qualifier.segment().and_then(|s| s.kind()) {
+                    Some(
+                        PathSegmentKind::CrateKw
+                        | PathSegmentKind::SelfKw
+                        | PathSegmentKind::SuperKw,
+                    ) => true,
+                    Some(PathSegmentKind::Name(outer)) => matches!(
+                        tags.get(&outer.syntax().text_range()),
+                        Some(HlTag::Symbol(SymbolKind::Module | SymbolKind::CrateRoot))
+                    ),
+                    _ => false,
+                },
+            };
+            if !qualified_by_module {
+                continue;
+            }
+            // Another crate can hold code the analyzer does not see (a source a build script
+            // writes and `include!`s), so a name missing from it is only a warning.
+            let in_other_crate =
+                path.first_segment()
+                    .and_then(|s| s.name_ref())
+                    .is_some_and(|first| {
+                        first.syntax() != name.syntax()
+                            && tags.get(&first.syntax().text_range())
+                                == Some(&HlTag::Symbol(SymbolKind::CrateRoot))
+                    });
+            let (line, col) = offset_to_line_col(text, range.start());
+            let (end_line, end_col) = offset_to_line_col(text, range.end());
+            out.push(FileDiagnostic {
+                code: "unresolved-path".to_string(),
+                message: if in_other_crate {
+                    format!(
+                        "cannot find `{}` in `{}`: the analyzer sees no such item (run code_check to be sure)",
+                        name.text(),
+                        path.qualifier().map(|q| q.syntax().text().to_string()).unwrap_or_default()
+                    )
+                } else {
+                    format!(
+                        "cannot find `{}` in this scope: no item of that name resolves here",
+                        name.text()
+                    )
+                },
+                severity: if in_other_crate { "warning" } else { "error" }.to_string(),
+                line,
+                col,
+                end_line,
+                end_col,
+                unused: false,
+            });
+        }
+        out
     }
 
     /// The `use` items of `file_id` that import something unused (#134). rust-analyzer computes
@@ -1771,6 +1899,38 @@ fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<T
     None
 }
 
+/// Whether a `use` in a scope enclosing `node` (a block, a module or the file) imports `name`
+/// (#181). An import rust-analyzer cannot resolve is reported at the `use`, so its uses are
+/// not reported again. Inside a function that an attribute macro such as `#[tokio::test]`
+/// expands, rust-analyzer also does not resolve a type in a `let` annotation through a `use`
+/// in the body, which rustc does.
+fn imported_in_scope(node: &ra_ap_syntax::SyntaxNode, name: &str) -> bool {
+    use ra_ap_syntax::AstNode;
+    use ra_ap_syntax::ast::{self, HasModuleItem};
+    let imports = |item: ast::Item| match item {
+        ast::Item::Use(import) => import
+            .syntax()
+            .descendants()
+            .filter_map(ast::NameRef::cast)
+            .any(|n| n.text() == name),
+        _ => false,
+    };
+    node.ancestors().any(|scope| {
+        if let Some(block) = ast::StmtList::cast(scope.clone()) {
+            block.statements().any(|stmt| match stmt {
+                ast::Stmt::Item(item) => imports(item),
+                _ => false,
+            })
+        } else if let Some(module) = ast::ItemList::cast(scope.clone()) {
+            module.items().any(imports)
+        } else if let Some(file) = ast::SourceFile::cast(scope) {
+            file.items().any(imports)
+        } else {
+            false
+        }
+    })
+}
+
 /// Convert 0-indexed byte offset to 1-indexed (line, col).
 fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     let target = usize::from(offset);
@@ -2062,6 +2222,118 @@ impl PathTranslator {
         // Not a symbol: rust-analyzer refuses instead of the engine erroring.
         let refused = engine.rename(&lib_path, 1, 1, "x").expect("rename query");
         assert!(refused.is_err());
+    }
+
+    #[test]
+    fn test_a_use_in_an_enclosing_scope_counts_as_an_import() {
+        use ra_ap_syntax::{AstNode, Edition, SourceFile, ast};
+        let file = SourceFile::parse(
+            concat!(
+                "fn t() {\n",
+                "    use std::sync::Mutex;\n",
+                "    { let m: Mutex<u8> = todo!(); let h: HashMap<u8, u8> = todo!(); }\n",
+                "}\n",
+                "fn u() { let m: Mutex<u8> = todo!(); }\n",
+                "mod m {\n",
+                "    use opaque::Driver;\n",
+                "    fn v() { let d: Driver = todo!(); }\n",
+                "}\n",
+                "fn w() { let d: Driver = todo!(); }\n",
+            ),
+            Edition::Edition2021,
+        )
+        .tree();
+        let segment = |nth: usize, name: &str| {
+            file.syntax()
+                .descendants()
+                .filter_map(ast::PathSegment::cast)
+                .filter(|s| s.name_ref().is_some_and(|n| n.text() == name))
+                .nth(nth)
+                .unwrap()
+        };
+        // The `use` itself is the 0th `Mutex` segment; the annotation below it is the 1st.
+        assert!(imported_in_scope(segment(1, "Mutex").syntax(), "Mutex"));
+        assert!(!imported_in_scope(
+            segment(0, "HashMap").syntax(),
+            "HashMap"
+        ));
+        // Another function's `use` does not reach here.
+        assert!(!imported_in_scope(segment(2, "Mutex").syntax(), "Mutex"));
+        // A module's `use` reaches its functions, and not the functions outside it.
+        assert!(imported_in_scope(segment(1, "Driver").syntax(), "Driver"));
+        assert!(!imported_in_scope(segment(2, "Driver").syntax(), "Driver"));
+    }
+
+    #[test]
+    fn test_diagnostics_report_paths_that_name_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        let lib = temp.path().join("src/lib.rs");
+        std::fs::write(
+            &lib,
+            concat!(
+                "use std::collections::HashMap;\n",
+                "pub struct Known;\n",
+                "pub fn a(_x: NoSuchType) -> Known { Known }\n",
+                "pub fn b() -> std::collections::NoSuchMap { todo!() }\n",
+                "pub fn c() -> no_such_crate::Thing { todo!() }\n",
+                "pub fn d() { let _y: NoSuchLocal = 1; let _z = no_such_fn(); }\n",
+                "pub fn e<T: Iterator>(t: T) -> Option<T::Item> {\n",
+                "    let m: HashMap<u8, Known> = HashMap::new();\n",
+                "    drop(m);\n",
+                "    let mut t = t;\n",
+                "    t.next()\n",
+                "}\n",
+                "#[cfg(windows)]\n",
+                "pub fn f() -> WindowsOnly { todo!() }\n",
+                "#[allow(dead_code)]\n",
+                "fn g() -> Vec<Known> { vec![] }\n",
+                "pub fn h() -> crate::nowhere::Thing { todo!() }\n",
+                "#[test]\n",
+                "fn i() {\n",
+                "    use std::sync::Mutex;\n",
+                "    let m: Mutex<u8> = Mutex::new(0);\n",
+                "    drop(m);\n",
+                "}\n",
+            ),
+        )
+        .unwrap();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let diagnostics = engine.diagnostics(&lib).unwrap();
+        let found: Vec<(u32, &str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code == "unresolved-path")
+            .map(|d| {
+                let name = d.message.split('`').nth(1).unwrap_or("");
+                (d.line, name, d.severity.as_str())
+            })
+            .collect();
+        // Only the paths that name nothing; `T::Item`, the `#[cfg(windows)]` item, the
+        // attribute and the call rust-analyzer already reports are not among them. A name
+        // missing from another crate is a warning: that crate may hold code the analyzer
+        // cannot see.
+        assert_eq!(
+            found,
+            vec![
+                (3, "NoSuchType", "error"),
+                (4, "NoSuchMap", "warning"),
+                (5, "no_such_crate", "error"),
+                (6, "NoSuchLocal", "error"),
+                (17, "nowhere", "error"),
+            ],
+            "{diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code == "unresolved-path" || !d.message.contains("NoSuch")),
+            "each name is reported once: {diagnostics:?}"
+        );
     }
 
     #[test]
