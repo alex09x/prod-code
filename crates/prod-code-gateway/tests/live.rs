@@ -421,6 +421,23 @@ async fn the_gateway_answers_a_real_checkout() {
         "a file that compiles has no errors: {diagnostics}"
     );
 
+    // An unused import is reported, as rustc reports it and `-D warnings` rejects it, although
+    // rust-analyzer computes no diagnostic for it (#134).
+    let with_import = format!("use std::collections::HashMap;\n{LIB}");
+    let validated = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_validate_edit",
+            serde_json::json!({ "path": "src/lib.rs", "new_text": with_import }),
+        )
+        .await,
+    );
+    assert!(
+        validated.contains("unused_imports") && validated.contains(":1:1"),
+        "the unused import is reported: {validated}"
+    );
+
     // A proposed edit is judged before anything is written.
     let broken = LIB.replace("all.iter()", "all.itr()");
     let validated = text_of(
