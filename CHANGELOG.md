@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- **Validating a proposal to a large file takes seconds, not tens of seconds** (#86). After a
+  proposal changes what a crate declares, rust-analyzer infers every body of the file again, one
+  function on one thread. Two functions made that the whole cost: `execute_tool` in the MCP
+  tools (1,786 lines) and the client-message arm of the gateway's session loop (1,412 lines of
+  `tokio::select!` input, where no refactoring assist works). `execute_tool` is now a dispatch
+  over 31 handlers; the session loop calls `on_client_message`, whose LSP fast paths are ten
+  handlers. Both splits were made with prod-code's own `extract_function` assist, `rename` and
+  `codemod`. The engine also infers a file's functions on several threads before its diagnostics
+  pass. Measured on a Linux build node, a new proposal that adds an item: `tools.rs` 25.0 s →
+  3.0 s (3.95 s from the split alone), the gateway's `lib.rs` 33.4 s → 4.8 s.
 - **The gateway no longer floods the journal with the analyzer's query log** (#95). The default
   filter was `info`, and rust-analyzer's crates and salsa log every query they execute at that
   level. One validation of a large file emitted about 1.2 million lines, the system journal kept

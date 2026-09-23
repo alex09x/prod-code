@@ -1436,11 +1436,11 @@ impl RustEngine {
         self.infer_functions_in_parallel(path);
         let primed = started.elapsed();
         let result = self.snapshot().diagnostics(path);
-        tracing::warn!(
+        tracing::debug!(
             file = %path.display(),
             primed_ms = primed.as_millis() as u64,
             diagnostics_ms = (started.elapsed() - primed).as_millis() as u64,
-            "prod_code_timing diagnostics"
+            "diagnostics: functions inferred in parallel, then the diagnostics pass"
         );
         result
     }
