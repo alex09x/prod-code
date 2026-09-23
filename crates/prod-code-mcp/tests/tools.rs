@@ -1103,6 +1103,73 @@ async fn code_rename_writes_the_analyzers_edit_into_the_checkout() {
     );
 }
 
+/// A rename to a name already declared in the same scope is a second definition, not a
+/// rename, and the analyzer computes it without complaint (#98). The result is checked before
+/// it is written: refused with the error, and written only with `force`, which says so.
+#[tokio::test]
+async fn a_rename_that_does_not_compile_is_refused_unless_forced() {
+    let ws = workspace();
+    let before = "pub fn a() {}\npub fn b() {}\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    // The first pull of each check is the file on disk, the second the proposal.
+    let pulls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/rename" => {
+            answers::whole_file(&path, before, "pub fn a() {}\npub fn a() {}\n")
+        }
+        "textDocument/diagnostic"
+            if pulls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .is_multiple_of(2) =>
+        {
+            answers::no_diagnostics()
+        }
+        "textDocument/diagnostic" => {
+            answers::error_at(2, 8, "E0428", "the name `a` is defined multiple times")
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let refused = execute_tool(
+        remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 8, "new_name": "a" }),
+    )
+    .await
+    .expect("the rename runs");
+    let text = text_of(&refused);
+    assert!(refused.is_error, "{text}");
+    assert!(text.contains("refused") && text.contains("E0428"), "{text}");
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        before,
+        "nothing written"
+    );
+
+    let forced = execute_tool(
+        remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 8, "new_name": "a", "force": true }),
+    )
+    .await
+    .expect("the rename runs");
+    let text = text_of(&forced);
+    assert!(!forced.is_error, "{text}");
+    assert!(
+        text.contains("written with `force`") && text.contains("E0428"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "pub fn a() {}\npub fn a() {}\n"
+    );
+}
+
 #[tokio::test]
 async fn code_rename_with_no_edits_is_reported() {
     let ws = workspace();

@@ -169,7 +169,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_rename".to_string(),
-            description: "Semantic rename of a symbol (type, function, field, variable, module) across the whole workspace, named with `symbol` or located by path + 1-based line/column, driven by the remote analyzer. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
+            description: "Semantic rename of a symbol (type, function, field, variable, module) across the whole workspace, named with `symbol` or located by path + 1-based line/column, driven by the remote analyzer. The result is type-checked in one overlay before anything is written, and a rename that does not compile — typically a new name already declared in the same scope — is refused with the errors unless `force` is given. Rewrites every affected file in the checkout (and renames module files) and reports what changed."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -177,7 +177,8 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "1-based column/character number" },
-                    "new_name": { "type": "string", "description": "New identifier" }
+                    "new_name": { "type": "string", "description": "New identifier" },
+                    "force": { "type": "boolean", "description": "Write the rename even when the result does not compile" }
                 },
                 "required": ["path", "line", "character", "new_name"]
             }),
@@ -2410,12 +2411,59 @@ async fn handle_rename(
             "rename produced no edits".to_string(),
         ));
     }
+    // The analyzer computes the edit; it does not check that the result compiles. A new name
+    // that is already declared in the same scope is renamed into a second definition (#98), so
+    // the result is checked in the overlay like every other write, and refused if it breaks.
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let (planned, moves_files) = crate::refactor::planned_texts(workspace_root, &edit)?;
+    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &planned, &[]).await?;
+    let errors: Vec<String> = reports
+        .iter()
+        .flat_map(|r| {
+            r.items
+                .iter()
+                .filter(|d| d.severity == "error")
+                .map(move |d| {
+                    format!(
+                        "{}{} ({}:{}:{})",
+                        d.message.lines().next().unwrap_or(""),
+                        d.code
+                            .as_deref()
+                            .map(|c| format!(" [{c}]"))
+                            .unwrap_or_default(),
+                        r.file,
+                        d.line,
+                        d.col
+                    )
+                })
+        })
+        .collect();
+    if !errors.is_empty() && !force {
+        return Ok(McpToolCallResult::error(format!(
+            "rename to `{new_name}` refused: the result does not compile ({} error(s)); nothing \
+             was written. If `{new_name}` is already declared in that scope, pick another name; \
+             pass `force: true` to write it anyway:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        )));
+    }
     let touched = crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
-    Ok(McpToolCallResult::text(format!(
+    let mut text = format!(
         "renamed to `{new_name}`; {} path(s) updated in the checkout:\n{}",
         touched.len(),
         touched.join("\n")
-    )))
+    );
+    if !errors.is_empty() {
+        text.push_str(&format!(
+            "\n\nwritten with `force`, although the analyzer reports {} error(s):\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        ));
+    }
+    if moves_files {
+        text.push_str("\n\nthe rename also moved files; that part was not checked before writing");
+    }
+    Ok(McpToolCallResult::text(text))
 }
 
 async fn handle_check(
