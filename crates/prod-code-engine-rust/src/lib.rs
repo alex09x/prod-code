@@ -623,13 +623,24 @@ impl RustEngineSnapshot {
             .find(|a| a.id.0 == id && (subtype.is_none() || a.id.2 == subtype))
         else {
             let available: Vec<String> = offered.iter().map(|a| a.id.0.to_string()).collect();
+            let available = if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            };
+            // Inside a macro call's input rust-analyzer sees tokens more than code, and most
+            // refactorings are not offered there; "not offered here" alone leaves the reader to
+            // guess why (#99).
+            if let Some(mac) = self.macro_call_around(frange) {
+                return Ok(Err(format!(
+                    "assist `{id}` is not offered here: the selection is inside `{mac}!`, and \
+                     rust-analyzer does not offer `{id}` inside a macro call's input. Move the \
+                     code out of the macro (into a function the macro calls) first. Available \
+                     here: {available}"
+                )));
+            }
             return Ok(Err(format!(
-                "assist `{id}` is not offered here; available: {}",
-                if available.is_empty() {
-                    "none".to_string()
-                } else {
-                    available.join(", ")
-                }
+                "assist `{id}` is not offered here; available: {available}"
             )));
         };
         let resolve = AssistResolveStrategy::Single(SingleResolve {
@@ -651,6 +662,25 @@ impl RustEngineSnapshot {
             return Ok(Err(format!("assist `{id}` produced no edit")));
         };
         Ok(Ok(self.outcome_from_change(&change)?))
+    }
+
+    /// The path of the innermost macro call whose input contains `frange`, if any.
+    fn macro_call_around(&self, frange: FileRange) -> Option<String> {
+        use ra_ap_syntax::AstNode;
+        let file = self.analysis.parse(frange.file_id).ok()?;
+        let token = file
+            .syntax()
+            .token_at_offset(frange.range.start())
+            .right_biased()?;
+        token
+            .parent_ancestors()
+            .filter_map(ra_ap_syntax::ast::MacroCall::cast)
+            .find(|call| {
+                call.token_tree()
+                    .is_some_and(|tree| tree.syntax().text_range().contains_range(frange.range))
+            })
+            .and_then(|call| call.path())
+            .map(|path| path.syntax().text().to_string())
     }
 
     /// Deletes the item (function, type, const, field, module …) whose name is at the 1-based
@@ -2019,7 +2049,38 @@ impl PathTranslator {
         let refused = engine
             .apply_assist(&lib, 2, 9, None, "no_such_assist", None)
             .unwrap();
-        assert!(refused.is_err());
+        let reason = refused.expect_err("refused");
+        assert!(reason.contains("not offered here; available"), "{reason}");
+        assert!(!reason.contains("macro"), "not inside a macro: {reason}");
+    }
+
+    /// Inside a macro call's input most refactorings are not offered; the refusal says which
+    /// macro and what to do, rather than only "not offered here" (#99).
+    #[test]
+    fn an_assist_refused_inside_a_macro_call_names_the_macro() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        let lib = temp.path().join("src/lib.rs");
+        std::fs::write(
+            &lib,
+            "macro_rules! wrap {\n    ($($t:tt)*) => { $($t)* };\n}\n\npub fn g() -> i32 {\n    wrap! {\n        let y = 1 + 2;\n    }\n    0\n}\n",
+        )
+        .unwrap();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let refused = engine
+            .apply_assist(&lib, 7, 17, Some((7, 22)), "extract_function", None)
+            .unwrap();
+        let reason = refused.expect_err("nothing is extracted inside a macro call");
+        assert!(reason.contains("inside `wrap!`"), "{reason}");
+        assert!(
+            reason.contains("Move the code out of the macro"),
+            "{reason}"
+        );
     }
 
     #[test]
