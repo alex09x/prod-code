@@ -132,7 +132,16 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     continue;
                 };
                 let Some(id) = value.get("id").cloned() else {
-                    continue; // a notification: didOpen, didChange, initialized
+                    // A notification — didOpen, didChange, initialized — is shown to the script,
+                    // which may keep the text it carries, and gets no answer.
+                    if let Some(method) = value.get("method").and_then(|m| m.as_str()) {
+                        let params = value
+                            .get("params")
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null);
+                        let _ = answer(method, &params);
+                    }
+                    continue;
                 };
                 let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
                 let params = value

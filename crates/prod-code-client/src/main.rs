@@ -325,6 +325,9 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// Write `.into()` where the old and new types meet, where the analyzer accepts it.
+        #[arg(long, default_value_t = false)]
+        convert: bool,
         /// Write the declaration instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -948,9 +951,15 @@ async fn main() -> Result<()> {
             line,
             character,
             path,
+            convert,
             apply,
             force,
-        } => run_migrate_type_cli(remote, symbol, to, line, character, path, apply, force).await,
+        } => {
+            run_migrate_type_cli(
+                remote, symbol, to, line, character, path, convert, apply, force,
+            )
+            .await
+        }
         Commands::Generify {
             symbol,
             param,
@@ -2818,12 +2827,14 @@ async fn run_migrate_type_cli(
     line: Option<u32>,
     character: u32,
     path: Option<String>,
+    convert: bool,
     apply: bool,
     force: bool,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let mut args = serde_json::json!({ "to": to, "apply": apply, "force": force });
+    let mut args =
+        serde_json::json!({ "to": to, "convert": convert, "apply": apply, "force": force });
     match line {
         // A position: the first argument is the file, not a name to resolve.
         Some(line) => {

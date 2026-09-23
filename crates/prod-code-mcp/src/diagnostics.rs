@@ -20,6 +20,9 @@ pub struct DocDiagnostic {
     /// the proposed edits removed or renamed).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Where the range ends, 1-based line and column, when the analyzer gave one.
+    #[serde(skip)]
+    pub end: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +270,7 @@ fn annotate_missing_symbols(
                 col,
                 source: Some("prod-code".to_string()),
                 note: Some(note_for(name, from)),
+                end: None,
             });
             report.warnings += 1;
         }
@@ -282,6 +286,11 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
             arr.iter()
                 .map(|d| {
                     let start = d.get("range").and_then(|r| r.get("start"));
+                    let end = d.get("range").and_then(|r| r.get("end")).and_then(|e| {
+                        let line = e.get("line")?.as_u64()? as u32 + 1;
+                        let col = e.get("character")?.as_u64()? as u32 + 1;
+                        Some((line, col))
+                    });
                     let severity = match d.get("severity").and_then(|s| s.as_u64()) {
                         Some(1) => "error",
                         Some(2) => "warning",
@@ -312,6 +321,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
                             .unwrap_or(0) as u32
                             + 1,
                         source: d.get("source").and_then(|s| s.as_str()).map(String::from),
+                        end,
                     }
                 })
                 // `inactive-code` marks the branch of a `#[cfg]` pair that is off on the
@@ -597,6 +607,7 @@ mod tests {
             col: 3,
             source: None,
             note: None,
+            end: None,
         }
     }
 
@@ -684,6 +695,7 @@ mod tests {
                     col: 16,
                     source: None,
                     note: None,
+                    end: None,
                 },
                 DocDiagnostic {
                     severity: "hint".to_string(),
@@ -693,6 +705,7 @@ mod tests {
                     col: 1,
                     source: None,
                     note: None,
+                    end: None,
                 },
             ],
             preexisting: vec![],

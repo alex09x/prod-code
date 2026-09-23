@@ -1459,6 +1459,7 @@ async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
             "9",
             "--to",
             "std::time::Duration",
+            "--convert",
         ],
     )
     .await;
@@ -1470,6 +1471,8 @@ async fn cli_migrates_a_declared_type_and_reports_what_no_longer_fits() {
     assert!(text.contains("1 site(s) in 1 file(s)"), "{text}");
     assert!(text.contains("r.timeout_secs"), "{text}");
     assert!(text.contains("they are the migration"), "{text}");
+    // `--convert` tried `.into()` there; the analyzer still rejects the line, so it was taken back.
+    assert!(text.contains("was tried here"), "{text}");
     assert!(
         ws.read("src/lib.rs").contains("pub timeout_secs: u64,"),
         "nothing is written without --apply"

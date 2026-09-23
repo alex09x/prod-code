@@ -219,7 +219,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_migrate_type".to_string(),
-            description: "Change a declared type and report the whole shape of what that breaks, before any of it is done. Give the declaration's position (a struct field, a function parameter, a return type, or an annotated `let`) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. The errors that come back are not a failure, they are the work list: each is reported with its file, line and the source at that line, grouped by file. Where an error is exactly the old type meeting the new one, the report says what conversion would fix that site — it says it and does not write it, because a wrong conversion inserted at every site is worse than none. `apply` writes the declaration alone and refuses while any site remains, so a half-migrated type is never written by accident. This is the first half of a migration, not an automatic one. Rust only."
+            description: "Change a declared type and report the whole shape of what that breaks, before any of it is done. Give the declaration's position (a struct field, a function parameter, a return type, or an annotated `let`) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. The errors that come back are not a failure, they are the work list: each is reported with its file, line and the source at that line, grouped by file. Where an error is exactly the old type meeting the new one, the report says what conversion would fix that site. With `convert: true` it writes `.into()` at every site where the old and new types meet and checks the overlay again: a conversion is kept only where the analyzer accepts it, a rejected one is taken back and its site stays in the report marked as tried, and if the kept conversions cause an error anywhere else none is kept. Narrowings (`u64` to `u32`) and fallible conversions therefore stay a person's decision. `apply` writes the declaration alone and refuses while any site remains, so a half-migrated type is never written by accident. `apply` then writes the declaration with the kept conversions. Rust only."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -228,6 +228,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the declared name" },
                     "character": { "type": "integer", "description": "1-based column of the declared name" },
                     "to": { "type": "string", "description": "The type it should become, spelled as it will be written" },
+                    "convert": { "type": "boolean", "description": "Write `.into()` at the sites where the old and new types meet, keeping only the conversions the analyzer accepts (default false: report only)" },
                     "apply": { "type": "boolean", "description": "Write the declaration (default false: report only)" },
                     "force": { "type": "boolean", "description": "Write the declaration while sites still do not fit" }
                 },
@@ -3076,6 +3077,10 @@ async fn handle_migrate_type(
         .get("to")
         .and_then(|v| v.as_str())
         .context("Missing 'to' argument: the type it should become")?;
+    let convert = args
+        .get("convert")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
@@ -3086,6 +3091,7 @@ async fn handle_migrate_type(
         line,
         character,
         to,
+        convert,
         apply,
         force,
     )
