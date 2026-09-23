@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **An analyzer panic no longer fails a whole validation** (#94). rust-analyzer panics on some
+  valid code (a `move` closure passed to `std::thread::scope`, for one), and the panic came back
+  as `query task failed: task N panicked`, which failed `validate` and every write tool without
+  naming the file. A panic while diagnosing a file is now one error at the top of that file,
+  `prod-code::analyzer-panic`, which quotes the panic, says nothing in the file was checked, and
+  points at the compiler as the check that remains. It is never set aside as a diagnostic the
+  file already had, and the other files of the same validation are still reported.
 - **A rename that does not compile is refused** (#98). The analyzer computes a rename without
   checking the result, so renaming a function to a name already declared in the same scope
   produced a second definition and reported success; splitting the gateway's session loop

@@ -2947,6 +2947,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 /// The diagnostics report for a file the analyzer panicked on: one error at its top that says
 /// nothing in it was checked, and what check remains.
 fn analyzer_panic_report(message: &str) -> serde_json::Value {
+    let message = message.trim().trim_end_matches('.');
     serde_json::json!({ "kind": "full", "items": [ {
         "range": lsp_range(1, 1, 1, 1),
         "severity": 1,
@@ -4474,9 +4475,9 @@ mod analyzer_panic_tests {
 
     #[test]
     fn a_panic_is_reported_as_one_unchecked_file_not_as_a_failed_request() {
-        let payload: Box<dyn std::any::Any + Send> = Box::new("escaping bound vars".to_string());
+        let payload: Box<dyn std::any::Any + Send> = Box::new("escaping bound vars.".to_string());
         let message = panic_message(payload);
-        assert_eq!(message, "escaping bound vars");
+        assert_eq!(message, "escaping bound vars.");
         assert_eq!(panic_message(Box::new("static text")), "static text");
         assert_eq!(panic_message(Box::new(42u8)), "no message");
 
@@ -4488,7 +4489,10 @@ mod analyzer_panic_tests {
         assert_eq!(items[0]["range"]["start"]["line"], 0);
         let text = items[0]["message"].as_str().unwrap();
         assert!(text.contains("nothing in it was checked"), "{text}");
-        assert!(text.contains("escaping bound vars"), "{text}");
+        assert!(
+            text.contains("escaping bound vars. The compiler"),
+            "one full stop: {text}"
+        );
         assert!(text.contains("verify"), "{text}");
     }
 }
