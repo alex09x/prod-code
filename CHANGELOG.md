@@ -129,6 +129,15 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Wrap a return type with its callers (roadmap 7.1.4, #109): `code_wrap_return` (MCP) and
+  `prod-code wrap-return <file> --line N --character C --wrapper option|result [--error TYPE]`.
+  rust-analyzer's `wrap_return_type_in_option` / `_in_result` rewrite the signature and every
+  returned value, and no caller; this fills the `Result`'s `_` error type with `error`, adds `?`
+  at every call whose caller already returns the same wrapper, and reports every other caller
+  with its line — turning a `None` or an error into something else there is a decision. Calls
+  later in the declaring file are mapped through the assist's rewrite; a recursive call is left
+  for a person. Nothing is written while a caller is blocked, unless `force`; the result is
+  type-checked in one overlay, and `verify: "compile"` adds `cargo check`.
 - The CLI reaches what the MCP tools already did (#93). `def`, `hover`, `refs`, `callers`,
   `callees` and `impls` take `--symbol NAME` instead of `<file> <line> <col>`.
   `prod-code symbols <name>` searches declarations by name; `symbols <file>` still outlines an

@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 500 tests | 5 min |
+| `cargo test --workspace` — 517 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
@@ -102,6 +102,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done |
+| `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |
 | `code_extract_field` | an expression in a method turned into a field of its type, initialised wherever the type is built |
 | `code_encapsulate_field` | a public field made private, every read and write outside its file turned into a getter or setter call |
 | `code_schema_rename` | one schema field renamed across every language that spells it differently, semantically per project |
@@ -133,7 +134,7 @@ has to grep for a line number:
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
 fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | hover | def | refs | callers | callees |
+extract-parameter | extract-field | encapsulate-field | wrap-return | hover | def | refs | callers | callees |
 impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
 diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
 cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a

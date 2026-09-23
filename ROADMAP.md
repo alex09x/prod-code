@@ -238,7 +238,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
     `wrap_return_type_in_result`, which rewrite the signature and the returned values but none of
     the callers; `invert_boolean`, `make_static` and `generify` are not offered at all
     (`convert_bool_to_enum` and `unwrap_type_to_generic_arg` are different refactorings). The
-    caller half of `wrap_return_value`, and the three that are not offered, are still to build.
+    caller half of `wrap_return_value` shipped the same day (`code_wrap_return`); the three that are not offered are still to build.
   
   - **7.1.1. The Core Five (Everyday Essential Refactorings)**:
     - [~] `refactor.rename(path, line, col, new_name)` — shipped 2026-09-19 for Rust: `prod-code rename`, MCP `code_rename`, LSP `textDocument/rename`; whole-workspace rewrite incl. module file moves, 1.8 ms server-side on the fixture, edits applied to the checkout and recorded in the sync watermark.
@@ -301,7 +301,7 @@ is `refactor.move` (a symbol to another module, imports and all), `type_migratio
       - Flips internal return expressions and inverts every single caller/usage with `!` negation across the entire monorepo.
     - `refactor.generify(path, symbol)` — not offered; to build.
       - Introduces generic type parameters `<T>` where concrete or dynamic types were used, updating callers with explicit or inferred type arguments.
-    - [~] `refactor.wrap_return_value(path, symbol, wrapper_type)` — half of it via `code_assists` at the return type: `wrap_return_type_in_option` and `wrap_return_type_in_result` rewrite the signature and every returned value. No caller is touched, so every call site stops compiling; that half needs a tool.
+    - [x] `refactor.wrap_return_value(path, symbol, wrapper_type)` — shipped 2026-09-23 for Rust as `code_wrap_return` / `prod-code wrap-return <file> --line N --character C --wrapper option|result [--error TYPE]`: rust-analyzer's `wrap_return_type_in_option` / `_in_result` rewrite the signature and the returned values (the `_` error type filled in with `error`), every caller that already returns the same wrapper gets `?`, and every other caller is reported with its line and blocks the write; a recursive call is left for a person. Type-checked in one overlay, `verify: "compile"` available.
       - Wraps function return types into `Result<T, Error>`, `Option<T>`, or custom envelopes, updating all return statements and wrapping call sites with `?` or `match`.
 
   - **7.1.5. Modernization & Control Flow Transformations**:
