@@ -2,13 +2,16 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.2.2, 2026-09-22): 33 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — and every file in the workspace at or above 80% of
-regions (87.2% overall, 422 tests). One epic is open: **7.1**, the refactoring catalog, and most
-of what an agent reaches for in it already works through `code_assists`, `code_rename`,
-`code_safe_delete`, `code_change_signature` and `code_codemod`. What is genuinely missing there
-is `refactor.move` (a symbol to another module, imports and all), `type_migration` and
-`introduce_parameter_object`.
+**Where it stands** (v0.2.2, 2026-09-23): 43 MCP tools, five nodes' worth of cluster reduced to
+four — three Linux and one macOS for Swift — 536 tests, and every file a change touches held at or
+above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
+**7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
+`code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
+the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
+`extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static`,
+`invert_boolean` and `generify`. What is still missing: the automatic half of `type_migration`
+(conversions injected at the sites that no longer fit), `convert_to_method` (the other direction of
+`make_static`), and `invert_boolean` for `bool` fields and variables.
 
 ---
 
