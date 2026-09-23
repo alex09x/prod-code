@@ -848,6 +848,13 @@ pub async fn execute_tool(
     } else {
         args
     };
+    // A path in a nested project of another language goes to a node that serves it (#125).
+    let remote = crate::cluster::route_for_path(
+        remote,
+        workspace_root,
+        args.get("path").and_then(|v| v.as_str()),
+    )
+    .await?;
     match tool_name {
         "code_symbols" => handle_symbols(remote, workspace_root, &args).await,
         "code_safe_delete" => handle_safe_delete(remote, workspace_root, &args).await,

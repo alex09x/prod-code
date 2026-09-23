@@ -20,6 +20,89 @@ use tokio_util::codec::Framed;
 /// How long a node has to accept a TCP connection before it counts as down.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 
+/// The cluster a process may route a request to by the path it names, and the workspace name
+/// placements are remembered under. Set once at startup; unset in tests and in library use,
+/// where every request goes to the node it was given.
+struct Routing {
+    nodes: Vec<SocketAddr>,
+    workspace: String,
+}
+
+static ROUTING: std::sync::OnceLock<Routing> = std::sync::OnceLock::new();
+
+/// Lets requests that name a path be sent to a node that serves that path's engine (#125).
+pub fn set_routing(nodes: Vec<SocketAddr>, workspace: String) {
+    let _ = ROUTING.set(Routing { nodes, workspace });
+}
+
+/// The node for a request about `path` in the checkout at `root`: `default` when the path
+/// belongs to the checkout's own project, otherwise a node that serves the engine of the
+/// nested project the path is in (a SwiftPM package or Xcode project under a Rust repository
+/// needs the macOS node). That placement is remembered under its own key, `<workspace>#swift`,
+/// so it does not displace the checkout's. Without routing set, or with one node, `default`.
+pub async fn route_for_path(
+    default: SocketAddr,
+    root: &Path,
+    path: Option<&str>,
+) -> Result<SocketAddr> {
+    let (Some(routing), Some(path)) = (ROUTING.get(), path) else {
+        return Ok(default);
+    };
+    route_in(
+        &routing.nodes,
+        &routing.workspace,
+        default,
+        root,
+        path,
+        placement_path().as_deref(),
+    )
+    .await
+}
+
+/// [`route_for_path`] over an explicit cluster, remembering placements in `placement_file`.
+pub async fn route_in(
+    nodes: &[SocketAddr],
+    workspace: &str,
+    default: SocketAddr,
+    root: &Path,
+    path: &str,
+    placement_file: Option<&Path>,
+) -> Result<SocketAddr> {
+    let Some(engine) = nested_engine(root, path) else {
+        return Ok(default);
+    };
+    if default_serves(default, engine).await {
+        return Ok(default);
+    }
+    let key = format!("{workspace}#{engine}");
+    pick_node_with(nodes, &key, Some(engine), placement_file)
+        .await
+        .with_context(|| format!("`{path}` is in a {engine} project"))
+}
+
+/// The engine of the nested project `path` is in, when that is not the checkout's own project:
+/// `swift` for `swift/Sources/App/main.swift` under a Rust root. `None` for a path of the root
+/// project.
+pub fn nested_engine(root: &Path, path: &str) -> Option<&'static str> {
+    let p = Path::new(path);
+    let hint = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    match crate::sync::engine_project(root, &hint) {
+        (Some(_), Some(engine)) => Some(engine),
+        _ => None,
+    }
+}
+
+/// Whether `node` lists `engine`.
+async fn default_serves(node: SocketAddr, engine: &str) -> bool {
+    node_status(node)
+        .await
+        .is_ok_and(|status| supports_engine(&status, engine))
+}
+
 /// Parses `host:port[,host:port...]` (spaces allowed) into resolved addresses, in order.
 pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
     let mut nodes = Vec::new();
@@ -410,6 +493,118 @@ mod tests {
         assert_eq!(choose_quietest(&[(a, None), (b, None)]), Some(a));
         assert_eq!(choose_quietest(&[(a, Some(0.2)), (b, Some(0.2))]), Some(a));
         assert_eq!(choose_quietest(&[]), None);
+    }
+
+    /// A path in a SwiftPM package under a Rust repository needs the swift engine; a path of
+    /// the Rust project itself needs no other node (#125).
+    #[tokio::test]
+    async fn a_path_in_a_nested_project_names_its_engine() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"r\"\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("swift/Sources/App")).unwrap();
+        std::fs::write(root.join("swift/Package.swift"), "").unwrap();
+        std::fs::write(root.join("swift/Sources/App/main.swift"), "").unwrap();
+
+        assert_eq!(nested_engine(&root, "swift"), Some("swift"));
+        assert_eq!(
+            nested_engine(&root, "swift/Sources/App/main.swift"),
+            Some("swift")
+        );
+        let absolute = root.join("swift/Package.swift");
+        assert_eq!(
+            nested_engine(&root, &absolute.to_string_lossy()),
+            Some("swift")
+        );
+        assert_eq!(nested_engine(&root, "src/lib.rs"), None);
+        assert_eq!(nested_engine(&root, "."), None);
+
+        // Without routing set up, a request goes where it was sent, whatever it names.
+        let default: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        assert_eq!(
+            route_for_path(default, &root, Some("swift")).await.unwrap(),
+            default
+        );
+    }
+
+    /// A node that answers a status request with the engines it serves and nothing else.
+    async fn node_serving(engines: &'static [&'static str]) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                    while let Some(Ok(message)) = framed.next().await {
+                        if matches!(message, WireMessage::StatusRequest) {
+                            let status = StatusResponse {
+                                server_pid: 1,
+                                uptime_seconds: 1,
+                                active_sessions: 0,
+                                loaded_workspaces: 0,
+                                detected_engines: engines.iter().map(|e| e.to_string()).collect(),
+                                memory_rss_bytes: None,
+                                total_queries: 0,
+                                active_queries: 0,
+                                load_average_millis: Some(100),
+                                cpu_count: Some(4),
+                            };
+                            let _ = framed.send(WireMessage::StatusResponse(status)).await;
+                        } else {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// With a Rust node and a Swift node, a path in the SwiftPM package goes to the Swift node and
+    /// is remembered under its own key; a Rust path stays on the Rust node; with no Swift node the
+    /// error says what the path needs (#125).
+    #[tokio::test]
+    async fn a_swift_path_is_routed_to_the_node_that_serves_swift() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"r\"\n").unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("swift/Sources/App")).unwrap();
+        std::fs::write(root.join("swift/Package.swift"), "").unwrap();
+        let placement = temp.path().join("placement.json");
+
+        let rust = node_serving(&["rust", "go"]).await;
+        let swift = node_serving(&["swift (sourcekit-lsp)"]).await;
+        let nodes = [rust, swift];
+        let routed = route_in(&nodes, "mixed", rust, &root, "swift", Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(routed, swift);
+        assert_eq!(
+            load_placement(&placement).workspaces.get("mixed#swift"),
+            Some(&swift)
+        );
+        assert!(!load_placement(&placement).workspaces.contains_key("mixed"));
+        let stays = route_in(&nodes, "mixed", rust, &root, "src/lib.rs", Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(stays, rust);
+        // A default node that serves the engine keeps the call.
+        let kept = route_in(&nodes, "mixed", swift, &root, "swift", Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(kept, swift);
+
+        let other_rust = node_serving(&["rust"]).await;
+        let err = route_in(&[rust, other_rust], "mixed", rust, &root, "swift", None)
+            .await
+            .expect_err("no node serves swift");
+        let text = format!("{err:#}");
+        assert!(text.contains("is in a swift project"), "{text}");
+        assert!(text.contains("serves swift"), "{text}");
     }
 
     #[test]
