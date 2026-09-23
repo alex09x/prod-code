@@ -103,7 +103,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done; with `convert`, `.into()` written wherever the analyzer accepts it |
 | `code_generify` | a parameter's concrete type turned into a bounded type parameter, every file that calls it type-checked against the new signature |
-| `code_invert_boolean` | a predicate renamed to its opposite, its body negated, every caller unchanged in effect |
+| `code_invert_boolean` | a predicate, a `bool` field or a `bool` variable renamed to its opposite, every read and write unchanged in effect |
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
 | `code_convert_to_method` | an associated function turned into a method: its first parameter becomes `self`, `Type::f(&x, a)` becomes `x.f(a)` |
 | `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |

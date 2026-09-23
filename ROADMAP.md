@@ -3,15 +3,18 @@
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
 **Where it stands** (v0.2.2, 2026-09-23): 44 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — 548 tests, and every file a change touches held at or
+four — three Linux and one macOS for Swift — 556 tests, and every file a change touches held at or
 above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
 **7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
 `code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
 the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
 `extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static` and
 `convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
-analyzer accepts (`convert`). What is still missing: `invert_boolean` for `bool` fields and
-variables.
+analyzer accepts (`convert`), and `invert_boolean` covers `bool` fields and variables. What is
+still open is listed per item below: cascading parameter removal in `safe_delete`, the return type
+and modifiers in `change_signature`, whole-file and method moves, `replace_all` for
+`introduce_variable`, a chosen subset of methods for `extract_trait`, and the helper type of
+`extract_delegate`.
 
 ---
 
@@ -299,7 +302,7 @@ variables.
       - Whole-program type migration: changes a symbol's type (e.g. `u32` -> `u64`, `String` -> `Uuid`, `T` -> `Option<T>` or `Result<T, E>`).
       - Solves whole-program data-flow constraint graph: computes transitively affected variables, return signatures, function parameters, and call sites.
       - Automatically injects necessary type conversions (`.into()`, `Some(...)`, `?`) or returns a guided conflict dossier for ambiguous coercions.
-    - [x] `refactor.invert_boolean(path, symbol)` — shipped 2026-09-23 for Rust as `code_invert_boolean` / `prod-code invert-boolean <file> --line N --character C --to NEW` (rust-analyzer offers only `convert_bool_to_enum`, a different refactoring): a function returning `bool` gets the new name, its body returns the negation (every `return` of the function, not of a closure or nested `fn`), every call gains a `!` or loses the one it had, a call followed by `.`, `?` or an index is parenthesized, a reference that is not a call is named, and a recursive predicate is refused. Functions only; a `bool` field or variable is not covered.
+    - [x] `refactor.invert_boolean(path, symbol)` — shipped 2026-09-23 for Rust as `code_invert_boolean` / `prod-code invert-boolean <file> --line N --character C --to NEW` (rust-analyzer offers only `convert_bool_to_enum`, a different refactoring): a function returning `bool` gets the new name, its body returns the negation (every `return` of the function, not of a closure or nested `fn`), every call gains a `!` or loses the one it had, a call followed by `.`, `?` or an index is parenthesized, a reference that is not a call is named, and a recursive predicate is refused. A `bool` field or `let` binding followed the same day (#132): every read gains a `!` or loses the one it had, every write (assignment, initialiser, struct literal field, shorthand) stores the negation, and a borrow, a compound assignment, a binding pattern, a format-string use, a derived `Default` or a serde derive is reported and blocks the write; a local's type comes from the analyzer when it is not annotated, because `!` also compiles on an integer.
       - Inverts boolean variable, field, or function predicate (e.g. `is_valid` -> `is_invalid`, `has_access` -> `access_revoked`).
       - Flips internal return expressions and inverts every single caller/usage with `!` negation across the entire monorepo.
     - [x] `refactor.generify(path, symbol)` — shipped 2026-09-23 for Rust as `code_generify` / `prod-code generify <function> --param NAME --bound TRAIT [--as T]` (#117; rust-analyzer offers only `unwrap_type_to_generic_arg`, a different refactoring): the parameter's type becomes a type parameter with the given bound, a reference in front of it is kept (`&Vec<u32>` → `&T`), a function that already has generics gets one more, and a type parameter name already in use is refused. Callers are not rewritten — the type argument is inferred — but every file that calls the function is type-checked in the same overlay, which catches both a body that needs more than the bound and a caller that stops compiling unedited (a `"x".into()` that took its target from the old type). The bound is the user's choice; nothing is inferred from the body.

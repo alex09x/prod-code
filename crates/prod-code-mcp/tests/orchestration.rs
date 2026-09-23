@@ -2475,3 +2475,111 @@ async fn an_associated_function_becomes_a_method_with_every_call() {
         assert!(format!("{err:#}").contains(why), "{err:#}");
     }
 }
+
+const FLAGS: &str = "pub struct Flags {\n    pub enabled: bool,\n    pub n: u32,\n}\n\npub fn make(on: bool) -> Flags {\n    Flags { enabled: on, n: 1 }\n}\n\npub fn read(f: &Flags) -> u32 {\n    if f.enabled && !f.enabled { 1 } else { f.enabled.then_some(2).unwrap_or(0) }\n}\n\npub fn write(f: &mut Flags, v: bool) {\n    f.enabled = v;\n}\n";
+
+const DEFAULTED: &str = "#[derive(Default)]\npub struct G {\n    pub on: bool,\n}\n\npub fn h(g: &mut G) -> bool {\n    let r = &g.on;\n    g.on |= true;\n    let G { on } = g;\n    *r || *on\n}\n";
+
+const SMALL: &str = "pub fn f(x: u32) -> bool {\n    let mut small = x < 10;\n    if x == 0 {\n        small = false;\n    }\n    let early = if x > 5 { small } else { false };\n    small && early\n}\n";
+
+/// Inverting a boolean field: every read gains a `!` or loses the one it had, a read that goes on
+/// is parenthesized, every write and the struct literal store the negation. A borrow, a compound
+/// assignment, a pattern and a derived `Default` cannot keep their meaning, and block the write.
+/// A local is inverted the same way once the analyzer says it is a `bool`, and refused when not.
+#[tokio::test]
+async fn a_boolean_field_or_local_is_inverted_with_every_read_and_write() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", FLAGS);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => {
+            answers::locations(&l, &[(7, 13), (11, 10), (11, 24), (11, 47), (15, 7)])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done =
+        prod_code_mcp::invert_boolean::invert(remote, &root, &lib, 2, 9, "disabled", true, false)
+            .await
+            .expect("the field is inverted");
+    assert_eq!(done.kind, "field");
+    assert_eq!((done.negated, done.cancelled, done.writes), (2, 1, 2));
+    assert!(done.blocked.is_empty(), "{:?}", done.blocked);
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    for expected in [
+        "    pub disabled: bool,",
+        "Flags { disabled: !(on), n: 1 }",
+        "if !f.disabled && f.disabled { 1 } else { (!f.disabled).then_some(2).unwrap_or(0) }",
+        "    f.disabled = !(v);",
+    ] {
+        assert!(written.contains(expected), "{expected}\n{written}");
+    }
+
+    let g = write(&ws, "src/g.rs", DEFAULTED);
+    let gp = g.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => answers::locations(&gp, &[(7, 16), (8, 7), (9, 13)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let blocked =
+        prod_code_mcp::invert_boolean::invert(remote, &root, &g, 3, 9, "off", false, false)
+            .await
+            .expect("the dry run reports");
+    let reasons = blocked.blocked.join("\n");
+    assert_eq!(blocked.blocked.len(), 4, "{reasons}");
+    for why in [
+        "derives `Default`",
+        "is borrowed",
+        "compound assignment",
+        "a pattern binds",
+    ] {
+        assert!(reasons.contains(why), "{why}\n{reasons}");
+    }
+    let remote = scripted_gateway(Arc::new(|_method, _params| serde_json::Value::Null)).await;
+    let err = prod_code_mcp::invert_boolean::invert(remote, &root, &g, 3, 9, "off", true, false)
+        .await
+        .expect_err("a blocked use stops the write");
+    assert!(format!("{err:#}").contains("nothing was"), "{err:#}");
+    assert_eq!(ws.read("src/g.rs"), DEFAULTED);
+
+    let small = write(&ws, "src/small.rs", SMALL);
+    let (sp, hover) = (small.clone(), Arc::new(std::sync::Mutex::new("bool")));
+    let h = Arc::clone(&hover);
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/hover" => serde_json::json!({ "contents": { "kind": "markdown",
+            "value": format!("```rust\nlet mut small: {}\n```", h.lock().unwrap()) } }),
+        "textDocument/references" => answers::locations(&sp, &[(4, 9), (6, 28), (7, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done =
+        prod_code_mcp::invert_boolean::invert(remote, &root, &small, 2, 13, "large", true, false)
+            .await
+            .expect("the local is inverted");
+    assert_eq!(done.kind, "variable");
+    assert_eq!((done.negated, done.writes), (2, 2));
+    let written = ws.read("src/small.rs");
+    for expected in [
+        "let mut large = !(x < 10);",
+        "        large = true;",
+        "let early = if x > 5 { !large } else { false };",
+        "    !large && early\n",
+    ] {
+        assert!(written.contains(expected), "{expected}\n{written}");
+    }
+
+    *hover.lock().unwrap() = "u32";
+    std::fs::write(&small, SMALL).unwrap();
+    let err =
+        prod_code_mcp::invert_boolean::invert(remote, &root, &small, 2, 13, "large", false, false)
+            .await
+            .expect_err("a u32 is not a boolean");
+    assert!(format!("{err:#}").contains("`u32`, not `bool`"), "{err:#}");
+}
