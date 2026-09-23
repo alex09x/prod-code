@@ -96,7 +96,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 |---|---|
 | `code_validate_edit` · `code_validate_edits` | analyzer diagnostics for proposed file contents, nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
 | `code_diagnostics` | diagnostics for a file, in memory, without a build |
-| `code_rename` · `code_safe_delete` | semantic rename across the workspace; delete only when nothing references it |
+| `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
 | `code_change_signature` | reorder, add and remove a function's parameters, with every call site, type-checked before it is written |
 | `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |

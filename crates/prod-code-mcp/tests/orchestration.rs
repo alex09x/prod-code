@@ -2816,3 +2816,85 @@ async fn a_return_type_and_visibility_change_checks_every_caller() {
     );
     assert_eq!(ws.read("src/lib.rs"), TOTAL_FN, "a dry run writes nothing");
 }
+
+const CONN: &str = "pub struct Conn {\n    timeout: u64,\n}\n\nimpl Conn {\n    pub fn timeout(&self) -> u64 {\n        self.timeout\n    }\n\n    pub fn set_timeout(&mut self, t: u64) {\n        self.timeout = t;\n    }\n}\n\npub fn double(c: &mut Conn) {\n    c.set_timeout(c.timeout() * 2);\n}\n";
+
+/// Renaming a field with `accessors`: the field's rename and each accessor's, every one computed
+/// by the analyzer against the checkout, are merged into one change, even where two of them land
+/// on one line; two renames that would change the same text are refused.
+#[tokio::test]
+async fn a_field_is_renamed_with_its_accessors_in_one_change() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", CONN);
+    commit(&ws);
+    let script = |getter_also_touches_the_field: bool| {
+        let l = lib.clone();
+        scripted_gateway(Arc::new(move |method, params| {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let method_hit = |name: &str, line: u32| {
+                serde_json::json!([{ "name": name, "kind": 6, "containerName": "Conn",
+                    "location": { "uri": format!("file://{}", l.display()),
+                        "range": { "start": { "line": line - 1, "character": 11 },
+                                   "end": { "line": line - 1, "character": 11 + name.len() } } } }])
+            };
+            match method {
+                "textDocument/definition" => serde_json::json!([{
+                    "uri": format!("file://{}", l.display()),
+                    "range": { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 11 } }
+                }]),
+                "workspace/symbol" => match params.get("query").and_then(|q| q.as_str()) {
+                    Some("timeout") => method_hit("timeout", 6),
+                    Some("set_timeout") => method_hit("set_timeout", 10),
+                    _ => serde_json::json!([]),
+                },
+                "textDocument/rename" => {
+                    let renamed = match line {
+                        1 => CONN
+                            .replace("    timeout: u64", "    deadline: u64")
+                            .replace("self.timeout", "self.deadline"),
+                        5 if getter_also_touches_the_field => CONN
+                            .replace("fn timeout(", "fn deadline(")
+                            .replace("self.timeout\n", "self.other\n"),
+                        5 => CONN
+                            .replace("fn timeout(", "fn deadline(")
+                            .replace("c.timeout()", "c.deadline()"),
+                        9 => CONN.replace("set_timeout", "set_deadline"),
+                        _ => return serde_json::Value::Null,
+                    };
+                    answers::whole_file(&l, CONN, &renamed)
+                }
+                "textDocument/diagnostic" => answers::no_diagnostics(),
+                _ => serde_json::Value::Null,
+            }
+        }))
+    };
+    let args = serde_json::json!({
+        "path": "src/lib.rs", "line": 2, "character": 5, "new_name": "deadline", "accessors": true
+    });
+
+    let done =
+        prod_code_mcp::tools::execute_tool(script(false).await, &root, "code_rename", args.clone())
+            .await
+            .expect("the rename runs");
+    assert!(!done.is_error, "{done:?}");
+    let written = ws.read("src/lib.rs");
+    assert_eq!(
+        written,
+        CONN.replace("timeout", "deadline"),
+        "every rename in one change"
+    );
+
+    std::fs::write(&lib, CONN).unwrap();
+    let refused =
+        prod_code_mcp::tools::execute_tool(script(true).await, &root, "code_rename", args)
+            .await
+            .expect("the tool answers");
+    assert!(refused.is_error, "{refused:?}");
+    let text = format!("{refused:?}");
+    assert!(text.contains("touches the same text"), "{text}");
+    assert_eq!(ws.read("src/lib.rs"), CONN, "nothing was written");
+}

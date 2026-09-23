@@ -179,6 +179,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line number" },
                     "character": { "type": "integer", "description": "1-based column/character number" },
                     "new_name": { "type": "string", "description": "New identifier" },
+                    "accessors": { "type": "boolean", "description": "At a field: also rename the methods of its struct's `impl` blocks named after it (`f`, `get_f`, `set_f`, `f_mut`), with every call, merged into one change" },
                     "force": { "type": "boolean", "description": "Write the rename even when the result does not compile" }
                 },
                 "required": ["path", "line", "character", "new_name"]
@@ -2864,6 +2865,23 @@ async fn handle_rename(
         .context("Missing 'new_name' argument")?
         .to_string();
     let file_path = resolve_file_path(workspace_root, path_str);
+    if args
+        .get("accessors")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+        return rename_with_accessors(
+            remote,
+            workspace_root,
+            &file_path,
+            line,
+            character,
+            &new_name,
+            force,
+        )
+        .await;
+    }
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
@@ -2942,6 +2960,78 @@ async fn handle_rename(
         text.push_str("\n\nthe rename also moved files; that part was not checked before writing");
     }
     Ok(McpToolCallResult::text(text))
+}
+
+/// A field renamed together with its accessors (#146): every rename merged into one change per
+/// file, checked in one overlay, written only when it compiles unless `force`.
+async fn rename_with_accessors(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file: &Path,
+    line: u32,
+    character: u32,
+    new_name: &str,
+    force: bool,
+) -> Result<McpToolCallResult> {
+    let (merged, renamed) = match crate::rename_accessors::plan(
+        remote,
+        workspace_root,
+        file,
+        line,
+        character,
+        new_name,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(e) => return Ok(McpToolCallResult::error(format!("rename refused: {e:#}"))),
+    };
+    if merged.is_empty() {
+        return Ok(McpToolCallResult::error(
+            "rename produced no edits".to_string(),
+        ));
+    }
+    let planned: Vec<(std::path::PathBuf, String)> =
+        merged.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
+    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &planned, &[]).await?;
+    let errors: Vec<String> = reports
+        .iter()
+        .flat_map(|r| {
+            r.items
+                .iter()
+                .filter(|d| d.severity == "error")
+                .map(move |d| {
+                    format!(
+                        "{}{} ({}:{}:{})",
+                        d.message.lines().next().unwrap_or(""),
+                        d.code
+                            .as_deref()
+                            .map(|c| format!(" [{c}]"))
+                            .unwrap_or_default(),
+                        r.file,
+                        d.line,
+                        d.col
+                    )
+                })
+        })
+        .collect();
+    if !errors.is_empty() && !force {
+        return Ok(McpToolCallResult::error(format!(
+            "rename refused: the result does not compile ({} error(s)); nothing was written:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        )));
+    }
+    let touched = crate::refactor::apply_workspace_edit(
+        workspace_root,
+        &crate::signature::whole_file_edit(&merged),
+    )?;
+    Ok(McpToolCallResult::text(format!(
+        "renamed {}; {} path(s) updated in the checkout:\n{}",
+        renamed.join(", "),
+        touched.len(),
+        touched.join("\n")
+    )))
 }
 
 async fn handle_check(

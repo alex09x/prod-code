@@ -231,6 +231,9 @@ enum Commands {
         line: u32,
         col: u32,
         new_name: String,
+        /// At a field: rename its accessors too (`f()`, `get_f()`, `set_f()`, `f_mut()`).
+        #[arg(long, default_value_t = false)]
+        accessors: bool,
         /// Write the rename even when the result does not compile.
         #[arg(long, default_value_t = false)]
         force: bool,
@@ -956,8 +959,9 @@ async fn main() -> Result<()> {
             line,
             col,
             new_name,
+            accessors,
             force,
-        } => run_rename(remote, &file, line, col, &new_name, force).await,
+        } => run_rename(remote, &file, line, col, &new_name, accessors, force).await,
         Commands::SafeDelete { file, line, col } => run_safe_delete(remote, &file, line, col).await,
         Commands::Assists {
             file,
@@ -2725,6 +2729,7 @@ async fn run_rename(
     line: u32,
     col: u32,
     new_name: &str,
+    accessors: bool,
     force: bool,
 ) -> Result<()> {
     // The same path as the MCP tool, so the CLI gets the same check before writing (#98).
@@ -2737,6 +2742,7 @@ async fn run_rename(
         "line": line,
         "character": col,
         "new_name": new_name,
+        "accessors": accessors,
         "force": force,
     });
     let result = prod_code_mcp::tools::execute_tool(remote, &ws_root, "code_rename", args).await?;
