@@ -258,6 +258,24 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_invert_boolean".to_string(),
+            description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the function" },
+                    "line": { "type": "integer", "description": "1-based line of the function's name" },
+                    "character": { "type": "integer", "description": "1-based column of the function's name" },
+                    "new_name": { "type": "string", "description": "The name of the inverted predicate" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["new_name"]
+            }),
+        },
+        McpTool {
             name: "code_make_static".to_string(),
             description: "Turn a method that never uses `self` into an associated function, with every call site. Give the method's name position (or `symbol`). The receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument. A receiver that does something when it is evaluated — a call, `?`, `.await`, a macro or an index, as in `load()?.method()` — cannot be dropped silently, so that call site is reported and nothing is written while one remains, unless `force`. A method whose body mentions `self` is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -832,6 +850,7 @@ pub async fn execute_tool(
         "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
+        "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
         "code_introduce_parameter_object" => {
             handle_introduce_parameter_object(remote, workspace_root, &args).await
@@ -1601,6 +1620,71 @@ async fn handle_extract_field(
     let clean = done.diagnostics.is_empty()
         && done.blocked.is_empty()
         && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_invert_boolean(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
+    };
+    let new_name = args
+        .get("new_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'new_name' argument: the name of the inverted predicate")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::invert_boolean::invert(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
+        new_name,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -3035,6 +3119,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_encapsulate_field",
     "code_wrap_return",
     "code_make_static",
+    "code_invert_boolean",
     "code_definition",
     "code_references",
     "code_hover",

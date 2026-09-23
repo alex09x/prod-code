@@ -1800,3 +1800,43 @@ async fn cli_makes_a_method_static_and_rewrites_its_call() {
     assert!(text.contains("+    S::one()"), "{text}");
     assert!(text.contains("nothing was written"), "{text}");
 }
+
+#[tokio::test]
+async fn cli_inverts_a_predicate_and_its_call() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn is_on(x: u8) -> bool {\n    x > 0\n}\n\npub fn f(x: u8) -> bool {\n    is_on(x)\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/references" => answers::locations(&lib, &[(6, 5)]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "invert-boolean",
+            "src/lib.rs",
+            "--line",
+            "1",
+            "--character",
+            "8",
+            "--to",
+            "is_off",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("+    !(x > 0)"), "{text}");
+    assert!(text.contains("+    !is_off(x)"), "{text}");
+}

@@ -12,6 +12,7 @@ pub mod extract_parameter;
 pub mod fixture;
 pub mod hot_reload;
 pub mod impact;
+pub mod invert_boolean;
 pub mod lang;
 pub mod make_static;
 pub mod move_item;

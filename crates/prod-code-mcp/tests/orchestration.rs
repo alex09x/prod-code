@@ -2049,3 +2049,61 @@ async fn a_trait_impls_method_is_not_made_static() {
         "{err:#}"
     );
 }
+
+const EVEN: &str = "pub fn is_even(n: u32) -> bool {\n    if n == 0 {\n        return true;\n    }\n    let r = n % 2;\n    r == 0\n}\n\npub fn f(n: u32) -> u32 {\n    if is_even(n) && !is_even(n + 1) {\n        1\n    } else {\n        0\n    }\n}\n\npub fn g(n: u32) -> Option<u32> {\n    is_even(n).then_some(n)\n}\n\npub fn h() -> fn(u32) -> bool {\n    is_even\n}\n";
+
+/// Inverting a predicate: the body returns the negation (its early `return` too), a call gains a
+/// `!`, a call that had one loses it, a call followed by a method is parenthesized, and the function
+/// used as a value is named — under its new name it would mean the opposite. A recursive predicate
+/// is refused.
+#[tokio::test]
+async fn inverting_a_predicate_keeps_every_caller_doing_what_it_did() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", EVEN);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => answers::locations(&l, &[(10, 8), (10, 23), (18, 5), (22, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done =
+        prod_code_mcp::invert_boolean::invert(remote, &root, &lib, 1, 8, "is_odd", true, false)
+            .await
+            .expect("the inversion runs");
+    assert_eq!((done.negated, done.cancelled), (2, 1));
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(done.unmatched[0].contains("used as a value"));
+    assert!(done.applied);
+    let written = ws.read("src/lib.rs");
+    assert!(
+        written.contains("pub fn is_odd(n: u32) -> bool {\n    !{"),
+        "{written}"
+    );
+    assert!(written.contains("return !(true);"), "{written}");
+    assert!(
+        written.contains("if !is_odd(n) && is_odd(n + 1) {"),
+        "{written}"
+    );
+    assert!(written.contains("(!is_odd(n)).then_some(n)"), "{written}");
+
+    let recursive = write(
+        &ws,
+        "src/rec.rs",
+        "pub fn all_even(n: u32) -> bool {\n    n == 0 || all_even(n - 2)\n}\n",
+    );
+    let r = recursive.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => answers::locations(&r, &[(2, 15)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let err = prod_code_mcp::invert_boolean::invert(
+        remote, &root, &recursive, 1, 8, "any_odd", false, false,
+    )
+    .await
+    .expect_err("refused");
+    assert!(format!("{err:#}").contains("calls itself"), "{err:#}");
+}

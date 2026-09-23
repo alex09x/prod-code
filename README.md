@@ -102,6 +102,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done |
+| `code_invert_boolean` | a predicate renamed to its opposite, its body negated, every caller unchanged in effect |
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
 | `code_wrap_return` | a return type wrapped in `Option` or `Result`, `?` at every caller that can propagate, the rest named |
 | `code_extract_field` | an expression in a method turned into a field of its type, initialised wherever the type is built |
@@ -135,7 +136,7 @@ has to grep for a line number:
 
 The same surface exists as a CLI for humans and scripts: `prod-code search | slice | codemod |
 fixture | change-signature | schema-rename | migrate-type | move | parameter-object |
-extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | hover | def | refs | callers | callees |
+extract-parameter | extract-field | encapsulate-field | wrap-return | make-static | invert-boolean | hover | def | refs | callers | callees |
 impls | symbols | outline | validate | diagnostics | check | lint | test | exec | impact |
 diagnose | rename | assists | assist | safe-delete | dead-code | shadow-run | source | status |
 cluster | metrics`. The position commands take `--symbol NAME` instead of a file and a
