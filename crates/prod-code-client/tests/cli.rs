@@ -1761,3 +1761,42 @@ async fn cli_wraps_a_return_type_and_names_the_caller_that_cannot_propagate() {
         "nothing written"
     );
 }
+
+#[tokio::test]
+async fn cli_makes_a_method_static_and_rewrites_its_call() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct S;\n\nimpl S {\n    pub fn one(&self) -> u32 {\n        1\n    }\n}\n\npub fn f(s: &S) -> u32 {\n    s.one()\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let gw = MockGateway::start(move |method, _| match method {
+        "textDocument/references" => answers::locations(&lib, &[(10, 7)]),
+        "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "make-static",
+            "src/lib.rs",
+            "--line",
+            "4",
+            "--character",
+            "12",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("+    pub fn one() -> u32 {"), "{text}");
+    assert!(text.contains("+    S::one()"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+}

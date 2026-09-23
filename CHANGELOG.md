@@ -129,6 +129,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Make a method static (roadmap 7.1.3, #111): `code_make_static` (MCP) and `prod-code
+  make-static <file> --line N --character C`. A method whose body never mentions `self` loses its
+  receiver; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)`
+  loses its first argument. A receiver that does something when it is evaluated — a call, `?`,
+  `.await`, a macro, an index — is not dropped silently: the call site is reported and nothing is
+  written while one remains, unless `force`. A method that uses `self` is refused. Type-checked in
+  one overlay; `verify: "compile"` adds `cargo check`.
 - Wrap a return type with its callers (roadmap 7.1.4, #109): `code_wrap_return` (MCP) and
   `prod-code wrap-return <file> --line N --character C --wrapper option|result [--error TYPE]`.
   rust-analyzer's `wrap_return_type_in_option` / `_in_result` rewrite the signature and every

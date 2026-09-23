@@ -258,6 +258,22 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_make_static".to_string(),
+            description: "Turn a method that never uses `self` into an associated function, with every call site. Give the method's name position (or `symbol`). The receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument. A receiver that does something when it is evaluated — a call, `?`, `.await`, a macro or an index, as in `load()?.method()` — cannot be dropped silently, so that call site is reported and nothing is written while one remains, unless `force`. A method whose body mentions `self` is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the method" },
+                    "line": { "type": "integer", "description": "1-based line of the method's name" },
+                    "character": { "type": "integer", "description": "1-based column of the method's name" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when a receiver with effects would be dropped or the result does not compile" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_wrap_return".to_string(),
             description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
                 .to_string(),
@@ -815,6 +831,7 @@ pub async fn execute_tool(
         "code_migrate_type" => handle_migrate_type(remote, workspace_root, &args).await,
         "code_extract_field" => handle_extract_field(remote, workspace_root, &args).await,
         "code_wrap_return" => handle_wrap_return(remote, workspace_root, &args).await,
+        "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_extract_parameter" => handle_extract_parameter(remote, workspace_root, &args).await,
         "code_introduce_parameter_object" => {
             handle_introduce_parameter_object(remote, workspace_root, &args).await
@@ -1558,6 +1575,68 @@ async fn handle_extract_field(
         ty,
         init,
         replace_all,
+        apply && !verify,
+        force,
+    )
+    .await?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_make_static(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument (or `symbol`)")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
+    };
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::make_static::make_static(
+        remote,
+        workspace_root,
+        &file_path,
+        num("line")?,
+        num("character")?,
         apply && !verify,
         force,
     )
@@ -2955,6 +3034,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_migrate_type",
     "code_encapsulate_field",
     "code_wrap_return",
+    "code_make_static",
     "code_definition",
     "code_references",
     "code_hover",

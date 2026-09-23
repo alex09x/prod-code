@@ -1958,3 +1958,72 @@ async fn wrapping_a_return_type_propagates_where_callers_can_and_names_the_rest(
     assert!(forced.applied);
     assert!(ws.read("src/app.rs").contains("Some(count(3)? + 1)"));
 }
+
+const TWICE: &str = "pub struct S;\n\nimpl S {\n    pub fn twice(&self, x: u32) -> u32 {\n        x * 2\n    }\n\n    pub fn me(&self) -> &Self {\n        self\n    }\n}\n\npub fn a(s: &S) -> u32 {\n    s.twice(1) + S::twice(s, 2)\n}\n\npub fn b() -> u32 {\n    load().twice(3)\n}\n\npub fn load() -> S {\n    S\n}\n\npub fn c() -> fn(&S, u32) -> u32 {\n    S::twice\n}\n";
+
+/// A method that never uses `self` becomes an associated function: the receiver leaves the
+/// declaration, `s.twice(1)` becomes `S::twice(1)`, `S::twice(s, 2)` loses its first argument, a
+/// receiver that runs something (`load()`) blocks the write, and the method used as a value is
+/// named rather than rewritten. A method that does use `self` is refused.
+#[tokio::test]
+async fn a_method_that_never_uses_self_becomes_an_associated_function() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", TWICE);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/references" => {
+            answers::locations(&l, &[(14, 7), (14, 21), (18, 12), (26, 8)])
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, false, false)
+        .await
+        .expect("the dry run reports");
+    assert_eq!(
+        (
+            done.owner.as_str(),
+            done.method.as_str(),
+            done.receiver.as_str()
+        ),
+        ("S", "twice", "&self")
+    );
+    assert_eq!(done.rewritten_calls, 2);
+    assert_eq!(done.blocked.len(), 1, "{:?}", done.blocked);
+    assert!(done.blocked[0].contains("`load()`"));
+    assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
+    assert!(done.unmatched[0].contains("not a call"));
+    let new = &done.rewritten[0].1;
+    assert!(new.contains("pub fn twice(x: u32) -> u32"), "{new}");
+    assert!(new.contains("S::twice(1) + S::twice(2)"), "{new}");
+    assert!(
+        new.contains("load().twice(3)"),
+        "untouched while blocked: {new}"
+    );
+
+    let err = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, true, false)
+        .await
+        .expect_err("a receiver with effects stops the write");
+    assert!(
+        format!("{err:#}").contains("nothing was written"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), TWICE);
+
+    let refused = prod_code_mcp::make_static::make_static(remote, &root, &lib, 8, 12, false, false)
+        .await
+        .expect_err("`me` returns `self`");
+    assert!(
+        format!("{refused:#}").contains("uses `self`"),
+        "{refused:#}"
+    );
+}

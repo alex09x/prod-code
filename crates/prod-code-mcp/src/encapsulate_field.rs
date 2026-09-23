@@ -399,7 +399,7 @@ fn expression_end(text: &str, from: usize) -> usize {
 }
 
 /// Where the receiver of the `.` at `dot` starts: `a.b().c[0]` for the dot before a field.
-fn chain_start(text: &str, dot: usize) -> usize {
+pub(crate) fn chain_start(text: &str, dot: usize) -> usize {
     let bytes = text.as_bytes();
     let mut i = dot;
     loop {
