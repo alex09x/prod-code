@@ -616,6 +616,12 @@ enum Commands {
         /// adds it; a declared parameter that is not listed is removed. Repeat the flag.
         #[arg(long = "param", required = true)]
         params: Vec<String>,
+        /// The return type it should have; `()` removes it.
+        #[arg(long)]
+        returns: Option<String>,
+        /// Its visibility: `pub`, `pub(crate)`, `pub(super)`, or `private`.
+        #[arg(long)]
+        visibility: Option<String>,
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
@@ -1273,11 +1279,18 @@ async fn main() -> Result<()> {
         Commands::ChangeSignature {
             symbol,
             params,
+            returns,
+            visibility,
             path,
             verify,
             apply,
             force,
-        } => run_change_signature_cli(remote, symbol, params, path, verify, apply, force).await,
+        } => {
+            run_change_signature_cli(
+                remote, symbol, params, returns, visibility, path, verify, apply, force,
+            )
+            .await
+        }
         Commands::Codemod { rule, path, apply } => run_codemod_cli(remote, rule, path, apply).await,
         Commands::Search { query, limit, path } => run_search_cli(remote, query, limit, path).await,
         Commands::Slice {
@@ -3108,10 +3121,13 @@ async fn run_move_cli(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_change_signature_cli(
     remote: SocketAddr,
     symbol: String,
     params: Vec<String>,
+    returns: Option<String>,
+    visibility: Option<String>,
     path: Option<String>,
     verify: Option<String>,
     apply: bool,
@@ -3121,6 +3137,12 @@ async fn run_change_signature_cli(
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut args =
         serde_json::json!({ "symbol": symbol, "params": params, "apply": apply, "force": force });
+    if let Some(returns) = returns {
+        args["returns"] = serde_json::Value::String(returns);
+    }
+    if let Some(visibility) = visibility {
+        args["visibility"] = serde_json::Value::String(visibility);
+    }
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
     }

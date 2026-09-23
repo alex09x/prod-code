@@ -68,6 +68,19 @@ pub struct SignatureChange {
     /// Errors the analyzer reports for the changed files, checked together.
     pub diagnostics: Vec<String>,
     pub applied: bool,
+    /// The return type before and after, when the request changed it (`()` for none).
+    pub returns: Option<(String, String)>,
+    /// The visibility before and after, when the request changed it (`private` for none).
+    pub visibility: Option<(String, String)>,
+}
+
+/// What a signature change does besides the parameters: the return type and the visibility.
+#[derive(Debug, Clone, Default)]
+pub struct Modifiers {
+    /// The return type the function should have; `()` removes it.
+    pub returns: Option<String>,
+    /// `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove it.
+    pub visibility: Option<String>,
 }
 
 impl SignatureChange {
@@ -76,6 +89,12 @@ impl SignatureChange {
             "`{}` ({})\n\n- was: ({})\n- now: ({})\n",
             self.symbol, self.file, self.old_signature, self.new_signature
         );
+        if let Some((was, now)) = &self.returns {
+            out.push_str(&format!("- returns: `{was}` → `{now}`\n"));
+        }
+        if let Some((was, now)) = &self.visibility {
+            out.push_str(&format!("- visibility: `{was}` → `{now}`\n"));
+        }
         if !self.rule.is_empty() {
             out.push_str(&format!("- call sites: `{}`\n", self.rule));
         }
@@ -597,6 +616,89 @@ pub async fn change(
     apply: bool,
     force: bool,
 ) -> Result<SignatureChange> {
+    change_with(
+        remote,
+        root,
+        file,
+        line,
+        col,
+        request,
+        &Modifiers::default(),
+        apply,
+        force,
+    )
+    .await
+}
+
+/// The declared return type of the function whose parameter list closes at `close` (`()` when it
+/// declares none), and `header` with it replaced by `returns`.
+fn with_return_type(header: &str, close: usize, returns: &str) -> (String, String) {
+    let returns = returns.trim();
+    match crate::wrap_return::declared_return(header, close) {
+        Some((start, end)) => {
+            let was = header[start..end].to_string();
+            let mut out = header.to_string();
+            if returns == "()" || returns.is_empty() {
+                // ` -> T` goes, from the arrow on.
+                let arrow = header[..start].rfind("->").unwrap_or(start);
+                let from = header[..arrow].trim_end().len();
+                out.replace_range(from..end, "");
+            } else {
+                out.replace_range(start..end, returns);
+            }
+            (was, out)
+        }
+        None => {
+            let mut out = header.to_string();
+            if returns != "()" && !returns.is_empty() {
+                out.insert_str(close + 1, &format!(" -> {returns}"));
+            }
+            ("()".to_string(), out)
+        }
+    }
+}
+
+/// The visibility of the function whose name starts at `name_at`, and `text` with it replaced by
+/// `visibility` (`private` removes it).
+fn with_visibility(text: &str, name_at: usize, visibility: &str) -> Option<(String, String)> {
+    let fn_kw = text[..name_at].trim_end().strip_suffix("fn")?.len();
+    let line_start = text[..fn_kw].rfind('\n').map_or(0, |i| i + 1);
+    let indent_end =
+        line_start + (text[line_start..].len() - text[line_start..].trim_start().len());
+    let head = &text[indent_end..fn_kw];
+    let (was, rest_at) = if let Some(rest) = head.strip_prefix("pub(") {
+        let close = rest.find(')')?;
+        (head[..4 + close + 1].to_string(), 4 + close + 1)
+    } else if head.starts_with("pub ") {
+        ("pub".to_string(), 3)
+    } else {
+        ("private".to_string(), 0)
+    };
+    let rest = head[rest_at..].trim_start();
+    let visibility = visibility.trim();
+    let new_head = if visibility == "private" || visibility.is_empty() {
+        rest.to_string()
+    } else {
+        format!("{visibility} {rest}")
+    };
+    let mut out = text.to_string();
+    out.replace_range(indent_end..fn_kw, &new_head);
+    Some((was, out))
+}
+
+/// [`change`], with the return type and the visibility changed in the same edit.
+#[allow(clippy::too_many_arguments)]
+pub async fn change_with(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+    request: &[Param],
+    modifiers: &Modifiers,
+    apply: bool,
+    force: bool,
+) -> Result<SignatureChange> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let offset =
@@ -692,6 +794,30 @@ pub async fn change(
     decl_text.push_str(&base[..open]);
     decl_text.push_str(&new_inner);
     decl_text.push_str(&base[close..]);
+    // The return type after the new list, then the visibility in front of `fn`: both in the
+    // declaration's own text, in the same edit.
+    let new_close = open + new_inner.len();
+    let mut returns_change = None;
+    if let Some(returns) = &modifiers.returns {
+        let (was, out) = with_return_type(&decl_text, new_close, returns);
+        if was.trim() != returns.trim() {
+            returns_change = Some((was, returns.trim().to_string()));
+            decl_text = out;
+        }
+    }
+    let mut visibility_change = None;
+    if let Some(visibility) = &modifiers.visibility {
+        let name_at = decl_text[..open]
+            .rfind(&format!("fn {name}"))
+            .map(|i| i + 3)
+            .context("the declaration's `fn` keyword is not where the parameter list says")?;
+        let (was, out) = with_visibility(&decl_text, name_at, visibility)
+            .context("the declaration's visibility could not be read")?;
+        if was != visibility.trim() {
+            visibility_change = Some((was, visibility.trim().to_string()));
+            decl_text = out;
+        }
+    }
     rewritten.insert(file.to_path_buf(), decl_text);
 
     // Reconcile: what the analyzer knows is a reference against what the rewrite touched.
@@ -757,7 +883,18 @@ pub async fn change(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &[]).await?;
+    // A caller the rewrite did not touch still has to fit a new return type or visibility.
+    let callers: Vec<PathBuf> = {
+        let mut files: Vec<PathBuf> = refs
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .filter(|p| !rewritten.contains_key(p))
+            .collect();
+        files.sort();
+        files.dedup();
+        files
+    };
+    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &callers).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -805,6 +942,8 @@ pub async fn change(
         unexpected,
         diagnostics,
         applied,
+        returns: returns_change,
+        visibility: visibility_change,
     })
 }
 
@@ -983,6 +1122,43 @@ mod tests {
             parameter_at(call, 2, 7).is_none(),
             "an argument is not a parameter"
         );
+    }
+
+    #[test]
+    fn a_return_type_is_replaced_added_and_removed() {
+        let t = "pub fn total(xs: &[u32]) -> u32 {\n    0\n}\n";
+        let close = t.find(')').unwrap();
+        let (was, out) = with_return_type(t, close, "u64");
+        assert_eq!(was, "u32");
+        assert!(
+            out.starts_with("pub fn total(xs: &[u32]) -> u64 {"),
+            "{out}"
+        );
+        let (_, out) = with_return_type(t, close, "()");
+        assert!(out.starts_with("pub fn total(xs: &[u32]) {"), "{out}");
+        let none = "fn log(s: &str) {\n}\n";
+        let (was, out) = with_return_type(none, none.find(')').unwrap(), "bool");
+        assert_eq!(was, "()");
+        assert!(out.starts_with("fn log(s: &str) -> bool {"), "{out}");
+        let generic = "fn f<T>(x: T) -> Vec<T> where T: Clone {\n}\n";
+        let (was, out) = with_return_type(generic, generic.find(')').unwrap(), "Option<T>");
+        assert_eq!(was, "Vec<T>");
+        assert!(out.contains("-> Option<T> where T: Clone"), "{out}");
+    }
+
+    #[test]
+    fn a_visibility_is_replaced_added_and_removed() {
+        let t = "    pub async fn run() {}\n";
+        let at = t.find("run").unwrap();
+        let (was, out) = with_visibility(t, at, "pub(crate)").unwrap();
+        assert_eq!(was, "pub");
+        assert_eq!(out, "    pub(crate) async fn run() {}\n");
+        let (was, out) = with_visibility(&out, out.find("run").unwrap(), "private").unwrap();
+        assert_eq!(was, "pub(crate)");
+        assert_eq!(out, "    async fn run() {}\n");
+        let (was, out) = with_visibility(&out, out.find("run").unwrap(), "pub").unwrap();
+        assert_eq!(was, "private");
+        assert_eq!(out, "    pub async fn run() {}\n");
     }
 
     #[test]
