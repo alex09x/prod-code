@@ -86,7 +86,22 @@ mv -f ~/Library/LaunchAgents/com.prod-code.gateway.plist.new ~/Library/LaunchAge
 # launchd keeps the definition it loaded: kickstart -k would restart the OLD arguments, so the
 # unit is unloaded and loaded again to pick up the rewritten plist (RunAtLoad starts it).
 launchctl bootout gui/$(id -u)/com.prod-code.gateway 2>/dev/null || true
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prod-code.gateway.plist
+# bootout returns before launchd has removed the service, and a bootstrap before that fails
+# with "5: Input/output error", leaving the node without a gateway (#183).
+for _ in $(seq 1 20); do
+  launchctl print gui/$(id -u)/com.prod-code.gateway >/dev/null 2>&1 || break
+  sleep 0.5
+done
+loaded=
+for attempt in 1 2 3 4 5; do
+  if launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.prod-code.gateway.plist; then
+    loaded=1
+    break
+  fi
+  echo "bootstrap attempt $attempt failed; retrying" >&2
+  sleep 2
+done
+[ -n "$loaded" ] || { echo "the gateway unit did not load" >&2; exit 1; }
 sleep 2
 launchctl print gui/$(id -u)/com.prod-code.gateway | grep -E "state = " | head -1
 IN
