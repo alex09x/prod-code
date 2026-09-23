@@ -3607,7 +3607,7 @@ async fn run_exec(
         );
     }
     eprintln!(
-        "[prod-code exec] {} in {:.1}s (server {:.1}s) on {}",
+        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {}",
         match (exit.timed_out, exit.exit_code) {
             (true, _) => "timed out".to_string(),
             (false, Some(code)) => format!("exit {code}"),
@@ -3615,6 +3615,9 @@ async fn run_exec(
         },
         started.elapsed().as_secs_f64(),
         exit.duration_ms as f64 / 1000.0,
+        exit.usage
+            .map(|u| format!(", {}", u.render()))
+            .unwrap_or_default(),
         exit.server_workspace_root
     );
     std::process::exit(exit.exit_code.unwrap_or(1));

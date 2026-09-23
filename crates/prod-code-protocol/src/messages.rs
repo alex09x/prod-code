@@ -443,6 +443,30 @@ pub struct ExecExit {
     /// Set when the command could not be started at all.
     #[serde(default)]
     pub error: Option<String>,
+    /// What the command and every descendant it waited for used, when the server could tell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExecUsage>,
+}
+
+/// Resource use of a finished command, from `wait4`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecUsage {
+    pub cpu_user_ms: u64,
+    pub cpu_sys_ms: u64,
+    /// Peak resident set size of the largest process in the tree, in KiB.
+    pub max_rss_kb: u64,
+}
+
+impl ExecUsage {
+    /// `cpu 12.3s user 1.2s sys, peak 512 MB`.
+    pub fn render(&self) -> String {
+        format!(
+            "cpu {:.1}s user {:.1}s sys, peak {} MB",
+            self.cpu_user_ms as f64 / 1000.0,
+            self.cpu_sys_ms as f64 / 1000.0,
+            self.max_rss_kb.div_ceil(1024)
+        )
+    }
 }
 
 /// A request to read a file on the gateway host, for definitions that resolve outside the

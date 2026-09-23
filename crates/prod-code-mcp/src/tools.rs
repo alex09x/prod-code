@@ -3145,9 +3145,12 @@ async fn handle_exec(
         (None, false, None) => "killed by signal".to_string(),
     };
     let mut text = format!(
-        "$ {}\n[{status} in {:.1}s on {}; {} bytes of output{}]\n",
+        "$ {}\n[{status} in {:.1}s{} on {}; {} bytes of output{}]\n",
         argv.join(" "),
         exit.duration_ms as f64 / 1000.0,
+        exit.usage
+            .map(|u| format!(" ({})", u.render()))
+            .unwrap_or_default(),
         exit.server_workspace_root,
         tail.total,
         if tail.total > tail_bytes {

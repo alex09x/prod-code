@@ -117,6 +117,7 @@ impl ExecGateway {
                             server_workspace_root: req.client_workspace_root.clone(),
                             timed_out: false,
                             error: None,
+                            usage: None,
                         }))
                         .await?;
                 }

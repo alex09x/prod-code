@@ -196,6 +196,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         server_workspace_root: req.client_workspace_root,
                         timed_out: false,
                         error: None,
+                        usage: None,
                     }))
                     .await?;
             }

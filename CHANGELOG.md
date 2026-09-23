@@ -226,6 +226,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Every exec summary shows the CPU time and peak memory of the command** (roadmap 6.1/6.4,
+  #180). The gateway reaps the command with `wait4` and sends `ExecExit.usage`: user and system
+  CPU and the largest resident set of the command and its children. `prod-code exec` prints
+  `(server 12.3s, cpu 80.1s user 9.2s sys, peak 1450 MB)`, and MCP `code_exec` shows the
+  same in its status line. An older gateway sends no usage, and the summary stays as it was.
+  - The waiter reaps the command only after `waitid(WNOWAIT)` has seen it exit, under the lock
+    the timeout kill takes. So a kill can never reach a process group whose id was reused.
 - Benchmarks with parsed results (roadmap 6.4, #178): MCP `code_benchmarks` and `prod-code
   benchmarks [FILTER]`, a fourth kind next to check, lint and test.
   - Rust runs `cargo bench --workspace [FILTER]` and Go runs `go test -run '^$' -bench FILTER
