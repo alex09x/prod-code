@@ -1151,6 +1151,48 @@ async fn code_rename_writes_the_analyzers_edit_into_the_checkout() {
     );
 }
 
+/// With `comments`, the old name follows the rename into the comments and the test names of the
+/// file, in the same written change; without it, only the analyzer's edit is written (#174).
+#[tokio::test]
+async fn a_rename_with_comments_follows_the_old_name_into_prose_and_tests() {
+    let ws = workspace();
+    let before = "/// An `Order` is priced once.\npub struct Order;\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn order_is_priced() {\n        let _ = super::Order;\n    }\n}\n";
+    let renamed = before
+        .replace("pub struct Order;", "pub struct Trade;")
+        .replace("super::Order", "super::Trade");
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let (path, renamed_text) = (lib.clone(), renamed.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/rename" => answers::whole_file(&path, before, &renamed_text),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_rename",
+        serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 12, "new_name": "Trade", "comments": true }),
+    )
+    .await
+    .expect("the rename runs");
+    let text = text_of(&result);
+    assert!(!result.is_error, "{text}");
+    assert!(
+        text.contains("in comments: 1 mention(s) of the old name replaced"),
+        "{text}"
+    );
+    assert!(
+        text.contains("test renamed: `order_is_priced` -> `trade_is_priced`"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        "/// An `Trade` is priced once.\npub struct Trade;\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn trade_is_priced() {\n        let _ = super::Trade;\n    }\n}\n"
+    );
+}
+
 /// A rename to a name already declared in the same scope is a second definition, not a
 /// rename, and the analyzer computes it without complaint (#98). The result is checked before
 /// it is written: refused with the error, and written only with `force`, which says so.

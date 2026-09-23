@@ -251,6 +251,9 @@ enum Commands {
         /// At a field: rename its accessors too (`f()`, `get_f()`, `set_f()`, `f_mut()`).
         #[arg(long, default_value_t = false)]
         accessors: bool,
+        /// Also rename the old name in comments and in the names of tests that exercise it.
+        #[arg(long, default_value_t = false)]
+        comments: bool,
         /// Write the rename even when the result does not compile.
         #[arg(long, default_value_t = false)]
         force: bool,
@@ -1080,8 +1083,14 @@ async fn main() -> Result<()> {
             col,
             new_name,
             accessors,
+            comments,
             force,
-        } => run_rename(remote, &file, line, col, &new_name, accessors, force).await,
+        } => {
+            run_rename(
+                remote, &file, line, col, &new_name, accessors, comments, force,
+            )
+            .await
+        }
         Commands::SafeDelete { file, line, col } => run_safe_delete(remote, &file, line, col).await,
         Commands::Assists {
             file,
@@ -2938,6 +2947,7 @@ async fn run_assist(
 }
 
 /// Rename a symbol through the remote analyzer and apply the resulting edits to the checkout.
+#[allow(clippy::too_many_arguments)]
 async fn run_rename(
     remote: SocketAddr,
     file: &Path,
@@ -2945,6 +2955,7 @@ async fn run_rename(
     col: u32,
     new_name: &str,
     accessors: bool,
+    comments: bool,
     force: bool,
 ) -> Result<()> {
     // The same path as the MCP tool, so the CLI gets the same check before writing (#98).
@@ -2958,6 +2969,7 @@ async fn run_rename(
         "character": col,
         "new_name": new_name,
         "accessors": accessors,
+        "comments": comments,
         "force": force,
     });
     let result = prod_code_mcp::tools::execute_tool(remote, &ws_root, "code_rename", args).await?;
