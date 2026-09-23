@@ -1579,3 +1579,135 @@ async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
     assert!(text.contains("nothing was written"), "{text}");
     assert!(ws.read("src/lib.rs").contains("let cap = 64 * 1024;"));
 }
+
+/// The CLI finds a declaration by name, gives a file's outline under its own name, and takes a
+/// name instead of a position — what the MCP tools already did (#93).
+#[tokio::test]
+async fn cli_finds_by_name_outlines_a_file_and_takes_a_symbol_for_a_position() {
+    let ws = make_workspace();
+    let path = ws.path("src/lib.rs");
+    let p = path.clone();
+    let gw = MockGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([answers::symbol("calculate", 12, &p, 5, 8)]),
+        "textDocument/references" => answers::locations(&p, &[(5, 8)]),
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("calculate", 12, 5, 7, 8)])
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let found = run_cli(&ws, gw.addr, &["symbols", "calculate"]).await;
+    assert!(found.status.success(), "{}", stderr_of(&found));
+    let text = stdout_of(&found);
+    assert!(
+        text.contains("calculate") && text.contains("src/lib.rs:5:8"),
+        "{text}"
+    );
+
+    let outline = run_cli(&ws, gw.addr, &["outline", "src/lib.rs"]).await;
+    assert!(outline.status.success());
+    assert!(stdout_of(&outline).contains("[Function] calculate (line 5)"));
+
+    let refs = run_cli(&ws, gw.addr, &["refs", "--symbol", "calculate"]).await;
+    assert!(refs.status.success(), "{}", stderr_of(&refs));
+    assert!(
+        stdout_of(&refs).contains("lib.rs:5"),
+        "{}",
+        stdout_of(&refs)
+    );
+
+    let neither = run_cli(&ws, gw.addr, &["refs"]).await;
+    assert!(
+        !neither.status.success(),
+        "a position or a symbol is required"
+    );
+}
+
+#[tokio::test]
+async fn cli_validates_several_files_together() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub mod other;\npub use other::VALUE;\n"),
+        ("src/other.rs", "pub const VALUE: u32 = 1;\n"),
+        (
+            "proposed_lib.rs",
+            "pub mod other;\npub use other::{VALUE, MORE};\n",
+        ),
+        (
+            "proposed_other.rs",
+            "pub const VALUE: u32 = 1;\npub const MORE: u32 = 2;\n",
+        ),
+    ]);
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--from",
+            "proposed_lib.rs",
+            "--with",
+            "src/other.rs=proposed_other.rs",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("src/lib.rs: 0 error(s)"), "{text}");
+    assert!(text.contains("src/other.rs: 0 error(s)"), "{text}");
+    assert!(stderr_of(&out).contains("2 file(s) analysed together"));
+
+    let bad = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--from",
+            "proposed_lib.rs",
+            "--with",
+            "no-equals-sign",
+        ],
+    )
+    .await;
+    assert!(!bad.status.success());
+    assert!(
+        stderr_of(&bad).contains("--with takes FILE=NEW"),
+        "{}",
+        stderr_of(&bad)
+    );
+}
+
+#[tokio::test]
+async fn every_subcommand_has_its_own_help_line() {
+    let ws = make_workspace();
+    let out = run_cli(&ws, "127.0.0.1:1".parse().unwrap(), &["--help"]).await;
+    let text = stdout_of(&out);
+    let line_of = |name: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+            .unwrap_or_default()
+            .to_string()
+    };
+    assert!(
+        line_of("change-signature").contains("Change what a function takes"),
+        "{text}"
+    );
+    assert!(
+        !line_of("migrate-type").contains("what a function takes"),
+        "{text}"
+    );
+    assert!(
+        line_of("outline").contains("declarations of a file"),
+        "{text}"
+    );
+}
