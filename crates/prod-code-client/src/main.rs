@@ -384,6 +384,26 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Turn an associated function into a method, with every call site.
+    ConvertToMethod {
+        /// The function by name (`Type::function`), or a file with `--line`.
+        symbol: String,
+        /// 1-based line, when the first argument is a file path.
+        #[arg(long)]
+        line: Option<u32>,
+        /// 1-based column of the function's name, with `--line`.
+        #[arg(long, default_value_t = 1)]
+        character: u32,
+        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        #[arg(long)]
+        verify: Option<String>,
+        /// Write the change instead of only reporting.
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Write even when the result does not compile.
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Turn a method that never uses `self` into an associated function, with every call site.
     MakeStatic {
         /// The method by name (`Type::method`), or a file with `--line`.
@@ -1010,6 +1030,28 @@ async fn main() -> Result<()> {
                 args["verify"] = serde_json::Value::String(verify);
             }
             run_tool(remote, "code_invert_boolean", args).await
+        }
+        Commands::ConvertToMethod {
+            symbol,
+            line,
+            character,
+            verify,
+            apply,
+            force,
+        } => {
+            let mut args = serde_json::json!({ "apply": apply, "force": force });
+            match line {
+                Some(line) => {
+                    args["path"] = serde_json::Value::String(symbol);
+                    args["line"] = serde_json::Value::from(line);
+                    args["character"] = serde_json::Value::from(character);
+                }
+                None => args["symbol"] = serde_json::Value::String(symbol),
+            }
+            if let Some(verify) = verify {
+                args["verify"] = serde_json::Value::String(verify);
+            }
+            run_tool(remote, "code_convert_to_method", args).await
         }
         Commands::MakeStatic {
             symbol,

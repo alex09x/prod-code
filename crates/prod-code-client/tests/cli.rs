@@ -1805,6 +1805,54 @@ async fn cli_makes_a_method_static_and_rewrites_its_call() {
 }
 
 #[tokio::test]
+async fn cli_converts_a_function_to_a_method_and_rewrites_its_call() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct S;\n\nimpl S {\n    pub fn one(s: &S) -> u32 {\n        let _ = s;\n        1\n    }\n}\n\npub fn f(s: &S) -> u32 {\n    S::one(s)\n}\n",
+        ),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let gw = MockGateway::start(move |method, params| {
+        let character = params
+            .pointer("/position/character")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        match method {
+            // The parameter `s` (4:16), then the function `one` (4:12).
+            "textDocument/references" if character == 15 => answers::locations(&lib, &[(5, 17)]),
+            "textDocument/references" => answers::locations(&lib, &[(11, 8)]),
+            "textDocument/diagnostic" => serde_json::json!({ "kind": "full", "items": [] }),
+            _ => serde_json::Value::Null,
+        }
+    })
+    .await;
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "convert-to-method",
+            "src/lib.rs",
+            "--line",
+            "4",
+            "--character",
+            "12",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let text = stdout_of(&out);
+    assert!(text.contains("+    pub fn one(&self) -> u32 {"), "{text}");
+    assert!(text.contains("+        let _ = self;"), "{text}");
+    assert!(text.contains("+    s.one()"), "{text}");
+    assert!(text.contains("nothing was written"), "{text}");
+}
+
+#[tokio::test]
 async fn cli_inverts_a_predicate_and_its_call() {
     let ws = Workspace::new(&[
         (

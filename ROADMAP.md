@@ -2,16 +2,16 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.2.2, 2026-09-23): 43 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — 542 tests, and every file a change touches held at or
+**Where it stands** (v0.2.2, 2026-09-23): 44 MCP tools, five nodes' worth of cluster reduced to
+four — three Linux and one macOS for Swift — 548 tests, and every file a change touches held at or
 above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
 **7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
 `code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
 the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
-`extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static`,
-`invert_boolean` and `generify`. `type_migration` writes the conversions the analyzer accepts
-(`convert`). What is still missing: `convert_to_method` (the other direction of `make_static`),
-and `invert_boolean` for `bool` fields and variables.
+`extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static` and
+`convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
+analyzer accepts (`convert`). What is still missing: `invert_boolean` for `bool` fields and
+variables.
 
 ---
 
@@ -291,7 +291,7 @@ and `invert_boolean` for `bool` fields and variables.
       - Enforces "Composition over Inheritance": wraps the base class in a private field and forwards inherited method calls.
     - *Not applicable as written* — Rust has no constructors; the useful half is generating a builder, which belongs with the generate assists. `refactor.replace_constructor_with_factory / builder(path, type_name)`:
       - Replaces raw struct instantiations with named static factory methods or a fluent builder pattern.
-    - [~] `refactor.make_static / convert_to_method(path, function_name)` — `make_static` shipped 2026-09-23 for Rust as `code_make_static` / `prod-code make-static <file> --line N --character C` (rust-analyzer offers nothing here): a method whose body never mentions `self` loses its receiver, `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument; a receiver that does something when evaluated (`load()?.method()`) is reported and blocks the write. The other direction, `convert_to_method`, is not built.
+    - [x] `refactor.make_static / convert_to_method(path, function_name)` — `make_static` shipped 2026-09-23 for Rust as `code_make_static` / `prod-code make-static <file> --line N --character C` (rust-analyzer offers nothing here): a method whose body never mentions `self` loses its receiver, `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument; a receiver that does something when evaluated (`load()?.method()`) is reported and blocks the write. The other direction shipped the same day (#120) as `code_convert_to_method` / `prod-code convert-to-method <file> --line N --character C` (rust-analyzer offers only `destructure_struct_binding` at the parameter): an associated function whose first parameter is the `impl`'s own type (`T`, `&T`, `&mut T`, `Self`) gets that parameter as its receiver, the parameter's uses in the body — as the analyzer resolves them — become `self`, and `Type::f(&mut x, a)` becomes `x.f(a)`. The function used as a value and a call inside the function itself stay as they are, valid through the path; a trait impl's function and a free function are refused.
       - Converts receiver-independent methods to static functions (or vice-versa), adjusting all call sites (`x.foo()` <-> `Type::foo(x)`).
 
   - **7.1.4. Data Flow & Advanced Type-System Refactorings**:

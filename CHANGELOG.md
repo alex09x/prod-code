@@ -133,6 +133,16 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- Convert a function to a method (roadmap 7.1.3, #120): `code_convert_to_method` (MCP) and
+  `prod-code convert-to-method <file> --line N --character C`, the other direction of
+  `make_static`. An associated function whose first parameter is the `impl`'s own type (`T`,
+  `&T`, `&mut T`, `Self`) gets that parameter as its receiver (`self`, `&self`, `&mut self`);
+  the parameter's uses in the body, found through the analyzer, become `self`; and
+  `Type::f(&mut x, a)` becomes `x.f(a)`, the borrow dropped because method syntax takes it and
+  anything but a path or call chain parenthesized. The receiver is evaluated first, as the first
+  argument was, so nothing is reordered. The function used as a value and a call inside the
+  function itself stay as they are, still valid through the path. A trait impl's function and a
+  free function are refused. Type-checked in one overlay; `verify: "compile"` adds `cargo check`.
 - Type migration writes conversions (roadmap 7.1.4, #119): `code_migrate_type` takes `convert`,
   `prod-code migrate-type` takes `--convert`. At every site where the old and new types meet
   (an E0308 naming both, on one line) `.into()` is written — parenthesized unless the expression
