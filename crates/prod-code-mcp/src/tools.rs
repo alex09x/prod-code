@@ -61,7 +61,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "fix": { "type": "boolean", "description": "Rust: apply the machine-applicable fixes, then lint again (default false)" },
+                    "fix": { "type": "boolean", "description": "Apply the fixes, then lint again (default false): Rust takes clippy's machine-applicable suggestions; Python, TypeScript and C++ run the linter's own fix mode (`ruff check --fix`, `eslint --fix` / `biome lint --write`, `clang-tidy -fix`) on the node and bring the rewritten files back; Go's `go vet` has none" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),

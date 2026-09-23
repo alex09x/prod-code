@@ -69,6 +69,8 @@ struct Script {
     exec_stdout: Vec<u8>,
     exec_stderr: Vec<u8>,
     exec_exit: Option<i32>,
+    /// Files the command rewrote, sent back as the gateway does for a formatter.
+    exec_changes: Vec<prod_code_protocol::FileDelta>,
     search_hits: Vec<SearchHit>,
     shadow_results: Vec<ShadowHypothesisResult>,
     read_file: Option<Vec<u8>>,
@@ -81,6 +83,7 @@ impl Default for Script {
             exec_stdout: Vec::new(),
             exec_stderr: Vec::new(),
             exec_exit: Some(0),
+            exec_changes: Vec::new(),
             search_hits: Vec::new(),
             shadow_results: Vec::new(),
             read_file: Some(b"stub".to_vec()),
@@ -186,6 +189,13 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         .send(WireMessage::ExecChunk(ExecChunk {
                             stderr: true,
                             data: Some(script.exec_stderr.clone()),
+                        }))
+                        .await?;
+                }
+                if !script.exec_changes.is_empty() {
+                    framed
+                        .send(WireMessage::ExecChanges(prod_code_protocol::ExecChanges {
+                            files: script.exec_changes.clone(),
                         }))
                         .await?;
                 }
@@ -2378,4 +2388,51 @@ async fn code_impact_finds_a_test_by_its_attribute() {
     assert!(text.contains("1 test(s)"), "{text}");
     assert!(text.contains("• prices  src/lib.rs:8"), "{text}");
     assert!(text.contains("cargo test --workspace -- prices"), "{text}");
+}
+
+/// `code_lint` with `fix` on a Python project runs ruff's own fix mode on the node and brings
+/// the file it rewrote back into the checkout, then lints again (#205).
+#[tokio::test]
+async fn lint_fix_runs_the_linters_own_fix_mode_for_python() {
+    let ws = Workspace::new(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"shop\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "shop/pricing.py",
+            "import os\ndef price(q: int) -> int:\n    return q\n",
+        ),
+    ]);
+    let remote = mock_gateway(Script {
+        exec_stdout: b"shop/pricing.py:1:8: F401 [*] `os` imported but unused\n".to_vec(),
+        exec_exit: Some(1),
+        exec_changes: vec![prod_code_protocol::FileDelta {
+            relative_path: "shop/pricing.py".to_string(),
+            content: Some(b"def price(q: int) -> int:\n    return q\n".to_vec()),
+            is_executable: false,
+        }],
+        ..Script::default()
+    })
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_lint",
+        serde_json::json!({ "fix": true }),
+    )
+    .await
+    .expect("lint runs");
+    let text = text_of(&result);
+    assert!(text.contains("F401"), "{text}");
+    assert!(
+        text.contains("fixes: `ruff check . --fix --output-format concise` rewrote 1 file(s)"),
+        "{text}"
+    );
+    assert!(text.contains("  fixed shop/pricing.py\n"), "{text}");
+    assert!(text.contains("after the fixes:"), "{text}");
+    assert_eq!(
+        ws.read("shop/pricing.py"),
+        "def price(q: int) -> int:\n    return q\n"
+    );
 }

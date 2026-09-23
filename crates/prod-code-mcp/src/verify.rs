@@ -513,6 +513,60 @@ fn strs(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
+/// The shell script that runs clang-tidy over a C/C++ project's sources with the build's
+/// compilation database (configured first), with `-fix` when `fix`. A Make project has no
+/// database to give it, and is refused.
+fn clang_tidy_script(build: CppBuild, fix: bool) -> Result<String> {
+    let configure = match build {
+        CppBuild::CMake => "cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON >/dev/null",
+        CppBuild::Meson => "{ [ -d build ] || meson setup build >/dev/null; }",
+        CppBuild::Make => {
+            return Err(anyhow!(
+                "clang-tidy needs a compilation database, which a Make build does not write; \
+                 use CMake or Meson, or generate one with bear"
+            ));
+        }
+    };
+    Ok(format!(
+        "{configure} && find . -path ./build -prune -o \\( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \\) -print | xargs -r clang-tidy -p build --quiet{}",
+        if fix { " -fix" } else { "" }
+    ))
+}
+
+/// The command that applies a linter's own fixes in place, for `lint --fix` on a language
+/// whose linter has a fix mode: `ruff check --fix`, `eslint --fix`, `biome lint --write`,
+/// `clang-tidy -fix`. `None` when it has none (`go vet`), or for Rust, whose fixes are read
+/// from the compiler's JSON instead.
+pub fn fix_command(tools: &ProjectTools, language: &str) -> Result<Option<Vec<String>>> {
+    let pm = tools.package_manager;
+    Ok(Some(match language {
+        "python" => {
+            let mut c = if tools.python == PythonRuntime::Uv {
+                strs(&["uv", "run", "ruff"])
+            } else {
+                strs(&["ruff"])
+            };
+            c.extend(strs(&["check", ".", "--fix", "--output-format", "concise"]));
+            c
+        }
+        "typescript" => match tools.js_linter {
+            Some("eslint") => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["eslint", ".", "--fix", "-f", "unix"]));
+                c
+            }
+            Some("biome") => {
+                let mut c = strs(&pm.exec());
+                c.extend(strs(&["biome", "lint", "--write", "."]));
+                c
+            }
+            _ => return Ok(None),
+        },
+        "cpp" => strs(&["sh", "-c", &clang_tidy_script(tools.cpp, true)?]),
+        _ => return Ok(None),
+    }))
+}
+
 /// The command for `kind` in `language` given the checkout's detected tooling.
 pub fn plan_command_with(
     tools: &ProjectTools,
@@ -615,6 +669,7 @@ pub fn plan_command_with(
             }
             c
         }
+        ("cpp", VerifyKind::Lint) => strs(&["sh", "-c", &clang_tidy_script(tools.cpp, false)?]),
         ("cpp", VerifyKind::Check) => match tools.cpp {
             CppBuild::CMake => strs(&[
                 "sh",
@@ -2076,7 +2131,13 @@ expected 42, got 43\n\
                 .unwrap()
                 .ends_with(&["--filter".to_string(), "Foo".to_string()])
         );
-        assert!(plan_command("cpp", VerifyKind::Lint, None).is_err());
+        // C++ lints with clang-tidy since #205.
+        assert!(
+            plan_command("cpp", VerifyKind::Lint, None)
+                .unwrap()
+                .join(" ")
+                .contains("clang-tidy -p build")
+        );
     }
 
     #[test]
@@ -2173,5 +2234,49 @@ expected 42, got 43\n\
             "rust test: FAILED (exit 101) in 1.5s; 2 passed, 1 failed"
         );
         assert!(report.render(10).contains("--- FAILED a::bad ---\nboom"));
+    }
+
+    #[test]
+    fn each_linter_has_its_fix_mode_and_cpp_lints_with_clang_tidy() {
+        let mut tools = ProjectTools::default();
+        let py = fix_command(&tools, "python").unwrap().unwrap().join(" ");
+        assert_eq!(py, "ruff check . --fix --output-format concise");
+        assert!(fix_command(&tools, "go").unwrap().is_none());
+        assert!(fix_command(&tools, "rust").unwrap().is_none());
+        assert!(fix_command(&tools, "typescript").unwrap().is_none());
+        tools.js_linter = Some("eslint");
+        assert!(
+            fix_command(&tools, "typescript")
+                .unwrap()
+                .unwrap()
+                .join(" ")
+                .ends_with("eslint . --fix -f unix")
+        );
+        tools.js_linter = Some("biome");
+        assert!(
+            fix_command(&tools, "typescript")
+                .unwrap()
+                .unwrap()
+                .join(" ")
+                .ends_with("biome lint --write .")
+        );
+        let cpp = fix_command(&tools, "cpp").unwrap().unwrap().join(" ");
+        assert!(cpp.contains("clang-tidy -p build --quiet -fix"), "{cpp}");
+        let lint = plan_command_with(&tools, "cpp", VerifyKind::Lint, None)
+            .unwrap()
+            .join(" ");
+        assert!(
+            lint.contains("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON") && lint.ends_with("--quiet"),
+            "{lint}"
+        );
+        tools.cpp = CppBuild::Meson;
+        assert!(
+            plan_command_with(&tools, "cpp", VerifyKind::Lint, None)
+                .unwrap()
+                .join(" ")
+                .contains("meson setup build")
+        );
+        tools.cpp = CppBuild::Make;
+        assert!(plan_command_with(&tools, "cpp", VerifyKind::Lint, None).is_err());
     }
 }
