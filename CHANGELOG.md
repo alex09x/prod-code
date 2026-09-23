@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **extract_function no longer replaces a duplicate whose later code reads a shadowed name**
+  (#189). The selection binds `gross`, and the new function does not return it. Where the code
+  after a duplicate still reads `gross` and an outer `gross` exists, the call type-checked and
+  compiled, and the read silently took the outer value. A duplicate is now refused before any
+  type check when the code after it reads a name that the selection binds and the call does
+  not. The report names the variable.
 - **`move` no longer moves a module as a one-line item** (#188). On `mod b;` it cut the line,
   pasted it into a new file as `pub mod b;` and requalified callers to `c::b::b`. It now refuses
   and names `code_move_module`.

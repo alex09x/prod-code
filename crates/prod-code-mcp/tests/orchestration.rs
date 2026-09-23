@@ -3588,10 +3588,10 @@ async fn async_is_added_and_removed_with_every_await() {
     assert_eq!(ws.read("src/lib.rs"), LOAD);
 }
 
-const ORDERS: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net + 5\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n";
+const ORDERS: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net + 5\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n\npub fn other(o: &Other) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n";
 /// What rust-analyzer's `extract_function` makes of lines 8-9 of `ORDERS`: the new function goes
 /// after `invoice`, and its body repeats the selection.
-const ORDERS_EXTRACTED: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let net = fun_name(o);\n    net + 5\n}\n\nfn fun_name(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n";
+const ORDERS_EXTRACTED: &str = "pub struct Order {\n    pub qty: u32,\n    pub price: u32,\n    pub discount: u32,\n}\n\npub fn invoice(o: &Order) -> u32 {\n    let net = fun_name(o);\n    net + 5\n}\n\nfn fun_name(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn quote(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n      let net = gross - gross * o.discount / 100;\n    net\n}\n\npub fn audit(o: &Order) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    gross - net\n}\n\npub fn other(o: &Other) -> u32 {\n    let gross = o.qty * o.price;\n    let net = gross - gross * o.discount / 100;\n    net\n}\n";
 
 /// Extracting a function with its duplicates: `quote` has the same two lines (indented
 /// differently) and gets the same call; `audit` has them too, but reads `gross` afterwards, which
@@ -3627,6 +3627,15 @@ async fn an_extracted_function_replaces_the_duplicates_that_type_check() {
                 if this.contains("let net = net_price(o);\n    gross - net") {
                     items.push(mismatch("E0425", "no such value in this scope", 25, 4, 9));
                 }
+                if this.contains("fn other(o: &Other) -> u32 {\n    let net = net_price(o);") {
+                    items.push(mismatch(
+                        "E0308",
+                        "expected `&Order`, found `&Other`",
+                        27,
+                        24,
+                        25,
+                    ));
+                }
                 serde_json::json!({ "kind": "full", "items": items })
             }
             _ => serde_json::Value::Null,
@@ -3658,17 +3667,28 @@ async fn an_extracted_function_replaces_the_duplicates_that_type_check() {
         .collect();
     assert_eq!(
         lines,
-        vec![(14, true), (20, false)],
+        vec![(14, true), (20, false), (26, false)],
         "{:?}",
         done.duplicates
     );
+    // `audit` reads `gross` after the lines, and the new function does not return it: refused
+    // before any type check, whether or not an outer `gross` exists (#189).
     assert!(
         done.duplicates[1]
             .reason
             .as_deref()
-            .is_some_and(|r| r.contains("does not type-check") && r.contains("E0425")),
+            .is_some_and(|r| r.contains("reads `gross`")),
         "{:?}",
         done.duplicates[1]
+    );
+    // `other` passes an `&Other`: the analyzer rejects the call there.
+    assert!(
+        done.duplicates[2]
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("does not type-check") && r.contains("E0308")),
+        "{:?}",
+        done.duplicates[2]
     );
     assert_eq!(done.replaced(), 1);
     assert!(done.diagnostics.is_empty(), "{:?}", done.diagnostics);
