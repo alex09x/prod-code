@@ -155,13 +155,22 @@ fn set_aside_preexisting(
         .count();
 }
 
-/// Every symbol name in a `textDocument/documentSymbol` result (flat or hierarchical).
+/// LSP `SymbolKind::Variable`: rust-analyzer lists a function's `let` bindings under it.
+const SYMBOL_KIND_VARIABLE: u64 = 13;
+
+/// Every symbol name in a `textDocument/documentSymbol` result (flat or hierarchical) that
+/// another file could refer to. A local variable is listed too, and it is not one of them: a
+/// `let edit` removed from one function is not what another file's `let edit` names (#136).
 fn symbol_names(result: &serde_json::Value) -> BTreeSet<String> {
     fn walk(value: &serde_json::Value, out: &mut BTreeSet<String>) {
         match value {
             serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
             serde_json::Value::Object(map) => {
-                if let Some(name) = map.get("name").and_then(|n| n.as_str()) {
+                let is_local =
+                    map.get("kind").and_then(|k| k.as_u64()) == Some(SYMBOL_KIND_VARIABLE);
+                if let Some(name) = map.get("name").and_then(|n| n.as_str())
+                    && !is_local
+                {
                     out.insert(name.to_string());
                 }
                 if let Some(children) = map.get("children") {
@@ -580,6 +589,17 @@ mod tests {
             { "name": "Outer", "kind": 23, "children": [ { "name": "inner", "kind": 6 } ] }
         ]);
         assert!(symbol_names(&tree).contains("inner"));
+        // A function's `let` bindings are listed as variables and are nobody else's to use.
+        let with_locals = serde_json::json!([
+            { "name": "run_safe_delete", "kind": 12, "children": [
+                { "name": "edit", "kind": 13 }, { "name": "touched", "kind": 13 }
+            ] },
+            { "name": "LIMIT", "kind": 14 }
+        ]);
+        assert_eq!(
+            symbol_names(&with_locals).into_iter().collect::<Vec<_>>(),
+            vec!["LIMIT".to_string(), "run_safe_delete".to_string()]
+        );
     }
 
     #[test]
