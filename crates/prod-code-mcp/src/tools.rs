@@ -416,6 +416,27 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_function".to_string(),
+            description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the selection" },
+                    "line": { "type": "integer", "description": "1-based line where the selection starts" },
+                    "character": { "type": "integer", "description": "1-based column where the selection starts" },
+                    "end_line": { "type": "integer", "description": "1-based line where the selection ends" },
+                    "end_character": { "type": "integer", "description": "1-based column just past the selection" },
+                    "name": { "type": "string", "description": "Name of the new function" },
+                    "duplicates": { "type": "boolean", "description": "Also replace the other places in the file with the same code (default true)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it (always done when a duplicate is replaced)" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                },
+                "required": ["path", "line", "character", "end_line", "end_character", "name"]
+            }),
+        },
+        McpTool {
             name: "code_introduce_variable".to_string(),
             description: "Introduce a variable for an expression and replace every occurrence of it in the enclosing function, not only the selected one: `(w + 1)` three times becomes `let w1 = w + 1;` above the first and `w1` at each place. Give the selection (`line`/`character` to `end_line`/`end_character`) and `name`. Refused when evaluating once is not the same as evaluating at each place: the expression calls something, expands a macro, uses `?` or awaits, or a name it reads is assigned, mutably borrowed or rebound between the first occurrence and the last (or in a loop that runs a later one again). For one occurrence of such an expression use `code_assist` with `extract_variable`. Type-checked in one overlay before anything is written. Rust only."
                 .to_string(),
@@ -1018,6 +1039,7 @@ pub async fn execute_tool(
         "code_make_static" => handle_make_static(remote, workspace_root, &args).await,
         "code_inline_parameter" => handle_inline_parameter(remote, workspace_root, &args).await,
         "code_introduce_variable" => handle_introduce_variable(remote, workspace_root, &args).await,
+        "code_extract_function" => handle_extract_function(remote, workspace_root, &args).await,
         "code_loop_to_iterator" => {
             let path_str = args
                 .get("path")
@@ -2266,6 +2288,79 @@ async fn handle_extract_trait(
     .await?;
     let text = done.render();
     Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_extract_function(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let name = args
+        .get("name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'name' argument")?;
+    let num = |key: &str| -> Result<u32> {
+        args.get(key)
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let duplicates = args
+        .get("duplicates")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let mut done = crate::extract_function::extract_function(
+        remote,
+        workspace_root,
+        &file_path,
+        (num("line")?, num("character")?),
+        (num("end_line")?, num("end_character")?),
+        name,
+        duplicates,
+    )
+    .await?;
+    // rust-analyzer does not check borrows: a duplicate whose call moves a value the code after
+    // it still uses type-checks and does not compile. So the compiler sees any such result.
+    let verify =
+        args.get("verify").and_then(|v| v.as_str()) == Some("compile") || done.replaced() > 0;
+    let gate = if verify {
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &done.rewritten,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        if apply {
+            done.write(force)?;
+        }
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render();
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)

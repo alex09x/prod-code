@@ -9,6 +9,7 @@ pub mod encapsulate_field;
 pub mod exec;
 pub mod extract_delegate;
 pub mod extract_field;
+pub mod extract_function;
 pub mod extract_parameter;
 pub mod extract_trait;
 pub mod fixit;
