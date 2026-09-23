@@ -36,7 +36,7 @@ on the laptop:
 | tool call over a persistent session | ~10 ms |
 | a one-shot CLI command from the laptop, end to end (`prod-code hover …`) | ~0.1 s |
 | `cargo clippy --workspace --all-targets` on a 32-core node, one file changed | 1 s |
-| `cargo test --workspace` — 500 tests | 5 min |
+| `cargo test --workspace` — 517 tests | 5 min |
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
