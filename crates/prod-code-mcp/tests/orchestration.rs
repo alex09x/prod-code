@@ -4020,3 +4020,54 @@ async fn a_method_moves_to_the_type_of_its_parameter() {
     );
     assert!(forced.render(20_000).contains("[applied]"));
 }
+
+const AF_LIB: &str = "pub mod tax;\n\npub struct Order {\n    pub total: u32,\n}\n\nimpl Order {\n    pub fn new(total: u32) -> Self {\n        Order { total }\n    }\n}\n\npub fn free() -> u32 {\n    let make = crate::tax::Tax::zero;\n    tax::Tax::zero().rate + make().rate\n}\n";
+const AF_TAX: &str = "pub struct Tax {\n    pub rate: u32,\n}\n\nimpl Tax {\n    pub fn zero() -> Self {\n        Self { rate: 0 }\n    }\n}\n";
+
+/// Moving the associated function `Tax::zero` to `Order`: the type is found by name, `Self` in
+/// it is spelled `crate::tax::Tax`, it joins `impl Order`, the `impl Tax` it leaves empty goes,
+/// and both paths to it (a call and a use as a value) name `Order`.
+#[tokio::test]
+async fn an_associated_function_moves_to_a_named_type() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"af\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(&ws, "src/lib.rs", AF_LIB);
+    let tax = write(&ws, "src/tax.rs", AF_TAX);
+    commit(&ws);
+    let l = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([{
+            "name": "Order", "kind": 23,
+            "location": { "uri": format!("file://{}", l.display()),
+                "range": { "start": { "line": 2, "character": 11 }, "end": { "line": 2, "character": 16 } } }
+        }]),
+        "textDocument/references" => answers::locations(&l, &[(14, 33), (15, 15)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let done = prod_code_mcp::move_method::move_associated_function(
+        remote, &root, &tax, 6, 12, "Order", true, false,
+    )
+    .await
+    .expect("it moves");
+    assert!(done.applied, "{}", done.render(20_000));
+    assert_eq!(done.signature, "fn zero() -> crate::tax::Tax");
+    assert_eq!(done.calls, 2);
+    assert_eq!(
+        ws.read("src/tax.rs"),
+        "pub struct Tax {\n    pub rate: u32,\n}\n"
+    );
+    let now = ws.read("src/lib.rs");
+    assert!(
+        now.contains("    }\n\n    pub fn zero() -> crate::tax::Tax {\n        crate::tax::Tax { rate: 0 }\n    }\n}\n"),
+        "{now}"
+    );
+    assert!(now.contains("let make = Order::zero;"), "{now}");
+    assert!(now.contains("Order::zero().rate + make().rate"), "{now}");
+}
