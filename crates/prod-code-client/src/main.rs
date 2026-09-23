@@ -373,6 +373,10 @@ enum Commands {
         /// Only look under this directory.
         #[arg(long)]
         path: Option<String>,
+        /// Another repository to rename in as part of the same change (repeatable): each is
+        /// checked by its own analyzers, and `--apply` writes all of them or none.
+        #[arg(long = "repo", value_name = "PATH")]
+        repos: Vec<String>,
         /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
         /// only if the compiler accepts it too. Seconds rather than milliseconds.
         #[arg(long)]
@@ -1347,10 +1351,11 @@ async fn main() -> Result<()> {
             field,
             to,
             path,
+            repos,
             verify,
             apply,
             force,
-        } => run_schema_rename_cli(remote, field, to, path, verify, apply, force).await,
+        } => run_schema_rename_cli(remote, field, to, path, repos, verify, apply, force).await,
         Commands::MigrateType {
             symbol,
             to,
@@ -3499,11 +3504,13 @@ async fn run_fixture_cli(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_schema_rename_cli(
     remote: SocketAddr,
     field: String,
     to: String,
     path: Option<String>,
+    repos: Vec<String>,
     verify: Option<String>,
     apply: bool,
     force: bool,
@@ -3513,6 +3520,14 @@ async fn run_schema_rename_cli(
     let mut args = serde_json::json!({ "field": field, "to": to, "apply": apply, "force": force });
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if !repos.is_empty() {
+        // Relative to where the command was typed, as a shell user means it.
+        let repos = repos
+            .iter()
+            .map(|r| cwd.join(r).to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        args["repos"] = serde_json::json!(repos);
     }
     if let Some(verify) = verify {
         args["verify"] = serde_json::Value::String(verify);

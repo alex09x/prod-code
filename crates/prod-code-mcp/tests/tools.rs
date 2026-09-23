@@ -393,6 +393,26 @@ async fn code_schema_rename_requires_field_and_to() {
     .await
     .expect_err("to is required");
     assert!(format!("{err:#}").contains("Missing 'to' argument"));
+
+    // `repos` is a list of readable paths, and it does not mix with `path` or `verify`.
+    for (repos, extra, expected) in [
+        (serde_json::json!("../frontend"), "", "a list of paths"),
+        (serde_json::json!([1]), "", "repos takes paths"),
+        (serde_json::json!(["no-such-repo"]), "", "cannot be read"),
+        (serde_json::json!(["."]), "path", "drop them"),
+        (serde_json::json!(["."]), "verify", "drop them"),
+    ] {
+        let mut args = serde_json::json!({ "field": "order_id", "to": "trade_id", "repos": repos });
+        match extra {
+            "path" => args["path"] = serde_json::json!("src"),
+            "verify" => args["verify"] = serde_json::json!("compile"),
+            _ => {}
+        }
+        let err = execute_tool(nowhere(), &ws.root(), "code_schema_rename", args)
+            .await
+            .expect_err("a bad `repos` is refused");
+        assert!(format!("{err:#}").contains(expected), "{expected}: {err:#}");
+    }
 }
 
 #[tokio::test]

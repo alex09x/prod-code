@@ -345,6 +345,155 @@ async fn apply_is_what_writes_and_it_writes_everything_at_once() {
     );
 }
 
+/// An OpenAPI document and a GraphQL schema are rewritten where the field is, and the prose
+/// that mentions it (a description, a comment, a `"""` block) is listed instead.
+#[tokio::test]
+async fn openapi_and_graphql_rewrite_the_field_and_list_the_prose() {
+    let ws = workspace();
+    let root = ws.root();
+    let api = write(
+        &ws,
+        "api/openapi.yaml",
+        "openapi: 3.0.3\ncomponents:\n  schemas:\n    Order:\n      required: [order_id]\n      properties:\n        order_id:\n          type: string\n          description: Copied from the order_id column.\n",
+    );
+    let gql = write(
+        &ws,
+        "api/schema.graphql",
+        "\"\"\"\nAn order. orderId is unique.\n\"\"\"\ntype Order {\n  orderId: ID! # was order_id\n}\n",
+    );
+    commit(&ws);
+
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let done =
+        prod_code_mcp::schema::rename(remote, &root, "order_id", "trade_id", true, false, None)
+            .await
+            .expect("the rename runs");
+    assert!(done.applied);
+    assert_eq!(
+        std::fs::read_to_string(&api).unwrap(),
+        "openapi: 3.0.3\ncomponents:\n  schemas:\n    Order:\n      required: [trade_id]\n      properties:\n        trade_id:\n          type: string\n          description: Copied from the order_id column.\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&gql).unwrap(),
+        "\"\"\"\nAn order. orderId is unique.\n\"\"\"\ntype Order {\n  tradeId: ID! # was order_id\n}\n"
+    );
+    let left = done.left.join("\n");
+    assert!(
+        left.contains("api/openapi.yaml:9:40 `order_id` (prose in the OpenAPI document"),
+        "{left}"
+    );
+    assert!(
+        left.contains("api/schema.graphql:2:11 `orderId` (a GraphQL comment or description)"),
+        "{left}"
+    );
+    assert!(
+        left.contains("api/schema.graphql:5:22 `order_id`"),
+        "{left}"
+    );
+    let summary = done.summary.join("\n");
+    assert!(
+        summary.contains(
+            "openapi: 3 occurrence(s) found, 0 renamed by the analyzer, 2 rewritten as text, 1 left alone"
+        ),
+        "{summary}"
+    );
+    assert!(
+        summary.contains(
+            "graphql: 3 occurrence(s) found, 0 renamed by the analyzer, 1 rewritten as text, 2 left alone"
+        ),
+        "{summary}"
+    );
+}
+
+/// Two repositories, one change: the backend's proto and the frontend's GraphQL schema are
+/// written together. When the second cannot be written, the first is put back, and a
+/// repository the field is not in is named.
+#[tokio::test]
+async fn a_rename_across_repositories_is_written_in_all_or_none() {
+    let backend = workspace();
+    let frontend = workspace();
+    let elsewhere = workspace();
+    let proto = write(&backend, "schema/order.proto", PROTO);
+    let gql = write(
+        &frontend,
+        "src/schema.graphql",
+        "type Order {\n  orderId: ID!\n}\n",
+    );
+    write(&elsewhere, "README.md", "nothing here\n");
+    for ws in [&backend, &frontend, &elsewhere] {
+        commit(ws);
+    }
+    let remote = scripted_gateway(Arc::new(move |method, _params| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let roots = vec![backend.root(), frontend.root(), elsewhere.root()];
+
+    // The second repository cannot be written: the first is put back.
+    let writable = std::fs::metadata(&gql).unwrap().permissions();
+    let mut readonly = writable.clone();
+    readonly.set_readonly(true);
+    std::fs::set_permissions(&gql, readonly).unwrap();
+    let err =
+        prod_code_mcp::schema::rename_across(remote, &roots, "order_id", "trade_id", true, false)
+            .await
+            .expect_err("a repository that cannot be written stops the change");
+    assert!(format!("{err:#}").contains("put back"), "{err:#}");
+    assert_eq!(std::fs::read_to_string(&proto).unwrap(), PROTO);
+    std::fs::set_permissions(&gql, writable).unwrap();
+
+    let plan =
+        prod_code_mcp::schema::rename_across(remote, &roots, "order_id", "trade_id", false, false)
+            .await
+            .expect("the plan runs");
+    assert!(!plan.applied && plan.clean());
+    assert_eq!(plan.repos.len(), 2);
+    assert_eq!(plan.missing, vec![elsewhere.root()]);
+    let text = plan.render(6000);
+    assert!(text.contains("the field does not appear here"), "{text}");
+    assert!(text.contains("writes them all or none"), "{text}");
+    assert_eq!(std::fs::read_to_string(&proto).unwrap(), PROTO);
+
+    let done =
+        prod_code_mcp::schema::rename_across(remote, &roots, "order_id", "trade_id", true, false)
+            .await
+            .expect("the rename runs");
+    assert!(done.applied);
+    assert!(
+        done.render(6000)
+            .contains("[applied to 2 repositories together]")
+    );
+    assert_eq!(
+        std::fs::read_to_string(&proto).unwrap(),
+        "message Order {\n  string trade_id = 1;\n}\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&gql).unwrap(),
+        "type Order {\n  tradeId: ID!\n}\n"
+    );
+
+    let none = prod_code_mcp::schema::rename_across(
+        remote,
+        &[elsewhere.root()],
+        "order_id",
+        "trade_id",
+        false,
+        false,
+    )
+    .await
+    .expect_err("a field that is nowhere is refused");
+    assert!(
+        format!("{none}").contains("does not appear in any"),
+        "{none}"
+    );
+}
+
 /// A result the analyzer rejects is not written, and the errors are what comes back.
 #[tokio::test]
 async fn a_rename_that_does_not_compile_is_not_written() {
