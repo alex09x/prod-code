@@ -1469,16 +1469,23 @@ pub async fn outline_directory(
     let read_dir = std::fs::read_dir(dir_path)
         .with_context(|| format!("Failed to read directory {:?}", dir_path))?;
     let mut entries = Vec::new();
+    let mut skipped = 0usize;
     for entry in read_dir.flatten() {
-        if entry.path().is_file() {
+        if !entry.path().is_file() {
+            continue;
+        }
+        // Only source files a language server outlines: a manifest or a README is not asked
+        // for, since a server that was handed one could answer with a made-up outline (#247).
+        if crate::sync::engine_for_file(&entry.path()).is_some() {
             entries.push(entry);
+        } else {
+            skipped += 1;
         }
     }
     entries.sort_by_key(|e| e.file_name());
 
     let mut blocks = Vec::new();
     let mut outlined = 0usize;
-    let mut skipped = 0usize;
 
     for entry in entries {
         let entry_file = entry.path();

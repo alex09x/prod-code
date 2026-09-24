@@ -1116,6 +1116,9 @@ async fn code_outline_outlines_a_directory_skipping_files_it_cannot_outline() {
                 serde_json::json!([answers::document_symbol("alpha", 12, 1, 1, 15)])
             } else if uri.ends_with("b.rs") {
                 serde_json::json!([answers::document_symbol("beta", 12, 1, 1, 14)])
+            } else if uri.ends_with("README.md") {
+                // What rust-analyzer answered for Markdown it had parsed as Rust (#247).
+                serde_json::json!([answers::document_symbol("or", 11, 80, 80, 13)])
             } else {
                 serde_json::Value::Null
             }
