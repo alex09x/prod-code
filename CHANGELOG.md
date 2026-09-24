@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **impact asks a cold language server again before it reports no callers** (#202). A Python
+  server that had just started answered the call hierarchy with nothing, and `impact` said "none
+  reach the changed functions", so an agent would skip the tests. For every language but Rust, an
+  empty answer for the first changed function is asked again up to three times, 800 ms apart,
+  before it is believed. rust-analyzer answers from a database that is already loaded.
 - **exec, check, lint and test name the platform they ran on, and warn when a write-back may be
   wrong here** (#140). A `clippy --fix` on a Linux node rewrote `&mut win` to `&win` for
   `libc::openpty`, whose Apple signature takes `*mut`, and the checkout stopped building on
