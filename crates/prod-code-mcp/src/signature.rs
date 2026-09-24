@@ -1164,18 +1164,33 @@ pub(crate) async fn references(
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
         .to_string();
-    let res = crate::tools::execute_lsp_query(
-        remote,
-        root,
-        file,
-        "textDocument/references",
-        serde_json::json!({
-            "textDocument": { "uri": uri },
-            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
-            "context": { "includeDeclaration": false },
-        }),
-    )
-    .await?;
+    let params = serde_json::json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        "context": { "includeDeclaration": false },
+    });
+    let ask = || {
+        crate::tools::execute_lsp_query(
+            remote,
+            root,
+            file,
+            "textDocument/references",
+            params.clone(),
+        )
+    };
+    let mut res = ask().await?;
+    // A language server still reading the project answers with no references, and a signature
+    // refactoring would take that for "no callers" and leave every call site behind (#284).
+    // rust-analyzer answers from a database that is already loaded.
+    if crate::sync::engine_for_file(file) != Some("rust") {
+        for _ in 0..crate::impact::COLD_RETRIES {
+            if res.as_array().is_some_and(|refs| !refs.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(crate::impact::COLD_WAIT).await;
+            res = ask().await?;
+        }
+    }
     let mut out = Vec::new();
     for loc in res.as_array().into_iter().flatten() {
         let Some(uri) = loc.get("uri").and_then(|u| u.as_str()) else {
@@ -1224,6 +1239,48 @@ fn normalize(list: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A language server that answers "no references" while it reads the project is asked
+    /// again before the answer is believed; rust-analyzer is believed at once (#284).
+    #[tokio::test]
+    async fn an_empty_answer_from_a_cold_server_is_asked_again() {
+        let ws = prod_code_testkit::Workspace::new(&[
+            ("pricing.py", "def price(qty):\n    return qty\n"),
+            ("lib.rs", "pub fn price() {}\n"),
+        ]);
+        let root_buf = ws.root();
+        let root = root_buf.as_path();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = std::sync::Arc::clone(&asked);
+        let caller = root.join("cart.py");
+        let gateway = prod_code_testkit::ScriptedGateway::start(move |method, _| {
+            if method != "textDocument/references" {
+                return serde_json::Value::Null;
+            }
+            // Empty for the first two questions, as a server still indexing answers.
+            if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                return serde_json::json!([]);
+            }
+            serde_json::json!([{
+                "uri": url::Url::from_file_path(&caller).unwrap().to_string(),
+                "range": { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 16 } }
+            }])
+        })
+        .await;
+        let refs = references(gateway.addr(), root, &root.join("pricing.py"), 1, 5)
+            .await
+            .unwrap();
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!((refs[0].1, refs[0].2), (5, 12));
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+        asked.store(0, std::sync::atomic::Ordering::SeqCst);
+        let refs = references(gateway.addr(), root, &root.join("lib.rs"), 1, 8)
+            .await
+            .unwrap();
+        assert!(refs.is_empty());
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn a_parameter_is_found_with_its_function_and_the_ones_that_stay() {
