@@ -1098,6 +1098,54 @@ async fn code_outline_lists_symbols_and_hides_locals_by_default() {
 }
 
 #[tokio::test]
+async fn code_outline_outlines_a_directory_skipping_files_it_cannot_outline() {
+    let ws = workspace();
+    write(&ws, "src/pkg/a.rs", "pub fn alpha() {}\n");
+    write(&ws, "src/pkg/b.rs", "pub fn beta() {}\n");
+    write(&ws, "src/pkg/README.md", "# Package\nDocs.\n");
+    commit(&ws);
+
+    let remote = scripted_gateway(Arc::new(|method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .get("textDocument")
+                .and_then(|t| t.get("uri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            if uri.ends_with("a.rs") {
+                serde_json::json!([answers::document_symbol("alpha", 12, 1, 1, 15)])
+            } else if uri.ends_with("b.rs") {
+                serde_json::json!([answers::document_symbol("beta", 12, 1, 1, 14)])
+            } else if uri.ends_with("README.md") {
+                // What rust-analyzer answered for Markdown it had parsed as Rust (#247).
+                serde_json::json!([answers::document_symbol("or", 11, 80, 80, 13)])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "src/pkg" }),
+    )
+    .await
+    .expect("the outline runs");
+
+    let text = text_of(&result);
+    assert!(text.contains("Outline for src/pkg/a.rs:"), "{text}");
+    assert!(text.contains("[Function] alpha (line 1)"), "{text}");
+    assert!(text.contains("Outline for src/pkg/b.rs:"), "{text}");
+    assert!(text.contains("[Function] beta (line 1)"), "{text}");
+    assert!(!text.contains("README"), "{text}");
+    assert!(text.contains("2 file(s) outlined, 1 skipped"), "{text}");
+}
+
+#[tokio::test]
 async fn code_hover_and_type_at_render_markdown_or_say_there_is_none() {
     let ws = workspace();
     write(&ws, "src/lib.rs", "pub fn a() {}\n");

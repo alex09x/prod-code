@@ -1702,6 +1702,37 @@ async fn cli_finds_by_name_outlines_a_file_and_takes_a_symbol_for_a_position() {
 }
 
 #[tokio::test]
+async fn cli_outlines_a_directory_and_exits_zero() {
+    let ws = make_workspace();
+    ws.write("src/other.rs", "pub fn other() {}\n");
+    ws.write("src/README.md", "# Module docs\n");
+    let gw = MockGateway::start(|method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .get("textDocument")
+                .and_then(|t| t.get("uri"))
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            if uri.ends_with("lib.rs") || uri.ends_with("other.rs") {
+                serde_json::json!([answers::document_symbol("calculate", 12, 5, 7, 8)])
+            } else {
+                serde_json::Value::Null
+            }
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(&ws, gw.addr, &["outline", "src"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("Outline for src/lib.rs:"), "{stdout}");
+    assert!(stdout.contains("Outline for src/other.rs:"), "{stdout}");
+    assert!(stdout.contains("[Function] calculate (line 5)"), "{stdout}");
+    assert!(stdout.contains("2 file(s) outlined, 1 skipped"), "{stdout}");
+}
+
+#[tokio::test]
 async fn cli_validates_several_files_together() {
     let ws = Workspace::new(&[
         (
