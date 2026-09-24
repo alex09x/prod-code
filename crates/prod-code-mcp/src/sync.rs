@@ -69,9 +69,11 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     let root_engine = expected_engine(root);
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let mut dir = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
+    let file = dir.is_file().then(|| dir.clone());
     if dir.is_file() {
         dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
     }
+    let file_dir = dir.clone();
     while dir.starts_with(&canonical_root) && dir != canonical_root {
         if let Some(engine) = expected_engine(&dir) {
             // Same language is not the same project. A Cargo workspace answers for its
@@ -97,7 +99,40 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
             None => break,
         }
     }
+    // A loose file of another language, in a directory no project of its own claims (a
+    // Python script in a Rust repository), is served by its own language's engine rooted at
+    // its directory, not by the root's analyzer, which has no answer for it (#247). A file at
+    // the root itself stays with the root: its engine cannot be keyed apart from the root's.
+    if let Some(own) = file.as_deref().and_then(engine_for_file)
+        && Some(own) != root_engine
+        && let Some(rel) = file_dir
+            .strip_prefix(&canonical_root)
+            .ok()
+            .map(|r| {
+                r.components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            })
+            .filter(|r| !r.is_empty())
+    {
+        return (Some(rel), Some(own));
+    }
     (None, root_engine)
+}
+
+/// The engine a source file's extension names, when it names one.
+pub fn engine_for_file(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "rs" => "rust",
+        "go" => "go",
+        "py" | "pyi" => "python",
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
+        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" => "cpp",
+        "swift" => "swift",
+        _ => return None,
+    })
 }
 
 /// Is `dir` a Cargo crate that the workspace at `root` does not own?
@@ -1527,6 +1562,44 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A loose file of another language than the checkout's goes to its own language's engine,
+    /// rooted at its directory; a file of the root's language, or one at the root, stays (#247).
+    #[test]
+    fn a_loose_file_of_another_language_is_served_by_its_own_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("scripts/tools")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::write(root.join("scripts/tools/cover.py"), "def f(): pass\n").unwrap();
+        std::fs::write(root.join("setup.py"), "").unwrap();
+        std::fs::write(root.join("scripts/notes.md"), "").unwrap();
+        assert_eq!(
+            engine_project(root, &root.join("scripts/tools/cover.py")),
+            (Some("scripts/tools".to_string()), Some("python"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("src/lib.rs")),
+            (None, Some("rust"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("setup.py")),
+            (None, Some("rust"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("scripts/notes.md")),
+            (None, Some("rust"))
+        );
+        assert_eq!(engine_for_file(Path::new("a.TSX")), Some("typescript"));
+        assert_eq!(engine_for_file(Path::new("a.hpp")), Some("cpp"));
+        assert_eq!(engine_for_file(Path::new("Makefile")), None);
+    }
 
     #[test]
     fn test_scan_workspace_files() {

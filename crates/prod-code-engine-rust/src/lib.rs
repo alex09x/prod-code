@@ -282,6 +282,11 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
     components.into_iter().collect()
 }
 
+/// Whether `path` is a Rust source file by its extension.
+fn is_rust_source(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "rs")
+}
+
 /// Functions to infer, dealt out to threads, each share with its own snapshot. Made by
 /// [`RustEngine::priming_job`]; see there.
 pub struct PrimingJob {
@@ -1299,6 +1304,11 @@ impl RustEngineSnapshot {
 
     /// Generate outline / document symbols for a file.
     pub fn document_symbols(&self, path: &Path) -> Result<Vec<SymbolTarget>> {
+        anyhow::ensure!(
+            is_rust_source(path),
+            "{} is not a Rust file, and no language server of this workspace outlines it",
+            path.display()
+        );
         let file_id = self
             .file_id_for_path(path)
             .with_context(|| format!("File not found in VFS: {:?}", path))?;
@@ -1915,6 +1925,12 @@ impl RustEngine {
 
     /// Single-owner fast path: Apply live buffer edits directly into Salsa DB in memory.
     pub fn apply_file_change(&mut self, path: &Path, new_text: String) -> Result<()> {
+        // A file rust-analyzer does not know and that is not Rust (a README a client opened,
+        // a Python script) would be added as a new Rust file and parsed as one: its outline
+        // came back as `[Interface] or` from Markdown prose (#247). It is left out.
+        if !is_rust_source(path) && self.file_id_for_path(path).is_none() {
+            return Ok(());
+        }
         let norm = normalize_vfs_path(path, &self.workspace_root);
         let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
         let (file_id, is_new) = if let Some(fid) = self.file_id_for_path(path) {
@@ -2204,6 +2220,28 @@ impl PathTranslator {
         assert_eq!(engine.priming_job(&[unknown.as_path()]).threads(), 0);
         // The diagnostics that follow find the work done.
         assert!(engine.diagnostics(&lib_path).is_ok());
+    }
+
+    /// A file that is not Rust is neither added to the database when a client opens it nor
+    /// outlined as if it were (#247).
+    #[test]
+    fn a_file_that_is_not_rust_is_not_parsed_as_rust() {
+        let (temp, _lib_path) = create_test_fixture();
+        let mut engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let readme = temp.path().join("README.md");
+        std::fs::write(&readme, "Pick an interface or a class and go.\n").unwrap();
+        engine
+            .apply_file_change(
+                &readme,
+                "Pick an interface or a class and go.\n".to_string(),
+            )
+            .unwrap();
+        assert!(
+            engine.file_id_for_path(&readme).is_none(),
+            "the README stays out"
+        );
+        let err = engine.document_symbols(&readme).unwrap_err();
+        assert!(format!("{err}").contains("is not a Rust file"), "{err}");
     }
 
     #[test]
