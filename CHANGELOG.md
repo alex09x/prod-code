@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **Signature refactorings in Python, TypeScript and Go no longer miss call sites while the
+  language server is still indexing** (#284). A language server that has just read the project
+  answers `textDocument/references` with nothing. A refactoring that changes a signature took
+  that for "no callers", rewrote only the declaration and reported a clean check. For a
+  language other than Rust, an empty answer is now asked again three times, 800 ms apart, as
+  `impact` already does for its call hierarchy (#202).
+
 ## v0.3.3 — 2026-09-24
 
 ### Performance

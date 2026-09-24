@@ -705,10 +705,10 @@ pub async fn analyze(
     })
 }
 
-/// Times an empty call hierarchy from a managed language server is asked again, and the wait
-/// before each: a server still reading the project answers empty (#202).
-const COLD_RETRIES: usize = 3;
-const COLD_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
+/// Times an empty answer from a managed language server is asked again, and the wait before
+/// each: a server still reading the project answers empty (#202, #284).
+pub(crate) const COLD_RETRIES: usize = 3;
+pub(crate) const COLD_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// The functions that call `sym`, each with whether it is a test (the analyzer's `isTest`, or
 /// the language's naming conventions).
