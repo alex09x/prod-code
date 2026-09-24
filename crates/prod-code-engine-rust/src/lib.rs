@@ -339,10 +339,17 @@ impl PrimingJob {
             .into_iter()
             .map(|(analysis, file_id)| {
                 std::thread::spawn(move || {
-                    let _ = analysis.full_diagnostics(
+                    let started = std::time::Instant::now();
+                    let outcome = analysis.full_diagnostics(
                         &DiagnosticsConfig::test_sample(),
                         AssistResolveStrategy::None,
                         file_id,
+                    );
+                    tracing::debug!(
+                        ?file_id,
+                        done = outcome.is_ok(),
+                        ms = started.elapsed().as_millis() as u64,
+                        "warmed the diagnostics of a file"
                     );
                 })
             })
