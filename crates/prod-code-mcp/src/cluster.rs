@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 /// How long a node has to accept a TCP connection before it counts as down.
@@ -140,7 +139,7 @@ pub fn rendezvous_order(nodes: &[SocketAddr], workspace_name: &str) -> Vec<Socke
 /// Whether `addr` accepts a TCP connection within [`PROBE_TIMEOUT`].
 pub async fn is_alive(addr: SocketAddr) -> bool {
     matches!(
-        tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr)).await,
+        tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr)).await,
         Ok(Ok(_))
     )
 }
@@ -386,10 +385,9 @@ pub fn remembered_node(workspace_name: &str) -> Option<SocketAddr> {
 
 /// Asks one node for the cluster as it sees it (gossip view).
 pub async fn cluster_view(addr: SocketAddr) -> Result<ClusterResponse> {
-    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed.send(WireMessage::ClusterRequest).await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
@@ -409,10 +407,9 @@ pub async fn ask_placement(
     engine: Option<&str>,
     os: Option<&str>,
 ) -> Result<PlaceResponse> {
-    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::PlaceRequest(PlaceRequest {
@@ -488,10 +485,9 @@ pub async fn discover_nodes(seeds: &[SocketAddr]) -> Vec<SocketAddr> {
 
 /// Asks one node for its usage metrics over the last `since_secs` (0 = all it holds).
 pub async fn node_metrics(addr: SocketAddr, since_secs: u64) -> Result<MetricsResponse> {
-    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::MetricsRequest(MetricsRequest { since_secs }))
@@ -507,10 +503,9 @@ pub async fn node_metrics(addr: SocketAddr, since_secs: u64) -> Result<MetricsRe
 
 /// Asks one node for its status.
 pub async fn node_status(addr: SocketAddr) -> Result<StatusResponse> {
-    let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
+    let stream = tokio::time::timeout(PROBE_TIMEOUT, prod_code_protocol::transport::connect(addr))
         .await
         .map_err(|_| anyhow!("connect timed out"))??;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed.send(WireMessage::StatusRequest).await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {

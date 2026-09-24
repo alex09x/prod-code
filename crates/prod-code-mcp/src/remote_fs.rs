@@ -6,7 +6,6 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, ReadFileRequest, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 /// Reads `path` on the gateway `remote`. Returns the bytes and whether they were truncated.
@@ -15,10 +14,9 @@ pub async fn read_remote_file(
     path: &str,
     max_bytes: u64,
 ) -> Result<(Vec<u8>, bool)> {
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed
         .send(WireMessage::ReadFileRequest(ReadFileRequest {

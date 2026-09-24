@@ -12,7 +12,6 @@ use prod_code_protocol::{
 };
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 /// One proposed file of a hypothesis; `text: None` deletes the file.
@@ -176,10 +175,9 @@ pub async fn run_shadow(
     anyhow::ensure!(!command.is_empty(), "empty command");
     anyhow::ensure!(!specs.is_empty(), "no hypotheses");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     push_workspace_sync(&mut framed, root, &identity, None)
         .await

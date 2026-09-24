@@ -8,7 +8,6 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, SearchRequest, SearchResponse, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 /// Sends the query and returns the gateway's answer.
@@ -21,10 +20,9 @@ pub async fn search(
 ) -> Result<SearchResponse> {
     anyhow::ensure!(!query.trim().is_empty(), "empty query");
     let identity: WorkspaceIdentity = workspace_identity(root);
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     push_workspace_sync(&mut framed, root, &identity, None)
         .await

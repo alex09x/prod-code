@@ -9,7 +9,6 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ExecExit, ExecRequest, ProdCodeCodec, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 /// Result of a remote command: its exit record plus the checkout files the command changed on
@@ -158,10 +157,9 @@ pub async fn run_remote(
     // Taken before the pre-flight sync: a file modified after this may not be what the node
     // ran on, so the node's version must not replace it.
     let started = std::time::SystemTime::now();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     push_workspace_sync(&mut framed, root, &identity, None)
         .await
@@ -229,8 +227,14 @@ pub async fn run_remote(
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
             Some(Ok(other)) => anyhow::bail!("unexpected message during exec: {other:?}"),
-            Some(Err(e)) => anyhow::bail!("frame decode error during exec: {e}"),
-            None => anyhow::bail!("gateway closed the connection during exec"),
+            // A reset from a keepalive probe lands here too: the node went away without a
+            // close, and whether the command finished there cannot be known (#256).
+            Some(Err(e)) => anyhow::bail!(
+                "lost the connection to the gateway during exec ({e}); the command's result is unknown"
+            ),
+            None => anyhow::bail!(
+                "gateway closed the connection during exec; the command's result is unknown"
+            ),
         }
     }
 }

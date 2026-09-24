@@ -5,7 +5,6 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, SyncRequest, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use url::Url;
 
@@ -1257,10 +1256,9 @@ async fn handle_sync(
     let subpath = args.get("path").and_then(|v| v.as_str()).map(Path::new);
     let deltas = scan_workspace_files(workspace_root, subpath)?;
     let file_count = deltas.len();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     let req = SyncRequest {
         client_workspace_root: workspace_root.to_string_lossy().to_string(),
@@ -1300,10 +1298,9 @@ async fn handle_sync(
 
 async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {
     let start = std::time::Instant::now();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let rtt = start.elapsed();
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     framed.send(WireMessage::StatusRequest).await?;

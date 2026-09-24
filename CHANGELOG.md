@@ -72,6 +72,12 @@
   - A file the node already has with this machine's text is neither written nor reported. That
     happens when another command syncs the checkout during the run. Such files had been reported
     as "changed by the command" and set off a false platform warning.
+- **A remote build or test no longer waits forever on a dead connection** (#256). The client
+  set no TCP keepalive, so when a connection to a build node died without a close, a command's
+  final message was lost and `exec`, `code_check` or `code_test` waited indefinitely. One check
+  waited nine hours after the node had finished it. Every connection to a gateway, and every
+  connection a gateway accepts, now has TCP keepalive: probes after 30 s of silence, 10 s
+  apart, reset after 3 unanswered. A lost exec fails and says its result is unknown.
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.
