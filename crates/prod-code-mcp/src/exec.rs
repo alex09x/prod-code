@@ -19,7 +19,8 @@ pub struct RemoteOutcome {
     pub exit: ExecExit,
     pub pulled_files: Vec<String>,
     /// Of `pulled_files`, the ones whose new text has the same characters as the old apart
-    /// from whitespace and commas, in any order: a formatter's layout, not a change (#234).
+    /// from whitespace, commas and braces, in any order: a formatter's layout, not a change
+    /// (#234, #244).
     pub relaid_files: Vec<String>,
 }
 
@@ -34,15 +35,16 @@ impl RemoteOutcome {
     }
 }
 
-/// Whether `new` has the same characters as `old` apart from whitespace and commas, in any
-/// order, and is not the same text: what a formatter makes of a file (rustfmt re-wraps lines,
-/// adds trailing commas and sorts imports). A real edit, such as `&mut win` to `&win`, adds or
-/// removes characters.
+/// Whether `new` has the same characters as `old` apart from whitespace, commas and braces, in
+/// any order, and is not the same text: what a formatter makes of a file. rustfmt re-wraps
+/// lines, adds trailing commas, sorts imports and drops the braces around a closure whose body
+/// is one expression (#244). A real edit, such as `&mut win` to `&win`, adds or removes other
+/// characters.
 pub fn layout_only(old: &[u8], new: &[u8]) -> bool {
     let counts = |text: &[u8]| {
         let mut counts = [0usize; 256];
         for &b in text {
-            if !b.is_ascii_whitespace() && b != b',' {
+            if !b.is_ascii_whitespace() && !matches!(b, b',' | b'{' | b'}') {
                 counts[b as usize] += 1;
             }
         }
@@ -289,6 +291,10 @@ mod tests {
         assert!(layout_only(old, formatted));
         assert!(!layout_only(old, edited));
         assert!(!layout_only(old, old), "the same text is not a rewrite");
+        // rustfmt drops a closure's braces when its body is one expression (#244).
+        let braced = b"x.is_some_and(|p| {\n    f(p)\n})\n";
+        let unbraced = b"x.is_some_and(|p| f(p))\n";
+        assert!(layout_only(braced, unbraced));
         let outcome = RemoteOutcome {
             exit: ExecExit {
                 exit_code: Some(0),

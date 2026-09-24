@@ -25,6 +25,9 @@
     with its old and new length.
 
 ### Fixed
+- **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
+  (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
+  the braces around a closure whose body is one expression. Braces now count as layout.
 - **A checkout stays on its build node through a gateway restart** (#238). One refused
   connection to the remembered node re-placed the checkout, so a two-second restart for a
   deploy moved it to another node and left its warm rust-analyzer behind. An unreachable
