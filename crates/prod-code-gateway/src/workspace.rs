@@ -745,6 +745,81 @@ pub fn touch_last_used(workspace_dir: &Path) {
     let _ = std::fs::write(&marker, unix_now().to_string());
 }
 
+/// File in a workspace directory that lists, one per line, the files the gateway removed from
+/// its copy because a command changed them after its client left and their old contents were
+/// not kept (#262). It lives on disk so that a gateway restart does not forget them: the client
+/// still believes those files are on the node, and only this list makes it send them again.
+pub const STALE_MARKER: &str = ".prod-code-stale";
+
+/// The paths recorded by [`record_stale_paths`] for the workspace, sorted.
+pub fn stale_paths(workspace_dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(workspace_dir.join(STALE_MARKER))
+        .map(|text| {
+            text.lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn write_stale_paths(workspace_dir: &Path, paths: &std::collections::BTreeSet<String>) {
+    let marker = workspace_dir.join(STALE_MARKER);
+    if paths.is_empty() {
+        let _ = std::fs::remove_file(&marker);
+        return;
+    }
+    let mut text = String::new();
+    for path in paths {
+        text.push_str(path);
+        text.push('\n');
+    }
+    if let Err(e) = std::fs::write(&marker, text) {
+        tracing::warn!(error = %e, marker = %marker.display(), "failed to record stale files");
+    }
+}
+
+/// Adds `paths` to the workspace's stale files, which every handshake and sync answer reports
+/// until the client has sent them again.
+pub fn record_stale_paths(workspace_dir: &Path, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    let mut all: std::collections::BTreeSet<String> =
+        stale_paths(workspace_dir).into_iter().collect();
+    all.extend(paths.iter().cloned());
+    write_stale_paths(workspace_dir, &all);
+}
+
+/// Forgets every stale file of the workspace: after a manifest probe the copy holds exactly
+/// the files the client listed, or asks for the ones it lacks, so none of them is lost anymore.
+pub fn forget_stale_paths(workspace_dir: &Path) {
+    let _ = std::fs::remove_file(workspace_dir.join(STALE_MARKER));
+}
+
+/// Removes the paths a sync just carried from the workspace's stale files, since the copy now
+/// holds the checkout's version of them, and returns the ones still recorded.
+pub fn clear_stale_paths<'a>(
+    workspace_dir: &Path,
+    arrived: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let mut all: std::collections::BTreeSet<String> =
+        stale_paths(workspace_dir).into_iter().collect();
+    if all.is_empty() {
+        return Vec::new();
+    }
+    let before = all.len();
+    for path in arrived {
+        all.remove(path);
+    }
+    if all.len() != before {
+        write_stale_paths(workspace_dir, &all);
+    }
+    all.into_iter().collect()
+}
+
 /// Configures a CMake project into `build/` with `compile_commands.json` before clangd starts,
 /// so its background index covers the whole tree (cross-file rename and references) from the
 /// first query. Best effort: a failure only means clangd runs without a compilation database.

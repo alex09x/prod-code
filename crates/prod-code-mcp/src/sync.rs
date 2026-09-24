@@ -40,6 +40,11 @@ pub struct SyncCache {
     /// about new file kinds, older watermarks would wrongly assume those files were sent.
     #[serde(default)]
     pub filter_version: u32,
+    /// Paths the gateway removed from its copy because a command changed them after its client
+    /// left and it could not put them back (#262). Git sees no change in them, so they are sent
+    /// by name on the next sync.
+    #[serde(default)]
+    pub resend: BTreeSet<String>,
 }
 
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
@@ -674,6 +679,30 @@ pub fn forget_synced_files(root: &Path, rel_paths: &[String]) {
     }
 }
 
+/// Drops `rel_paths` from the watermark of `root` for gateway `node` and marks them to be sent
+/// by the next sync to that node whatever git says about them: the gateway reported them stale,
+/// gone from its copy of the workspace (#262).
+pub fn resend_lost_files(root: &Path, node: &str, rel_paths: &[String]) {
+    if rel_paths.is_empty() {
+        return;
+    }
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut cache = load_sync_cache_for(&canonical_root, node);
+    for rel in rel_paths {
+        let path = Path::new(rel);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue; // never let the server name a file outside the checkout to upload
+        }
+        cache.files.remove(rel);
+        cache.resend.insert(rel.clone());
+    }
+    save_sync_cache_for(&canonical_root, node, &cache);
+}
+
 /// A prepared incremental sync. The state is committed only after the remote accepts the files.
 #[derive(Debug)]
 pub struct SyncPlan {
@@ -725,6 +754,8 @@ pub struct SyncOutcome {
     pub server_workspace_root: String,
     /// Relative paths this round uploaded or deleted on the gateway.
     pub changed_paths: Vec<String>,
+    /// Files the gateway still reports lost from its copy after the sync (#262).
+    pub stale_paths: Vec<String>,
 }
 
 async fn wait_for_message<T>(
@@ -766,11 +797,38 @@ pub async fn push_workspace_sync(
     identity: &WorkspaceIdentity,
     subpath: Option<&Path>,
 ) -> Result<SyncOutcome> {
-    let node = framed
+    let mut outcome = push_sync_round(framed, root, identity, subpath).await?;
+    // The gateway removed files a command changed after its client left and it could not put
+    // back (#262). They go in one more round on this connection, so that what runs next sees
+    // the checkout's version of them; a second report waits for the next sync.
+    if !outcome.stale_paths.is_empty() {
+        resend_lost_files(root, &gateway_node(framed), &outcome.stale_paths);
+        let again = push_sync_round(framed, root, identity, subpath).await?;
+        outcome.files_updated += again.files_updated;
+        outcome.files_deleted += again.files_deleted;
+        outcome.bytes_transferred += again.bytes_transferred;
+        outcome.changed_paths.extend(again.changed_paths);
+        outcome.stale_paths = again.stale_paths;
+    }
+    Ok(outcome)
+}
+
+/// The `host:port` of the gateway on the other end of `framed`, which keys its watermark.
+pub fn gateway_node(framed: &Framed<TcpStream, ProdCodeCodec>) -> String {
+    framed
         .get_ref()
         .peer_addr()
         .map(|addr| addr.to_string())
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
+
+async fn push_sync_round(
+    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    root: &Path,
+    identity: &WorkspaceIdentity,
+    subpath: Option<&Path>,
+) -> Result<SyncOutcome> {
+    let node = gateway_node(framed);
     let mut plan = prepare_workspace_sync_for(root, &node, subpath)?;
     let root_str = root.to_string_lossy().to_string();
     let mut outcome = SyncOutcome {
@@ -834,6 +892,7 @@ pub async fn push_workspace_sync(
         outcome.files_deleted += resp.files_deleted;
         outcome.bytes_transferred = resp.bytes_transferred;
         outcome.server_workspace_root = resp.server_workspace_root;
+        outcome.stale_paths = resp.stale_paths;
     }
 
     commit_workspace_sync(root, &plan);
@@ -900,10 +959,7 @@ pub fn prepare_workspace_sync_for(
         let Ok(metadata) = full_path.metadata() else {
             continue;
         };
-        if !metadata.is_file()
-            || metadata.len() > MAX_FILE_SIZE
-            || (relative_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
-        {
+        if !fits_sync(&relative_path, &metadata) {
             continue;
         }
 
@@ -913,20 +969,57 @@ pub fn prepare_workspace_sync_for(
             continue;
         }
 
-        #[cfg(unix)]
-        let is_executable = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode() & 0o111 != 0
-        };
-        #[cfg(not(unix))]
-        let is_executable = false;
-
         files.push(FileDelta {
             relative_path: relative_path.clone(),
             content: Some(content),
-            is_executable,
+            is_executable: is_executable(&metadata),
         });
         state.files.insert(relative_path, entry);
+    }
+
+    // Files the gateway lost (#262) are sent whatever git says about them: their content when
+    // a sync carries such a file, their deletion otherwise, so that the gateway's record of them
+    // is cleared either way. One outside a partial sync waits for a sync that covers it.
+    let mut lost = Vec::new();
+    for rel in std::mem::take(&mut state.resend) {
+        if !filter.includes(&rel) {
+            state.resend.insert(rel);
+        } else if !files.iter().any(|f| f.relative_path == rel) {
+            lost.push(rel);
+        }
+    }
+    let listed = git_listed_paths(&canonical_root, &lost);
+    for rel in lost {
+        let full_path = canonical_root.join(&rel);
+        let content = full_path
+            .metadata()
+            .ok()
+            .filter(|m| listed.contains(&rel) && is_synced_git_path(&rel) && fits_sync(&rel, m))
+            .and_then(|m| {
+                // Read only once it is known to be sent: an ignored file stays unread.
+                let content = std::fs::read(&full_path).ok()?;
+                Some((m, content))
+            });
+        match content {
+            Some((metadata, content)) => {
+                state
+                    .files
+                    .insert(rel.clone(), sync_file_entry(&metadata, &content));
+                files.push(FileDelta {
+                    relative_path: rel,
+                    content: Some(content),
+                    is_executable: is_executable(&metadata),
+                });
+            }
+            None => {
+                state.files.remove(&rel);
+                files.push(FileDelta {
+                    relative_path: rel,
+                    content: None,
+                    is_executable: false,
+                });
+            }
+        }
     }
 
     // A partial sync cannot advance the workspace-wide base: changes outside the selected path
@@ -1025,6 +1118,60 @@ fn sync_file_entry(metadata: &std::fs::Metadata, content: &[u8]) -> SyncFileEntr
         size: metadata.len(),
         hash: content_hash(content),
     }
+}
+
+/// Whether a file of this size is sent at all: large files are datasets, not sources.
+fn fits_sync(relative_path: &str, metadata: &std::fs::Metadata) -> bool {
+    metadata.is_file()
+        && metadata.len() <= MAX_FILE_SIZE
+        && !(relative_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
+}
+
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+/// Which of `paths` git lists (tracked, or untracked and not ignored). An ignored file is never
+/// sent, even when the gateway names it.
+fn git_listed_paths(root: &Path, paths: &[String]) -> HashSet<String> {
+    if paths.is_empty() {
+        return HashSet::new();
+    }
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "--literal-pathspecs",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+        ])
+        .args(paths)
+        .output()
+    else {
+        return HashSet::new();
+    };
+    if !output.status.success() {
+        return HashSet::new();
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect()
 }
 
 fn git_head(root: &Path) -> Result<String> {
@@ -2222,6 +2369,75 @@ mod tests {
             RELEVANCE_VERSION
         );
         assert!(!prepare_workspace_sync(root, None).unwrap().initial);
+        clear_sync_cache(root);
+    }
+
+    /// Stale paths from a handshake make the next sync carry those files although git sees no
+    /// change in them (#262): the checkout's content where it syncs the file, a deletion where
+    /// it has none or ignores it, and nothing outside the checkout.
+    #[test]
+    fn stale_paths_from_a_handshake_are_in_the_next_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        clear_sync_cache(root);
+        if !std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+        {
+            return;
+        }
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+            assert!(git(root, &["config", key, value]));
+        }
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn a() {}").unwrap();
+        std::fs::write(root.join("src/other.rs"), "pub fn b() {}").unwrap();
+        std::fs::write(root.join(".gitignore"), "secret.env\n").unwrap();
+        std::fs::write(root.join("secret.env"), "TOKEN=1").unwrap();
+        assert!(git(root, &["add", "."]));
+        assert!(git(root, &["commit", "-qm", "initial"]));
+        let first = prepare_workspace_sync(root, None).unwrap();
+        commit_workspace_sync(root, &first);
+        assert!(prepare_workspace_sync(root, None).unwrap().files.is_empty());
+
+        let handshake = prod_code_protocol::HandshakeResponse {
+            protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+            server_pid: 1,
+            session_id: 1,
+            server_workspace_root: "/srv/ws".to_string(),
+            detected_engine: "rust".to_string(),
+            stale_paths: [
+                "src/lib.rs",
+                "src/generated.rs",
+                "secret.env",
+                "../outside.rs",
+            ]
+            .map(str::to_string)
+            .to_vec(),
+        };
+        resend_lost_files(root, "", &handshake.stale_paths);
+
+        let plan = prepare_workspace_sync(root, None).unwrap();
+        let mut sent: Vec<(&str, Option<&[u8]>)> = plan
+            .files
+            .iter()
+            .map(|f| (f.relative_path.as_str(), f.content.as_deref()))
+            .collect();
+        sent.sort();
+        assert_eq!(
+            sent,
+            [
+                ("secret.env", None),
+                ("src/generated.rs", None),
+                ("src/lib.rs", Some(b"pub fn a() {}".as_slice())),
+            ]
+        );
+        commit_workspace_sync(root, &plan);
+        let next = prepare_workspace_sync(root, None).unwrap();
+        assert!(next.files.is_empty(), "sent once: {next:?}");
         clear_sync_cache(root);
     }
 

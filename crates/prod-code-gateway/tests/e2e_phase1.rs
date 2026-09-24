@@ -100,6 +100,7 @@ async fn handle_test_client(
                         session_id,
                         server_workspace_root: server_workspace_str,
                         detected_engine: "rust".to_string(),
+                        stale_paths: Vec::new(),
                     }))
                     .await?;
 

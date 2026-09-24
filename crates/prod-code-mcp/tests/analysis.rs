@@ -78,6 +78,7 @@ impl ExecGateway {
                             bytes_transferred: 0,
                             duration_ms: 0,
                             workspace_was_fresh: false,
+                            stale_paths: Vec::new(),
                         }))
                         .await?;
                 }
@@ -89,6 +90,7 @@ impl ExecGateway {
                             session_id: 1,
                             server_workspace_root: req.client_workspace_root.clone(),
                             detected_engine: "rust".to_string(),
+                            stale_paths: Vec::new(),
                         }))
                         .await?;
                 }

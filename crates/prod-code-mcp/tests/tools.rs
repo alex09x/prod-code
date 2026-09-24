@@ -145,6 +145,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         bytes_transferred: 0,
                         duration_ms: 1,
                         workspace_was_fresh: false,
+                        stale_paths: Vec::new(),
                     }))
                     .await?;
             }
@@ -156,6 +157,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         session_id: 1,
                         server_workspace_root: req.client_workspace_root,
                         detected_engine: "rust".to_string(),
+                        stale_paths: Vec::new(),
                     }))
                     .await?;
             }

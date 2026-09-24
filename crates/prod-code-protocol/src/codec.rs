@@ -220,6 +220,7 @@ mod tests {
             duration_ms: 15,
             server_workspace_root: "/srv/prod-code/workspaces/repo".to_string(),
             workspace_was_fresh: false,
+            stale_paths: Vec::new(),
         });
 
         codec.encode(resp.clone(), &mut buf).unwrap();

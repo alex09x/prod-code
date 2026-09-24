@@ -70,6 +70,7 @@ async fn expect_after_sync(framed: &mut Framed<TcpStream, ProdCodeCodec>) -> Wir
                         bytes_transferred: 0,
                         duration_ms: 0,
                         workspace_was_fresh: false,
+                        stale_paths: Vec::new(),
                     }))
                     .await
                     .unwrap();
@@ -704,6 +705,7 @@ impl RecordingGateway {
                             bytes_transferred: 0,
                             duration_ms: 0,
                             workspace_was_fresh: false,
+                            stale_paths: Vec::new(),
                         }))
                         .await?;
                 }
@@ -715,6 +717,7 @@ impl RecordingGateway {
                             session_id: 1,
                             server_workspace_root: req.client_workspace_root.clone(),
                             detected_engine: "rust".to_string(),
+                            stale_paths: Vec::new(),
                         }))
                         .await?;
                 }
@@ -1058,6 +1061,7 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
                                     bytes_transferred: 0,
                                     duration_ms: 0,
                                     workspace_was_fresh: false,
+                                    stale_paths: Vec::new(),
                                 }))
                                 .await;
                         }
@@ -1069,6 +1073,7 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
                                     session_id: 1,
                                     server_workspace_root: req.client_workspace_root,
                                     detected_engine: "rust".to_string(),
+                                    stale_paths: Vec::new(),
                                 }))
                                 .await;
                         }

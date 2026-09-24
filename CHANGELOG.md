@@ -36,6 +36,22 @@
     with its old and new length.
 
 ### Fixed
+- **The remote build node's copy of a checkout no longer keeps stale files from a killed
+  command** (#262). A command such as `cargo fmt --all`, `clippy --fix` or a code generator
+  rewrites files on the build node, and the client writes the changes back when the command
+  ends. When the client left first, the gateway killed the command and the rewritten files
+  stayed on the node. The next sync sends only what changed locally, so later checks ran on
+  code that was not in the checkout: a formatting check passed on the node and failed on
+  `main`.
+  - Before a command that sends its changes back, the gateway now also keeps the old contents
+    of every file up to 1 MiB, within 256 MiB per command.
+  - When the client disconnects, its connection fails, or the changes cannot be sent, the
+    gateway kills the command, waits for it to exit and puts every file back: changed files
+    get their old contents, new files are removed, deleted files come back. The warm analyzer
+    is told, so it answers from the old text again.
+  - A file whose old contents were not kept is removed from the node's copy and reported as
+    stale in the next handshake and sync answers. The client then sends its own version of it,
+    whether or not git sees a change.
 - **A symbol name resolves only to a symbol of that name** (#253). `--symbol NAME` in the CLI
   and `symbol` in the MCP tools took the best-scored `workspace/symbol` hit. The index also
   returns fuzzy matches, so a Rust struct field, which rust-analyzer does not index, resolved
