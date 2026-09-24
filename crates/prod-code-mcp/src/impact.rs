@@ -639,6 +639,23 @@ pub async fn analyze(
     let key = |s: &Symbol| (s.file.clone(), s.line, s.col);
     let changed_keys: HashSet<(String, u32, u32)> = changed.iter().map(key).collect();
     let mut cache: HashMap<(String, u32, u32), Vec<(Symbol, bool)>> = HashMap::new();
+    // A language server that has just started answers the call hierarchy with nothing until it
+    // has read the project, and "no callers" would then read as "no test is affected" (#202).
+    // For the managed servers, an empty answer for the first changed function is asked again a
+    // few times before it is believed; rust-analyzer answers from a database already loaded.
+    if language != "rust"
+        && let Some(first) = changed.first()
+    {
+        let mut answer = incoming_calls(&mut session, root, &language, first).await;
+        for _ in 0..COLD_RETRIES {
+            if !answer.is_empty() {
+                break;
+            }
+            tokio::time::sleep(COLD_WAIT).await;
+            answer = incoming_calls(&mut session, root, &language, first).await;
+        }
+        cache.insert(key(first), answer);
+    }
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     let mut tests: BTreeSet<Symbol> = BTreeSet::new();
     let mut reaches: Vec<Reach> = Vec::new();
@@ -687,6 +704,11 @@ pub async fn analyze(
         reaches,
     })
 }
+
+/// Times an empty call hierarchy from a managed language server is asked again, and the wait
+/// before each: a server still reading the project answers empty (#202).
+const COLD_RETRIES: usize = 3;
+const COLD_WAIT: std::time::Duration = std::time::Duration::from_millis(800);
 
 /// The functions that call `sym`, each with whether it is a test (the analyzer's `isTest`, or
 /// the language's naming conventions).

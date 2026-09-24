@@ -1971,6 +1971,62 @@ async fn code_impact_attributes_a_changed_line_to_its_function() {
     );
 }
 
+/// A Python server that has just started answers the call hierarchy with nothing for a while.
+/// `impact` asks again before it believes "no callers", and the caller is found once the server
+/// has read the project (#202).
+#[tokio::test]
+async fn code_impact_asks_a_cold_server_again_before_it_reports_no_callers() {
+    let ws = workspace();
+    write(&ws, "pyproject.toml", "[project]\nname = \"shop\"\n");
+    let pricing = write(&ws, "shop/pricing.py", "def price(x):\n    return x\n");
+    let checks = write(
+        &ws,
+        "checks/check_price.py",
+        "from shop.pricing import price\n\n\ndef test_doubles():\n    assert price(2) == 2\n",
+    );
+    commit(&ws);
+    write(&ws, "shop/pricing.py", "def price(x):\n    return x * 1\n");
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = asked.clone();
+    let (p, c) = (
+        format!("file://{}", pricing.display()),
+        format!("file://{}", checks.display()),
+    );
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("price", 12, 1, 2, 5)])
+        }
+        "textDocument/prepareCallHierarchy" => serde_json::json!([{ "name": "price", "uri": p,
+            "selectionRange": { "start": { "line": 0, "character": 4 }, "end": { "line": 0, "character": 9 } } }]),
+        "callHierarchy/incomingCalls" => {
+            if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([{ "from": { "name": "test_doubles", "uri": c,
+                    "selectionRange": { "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 16 } } },
+                    "fromRanges": [ { "start": { "line": 4, "character": 11 }, "end": { "line": 4, "character": 16 } } ] }])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(remote, &ws.root(), "code_impact", serde_json::json!({}))
+            .await
+            .expect("the analysis runs"),
+    );
+    // `checks/check_price.py` is not a test file by pytest's naming, so the caller is a caller.
+    assert!(text.contains("1 caller(s)"), "{text}");
+    assert!(
+        text.contains("test_doubles  checks/check_price.py:4:5"),
+        "{text}"
+    );
+    assert!(
+        asked.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+        "the empty answers were asked again"
+    );
+}
+
 // ---------------------------------------------------------------------------------------
 // Tools that speak the exec / search / shadow-run / status / read-file wire messages.
 // ---------------------------------------------------------------------------------------
