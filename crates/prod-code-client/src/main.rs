@@ -100,6 +100,9 @@ enum Commands {
         /// The symbol by name (`Type::method`, `module::function`) instead of a position.
         #[arg(long, conflicts_with_all = ["file", "line", "col"])]
         symbol: Option<String>,
+        /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
     },
     /// What the function at a position calls: prod-code callees <file> <line> <col>, or --symbol NAME
     Callees {
@@ -112,6 +115,9 @@ enum Commands {
         /// The symbol by name (`Type::method`, `module::function`) instead of a position.
         #[arg(long, conflicts_with_all = ["file", "line", "col"])]
         symbol: Option<String>,
+        /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
     },
     /// Implementations of the trait / interface at a position: prod-code impls <file> <line> <col>, or --symbol NAME
     Impls {
@@ -1105,25 +1111,15 @@ async fn main() -> Result<()> {
             line,
             col,
             symbol,
-        } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_callers", &symbol).await,
-            None => {
-                let (file, line, col) = position(file, line, col)?;
-                run_call_hierarchy(remote, &file, line, col, true).await
-            }
-        },
+            depth,
+        } => run_call_tree(remote, "code_callers", file, line, col, symbol, depth).await,
         Commands::Callees {
             file,
             line,
             col,
             symbol,
-        } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_callees", &symbol).await,
-            None => {
-                let (file, line, col) = position(file, line, col)?;
-                run_call_hierarchy(remote, &file, line, col, false).await
-            }
-        },
+            depth,
+        } => run_call_tree(remote, "code_callees", file, line, col, symbol, depth).await,
         Commands::Impls {
             file,
             line,
@@ -2609,6 +2605,33 @@ async fn run_tool(remote: SocketAddr, tool: &str, args: serde_json::Value) -> Re
     Ok(())
 }
 
+/// `callers` / `callees`: the call hierarchy to `depth` levels, at a position or of `--symbol`,
+/// answered by the same code as the MCP tools.
+async fn run_call_tree(
+    remote: SocketAddr,
+    tool: &str,
+    file: Option<PathBuf>,
+    line: Option<u32>,
+    col: Option<u32>,
+    symbol: Option<String>,
+    depth: usize,
+) -> Result<()> {
+    let args = match symbol {
+        Some(symbol) => serde_json::json!({ "symbol": symbol, "depth": depth }),
+        None => {
+            let (file, line, col) = position(file, line, col)?;
+            let file = std::fs::canonicalize(&file).unwrap_or(file);
+            serde_json::json!({
+                "path": file.to_string_lossy(),
+                "line": line,
+                "character": col,
+                "depth": depth,
+            })
+        }
+    };
+    run_tool(remote, tool, args).await
+}
+
 /// A position command given `--symbol`: the MCP tool resolves the name, exactly as for an agent.
 async fn run_by_symbol(remote: SocketAddr, tool: &str, symbol: &str) -> Result<()> {
     run_tool(remote, tool, serde_json::json!({ "symbol": symbol })).await
@@ -2748,91 +2771,6 @@ fn print_locations(arr: &[serde_json::Value]) {
             + 1;
         println!("  • {uri}:{line}:{col}");
     }
-}
-
-/// Callers (`incoming`) or callees of the function at a 1-based position: the call-hierarchy
-/// item is prepared first, then its incoming or outgoing calls are listed with call sites.
-async fn run_call_hierarchy(
-    remote: SocketAddr,
-    file: &Path,
-    line: u32,
-    col: u32,
-    incoming: bool,
-) -> Result<()> {
-    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let file_uri = Url::from_file_path(&abs_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
-        .to_string();
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri },
-        "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
-    });
-    let items =
-        execute_lsp_query(remote, file, "textDocument/prepareCallHierarchy", params).await?;
-    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-        println!("No function at {}:{line}:{col}.", file.display());
-        return Ok(());
-    };
-    let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-    let method = if incoming {
-        "callHierarchy/incomingCalls"
-    } else {
-        "callHierarchy/outgoingCalls"
-    };
-    let result =
-        execute_lsp_query(remote, file, method, serde_json::json!({ "item": item })).await?;
-    let edges = result.as_array().cloned().unwrap_or_default();
-    let side = if incoming { "from" } else { "to" };
-    if edges.is_empty() {
-        println!(
-            "`{name}`: no {} found.",
-            if incoming { "callers" } else { "callees" }
-        );
-        return Ok(());
-    }
-    println!(
-        "`{name}`: {} {}",
-        edges.len(),
-        if incoming { "caller(s)" } else { "callee(s)" }
-    );
-    for edge in &edges {
-        let other = edge.get(side).cloned().unwrap_or_default();
-        let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-        let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        let start = other.get("selectionRange").and_then(|r| r.get("start"));
-        let dl = start
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let dc = start
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let sites: Vec<String> = edge
-            .get("fromRanges")
-            .and_then(|r| r.as_array())
-            .map(|ranges| {
-                ranges
-                    .iter()
-                    .filter_map(|r| r.get("start"))
-                    .map(|s| {
-                        format!(
-                            "{}:{}",
-                            s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
-                            s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        println!(
-            "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]",
-            sites.join(", ")
-        );
-    }
-    Ok(())
 }
 
 async fn run_implementations(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {

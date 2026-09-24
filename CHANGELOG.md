@@ -261,6 +261,11 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Callers and callees to a depth** (roadmap 7.5, #222). `code_callers` / `code_callees` take
+  `depth`, and `callers` / `callees` take `--depth N` (1 to 6). Deeper levels come as an
+  indented tree. A function already shown is marked `(shown above)` and not expanded again, so
+  recursion ends, and a tree stops at 300 functions and says so. The CLI now answers through the
+  same code as the MCP tools, and its separate copy is gone.
 - **Intent search ranks by meaning too** (roadmap 8.4, #218).
   - The gateway embeds every declaration with a small sentence-embedding model (BGE-small,
     int8 ONNX, run in process), in a background pass after the index is built. A file that

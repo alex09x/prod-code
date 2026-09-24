@@ -132,28 +132,30 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_callers".to_string(),
-            description: "Incoming call hierarchy: every function/method in the workspace that calls the given function, with the call sites. Name the function with `symbol` (e.g. `Metrics::record`); path/line/character is the alternative. Semantic (resolved through the analyzer), not a text search."
+            description: "Incoming call hierarchy: every function/method in the workspace that calls the given function, with the call sites. With `depth`, their callers too, as a tree. Name the function with `symbol` (e.g. `Metrics::record`); path/line/character is the alternative. Semantic (resolved through the analyzer), not a text search."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
-                    "character": { "type": "integer", "description": "1-based column/character number" }
+                    "character": { "type": "integer", "description": "1-based column/character number" },
+                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" }
                 },
                 "required": ["path", "line", "character"]
             }),
         },
         McpTool {
             name: "code_callees".to_string(),
-            description: "Outgoing call hierarchy: every function/method the given function calls, with the call sites. Name it with `symbol`, or give path/line/character."
+            description: "Outgoing call hierarchy: every function/method the given function calls, with the call sites. With `depth`, what those call too, as a tree. Name it with `symbol`, or give path/line/character."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line number" },
-                    "character": { "type": "integer", "description": "1-based column/character number" }
+                    "character": { "type": "integer", "description": "1-based column/character number" },
+                    "depth": { "type": "integer", "description": "Levels to walk (default 1, the direct ones; at most 6). Deeper levels come as an indented tree; a function already shown is marked instead of expanded again" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -3229,90 +3231,22 @@ async fn handle_callers(
         .and_then(|v| v.as_u64())
         .context("Missing 'character' argument")? as u32;
     let incoming = tool_name == "code_callers";
+    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
     let file_path = resolve_file_path(workspace_root, path_str);
-    let file_uri = Url::from_file_path(&file_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
-        .to_string();
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri },
-        "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
-    });
-    let items = execute_lsp_query(
+    let tree = crate::call_tree::call_tree(
         remote,
         workspace_root,
         &file_path,
-        "textDocument/prepareCallHierarchy",
-        params,
+        line,
+        character,
+        incoming,
+        depth,
     )
     .await?;
-    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-        return Ok(McpToolCallResult::text(format!(
-            "No function at {path_str}:{line}:{character}."
-        )));
-    };
-    let fn_name = item
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or("?")
-        .to_string();
-    let method = if incoming {
-        "callHierarchy/incomingCalls"
-    } else {
-        "callHierarchy/outgoingCalls"
-    };
-    let res = execute_lsp_query(
-        remote,
-        workspace_root,
-        &file_path,
-        method,
-        serde_json::json!({ "item": item }),
-    )
-    .await?;
-    let edges = res.as_array().cloned().unwrap_or_default();
-    let side = if incoming { "from" } else { "to" };
-    let mut out = format!(
-        "`{fn_name}`: {} {}\n",
-        edges.len(),
-        if incoming { "caller(s)" } else { "callee(s)" }
-    );
-    for edge in &edges {
-        let other = edge.get(side).cloned().unwrap_or_default();
-        let other_name = other.get("name").and_then(|n| n.as_str()).unwrap_or("?");
-        let uri = other.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        let start = other.get("selectionRange").and_then(|r| r.get("start"));
-        let dl = start
-            .and_then(|s| s.get("line"))
-            .and_then(|l| l.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let dc = start
-            .and_then(|s| s.get("character"))
-            .and_then(|c| c.as_u64())
-            .unwrap_or(0)
-            + 1;
-        let sites: Vec<String> = edge
-            .get("fromRanges")
-            .and_then(|r| r.as_array())
-            .map(|ranges| {
-                ranges
-                    .iter()
-                    .filter_map(|r| r.get("start"))
-                    .map(|s| {
-                        format!(
-                            "{}:{}",
-                            s.get("line").and_then(|l| l.as_u64()).unwrap_or(0) + 1,
-                            s.get("character").and_then(|c| c.as_u64()).unwrap_or(0) + 1
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        out.push_str(&format!(
-            "  • {other_name}  {uri}:{dl}:{dc}  [call sites: {}]\n",
-            sites.join(", ")
-        ));
-    }
-    Ok(McpToolCallResult::text(out.trim_end().to_string()))
+    Ok(McpToolCallResult::text(match tree {
+        Some(tree) => tree.render(),
+        None => format!("No function at {path_str}:{line}:{character}."),
+    }))
 }
 
 async fn handle_definition(
