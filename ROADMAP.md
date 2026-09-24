@@ -2,17 +2,12 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.2.2, 2026-09-23): 45 MCP tools, five nodes' worth of cluster reduced to
-four — three Linux and one macOS for Swift — 565 tests, and every file a change touches held at or
-above 80% of regions (87.2% overall at the last full measurement, 2026-09-22). One epic is open:
-**7.1**, the refactoring catalog. Most of what an agent reaches for in it works through
-`code_assists`, `code_rename`, `code_safe_delete`, `code_change_signature` and `code_codemod`, and
-the pieces rust-analyzer does not offer are tools of their own — `move`, `introduce_parameter_object`,
-`extract_parameter`, `extract_field`, `encapsulate_field`, `wrap_return`, `make_static` and
-`convert_to_method`, `invert_boolean` and `generify`. `type_migration` writes the conversions the
-analyzer accepts (`convert`), and `invert_boolean` covers `bool` fields and variables. What is
-still open is listed per item below: parameter removal across trait implementations, `async` in
-`change_signature`, and whole-file and method moves.
+**Where it stands** (v0.3.0, 2026-09-24): 55 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift, 707 tests, and every file a change touches held at or above 80% of regions.
+The refactoring catalog (7.1) is complete for Rust. Across the other languages it works through
+the language servers' own code actions, and `extract_parameter` and `introduce_parameter_object`
+are still Rust-only. Partial: caches shared across worktrees beyond the C/C++ compiler cache — the
+clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7, 6.2, 6.3).
 
 ---
 

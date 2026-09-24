@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.0 — 2026-09-24
+
 ### Performance
 - **Git worktrees of a C/C++ project share one compiler cache on the build nodes** (#243). Each
   worktree has its own server copy, so every one compiled from scratch. When the node has
