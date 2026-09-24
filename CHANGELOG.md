@@ -348,6 +348,11 @@
   (`Framed` from tokio-util) could not be found. When the workspace has no match, rust-analyzer's
   library symbol search now runs. Each hit names its crate and module (`tokio_util::codec::framed`),
   read from rust-analyzer's moniker for it. Workspace hits still come alone when there are any.
+- **Outline a whole directory or package in one call** (#245). `code_outline` and
+  `prod-code outline` take a directory. They return the declarations of every source file
+  directly in it, one block per file, through one language-server session, and end with
+  `N file(s) outlined, M skipped`. Files no language server outlines, such as manifests and
+  READMEs, are skipped rather than asked for. Subdirectories are not descended into.
 - **Supertypes** (roadmap 7.5, #224). `code_supertypes` / `prod-code supertypes` answer the
   upward half of the type hierarchy (`code_implementations` is the downward one).
   - A Rust type's traits: the derived ones read from its `#[derive(…)]` attributes, including a
