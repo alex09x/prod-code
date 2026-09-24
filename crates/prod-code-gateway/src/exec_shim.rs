@@ -279,16 +279,17 @@ mod tests {
         assert_eq!(run(&args(&[report_arg, "sh"])), 2, "no `--`");
         assert_eq!(run(&args(&[report_arg])), 2, "no command");
         assert_eq!(
-            run(&args(&[report_arg, "--", "/nonexistent/prod-code-no-such-command"])),
+            run(&args(&[
+                report_arg,
+                "--",
+                "/nonexistent/prod-code-no-such-command"
+            ])),
             127
         );
 
         // A report that cannot be written does not change the exit code.
         let unwritable = dir.path().join("missing-dir").join("report");
-        assert_eq!(
-            run(&args(&[unwritable.to_str().unwrap(), "--", "true"])),
-            0
-        );
+        assert_eq!(run(&args(&[unwritable.to_str().unwrap(), "--", "true"])), 0);
     }
 
     #[test]
