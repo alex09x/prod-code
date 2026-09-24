@@ -77,8 +77,8 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_search` | find code by what it does, ranked declarations with the doc comment that matched |
 | `code_symbols` | workspace symbol index by name, fuzzy, analyzer-backed |
 | `code_definition` · `code_references` | where a symbol is defined; every use of it |
-| `code_callers` · `code_callees` · `code_implementations` | call hierarchy both ways; implementations of a trait or interface |
-| `code_outline` | a file's declarations with their kinds and lines |
+| `code_callers` · `code_callees` · `code_implementations` · `code_supertypes` | call hierarchy both ways, as a tree to a depth; implementations of a trait or interface, and the traits a type implements or a trait requires |
+| `code_outline` | a file's declarations with their kinds and lines, or those of every source file in a directory |
 | `code_source` | read std, registry and SDK sources that live only on the node |
 
 **Understand it without reading everything**
@@ -100,6 +100,8 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
 | `code_change_signature` | reorder, add and remove a function's parameters, with every call site, type-checked before it is written |
 | `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
+| `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters, or an associated function to another type; a whole module moved to another parent, with every path that names it |
+| `code_extract_function` | a selection turned into a named function, and its duplicates and near-duplicates in this file and others replaced by calls |
 | `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
 | `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done; with `convert`, `.into()` written wherever the analyzer accepts it |
@@ -133,7 +135,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 
 | tool | what it does |
 |---|---|
-| `code_status` · `code_sync` | gateway health, engines, loaded workspaces; a manual push (the watcher does this for you) |
+| `code_status` · `code_sync` | gateway health, engines, loaded workspaces and the builds and tests running on it; a manual push (the watcher does this for you) |
 
 Every position tool also takes `symbol` instead of a file and a position, so an agent never
 has to grep for a line number:
