@@ -19,9 +19,9 @@ use std::path::{Path, PathBuf};
 
 /// ONNX Runtime's library file on this platform.
 #[cfg(target_os = "macos")]
-const RUNTIME_LIBRARY: &str = "libonnxruntime.dylib";
+pub const RUNTIME_LIBRARY: &str = "libonnxruntime.dylib";
 #[cfg(not(target_os = "macos"))]
-const RUNTIME_LIBRARY: &str = "libonnxruntime.so";
+pub const RUNTIME_LIBRARY: &str = "libonnxruntime.so";
 
 /// Where ONNX Runtime's library is looked for: `ORT_DYLIB_PATH`, or `onnxruntime/` beside the
 /// model's directory.
@@ -41,18 +41,21 @@ pub fn runtime_path(model_dir: &Path) -> PathBuf {
 fn load_runtime(model_dir: &Path) -> Result<()> {
     static LOADED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     LOADED
-        .get_or_init(|| {
-            let library = runtime_path(model_dir);
-            if !library.is_file() {
-                return Err(format!("no ONNX Runtime library at {}", library.display()));
-            }
-            ort::init_from(&library)
-                .map_err(|e| format!("loading {}: {e}", library.display()))?
-                .commit();
-            Ok(())
-        })
+        .get_or_init(|| open_runtime(&runtime_path(model_dir)))
         .clone()
         .map_err(|e| anyhow!(e))
+}
+
+/// Loads the ONNX Runtime library at `library`, or says why it could not. Once a library is
+/// loaded, the process keeps it, and a later call succeeds whatever path it is given.
+pub fn open_runtime(library: &Path) -> Result<(), String> {
+    if !library.is_file() {
+        return Err(format!("no ONNX Runtime library at {}", library.display()));
+    }
+    ort::init_from(library)
+        .map_err(|e| format!("loading {}: {e}", library.display()))?
+        .commit();
+    Ok(())
 }
 
 /// Declarations are short; the head of a long doc comment carries its topic.
@@ -357,6 +360,12 @@ mod tests {
             dot(&q, &passages[0]),
             dot(&q, &passages[1])
         );
+        // Mean pooling, as e5 and Jina models use it, over the same model: another vector, still
+        // of unit length, and nothing is embedded for no text.
+        model.recipe = recipe_for(Path::new("/m/jina"));
+        let mean = model.passages(&["fn parse_color".to_string()]).unwrap();
+        assert!((dot(&mean[0], &mean[0]) - 1.0).abs() < 1e-3);
+        assert!(model.passages(&[]).unwrap().is_empty());
     }
 
     /// The gateway's default workspaces directory; the nodes keep the model beside it.
