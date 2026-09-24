@@ -261,6 +261,13 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Supertypes** (roadmap 7.5, #224). `code_supertypes` / `prod-code supertypes` answer the
+  upward half of the type hierarchy (`code_implementations` is the downward one).
+  - A Rust type's traits: the derived ones read from its `#[derive(…)]` attributes, including a
+    macro's such as serde's, and the written ones from its `impl Trait for Type` blocks. An
+    inherent `impl Type` is not listed.
+  - A Rust trait's supertraits, from its header.
+  - Other languages: their server's `typeHierarchy/supertypes`, or a note that it has none.
 - **Callers and callees to a depth** (roadmap 7.5, #222). `code_callers` / `code_callees` take
   `depth`, and `callers` / `callees` take `--depth N` (1 to 6). Deeper levels come as an
   indented tree. A function already shown is marked `(shown above)` and not expanded again, so

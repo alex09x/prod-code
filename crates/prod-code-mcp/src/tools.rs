@@ -175,6 +175,20 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_supertypes".to_string(),
+            description: "What a type implements, or what a trait requires: the upward half of the type hierarchy (`code_implementations` is the downward half). For a Rust type, the traits it implements, derived or written as impl blocks, each with the position of the impl or the derive; inherent impls are not listed. For a Rust trait, its supertraits. Other languages ask their server's own type hierarchy (clangd, gopls, sourcekit-lsp have one) and say so when it has none. Give `symbol` or a file position."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
+                    "line": { "type": "integer", "description": "1-based line number" },
+                    "character": { "type": "integer", "description": "1-based column/character number" }
+                },
+                "required": ["path", "line", "character"]
+            }),
+        },
+        McpTool {
             name: "code_safe_delete".to_string(),
             description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. At a parameter of a function, the parameter is removed together with its argument at every call site (the same rewrite as `code_change_signature`), refused while the body still uses it, and type-checked before it is written. The edit is written into the checkout."
                 .to_string(),
@@ -1061,6 +1075,28 @@ pub async fn execute_tool(
             handle_callers(remote, workspace_root, tool_name, &args).await
         }
         "code_implementations" => handle_implementations(remote, workspace_root, &args).await,
+        "code_supertypes" => {
+            let path_str = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .context("Missing 'path' argument")?;
+            let num = |key: &str| -> Result<u32> {
+                args.get(key)
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .with_context(|| format!("Missing '{key}' argument"))
+            };
+            let file_path = resolve_file_path(workspace_root, path_str);
+            let found = crate::supertypes::supertypes(
+                remote,
+                workspace_root,
+                &file_path,
+                num("line")?,
+                num("character")?,
+            )
+            .await?;
+            Ok(McpToolCallResult::text(found.render(workspace_root)))
+        }
         "code_impact" => {
             let base = args.get("base").and_then(|v| v.as_str());
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
@@ -4194,6 +4230,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_callers",
     "code_callees",
     "code_implementations",
+    "code_supertypes",
     "code_rename",
     "code_safe_delete",
     "code_assists",
