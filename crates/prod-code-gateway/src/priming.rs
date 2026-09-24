@@ -2,10 +2,11 @@
 //!
 //! The first diagnostics of a large file infer every function in it cold: 47 s for a
 //! 4,246-line file on a Linux build node, against 2.3 s once warm. An agent validates the file
-//! it just edited, so the gateway warms the Rust files a sync writes, and, when a workspace is
-//! loaded, the ones modified most recently. The work runs on analysis snapshots without the
-//! engine lock, so queries go on, and a write to the database (the next sync, an overlay)
-//! cancels it.
+//! it just edited, so the gateway warms the Rust files a sync writes, and, when the validation
+//! engine is loaded, the ones modified most recently. Validation runs on an engine of its own
+//! (`SharedWorkspace::validation_view`), and that is the one warmed. The work runs on analysis
+//! snapshots without the engine lock, so queries go on, and a write to the database (the next
+//! sync, an overlay) cancels it.
 
 use prod_code_engine_rust::RustEngine;
 use std::collections::HashSet;
@@ -14,7 +15,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Instant, SystemTime};
 use tokio::sync::Mutex;
 
-/// Files warmed after a workspace loads, the most recently modified first.
+/// Files warmed after the validation engine loads, the most recently modified first.
 pub const RECENT_FILES: usize = 10;
 /// Files warmed after one sync; a sync that writes more is a checkout arriving, not an edit.
 pub const SYNCED_FILES: usize = 20;
