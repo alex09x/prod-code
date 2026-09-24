@@ -391,6 +391,16 @@ impl WorkspaceManager {
                 });
 
                 if let Some(re) = loaded_engine {
+                    // Nothing is warm after a load; the newest files are the likeliest to be
+                    // asked about first (#233).
+                    crate::priming::warm_in_background(
+                        Arc::clone(&re),
+                        workspace_root.to_path_buf(),
+                        crate::priming::recent_rust_files(
+                            workspace_root,
+                            crate::priming::RECENT_FILES,
+                        ),
+                    );
                     rust_engine = Some(re);
                 } else {
                     backend = crate::backend::BackendWorker::spawn(workspace_root, engine)

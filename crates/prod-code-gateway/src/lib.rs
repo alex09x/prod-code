@@ -9,6 +9,7 @@ pub mod detect;
 pub mod embed;
 pub mod memory;
 mod metrics;
+pub mod priming;
 pub mod search;
 pub mod shadow;
 pub mod workspace;
@@ -1830,6 +1831,17 @@ pub async fn handle_client(
                     req,
                 )
                 .await;
+                // The files an agent is editing are the ones it validates next: warm them now
+                // (#233).
+                if let Some(loaded) = state.workspace_manager.get_loaded(&workspace).await
+                    && let Some(engine) = loaded.rust_engine.clone()
+                {
+                    priming::warm_in_background(
+                        engine,
+                        workspace.clone(),
+                        priming::synced_rust_files(&workspace, &touched),
+                    );
+                }
                 // The search index is kept current by what the sync wrote, so a query never
                 // has to walk the tree.
                 state.search_indexes.invalidate(&workspace, touched);
