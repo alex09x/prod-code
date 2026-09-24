@@ -343,6 +343,11 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Rust symbols in dependency crates are found by name** (#246). `symbols`, `--symbol NAME` and
+  `code_symbols` searched only the workspace's own crates, so a type from a dependency
+  (`Framed` from tokio-util) could not be found. When the workspace has no match, rust-analyzer's
+  library symbol search now runs. Each hit names its crate and module (`tokio_util::codec::framed`),
+  read from rust-analyzer's moniker for it. Workspace hits still come alone when there are any.
 - **Supertypes** (roadmap 7.5, #224). `code_supertypes` / `prod-code supertypes` answer the
   upward half of the type hierarchy (`code_implementations` is the downward one).
   - A Rust type's traits: the derived ones read from its `#[derive(…)]` attributes, including a
