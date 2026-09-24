@@ -24,6 +24,19 @@ pub struct LspSession {
     pub engine: String,
 }
 
+/// How long a request may take before the session gives up on it. A structural rewrite searches
+/// the workspace with type inference and legitimately takes minutes. A file's diagnostics are a
+/// full check of it: 85 s cold for a 4,246-line file on an aarch64 build node, where 60 s made
+/// the client give up and send the same work again (#237). Everything else is an interactive
+/// query and should not take long.
+fn budget_for(method: &str) -> std::time::Duration {
+    std::time::Duration::from_secs(match method {
+        "prodCode/structuralReplace" => 900,
+        "textDocument/diagnostic" => 300,
+        _ => 60,
+    })
+}
+
 impl LspSession {
     /// Opens a session on `remote` for the checkout at `root`. `hint` selects a nested
     /// project (any path inside it); the root project otherwise.
@@ -141,13 +154,7 @@ impl LspSession {
         self.framed
             .send(WireMessage::LspPayload(msg.to_string()))
             .await?;
-        // A structural rewrite searches the workspace with type inference and legitimately
-        // takes minutes; everything else is an interactive query and should not.
-        let budget = if method == "prodCode/structuralReplace" {
-            std::time::Duration::from_secs(900)
-        } else {
-            std::time::Duration::from_secs(60)
-        };
+        let budget = budget_for(method);
         let deadline = tokio::time::Instant::now() + budget;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -410,4 +417,16 @@ pub async fn pooled_query(
         }
     }
     unreachable!("two attempts always return")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_full_check_gets_more_time_than_an_interactive_query() {
+        assert_eq!(budget_for("textDocument/hover").as_secs(), 60);
+        assert_eq!(budget_for("textDocument/diagnostic").as_secs(), 300);
+        assert_eq!(budget_for("prodCode/structuralReplace").as_secs(), 900);
+    }
 }

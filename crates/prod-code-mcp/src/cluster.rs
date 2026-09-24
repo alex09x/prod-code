@@ -145,6 +145,23 @@ pub async fn is_alive(addr: SocketAddr) -> bool {
     )
 }
 
+/// How many times an unreachable remembered node is asked again, and how long apart, before
+/// the checkout moves: a gateway restarting for a deploy is back in about two seconds, and a
+/// move leaves its warm analyzer behind (#238).
+const RESTART_RETRIES: usize = 4;
+const RESTART_WAIT: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Can `node` take the workspace: alive, and serving `engine` when one is needed.
+async fn node_fits(node: SocketAddr, engine: Option<&str>) -> bool {
+    match engine {
+        None => is_alive(node).await,
+        Some(engine) => node_status(node)
+            .await
+            .map(|status| supports_engine(&status, engine))
+            .unwrap_or(false),
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Placement {
     #[serde(default)]
@@ -209,13 +226,15 @@ pub async fn pick_node_with(
         if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
             && nodes.contains(&remembered)
         {
-            let still_fits = match engine {
-                None => is_alive(remembered).await,
-                Some(engine) => node_status(remembered)
-                    .await
-                    .map(|status| supports_engine(&status, engine))
-                    .unwrap_or(false),
-            };
+            let mut still_fits = node_fits(remembered, engine).await;
+            // A node that does not answer at all may be restarting: ask again before moving.
+            // One that answers but cannot serve the engine is left at once.
+            let mut tries = 0;
+            while !still_fits && tries < RESTART_RETRIES && !is_alive(remembered).await {
+                tokio::time::sleep(RESTART_WAIT).await;
+                tries += 1;
+                still_fits = node_fits(remembered, engine).await;
+            }
             if still_fits {
                 return Ok(remembered);
             }
@@ -630,6 +649,46 @@ mod tests {
         assert!(supports_engine(&status, "generic-lsp"));
         assert!(!supports_engine(&status, "go"));
         assert!(!supports_engine(&status, "swif"));
+    }
+
+    /// A remembered node that is down for a moment, as a gateway is while it restarts, keeps the
+    /// workspace; one that stays down loses it to a live node (#238).
+    #[tokio::test]
+    async fn a_remembered_node_that_restarts_keeps_the_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+        let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let other_addr = other.local_addr().unwrap();
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home = closed.local_addr().unwrap();
+        drop(closed);
+        let mut remembered = Placement::default();
+        remembered.workspaces.insert("ws".to_string(), home);
+        save_placement(&placement, &remembered);
+        let revived = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+            let listener = tokio::net::TcpListener::bind(home).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            drop(listener);
+        });
+        let picked = pick_node_with(&[other_addr, home], "ws", None, Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(picked, home, "the restarted node keeps the workspace");
+        revived.abort();
+
+        // Down for good: after the retries the workspace moves to the live node.
+        let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gone_addr = gone.local_addr().unwrap();
+        drop(gone);
+        let mut remembered = Placement::default();
+        remembered.workspaces.insert("ws2".to_string(), gone_addr);
+        save_placement(&placement, &remembered);
+        let picked = pick_node_with(&[other_addr, gone_addr], "ws2", None, Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(picked, other_addr);
+        drop(other);
     }
 
     #[tokio::test]

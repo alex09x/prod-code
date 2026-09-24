@@ -20,6 +20,14 @@
     with its old and new length.
 
 ### Fixed
+- **A checkout stays on its build node through a gateway restart** (#238). One refused
+  connection to the remembered node re-placed the checkout, so a two-second restart for a
+  deploy moved it to another node and left its warm rust-analyzer behind. An unreachable
+  remembered node is now asked again up to 4 times, 750 ms apart, before the checkout moves.
+  A node that answers but cannot serve the engine is still left at once.
+- **A file's diagnostics get 300 s instead of the 60 s interactive budget** (#237). A cold full
+  check of a 4,246-line file took 85 s on an aarch64 node, so the client gave up and sent the
+  same work again.
 - **The exec platform warning no longer fires on `cargo fmt`** (#234). The #140 warning named
   every written-back file that mentions `cfg(target_…)` or `libc::`, including files a
   formatter only laid out again, so every format-and-check run showed a false alarm. A
