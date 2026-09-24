@@ -1921,14 +1921,16 @@ impl RustEngine {
             // Identical text (the common didOpen of an unmodified file) must not bump the
             // Salsa revision: that would invalidate every derived query for nothing and turn a
             // cached 1 ms hover into a 10-40 ms recomputation.
-            if self
-                .host
-                .analysis()
-                .file_text(fid)
-                .is_ok_and(|current| *current == *new_text)
-            {
+            let current = self.host.analysis().file_text(fid).ok();
+            if current.as_deref().is_some_and(|current| *current == *new_text) {
                 return Ok(());
             }
+            tracing::debug!(
+                file = %norm.display(),
+                old_len = current.as_deref().map(|c| c.len()),
+                new_len = new_text.len(),
+                "file text changed in the database"
+            );
             (fid, false)
         } else {
             let mut vfs = self
