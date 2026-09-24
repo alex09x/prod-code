@@ -143,16 +143,26 @@ pub struct SearchIndexes {
     inner: Arc<Inner>,
 }
 
+/// The model is held twice, once for questions and once for the background pass, because a
+/// search must never wait for that pass: a batch of `EMBED_BATCH` declarations keeps its model
+/// busy for hundreds of milliseconds, seconds on a loaded node, and one shared model made every
+/// question wait for the batch in progress. Handing one model over between smaller batches
+/// would still make a question wait for the batch that holds it. The price of a second session
+/// is one more copy of the model in memory (tens of megabytes for BGE-small), loaded from the
+/// same directory.
 struct Inner {
     by_workspace: Mutex<HashMap<PathBuf, WorkspaceIndex>>,
-    model: Mutex<Model>,
+    /// Embeds questions; only a search takes it.
+    query_model: Mutex<Model>,
+    /// Embeds declarations; only the background pass (and `embed_pending`) takes it.
+    passage_model: Mutex<Model>,
     /// Workspaces a background pass is embedding right now.
     embedding: Mutex<HashSet<PathBuf>>,
 }
 
 impl Default for SearchIndexes {
     fn default() -> Self {
-        Self::with(Model::Missing)
+        Self::with(Model::Missing, Model::Missing)
     }
 }
 
@@ -174,19 +184,21 @@ impl SearchIndexes {
     /// Lexical and dense search, with the model in `dir` loaded on the first query. A missing or
     /// broken model leaves the search lexical.
     pub fn with_model_dir(dir: PathBuf) -> Self {
-        Self::with(Model::Unloaded(dir))
+        Self::with(Model::Unloaded(dir.clone()), Model::Unloaded(dir))
     }
 
-    /// Lexical and dense search with this embedder.
-    pub fn with_embedder(embedder: Box<dyn Embed>) -> Self {
-        Self::with(Model::Ready(embedder))
+    /// Lexical and dense search with these embedders: one for questions, one for declarations.
+    /// They must be the same model, or the two kinds of vector do not compare.
+    pub fn with_embedders(query: Box<dyn Embed>, passages: Box<dyn Embed>) -> Self {
+        Self::with(Model::Ready(query), Model::Ready(passages))
     }
 
-    fn with(model: Model) -> Self {
+    fn with(query: Model, passages: Model) -> Self {
         Self {
             inner: Arc::new(Inner {
                 by_workspace: Mutex::new(HashMap::new()),
-                model: Mutex::new(model),
+                query_model: Mutex::new(query),
+                passage_model: Mutex::new(passages),
                 embedding: Mutex::new(HashSet::new()),
             }),
         }
@@ -305,27 +317,8 @@ impl Inner {
         self.by_workspace.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The model, loaded on first use. `None` when there is none or it failed; the failure is
-    /// logged once and the search stays lexical.
-    fn model(&self) -> std::sync::MutexGuard<'_, Model> {
-        let mut model = self.model.lock().unwrap_or_else(|e| e.into_inner());
-        if let Model::Unloaded(dir) = &*model {
-            *model = match crate::embed::OnnxEmbedder::load(dir) {
-                Ok(loaded) => {
-                    tracing::info!("embedding model loaded from {}", dir.display());
-                    Model::Ready(Box::new(loaded))
-                }
-                Err(err) => {
-                    tracing::warn!("no dense search: {err:#}");
-                    Model::Missing
-                }
-            };
-        }
-        model
-    }
-
     fn query_vector(&self, query: &str) -> Option<Vec<f32>> {
-        match &mut *self.model() {
+        match &mut *loaded(&self.query_model, "questions") {
             Model::Ready(model) => model
                 .query(query)
                 .map_err(|err| tracing::warn!("embedding the query failed: {err:#}"))
@@ -359,7 +352,7 @@ impl Inner {
             return 0;
         }
         let texts: Vec<String> = batch.iter().map(|(_, _, _, text)| text.clone()).collect();
-        let vectors = match &mut *self.model() {
+        let vectors = match &mut *loaded(&self.passage_model, "declarations") {
             Model::Ready(model) => match model.passages(&texts) {
                 Ok(vectors) => vectors,
                 Err(err) => {
@@ -386,6 +379,28 @@ impl Inner {
         }
         installed
     }
+}
+
+/// The model in `slot`, loaded on first use; `purpose` names it in the log. `Missing` when there
+/// is none or it failed; the failure is logged once per slot and the search stays lexical.
+fn loaded<'a>(slot: &'a Mutex<Model>, purpose: &str) -> std::sync::MutexGuard<'a, Model> {
+    let mut model = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Model::Unloaded(dir) = &*model {
+        *model = match crate::embed::OnnxEmbedder::load(dir) {
+            Ok(loaded) => {
+                tracing::info!(
+                    "embedding model for {purpose} loaded from {}",
+                    dir.display()
+                );
+                Model::Ready(Box::new(loaded))
+            }
+            Err(err) => {
+                tracing::warn!("no dense search: {err:#}");
+                Model::Missing
+            }
+        };
+    }
+    model
 }
 
 /// Walks the workspace copy and reindexes files whose stamp changed.
@@ -1392,7 +1407,7 @@ impl Metrics {
         assert!(lexical_only.hits.is_empty());
         assert!(lexical_only.dense.is_none());
 
-        let indexes = SearchIndexes::with_embedder(Box::new(Concepts));
+        let indexes = SearchIndexes::with_embedders(Box::new(Concepts), Box::new(Concepts));
         let first = indexes.search(root, question, 5, None);
         assert_eq!(first.declarations, 2);
         let found = embedded(&indexes, root, question);
@@ -1422,6 +1437,81 @@ impl Metrics {
         );
         indexes.forget(root);
         assert_eq!(indexes.embed_pending(root, 100), 0);
+    }
+
+    /// Stands in for the model on a busy node: a batch of declarations says it has started and
+    /// then blocks until the test releases it (or gives up after `BLOCK`), so a batch is in
+    /// progress for as long as the test needs.
+    struct Blocking {
+        started: std::sync::mpsc::Sender<()>,
+        release: std::sync::mpsc::Receiver<()>,
+    }
+
+    const BLOCK: std::time::Duration = std::time::Duration::from_secs(30);
+
+    impl Embed for Blocking {
+        fn passages(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
+            let _ = self.started.send(());
+            let _ = self.release.recv_timeout(BLOCK);
+            Ok(texts.iter().map(|t| concept_vector(t)).collect())
+        }
+
+        fn query(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(concept_vector(text))
+        }
+    }
+
+    #[test]
+    fn a_question_does_not_wait_for_the_batch_being_embedded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("net.rs"),
+            "/// Re-establishes the socket after the link drops.\npub fn reconnect_on_close() {}\n",
+        )
+        .unwrap();
+        let question = "restore the connection when the server goes away";
+        let (started, batch_started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let indexes = SearchIndexes::with_embedders(
+            Box::new(Concepts),
+            Box::new(Blocking {
+                started,
+                release: released,
+            }),
+        );
+
+        // The first search starts the background pass, whose batch then blocks.
+        indexes.search(&root, question, 5, None);
+        batch_started
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the background pass started a batch");
+
+        // A question asked meanwhile is answered without waiting for that batch, and says how
+        // far the embedding has got.
+        let (answer, answered) = std::sync::mpsc::channel();
+        {
+            let indexes = indexes.clone();
+            let root = root.clone();
+            std::thread::spawn(move || {
+                let _ = answer.send(indexes.search(&root, question, 5, None));
+            });
+        }
+        let found = answered
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("the search returned while a batch was still being embedded");
+        let dense = found.dense.as_ref().expect("there is a model");
+        assert!(!dense.used);
+        assert_eq!(dense.embedded, 0);
+        assert_eq!(found.declarations, 1);
+
+        // Released, the batch lands and the next question is ranked by meaning too.
+        drop(release);
+        let found = embedded(&indexes, &root, question);
+        let dense = found.dense.as_ref().unwrap();
+        assert!(dense.used);
+        assert_eq!(dense.embedded, 1);
+        assert_eq!(found.hits[0].name, "reconnect_on_close");
     }
 
     #[test]

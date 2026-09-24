@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Performance
+- **Semantic search no longer waits for the background embedding pass** (#240). A question and
+  the background pass shared one model, so a search waited for the batch of 64 declarations in
+  progress: 555 ms instead of 4 ms right after a workspace loaded. Questions and declarations
+  now each have their own model instance, loaded from the same directory. That costs one more
+  copy of the model, tens of megabytes for BGE-small.
 - **The gateway warms rust-analyzer for the files an agent is editing** (#233). The first
   validation of a large file after the analyzer starts inferred every function and computed
   every diagnostic cold: 53–58 s for the 4,246-line `crates/prod-code-client/src/main.rs` on a
