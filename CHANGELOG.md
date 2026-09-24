@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **`code_outline` reports why a file cannot be outlined instead of an empty outline** (#270).
+  The gateway turned every error of the Rust engine's document symbols into an empty list, so
+  `prod-code outline README.md` in a Rust workspace printed a header and nothing, with exit
+  code 0. An agent could not tell a refused file from one that declares nothing. The error is
+  now an LSP error response: `README.md is not a Rust file, and no language server of this
+  workspace outlines it`.
+
 ## v0.3.1 — 2026-09-24
 
 ### Fixed

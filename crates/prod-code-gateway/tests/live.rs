@@ -391,6 +391,28 @@ async fn the_gateway_answers_a_real_checkout() {
         );
     }
 
+    // A file the analyzer refuses is an error with the reason, not an empty outline (#270).
+    std::fs::write(
+        root.join("README.md"),
+        "A table row about a trait or interface.\n",
+    )
+    .unwrap();
+    let refused = match prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_outline",
+        serde_json::json!({ "path": "README.md" }),
+    )
+    .await
+    {
+        Ok(result) => {
+            assert!(result.is_error, "{}", text_of(&result));
+            text_of(&result)
+        }
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(refused.contains("is not a Rust file"), "{refused}");
+
     // The symbol index answers by name.
     let symbols = text_of(
         &tool(

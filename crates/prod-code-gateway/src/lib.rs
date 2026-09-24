@@ -3945,19 +3945,22 @@ fn lsp_document_symbol(
                  if let Err(e) = engine.activate_session(session_id) {
                      tracing::warn!(error = %e, session = session_id, "session view activation failed");
                  }
-                 engine.document_symbols(&fp_clone).unwrap_or_else(|e| {
+                 // An error is the answer, not an empty file: a README in a Rust workspace is
+                 // refused with the reason, and an agent must be able to tell that from a file
+                 // that declares nothing (#270).
+                 engine.document_symbols(&fp_clone).map_err(|e| {
                      tracing::warn!(error = %e, session = session_id, "query failed");
-                     Vec::new()
+                     e.to_string()
                  })
              })
              .await
-             .unwrap_or_default()
+             .unwrap_or_else(|e| Err(e.to_string()))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let count = syms.len();
+        let count = syms.as_ref().map_or(0, Vec::len);
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -3982,6 +3985,19 @@ fn lsp_document_symbol(
             );
         }
 
+        let syms = match syms {
+            Ok(syms) => syms,
+            Err(message) => {
+                let resp = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "error": { "code": -32603, "message": message }
+                });
+                let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+                let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+                return;
+            }
+        };
         let sym_list: Vec<_> = syms.into_iter().map(|s| {
              let kind_num = lsp_symbol_kind(&s.kind);
              serde_json::json!({
