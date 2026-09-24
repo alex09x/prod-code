@@ -2069,7 +2069,10 @@ async fn execute_lsp_query(
                     client_pid: std::process::id(),
                     auth_token: None,
                     client_workspace_root: ws_root_str.clone(),
-                    preferred_engine: None,
+                    preferred_engine: engine_subpath
+                        .as_ref()
+                        .and(expected_engine)
+                        .map(str::to_string),
                     base_workspace_name: base_ws_name.clone(),
                     engine_subpath,
                     client_agent: Some(prod_code_protocol::detect_client_agent()),

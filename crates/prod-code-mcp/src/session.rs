@@ -79,7 +79,10 @@ impl LspSession {
         push_workspace_sync(&mut framed, &root, &identity, None)
             .await
             .context("pre-flight workspace sync failed")?;
-        let (engine_subpath, _) = engine_project(&root, hint.unwrap_or(&root));
+        let (engine_subpath, engine) = engine_project(&root, hint.unwrap_or(&root));
+        // A nested project's engine is named, so a directory with no manifest of its own (a
+        // loose script's) is served by its language, not by detection there (#247).
+        let preferred_engine = engine_subpath.as_ref().and(engine).map(str::to_string);
         framed
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
@@ -87,7 +90,7 @@ impl LspSession {
                 client_pid: std::process::id(),
                 auth_token: None,
                 client_workspace_root: root_str.clone(),
-                preferred_engine: None,
+                preferred_engine,
                 base_workspace_name: Some(identity.name.clone()),
                 engine_subpath,
                 client_agent: Some(prod_code_protocol::detect_client_agent()),

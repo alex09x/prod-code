@@ -37,6 +37,16 @@
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.
+- **Files of another language in a mixed repository are served by their own language server**
+  (#247).
+  - A loose Python script in a Rust repository (a directory with no project of its own) went to
+    rust-analyzer, and its outline came back empty. Its directory is now served by the Python
+    engine: the client names the engine in the handshake (`preferred_engine`) with the
+    directory as `engine_subpath`. `scripts/coverage.py` in this repository is outlined with
+    its 5 declarations. A file at the root itself stays with the root.
+  - rust-analyzer no longer adds a file that is not Rust to its database when a client opens
+    it. README.md had been parsed as Rust and outlined as `[Interface] or`. Its outline is now
+    an error saying no language server of the workspace outlines it.
 - **A checkout stays on its build node through a gateway restart** (#238). One refused
   connection to the remembered node re-placed the checkout, so a two-second restart for a
   deploy moved it to another node and left its warm rust-analyzer behind. An unreachable
