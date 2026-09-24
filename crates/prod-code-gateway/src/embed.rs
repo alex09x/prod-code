@@ -9,11 +9,51 @@
 //! The model is an ONNX export run in process by ONNX Runtime: BGE-small (English, 384
 //! dimensions, 34 MB quantized) by default, found in `models/bge-small-en-v1.5` next to the
 //! workspaces directory (`~/prod-code-storage/models/…`, beside the metrics) or
-//! wherever `PROD_CODE_EMBED_MODEL` points. It is optional: without it the search is lexical
-//! only and says so.
+//! wherever `PROD_CODE_EMBED_MODEL` points. ONNX Runtime itself is a shared library loaded at
+//! run time, not linked: `models/onnxruntime/libonnxruntime.so` (`.dylib` on macOS) beside the
+//! model, or `ORT_DYLIB_PATH`. Microsoft's release builds need glibc 2.28, so the gateway builds
+//! and runs anywhere. Both are optional: without either the search is lexical only and says so.
 
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
+
+/// ONNX Runtime's library file on this platform.
+#[cfg(target_os = "macos")]
+const RUNTIME_LIBRARY: &str = "libonnxruntime.dylib";
+#[cfg(not(target_os = "macos"))]
+const RUNTIME_LIBRARY: &str = "libonnxruntime.so";
+
+/// Where ONNX Runtime's library is looked for: `ORT_DYLIB_PATH`, or `onnxruntime/` beside the
+/// model's directory.
+pub fn runtime_path(model_dir: &Path) -> PathBuf {
+    match std::env::var_os("ORT_DYLIB_PATH") {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => model_dir
+            .parent()
+            .unwrap_or(model_dir)
+            .join("onnxruntime")
+            .join(RUNTIME_LIBRARY),
+    }
+}
+
+/// Loads ONNX Runtime once per process. Every later call returns the first call's outcome: the
+/// library cannot be unloaded and loaded again from elsewhere.
+fn load_runtime(model_dir: &Path) -> Result<()> {
+    static LOADED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    LOADED
+        .get_or_init(|| {
+            let library = runtime_path(model_dir);
+            if !library.is_file() {
+                return Err(format!("no ONNX Runtime library at {}", library.display()));
+            }
+            ort::init_from(&library)
+                .map_err(|e| format!("loading {}: {e}", library.display()))?
+                .commit();
+            Ok(())
+        })
+        .clone()
+        .map_err(|e| anyhow!(e))
+}
 
 /// Declarations are short; the head of a long doc comment carries its topic.
 const MAX_TOKENS: usize = 256;
@@ -97,6 +137,7 @@ impl OnnxEmbedder {
             "no model.onnx and tokenizer.json in {}",
             dir.display()
         );
+        load_runtime(dir)?;
         let threads = std::thread::available_parallelism()
             .map(|n| n.get().min(8))
             .unwrap_or(4);
@@ -276,6 +317,11 @@ mod tests {
                 .filter(|d| !d.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from("/s/models/bge-small-en-v1.5"))
+        );
+        assert!(
+            runtime_path(Path::new("/s/models/bge-small-en-v1.5"))
+                .starts_with("/s/models/onnxruntime")
+                || std::env::var_os("ORT_DYLIB_PATH").is_some()
         );
         let missing = OnnxEmbedder::load(Path::new("/no/such/model"))
             .err()

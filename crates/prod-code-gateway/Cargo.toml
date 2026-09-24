@@ -30,9 +30,10 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 libc = "0.2"
-# Dense intent search (roadmap 8.4): a sentence-embedding model run in process. The model file
-# itself is optional and lives outside the repository.
-ort = { version = "2.0.0-rc.10", features = ["ndarray"] }
+# Dense intent search (roadmap 8.4): a sentence-embedding model run in process. ONNX Runtime is
+# loaded at run time (`load-dynamic`), not linked: the prebuilt archive `ort` would download needs
+# glibc 2.38 (#220). The model and the library are optional and live outside the repository.
+ort = { version = "2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-22"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 ndarray = "0.17"
 
