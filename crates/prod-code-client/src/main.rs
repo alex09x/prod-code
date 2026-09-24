@@ -778,24 +778,26 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Bundle several of a function's parameters into a struct, with body and call sites.
+    /// Bundle several of a function's parameters into a new type, with body and call sites
+    /// (Rust, TypeScript, Python, Go).
     ParameterObject {
-        /// The function, by name (`move_item`, `Session::open_text`).
+        /// The function, by name (`move_item`, `Session::open_text`, `Canvas.draw`).
         symbol: String,
         /// A parameter to bundle, by the name the declaration gives it. Repeat the flag.
         #[arg(long = "param", required = true)]
         params: Vec<String>,
-        /// The struct's name, UpperCamelCase.
+        /// The new type's name, UpperCamelCase.
         #[arg(long)]
         name: String,
-        /// What the new parameter is called in the body (default: the name in snake_case).
+        /// What the new parameter is called in the body (default: the name in snake_case, or in
+        /// lowerCamelCase in TypeScript and Go).
         #[arg(long)]
         binding: Option<String>,
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
         /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
-        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        /// only if the compiler accepts it too. Rust only; seconds rather than milliseconds.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting it.
