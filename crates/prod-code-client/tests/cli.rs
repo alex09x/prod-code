@@ -210,6 +210,7 @@ async fn handle_client(
                             timed_out: false,
                             error: None,
                             usage: None,
+                            platform: None,
                         }))
                         .await?;
                 } else {
@@ -237,6 +238,7 @@ async fn handle_client(
                                 cpu_sys_ms: 200,
                                 max_rss_kb: 10240,
                             }),
+                            platform: Some("linux x86_64".to_string()),
                         }))
                         .await?;
                 }
@@ -956,6 +958,11 @@ async fn cli_test_sets_env_and_prints_events_then_the_report() {
     assert!(
         stdout_of(&text).contains("cpu 1.5s user 0.2s sys, peak 10 MB"),
         "{}",
+        stdout_of(&text)
+    );
+    assert!(
+        stdout_of(&text).contains(" on linux x86_64;"),
+        "the platform is named: {}",
         stdout_of(&text)
     );
 

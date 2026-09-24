@@ -154,6 +154,10 @@ pub struct VerifyReport {
     /// CPU time and peak memory of the command and its children, when the node could tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<prod_code_protocol::ExecUsage>,
+    /// The OS and architecture the run was on (`linux x86_64`): a diagnostic or a fix is for
+    /// that platform (#140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 impl VerifyReport {
@@ -183,10 +187,14 @@ impl VerifyReport {
             (false, None) => "KILLED".to_string(),
         };
         let mut parts = vec![format!(
-            "{} {}: {status} in {:.1}s",
+            "{} {}: {status} in {:.1}s{}",
             self.language,
             self.kind.label(),
-            self.duration_ms as f64 / 1000.0
+            self.duration_ms as f64 / 1000.0,
+            self.platform
+                .as_deref()
+                .map(|p| format!(" on {p}"))
+                .unwrap_or_default()
         )];
         if self.kind == VerifyKind::Test {
             parts.push(format!(
@@ -1943,6 +1951,7 @@ pub async fn run_verify_with(
         fixes,
         benches,
         usage: outcome.exit.usage,
+        platform: outcome.exit.platform.clone(),
     })
 }
 
@@ -2278,6 +2287,7 @@ expected 42, got 43\n\
             fixes: vec![],
             benches: found,
             usage: None,
+            platform: None,
         };
         let text = report.render(10);
         assert!(
@@ -2322,6 +2332,7 @@ expected 42, got 43\n\
             fixes: vec![],
             benches: vec![],
             usage: None,
+            platform: None,
         };
         assert_eq!(
             report.summary(),

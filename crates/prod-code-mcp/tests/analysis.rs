@@ -118,6 +118,7 @@ impl ExecGateway {
                             timed_out: false,
                             error: None,
                             usage: None,
+                            platform: None,
                         }))
                         .await?;
                 }

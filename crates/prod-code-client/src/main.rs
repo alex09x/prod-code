@@ -3935,8 +3935,15 @@ async fn run_exec(
             outcome.pulled_files.join(", ")
         );
     }
+    if let Some(warning) = prod_code_mcp::exec::platform_warning(
+        &root,
+        exit.platform.as_deref(),
+        &outcome.pulled_files,
+    ) {
+        eprintln!("[prod-code exec] {warning}");
+    }
     eprintln!(
-        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {}",
+        "[prod-code exec] {} in {:.1}s (server {:.1}s{}) on {}{}",
         match (exit.timed_out, exit.exit_code) {
             (true, _) => "timed out".to_string(),
             (false, Some(code)) => format!("exit {code}"),
@@ -3947,7 +3954,11 @@ async fn run_exec(
         exit.usage
             .map(|u| format!(", {}", u.render()))
             .unwrap_or_default(),
-        exit.server_workspace_root
+        exit.server_workspace_root,
+        exit.platform
+            .as_deref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default()
     );
     std::process::exit(exit.exit_code.unwrap_or(1));
 }
