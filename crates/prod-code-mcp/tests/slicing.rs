@@ -450,6 +450,60 @@ async fn a_re_exported_name_resolves_to_its_definition() {
     assert!(format!("{err:#}").contains("ambiguous"), "{err:#}");
 }
 
+/// A re-export inside a `pub use` that spans lines is the same symbol as its definition too
+/// (#225): the line the index points at is a continuation of the `use`, not its first line.
+/// A struct field below a one-line `use` is not in it.
+#[tokio::test]
+async fn a_name_re_exported_by_a_multi_line_use_resolves_to_its_definition() {
+    let ws = Workspace::new(&[
+        (
+            "src/lib.rs",
+            "pub mod messages;\npub use messages::{\n    Other,\n    WireMessage,\n};\n",
+        ),
+        (
+            "src/messages.rs",
+            "pub enum WireMessage {}\npub struct Other;\n",
+        ),
+        (
+            "src/fields.rs",
+            "use crate::Other;\npub struct Holder {\n    pub WireMessage: u8,\n}\n",
+        ),
+    ]);
+    let root = ws.root();
+    let (lib, messages, fields) = (
+        root.join("src/lib.rs"),
+        root.join("src/messages.rs"),
+        root.join("src/fields.rs"),
+    );
+    let (l, m) = (lib.clone(), messages.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("WireMessage", 10, &l, 4, 5),
+            answers::symbol("WireMessage", 10, &m, 1, 10),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "WireMessage", None)
+        .await
+        .expect("the re-export is not a second candidate");
+    assert_eq!((hit.path, hit.line, hit.col), (messages.clone(), 1, 10));
+
+    let (m, f) = (messages.clone(), fields.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("WireMessage", 10, &m, 1, 10),
+            answers::symbol("WireMessage", 10, &f, 3, 9),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let err = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "WireMessage", None)
+        .await
+        .expect_err("a field below a use is a second declaration");
+    assert!(format!("{err:#}").contains("ambiguous"), "{err:#}");
+}
+
 /// `verify: false` never asks the analyzer, and `verify: true` reports exactly what it rejected
 /// rather than pretending the fixture is usable.
 #[tokio::test]
