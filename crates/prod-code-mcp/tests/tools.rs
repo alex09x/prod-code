@@ -866,6 +866,118 @@ async fn code_callers_to_a_depth_is_a_tree_that_ends_at_recursion() {
     );
 }
 
+/// A Rust type's supertypes: the derives from its attributes (a built-in one and a macro's),
+/// and the trait of a written impl; the inherent impl is not one. A trait's are its bounds.
+#[tokio::test]
+async fn code_supertypes_reads_derives_impls_and_supertraits() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "#[derive(Clone, serde::Serialize)]\npub struct Cache;\n\nimpl Default for Cache {\n    fn default() -> Self { Cache }\n}\n\nimpl Cache {}\n\npub trait Store: Send + Sync {}\n",
+    );
+    commit(&ws);
+    let uri = format!("file://{}", lib.display());
+    let at = |line: u32, character: u32| {
+        serde_json::json!({ "uri": uri.clone(), "range": {
+            "start": { "line": line, "character": character }, "end": { "line": line, "character": character + 5 } } })
+    };
+    let answers = (
+        at(1, 11),
+        serde_json::json!([at(0, 9), at(1, 11), at(3, 17), at(7, 5)]),
+    );
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let line = params.pointer("/position/line").and_then(|l| l.as_u64());
+        match (method, line) {
+            ("textDocument/definition", Some(1)) => answers.0.clone(),
+            ("textDocument/definition", Some(9)) => serde_json::json!([]),
+            ("textDocument/implementation", Some(1)) => answers.1.clone(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let cache = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_supertypes",
+            serde_json::json!({ "path": "src/lib.rs", "line": 2, "character": 12 }),
+        )
+        .await
+        .expect("supertypes run"),
+    );
+    assert_eq!(
+        cache,
+        "`Cache` implements 3 trait(s):\n  • Clone  (derived)  src/lib.rs:1:10\n  • Default  src/lib.rs:4:18\n  • serde::Serialize  (derived)  src/lib.rs:1:17"
+    );
+    let store = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_supertypes",
+            serde_json::json!({ "path": "src/lib.rs", "line": 10, "character": 11 }),
+        )
+        .await
+        .expect("supertypes run"),
+    );
+    assert_eq!(
+        store,
+        "`Store` requires 2 supertrait(s):\n  • Send\n  • Sync"
+    );
+}
+
+/// Another language's server is asked for its type hierarchy, and one without it is named.
+#[tokio::test]
+async fn code_supertypes_asks_other_servers_for_their_type_hierarchy() {
+    let ws = workspace();
+    let go = write(&ws, "shape.go", "package shape\n\ntype Square struct{}\n");
+    commit(&ws);
+    let uri = format!("file://{}", go.display());
+    let item = serde_json::json!({ "name": "Square", "kind": 23, "uri": uri.clone(),
+        "range": { "start": { "line": 2, "character": 5 }, "end": { "line": 2, "character": 11 } },
+        "selectionRange": { "start": { "line": 2, "character": 5 }, "end": { "line": 2, "character": 11 } } });
+    let shape = serde_json::json!([{ "name": "Shape", "kind": 11, "uri": uri.clone(),
+        "range": { "start": { "line": 9, "character": 5 }, "end": { "line": 9, "character": 10 } },
+        "selectionRange": { "start": { "line": 9, "character": 5 }, "end": { "line": 9, "character": 10 } } }]);
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        match (
+            method,
+            params.pointer("/position/line").and_then(|l| l.as_u64()),
+        ) {
+            ("textDocument/prepareTypeHierarchy", Some(2)) => serde_json::json!([item.clone()]),
+            ("textDocument/prepareTypeHierarchy", _) => serde_json::Value::Null,
+            ("typeHierarchy/supertypes", _) => shape.clone(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let found = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_supertypes",
+            serde_json::json!({ "path": "shape.go", "line": 3, "character": 6 }),
+        )
+        .await
+        .expect("supertypes run"),
+    );
+    assert_eq!(
+        found,
+        "`Square` has 1 supertype(s):\n  • Shape  shape.go:10:6"
+    );
+    let none = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_supertypes",
+            serde_json::json!({ "path": "shape.go", "line": 1, "character": 1 }),
+        )
+        .await
+        .expect("supertypes run"),
+    );
+    assert!(none.starts_with("No type hierarchy at"), "{none}");
+}
+
 #[tokio::test]
 async fn code_callers_reports_no_function_at_position() {
     let ws = workspace();

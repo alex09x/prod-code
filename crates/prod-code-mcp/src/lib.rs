@@ -42,6 +42,7 @@ pub mod session;
 pub mod shadow;
 pub mod signature;
 pub mod slice;
+pub mod supertypes;
 pub mod sync;
 pub mod to_method;
 pub mod tools;

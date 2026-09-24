@@ -131,6 +131,19 @@ enum Commands {
         #[arg(long, conflicts_with_all = ["file", "line", "col"])]
         symbol: Option<String>,
     },
+    /// What the type at a position implements, or what the trait requires: prod-code supertypes
+    /// <file> <line> <col>, or --symbol NAME
+    Supertypes {
+        #[arg(required_unless_present = "symbol")]
+        file: Option<PathBuf>,
+        #[arg(required_unless_present = "symbol")]
+        line: Option<u32>,
+        #[arg(required_unless_present = "symbol")]
+        col: Option<u32>,
+        /// The symbol by name (`Type`, `module::Trait`) instead of a position.
+        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        symbol: Option<String>,
+    },
     /// Declarations named like a query across the workspace: prod-code symbols <name>. Given an
     /// existing file instead, its outline (the same as `prod-code outline <file>`).
     Symbols { target: String },
@@ -1130,6 +1143,24 @@ async fn main() -> Result<()> {
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_implementations(remote, &file, line, col).await
+            }
+        },
+        Commands::Supertypes {
+            file,
+            line,
+            col,
+            symbol,
+        } => match symbol {
+            Some(symbol) => run_by_symbol(remote, "code_supertypes", &symbol).await,
+            None => {
+                let (file, line, col) = position(file, line, col)?;
+                let file = std::fs::canonicalize(&file).unwrap_or(file);
+                run_tool(
+                    remote,
+                    "code_supertypes",
+                    serde_json::json!({ "path": file.to_string_lossy(), "line": line, "character": col }),
+                )
+                .await
             }
         },
         Commands::Symbols { target } => {
