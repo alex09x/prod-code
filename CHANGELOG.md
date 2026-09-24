@@ -64,6 +64,14 @@
   starts the command and reports what the command and its descendants used. The peak is now
   the largest resident set among the command's processes, and exit codes and signals pass
   through unchanged.
+- **A remote command no longer overwrites a file edited here while it ran** (#254). `exec`,
+  `code_check` and `code_test` write back the files a command changed on the build node, and
+  they wrote the node's text over the local file without comparing it to anything. An edit made
+  during a long run was lost when the node's version differed.
+  - A file modified here after the command started is now kept, and the output names it.
+  - A file the node already has with this machine's text is neither written nor reported. That
+    happens when another command syncs the checkout during the run. Such files had been reported
+    as "changed by the command" and set off a false platform warning.
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.

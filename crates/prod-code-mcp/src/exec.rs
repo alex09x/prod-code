@@ -22,6 +22,9 @@ pub struct RemoteOutcome {
     /// from whitespace, commas and braces, in any order: a formatter's layout, not a change
     /// (#234, #244).
     pub relaid_files: Vec<String>,
+    /// Files the command changed on the node that were edited here while it ran: the local
+    /// edit is kept and the node's version is not written (#254).
+    pub kept_files: Vec<String>,
 }
 
 impl RemoteOutcome {
@@ -128,6 +131,14 @@ pub fn subdir_of(root: &Path, dir: &Path) -> Option<String> {
     (!rel.is_empty()).then_some(rel)
 }
 
+/// Whether `path` was modified after `since`, on this machine's clock. A file that does not
+/// exist was not.
+fn edited_since(path: &Path, since: std::time::SystemTime) -> bool {
+    std::fs::symlink_metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|modified| modified > since)
+}
+
 /// Runs `command` in the server copy of `root`, calling `on_output(is_stderr, bytes)` for
 /// every chunk as it arrives. With `pull_changes`, files the command created, changed or
 /// deleted on the server are written back into the checkout and recorded in the watermark.
@@ -144,6 +155,9 @@ pub async fn run_remote(
 ) -> Result<RemoteOutcome> {
     anyhow::ensure!(!command.is_empty(), "empty command");
     let identity: WorkspaceIdentity = workspace_identity(root);
+    // Taken before the pre-flight sync: a file modified after this may not be what the node
+    // ran on, so the node's version must not replace it.
+    let started = std::time::SystemTime::now();
     let stream = TcpStream::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
@@ -169,6 +183,7 @@ pub async fn run_remote(
 
     let mut pulled_files = Vec::new();
     let mut relaid_files = Vec::new();
+    let mut kept_files = Vec::new();
     loop {
         match framed.next().await {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -177,20 +192,27 @@ pub async fn run_remote(
                 }
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
-                for delta in &changes.files {
-                    if let (Ok(old), Some(new)) = (
-                        std::fs::read(root.join(&delta.relative_path)),
-                        delta.content.as_deref(),
-                    ) && layout_only(&old, new)
+                let mut written = Vec::new();
+                for delta in changes.files {
+                    let local = root.join(&delta.relative_path);
+                    let current = std::fs::read(&local).ok();
+                    // Already the text here: a sync from this machine reached the node during
+                    // the run, and the command did not make it (#254).
+                    if current.as_deref() == delta.content.as_deref() {
+                        continue;
+                    }
+                    if edited_since(&local, started) {
+                        kept_files.push(delta.relative_path);
+                        continue;
+                    }
+                    if let (Some(old), Some(new)) = (&current, delta.content.as_deref())
+                        && layout_only(old, new)
                     {
                         relaid_files.push(delta.relative_path.clone());
                     }
+                    written.push(delta);
                 }
-                pulled_files.extend(apply_pulled_files_for(
-                    root,
-                    &remote.to_string(),
-                    &changes.files,
-                )?);
+                pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {
                 let _ = framed
@@ -202,6 +224,7 @@ pub async fn run_remote(
                     exit,
                     pulled_files,
                     relaid_files,
+                    kept_files,
                 });
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
@@ -307,6 +330,7 @@ mod tests {
             },
             pulled_files: vec!["a.rs".into(), "b.rs".into()],
             relaid_files: vec!["a.rs".into()],
+            kept_files: Vec::new(),
         };
         assert_eq!(outcome.changed_code(), vec!["b.rs".to_string()]);
     }
