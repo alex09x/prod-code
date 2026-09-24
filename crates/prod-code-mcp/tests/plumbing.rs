@@ -130,6 +130,7 @@ async fn run_remote_streams_output_and_writes_back_pulled_files() {
                 timed_out: false,
                 error: None,
                 usage: None,
+                platform: None,
             }))
             .await
             .unwrap();

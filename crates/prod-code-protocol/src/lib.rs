@@ -13,7 +13,7 @@ pub use messages::{
     ReadFileResponse, SearchHit, SearchRequest, SearchResponse, ShadowHypothesis,
     ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host, content_hash,
-    detect_client_agent,
+    detect_client_agent, platform,
 };
 pub use path::PathTranslator;
 

@@ -1335,6 +1335,7 @@ pub async fn run_exec(
         timed_out: false,
         error: Some(error),
         usage: None,
+        platform: Some(prod_code_protocol::platform()),
     };
     if !workspace.is_dir() {
         framed
@@ -1568,6 +1569,7 @@ pub async fn run_exec(
             timed_out,
             error: None,
             usage,
+            platform: Some(prod_code_protocol::platform()),
         }))
         .await?;
     Ok(())

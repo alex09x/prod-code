@@ -20,6 +20,67 @@ pub struct RemoteOutcome {
     pub pulled_files: Vec<String>,
 }
 
+/// What in a file makes its meaning depend on the platform: conditional compilation on the
+/// target, and the C library, whose signatures differ between Linux and Apple (#140).
+const PLATFORM_MARKS: &[&str] = &[
+    "cfg(target_",
+    "cfg(unix)",
+    "cfg(windows)",
+    "libc::",
+    "#ifdef __APPLE__",
+    "#if defined(__APPLE__)",
+    "#ifdef __linux__",
+    "#if os(",
+    "//go:build ",
+];
+
+/// A warning for files a command rewrote on a node of another OS than this machine's, when
+/// they hold code whose meaning depends on the platform, or the checkout is an Apple project: a
+/// lint or a fix computed there can be wrong here, and it was written back as a success.
+/// `None` when the platforms match, nothing was written, or nothing looks platform-specific.
+pub fn platform_warning(root: &Path, node: Option<&str>, pulled: &[String]) -> Option<String> {
+    let node = node?;
+    let here = prod_code_protocol::platform();
+    let os = |p: &str| p.split(' ').next().unwrap_or("").to_string();
+    if pulled.is_empty() || os(node) == os(&here) {
+        return None;
+    }
+    let marked: Vec<&String> = pulled
+        .iter()
+        .filter(|rel| {
+            std::fs::read_to_string(root.join(rel))
+                .is_ok_and(|text| PLATFORM_MARKS.iter().any(|m| text.contains(m)))
+        })
+        .collect();
+    let apple = root.join("Package.swift").is_file()
+        || std::fs::read_dir(root).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|x| x == "xcodeproj" || x == "xcworkspace")
+            })
+        });
+    if marked.is_empty() && !apple {
+        return None;
+    }
+    let what = if marked.is_empty() {
+        "this checkout is also an Apple project".to_string()
+    } else {
+        format!(
+            "{} of them hold code that depends on the platform ({})",
+            marked.len(),
+            marked
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    Some(format!(
+        "warning: the command ran on {node} and this machine is {here}; {what}. A fix or a lint computed there can be wrong here (a `cfg` it never compiled, a libc signature that differs), so build the checkout here before trusting it."
+    ))
+}
+
 /// The `/`-separated path of `dir` inside `root`, or `None` when `dir` is the root itself
 /// or lies outside it: the directory a command runs in on the server.
 pub fn subdir_of(root: &Path, dir: &Path) -> Option<String> {
@@ -137,6 +198,43 @@ impl TailBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_rewritten_on_another_platform_are_named_when_they_depend_on_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src/pty.rs"),
+            "unsafe { libc::openpty(m, s, p, t, &mut w) };\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("src/plain.rs"), "pub fn add(a: u8) -> u8 { a }\n").unwrap();
+        let here = prod_code_protocol::platform();
+        let other = if cfg!(target_os = "macos") {
+            "linux x86_64"
+        } else {
+            "macos aarch64"
+        };
+        let both = vec!["src/pty.rs".to_string(), "src/plain.rs".to_string()];
+        let plain = vec!["src/plain.rs".to_string()];
+        assert_eq!(platform_warning(root, Some(&here), &both), None);
+        assert_eq!(platform_warning(root, None, &both), None);
+        assert_eq!(platform_warning(root, Some(other), &[]), None);
+        assert_eq!(platform_warning(root, Some(other), &plain), None);
+        let warning = platform_warning(root, Some(other), &both).expect("a libc call is named");
+        assert!(
+            warning.contains(&format!("ran on {other} and this machine is {here}")),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("1 of them hold code that depends on the platform (src/pty.rs)"),
+            "{warning}"
+        );
+        std::fs::write(root.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+        let apple = platform_warning(root, Some(other), &plain).expect("an Apple project is named");
+        assert!(apple.contains("also an Apple project"), "{apple}");
+    }
 
     #[test]
     fn tail_buffer_keeps_only_the_end() {

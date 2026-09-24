@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Fixed
+- **exec, check, lint and test name the platform they ran on, and warn when a write-back may be
+  wrong here** (#140). A `clippy --fix` on a Linux node rewrote `&mut win` to `&win` for
+  `libc::openpty`, whose Apple signature takes `*mut`, and the checkout stopped building on
+  macOS. The only message was "15 file(s) … written back".
+  - `ExecExit.platform` carries the node's OS and architecture (`linux x86_64`). The exec
+    summary and every check/lint/test summary print it.
+  - When files were written back from a node whose OS differs from this machine's, and they
+    hold platform-dependent code (`cfg(target_…)`, `cfg(unix)`, `libc::`, `#ifdef __APPLE__`,
+    `//go:build`), or the checkout is an Apple project, the result names them and says to
+    build here before trusting it.
 - **supertypes reads supertraits written as `where Self: …`** (#227). `trait Circle where Self:
   Shape {}` answered "requires no supertrait", because only the bounds after the colon were
   read. Bounds on `Self` in the `where` clause count too, and `where` is matched as a word, not

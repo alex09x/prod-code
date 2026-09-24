@@ -446,6 +446,10 @@ pub struct ExecExit {
     /// What the command and every descendant it waited for used, when the server could tell.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ExecUsage>,
+    /// The OS and architecture the command ran on (`linux x86_64`), from [`platform`]. A fix or a
+    /// lint computed there is for that platform, whatever the checkout targets (#140).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
 }
 
 /// Resource use of a finished command, from `wait4`.
@@ -615,6 +619,11 @@ pub fn detect_client_agent() -> String {
         return "codex".to_string();
     }
     "cli".to_string()
+}
+
+/// This machine's OS and architecture, as `linux x86_64` or `macos aarch64`.
+pub fn platform() -> String {
+    format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
 /// The client machine's hostname (cached).

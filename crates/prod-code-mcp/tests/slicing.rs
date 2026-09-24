@@ -840,6 +840,7 @@ async fn exec_gateway(
                 timed_out: false,
                 error: None,
                 usage: None,
+                platform: None,
             }))
             .await;
         let _ = framed.next().await;

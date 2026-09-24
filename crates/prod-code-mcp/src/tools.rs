@@ -3431,13 +3431,17 @@ async fn handle_exec(
         (None, false, None) => "killed by signal".to_string(),
     };
     let mut text = format!(
-        "$ {}\n[{status} in {:.1}s{} on {}; {} bytes of output{}]\n",
+        "$ {}\n[{status} in {:.1}s{} on {}{}; {} bytes of output{}]\n",
         argv.join(" "),
         exit.duration_ms as f64 / 1000.0,
         exit.usage
             .map(|u| format!(" ({})", u.render()))
             .unwrap_or_default(),
         exit.server_workspace_root,
+        exit.platform
+            .as_deref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default(),
         tail.total,
         if tail.total > tail_bytes {
             ", tail shown"
@@ -3451,6 +3455,13 @@ async fn handle_exec(
             outcome.pulled_files.len(),
             outcome.pulled_files.join(", ")
         ));
+    }
+    if let Some(warning) = crate::exec::platform_warning(
+        workspace_root,
+        exit.platform.as_deref(),
+        &outcome.pulled_files,
+    ) {
+        text.push_str(&format!("[{warning}]\n"));
     }
     text.push_str(&tail.text());
     Ok(if matches!(exit.exit_code, Some(0)) {
