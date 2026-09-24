@@ -98,7 +98,8 @@ impl SharedWorkspace {
                 })
                 .await;
                 match loaded {
-                    Ok(Ok(engine)) => {
+                    Ok(Ok(mut engine)) => {
+                        engine.set_label("validation");
                         let engine = Arc::new(Mutex::new(engine));
                         if let Ok(mut all) = engines.lock() {
                             all.push(Arc::clone(&engine));

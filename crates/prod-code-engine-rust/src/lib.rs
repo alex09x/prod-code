@@ -375,6 +375,11 @@ pub struct RustEngineSnapshot {
     pub workspace_root: PathBuf,
     analysis: ra_ap_ide::Analysis,
     vfs: Arc<std::sync::RwLock<Vfs>>,
+    /// Which engine of the workspace this is a snapshot of, and how many changes that engine
+    /// had applied when it was taken: a diagnostics pass is logged with both, so a cold pass
+    /// can be traced to the write that made it cold (#235).
+    label: &'static str,
+    changes: u64,
 }
 
 impl RustEngineSnapshot {
@@ -938,6 +943,8 @@ impl RustEngineSnapshot {
         let unresolved = self.unresolved_paths(file_id, &text, &covered);
         tracing::debug!(
             file = %path.display(),
+            engine = self.label,
+            changes = self.changes,
             analyzer_ms = analyzer.as_millis() as u64,
             unused_imports_ms = imports.as_millis() as u64,
             unresolved_paths_ms = (started.elapsed() - analyzer - imports).as_millis() as u64,
@@ -1487,6 +1494,10 @@ pub struct RustEngine {
     vfs: Arc<std::sync::RwLock<Vfs>>,
     source_root_config: Arc<SourceRootConfig>,
     overlays: SessionOverlays,
+    /// `main` or `validation`, for the logs.
+    label: &'static str,
+    /// Changes applied to the database since the load; each starts a new revision.
+    changes: u64,
 }
 
 /// Per-session live buffers layered over the shared base workspace.
@@ -1504,6 +1515,23 @@ struct SessionOverlays {
 }
 
 impl RustEngine {
+    /// Names this engine in the logs (`main` or `validation`).
+    pub fn set_label(&mut self, label: &'static str) {
+        self.label = label;
+    }
+
+    /// Applies `change` and counts it: every change starts a new revision of the database,
+    /// which drops rust-analyzer's size-capped caches (#235).
+    fn apply(&mut self, change: ChangeWithProcMacros) {
+        self.changes += 1;
+        tracing::debug!(
+            engine = self.label,
+            changes = self.changes,
+            "change applied to the database"
+        );
+        self.host.apply_change(change);
+    }
+
     /// Text the database currently holds for `norm`, or `None` when the file is unknown.
     fn current_db_text(&self, norm: &Path) -> Option<String> {
         let file_id = self.file_id_for_path(norm)?;
@@ -1533,7 +1561,7 @@ impl RustEngine {
                     tracing::debug!(file = %norm.display(), "file removed from the database");
                     let mut change = ChangeWithProcMacros::default();
                     change.change_file(file_id, None);
-                    self.host.apply_change(change);
+                    self.apply(change);
                 }
                 Ok(())
             }
@@ -1776,6 +1804,8 @@ impl RustEngine {
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
             source_root_config,
             overlays: SessionOverlays::default(),
+            label: "main",
+            changes: 0,
         })
     }
 
@@ -1785,6 +1815,8 @@ impl RustEngine {
             workspace_root: self.workspace_root.clone(),
             analysis: self.host.analysis(),
             vfs: Arc::clone(&self.vfs),
+            label: self.label,
+            changes: self.changes,
         }
     }
 
@@ -2062,7 +2094,7 @@ impl RustEngine {
             change.source_change.set_roots(roots);
         }
         change.change_file(file_id, Some(new_text));
-        self.host.apply_change(change);
+        self.apply(change);
         Ok(())
     }
 }
