@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Performance
+- **Git worktrees of a C/C++ project share one compiler cache on the build nodes** (#243). Each
+  worktree has its own server copy, so every one compiled from scratch. When the node has
+  ccache, every command now runs with `CCACHE_BASEDIR` set to its workspace, `CCACHE_NOHASHDIR=1`
+  and ccache as CMake's C and C++ compiler launcher. The caller's own variables still win.
+  - Through `prod-code exec` on a Linux build node, the fmt library (114 compiles) built in
+    24.0 s in one worktree and in 1.0 s in a second one.
+  - sccache was measured first and shared 2 of 114 compiles: it keys by absolute path and reads
+    its base directories only when its server starts.
+  - ccache is installed on the three Linux build nodes.
 - **Semantic search no longer waits for the background embedding pass** (#240). A question and
   the background pass shared one model, so a search waited for the batch of 64 declarations in
   progress: 555 ms instead of 4 ms right after a workspace loaded. Questions and declarations

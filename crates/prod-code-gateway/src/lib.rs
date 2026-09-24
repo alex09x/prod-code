@@ -26,7 +26,7 @@ use prod_code_protocol::{
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
 };
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -1313,6 +1313,41 @@ fn kill_exec_tree(child: &mut tokio::process::Child) {
 /// Runs `req.command` inside the client's server workspace, streaming stdout/stderr chunks to
 /// the client and finishing with an `ExecExit`. The child is killed if the client goes away
 /// or the timeout elapses.
+/// The environment that lets every git worktree of a project share one C/C++ compiler cache
+/// (#243). Each worktree has its own server copy at its own path, and a compiler cache keyed by
+/// absolute paths shares nothing between them: the fmt library built in a second copy took
+/// 22.9 s with sccache as the launcher (2 hits of 114 compiles) and 0.71 s with ccache and
+/// `CCACHE_BASEDIR` set to the copy, which ccache reads on every compile. sccache reads its
+/// base directories once, when its server starts, so it cannot follow worktrees that appear
+/// later. CMake picks the launchers up when it configures a build directory. Nothing when the
+/// node has no ccache; the caller's own variables are applied after these and win.
+pub fn compiler_cache_env(workspace: &Path, ccache: bool) -> Vec<(String, String)> {
+    if !ccache {
+        return Vec::new();
+    }
+    vec![
+        (
+            "CCACHE_BASEDIR".to_string(),
+            workspace.to_string_lossy().into_owned(),
+        ),
+        ("CCACHE_NOHASHDIR".to_string(), "1".to_string()),
+        (
+            "CMAKE_C_COMPILER_LAUNCHER".to_string(),
+            "ccache".to_string(),
+        ),
+        (
+            "CMAKE_CXX_COMPILER_LAUNCHER".to_string(),
+            "ccache".to_string(),
+        ),
+    ]
+}
+
+/// Whether `program` is an executable file in a directory of `PATH`.
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
 pub async fn run_exec(
     storage_root: &std::path::Path,
     metrics: &metrics::Metrics,
@@ -1377,6 +1412,7 @@ pub async fn run_exec(
     let mut cmd = std::process::Command::new(program);
     cmd.args(args)
         .current_dir(&run_dir)
+        .envs(compiler_cache_env(&workspace, on_path("ccache")))
         .envs(req.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -4345,6 +4381,24 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_compiler_cache_is_shared_across_worktrees_when_the_node_has_ccache() {
+        let workspace = Path::new("/srv/workspaces/shop--wt-1a2b");
+        assert!(compiler_cache_env(workspace, false).is_empty());
+        let env = compiler_cache_env(workspace, true);
+        let get = |k: &str| {
+            env.iter()
+                .find(|(key, _)| key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("CCACHE_BASEDIR"), Some("/srv/workspaces/shop--wt-1a2b"));
+        assert_eq!(get("CCACHE_NOHASHDIR"), Some("1"));
+        assert_eq!(get("CMAKE_C_COMPILER_LAUNCHER"), Some("ccache"));
+        assert_eq!(get("CMAKE_CXX_COMPILER_LAUNCHER"), Some("ccache"));
+        assert!(on_path("sh"), "sh is on PATH on every node");
+        assert!(!on_path("no-such-program-on-any-node"));
+    }
 
     /// A directory renamed or deleted locally leaves nothing behind on the copy (#124): the files
     /// the manifest no longer lists go, and so do the directories that held only them, while a
