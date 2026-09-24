@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Fixed
+- **supertypes reads supertraits written as `where Self: …`** (#227). `trait Circle where Self:
+  Shape {}` answered "requires no supertrait", because only the bounds after the colon were
+  read. Bounds on `Self` in the `where` clause count too, and `where` is matched as a word, not
+  inside a name like `Somewhere`. The tool's description now names only the servers it was
+  checked against, clangd and gopls.
 - **`--symbol` no longer calls a re-exported name ambiguous when its `pub use` spans lines**
   (#225). `pub use messages::{ …, WireMessage, … };` put `WireMessage` on a continuation line,
   which was not recognised as part of a `use`. So `hover --symbol WireMessage` listed the

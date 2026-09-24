@@ -176,7 +176,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_supertypes".to_string(),
-            description: "What a type implements, or what a trait requires: the upward half of the type hierarchy (`code_implementations` is the downward half). For a Rust type, the traits it implements, derived or written as impl blocks, each with the position of the impl or the derive; inherent impls are not listed. For a Rust trait, its supertraits. Other languages ask their server's own type hierarchy (clangd, gopls, sourcekit-lsp have one) and say so when it has none. Give `symbol` or a file position."
+            description: "What a type implements, or what a trait requires: the upward half of the type hierarchy (`code_implementations` is the downward half). For a Rust type, the traits it implements, derived or written as impl blocks, each with the position of the impl or the derive; inherent impls are not listed. For a Rust trait, its supertraits. Other languages ask their server's own type hierarchy (clangd and gopls answer it) and say so when it has none. Give `symbol` or a file position."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
