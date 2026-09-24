@@ -212,11 +212,7 @@ pub async fn run_remote(
                     }
                     written.push(delta);
                 }
-                pulled_files.extend(apply_pulled_files_for(
-                    root,
-                    &remote.to_string(),
-                    &written,
-                )?);
+                pulled_files.extend(apply_pulled_files_for(root, &remote.to_string(), &written)?);
             }
             Some(Ok(WireMessage::ExecExit(exit))) => {
                 let _ = framed
