@@ -890,14 +890,14 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_outline".to_string(),
-            description: "Extract the structural symbol outline (functions, structs, enums, traits, classes, methods, fields) with line numbers from a source file. Local variables are left out unless `include_locals` is set."
+            description: "Extract the structural symbol outline (functions, structs, enums, traits, classes, methods, fields) with line numbers from a source file or directory. Local variables are left out unless `include_locals` is set."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path (relative to workspace or absolute)"
+                        "description": "File or directory path (relative to workspace or absolute)"
                     },
                     "max_depth": {
                         "type": "integer",
@@ -1404,6 +1404,30 @@ async fn handle_outline(
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
     let file_path = resolve_file_path(workspace_root, path_str);
+    let max_depth = args
+        .get("max_depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(3)
+        .max(1) as usize;
+    let include_locals = args
+        .get("include_locals")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if file_path.is_dir() {
+        let text = outline_directory(
+            remote,
+            workspace_root,
+            &file_path,
+            Path::new(path_str),
+            max_depth,
+            include_locals,
+            "pass include_locals: true",
+        )
+        .await?;
+        return Ok(McpToolCallResult::text(text));
+    }
+
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
@@ -1418,15 +1442,6 @@ async fn handle_outline(
         params,
     )
     .await?;
-    let max_depth = args
-        .get("max_depth")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(3)
-        .max(1) as usize;
-    let include_locals = args
-        .get("include_locals")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
     Ok(McpToolCallResult::text(render_outline(
         &res,
         path_str,
@@ -1435,6 +1450,81 @@ async fn handle_outline(
         "pass include_locals: true",
     )))
 }
+
+/// Outlines every source file directly in `dir_path` using a single [`crate::session::LspSession`],
+/// file by file, skipping files the gateway cannot outline, and ends with how many files were
+/// outlined and how many skipped.
+pub async fn outline_directory(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    dir_path: &Path,
+    path_display_prefix: &Path,
+    max_depth: usize,
+    include_locals: bool,
+    hint: &str,
+) -> Result<String> {
+    let mut session =
+        crate::session::LspSession::open(remote, workspace_root, Some(dir_path)).await?;
+
+    let read_dir = std::fs::read_dir(dir_path)
+        .with_context(|| format!("Failed to read directory {:?}", dir_path))?;
+    let mut entries = Vec::new();
+    for entry in read_dir.flatten() {
+        if entry.path().is_file() {
+            entries.push(entry);
+        }
+    }
+    entries.sort_by_key(|e| e.file_name());
+
+    let mut blocks = Vec::new();
+    let mut outlined = 0usize;
+    let mut skipped = 0usize;
+
+    for entry in entries {
+        let entry_file = entry.path();
+        let file_uri = match Url::from_file_path(&entry_file) {
+            Ok(u) => u.to_string(),
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+        let params = serde_json::json!({
+            "textDocument": { "uri": file_uri }
+        });
+        match session
+            .query(&entry_file, "textDocument/documentSymbol", params)
+            .await
+        {
+            Ok(res) if res.is_array() => {
+                let display_path = path_display_prefix
+                    .join(entry.file_name())
+                    .display()
+                    .to_string();
+                let block = render_outline(
+                    &res,
+                    &display_path,
+                    max_depth,
+                    include_locals,
+                    hint,
+                );
+                blocks.push(block);
+                outlined += 1;
+            }
+            _ => {
+                skipped += 1;
+            }
+        }
+    }
+
+    let summary = format!("{outlined} file(s) outlined, {skipped} skipped");
+    if blocks.is_empty() {
+        Ok(summary)
+    } else {
+        Ok(format!("{}\n\n{summary}", blocks.join("\n\n")))
+    }
+}
+
 
 /// The start and end line (0-based) of a symbol from `textDocument/documentSymbol`.
 fn symbol_lines(sym: &serde_json::Value) -> (u64, u64) {

@@ -147,7 +147,7 @@ enum Commands {
     /// Declarations named like a query across the workspace: prod-code symbols <name>. Given an
     /// existing file instead, its outline (the same as `prod-code outline <file>`).
     Symbols { target: String },
-    /// The declarations of a file, nested: prod-code outline <file>
+    /// The declarations of a file or directory, nested: prod-code outline <path>
     Outline {
         file: PathBuf,
         /// Also list the local variables inside functions and methods.
@@ -2881,6 +2881,23 @@ async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
 
 async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    if abs_path.is_dir() {
+        let cwd = env::current_dir().context("Failed to determine current working directory")?;
+        let ws_root = find_workspace_root(&abs_path).unwrap_or_else(|| cwd.clone());
+        let text = prod_code_mcp::tools::outline_directory(
+            remote,
+            &ws_root,
+            &abs_path,
+            file,
+            usize::MAX,
+            locals,
+            "pass --locals",
+        )
+        .await?;
+        println!("{text}");
+        return Ok(());
+    }
+
     let file_uri = Url::from_file_path(&abs_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path"))?
         .to_string();
