@@ -417,8 +417,11 @@ pub async fn validate_text(
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
     let shown = display(root, file);
+    // The file as it is on disk, read on the validation engine: it has no overlay for this
+    // session, and it is the engine the gateway warms. The main engine is cold for the file's
+    // diagnostics after a restart, and asking it cost 21 s of a 24 s validation (#235).
     let before = {
-        let mut checkout = LspSession::open(remote, root, Some(file)).await?;
+        let mut checkout = LspSession::open_for_validation(remote, root, Some(file)).await?;
         let before = on_disk(&mut checkout, root, file, &shown).await;
         checkout.close().await;
         before
@@ -489,7 +492,8 @@ pub async fn validate_texts(
     // edit's, and a report that counts it refuses every edit to that file.
     let mut baselines: HashMap<String, (DiagnosticsReport, String)> = HashMap::new();
     {
-        let mut checkout = LspSession::open(remote, root, hint).await?;
+        // On the validation engine, which is warm, as in `validate_text` (#235).
+        let mut checkout = LspSession::open_for_validation(remote, root, hint).await?;
         for file in edits.iter().map(|(f, _)| f).chain(also_check) {
             let shown = display(root, file);
             if let Some(before) = on_disk(&mut checkout, root, file, &shown).await {

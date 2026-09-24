@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Performance
+- **The first validation after a gateway restart takes 2 s instead of 24 s** (#235). A validation
+  reads the file as it is on disk first, so that errors the file already had are not counted
+  against the edit, and it read it from the main rust-analyzer engine. The background warm-up of
+  #233 warms the validation engine, so that first pass was cold: 21 of the 24 s for
+  `crates/prod-code-client/src/main.rs`. Both passes now run on the validation engine. Measured
+  on a Linux x86_64 node after a restart and the warm-up: 24.19 s before, 2.21 s after.
 - **A new git worktree of a Rust project no longer compiles every dependency on the build node**
   (#278). When the gateway seeds a new worktree's copy from the main checkout's copy, it now
   also copies that copy's `target/debug` compiled crates, build-script outputs and cargo
