@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.3 — 2026-09-24
+
 ### Performance
 - **The first validation after a gateway restart takes 2 s instead of 24 s** (#235). A validation
   reads the file as it is on disk first, so that errors the file already had are not counted
