@@ -286,6 +286,9 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
 /// [`RustEngine::priming_job`]; see there.
 pub struct PrimingJob {
     shares: Vec<(Analysis, Vec<FileRange>)>,
+    /// The files whose full diagnostics are computed after the inference, each on its own
+    /// snapshot: rust-analyzer caches them, and a validation asks for exactly these.
+    files: Vec<(Analysis, FileId)>,
 }
 
 impl PrimingJob {
@@ -294,11 +297,15 @@ impl PrimingJob {
         self.shares.len()
     }
 
-    /// Infers the functions, one thread per share. Highlighting a range resolves every name in
-    /// it, and so infers the bodies there. Returns how many functions were done; a share stops
-    /// at its first error, which is a write to the database cancelling it. The snapshots are
-    /// dropped before this returns: one kept alive would block the next write.
+    /// Infers the functions, one thread per share, then computes each file's full diagnostics,
+    /// one thread per file. Highlighting a range resolves every name in it, and so infers the
+    /// bodies there; the diagnostics pass that follows is most of what a validation costs cold
+    /// (21 s of 22 for a 4,246-line file on a Linux build node, #233). Returns how many
+    /// functions were inferred; a thread stops at its first error, which is a write to the
+    /// database cancelling it. The snapshots are dropped before this returns: one kept alive
+    /// would block the next write.
     pub fn run(self) -> usize {
+        let files = self.files;
         let workers: Vec<_> = self
             .shares
             .into_iter()
@@ -327,7 +334,23 @@ impl PrimingJob {
                 })
             })
             .collect();
-        workers.into_iter().map(|w| w.join().unwrap_or(0)).sum()
+        let inferred = workers.into_iter().map(|w| w.join().unwrap_or(0)).sum();
+        let diagnosed: Vec<_> = files
+            .into_iter()
+            .map(|(analysis, file_id)| {
+                std::thread::spawn(move || {
+                    let _ = analysis.full_diagnostics(
+                        &DiagnosticsConfig::test_sample(),
+                        AssistResolveStrategy::None,
+                        file_id,
+                    );
+                })
+            })
+            .collect();
+        for worker in diagnosed {
+            let _ = worker.join();
+        }
+        inferred
     }
 }
 
@@ -1727,7 +1750,9 @@ impl RustEngine {
     /// one huge function gains nothing. The snapshots are used and dropped before this returns:
     /// a snapshot kept alive would block the next write to the database.
     fn infer_functions_in_parallel(&self, path: &Path) {
-        let job = self.priming_job(&[path]);
+        // The diagnostics pass runs next under the caller's lock; the job only infers.
+        let mut job = self.priming_job(&[path]);
+        job.files.clear();
         // One function gains nothing from a thread of its own.
         if job.threads() >= 2 {
             job.run();
@@ -1741,10 +1766,12 @@ impl RustEngine {
     pub fn priming_job(&self, paths: &[&Path]) -> PrimingJob {
         let analysis = self.host.analysis();
         let mut ranges: Vec<FileRange> = Vec::new();
+        let mut files: Vec<FileId> = Vec::new();
         for path in paths {
             let Some(file_id) = self.file_id_for_path(path) else {
                 continue;
             };
+            files.push(file_id);
             let Ok(nodes) = analysis.file_structure(
                 &FileStructureConfig {
                     exclude_locals: true,
@@ -1786,6 +1813,10 @@ impl RustEngine {
             shares: shares
                 .into_iter()
                 .map(|share| (self.host.analysis(), share))
+                .collect(),
+            files: files
+                .into_iter()
+                .map(|file_id| (self.host.analysis(), file_id))
                 .collect(),
         }
     }
