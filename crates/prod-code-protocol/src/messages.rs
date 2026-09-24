@@ -178,9 +178,44 @@ pub struct StatusResponse {
     /// Absent from older gateways, which a checkout that needs macOS must not be placed on.
     #[serde(default)]
     pub platform: Option<String>,
+    /// Remote commands running on the gateway (`exec`, `check`, `test`, `lint`). A node with
+    /// one running is not idle, whatever the session count says (#273).
+    #[serde(default)]
+    pub running_commands: Vec<RunningCommand>,
+}
+
+/// A remote command the gateway is running.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunningCommand {
+    /// The workspace copy's directory name, as `prod-code--wt-<hash>`.
+    pub workspace: String,
+    pub command: String,
+    pub running_seconds: u64,
 }
 
 impl StatusResponse {
+    /// One line per running command, longest-running first: `workspace  12m 5s  command`,
+    /// with the command cut at 100 characters.
+    pub fn running_lines(&self) -> Vec<String> {
+        let mut commands = self.running_commands.clone();
+        commands.sort_by_key(|c| std::cmp::Reverse(c.running_seconds));
+        commands
+            .iter()
+            .map(|c| {
+                let mut command: String = c.command.chars().take(100).collect();
+                if c.command.chars().count() > 100 {
+                    command.push('…');
+                }
+                format!(
+                    "{}  {}m {}s  {command}",
+                    c.workspace,
+                    c.running_seconds / 60,
+                    c.running_seconds % 60
+                )
+            })
+            .collect()
+    }
+
     /// Load per CPU (1-minute load average divided by CPU count); lower is quieter.
     pub fn load_per_cpu(&self) -> Option<f64> {
         match (self.load_average_millis, self.cpu_count) {
@@ -812,6 +847,41 @@ mod wire_tests {
             "no content is how a deletion is spelled"
         );
         assert!(!file.is_executable);
+    }
+
+    /// An older gateway sends no running commands, and a status lists the ones it has longest
+    /// first, with a long command line cut (#273).
+    #[test]
+    fn a_status_lists_its_running_commands_longest_first() {
+        let old = r#"{"server_pid":1,"uptime_seconds":2,"active_sessions":0,"loaded_workspaces":0,"detected_engines":[]}"#;
+        let status: StatusResponse = serde_json::from_str(old).expect("an older gateway's status");
+        assert!(status.running_commands.is_empty());
+        assert!(status.running_lines().is_empty());
+
+        let status = StatusResponse {
+            running_commands: vec![
+                RunningCommand {
+                    workspace: "shop".to_string(),
+                    command: "cargo check".to_string(),
+                    running_seconds: 5,
+                },
+                RunningCommand {
+                    workspace: "shop--wt-1a2b".to_string(),
+                    command: format!("cargo test {}", "x".repeat(120)),
+                    running_seconds: 725,
+                },
+            ],
+            ..status
+        };
+        let lines = status.running_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].starts_with("shop--wt-1a2b  12m 5s  cargo test xx"),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].ends_with('…'), "{}", lines[0]);
+        assert_eq!(lines[1], "shop  0m 5s  cargo check");
     }
 
     #[test]

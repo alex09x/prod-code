@@ -3,12 +3,23 @@
 ## Unreleased
 
 ### Fixed
+- **Go to definition, hover and references work on Rust types from dependency crates** (#271).
+  `--symbol Framed` called tokio-util's `Framed` ambiguous: the resolver told a definition
+  from its `pub use` re-export by reading the file on the local disk, and a dependency's
+  source exists only in the build node's cargo registry. Such files are now read from the
+  gateway, and a position query on one no longer tries to open it on this machine.
 - **`code_outline` reports why a file cannot be outlined instead of an empty outline** (#270).
   The gateway turned every error of the Rust engine's document symbols into an empty list, so
   `prod-code outline README.md` in a Rust workspace printed a header and nothing, with exit
   code 0. An agent could not tell a refused file from one that declares nothing. The error is
   now an LSP error response: `README.md is not a Rust file, and no language server of this
   workspace outlines it`.
+- **A build node running a remote build or test is no longer shown as idle** (#273).
+  `prod-code status`, `prod-code cluster` and MCP `code_status` counted language-server
+  sessions and queries only. A `cargo test` started through `exec`, `code_check` or `code_test`
+  was counted nowhere, so the check before a gateway restart (`Active Sessions: 0`) passed in the
+  middle of it. Each running command is now listed with its workspace, how long it has run and
+  its command line, and the cluster table has a `commands` column.
 
 ## v0.3.1 — 2026-09-24
 

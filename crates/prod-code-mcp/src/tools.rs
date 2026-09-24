@@ -1319,12 +1319,18 @@ async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {
                              • Uptime: {hours}h {minutes}m {seconds}s\n\
                              • Memory RSS: {mem:.2} MB\n\
                              • Active Sessions: {}\n\
+                             • Running Commands: {}{}\n\
                              • Loaded Workspaces: {}\n\
                              • Queries Handled: {} (in-flight: {})\n\
                              • Engines: {}\n\
                              • Status: HEALTHY",
                     resp.server_pid,
                     resp.active_sessions,
+                    resp.running_commands.len(),
+                    resp.running_lines()
+                        .iter()
+                        .map(|line| format!("\n    - {line}"))
+                        .collect::<String>(),
                     resp.loaded_workspaces,
                     resp.total_queries,
                     resp.active_queries,
