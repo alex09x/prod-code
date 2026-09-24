@@ -220,7 +220,11 @@ impl LspSession {
             .map_err(|_| anyhow!("invalid file path {}", abs.display()))?
             .to_string();
         // A directory stands for a workspace-level query (workspace/symbol): nothing to open.
-        if !self.opened.contains(&uri) && !abs.is_dir() {
+        // Neither does a file outside the checkout that is not on this machine, such as a
+        // dependency's source in the node's cargo registry: the node's analyzer already has
+        // it, and reading it here would fail (#271).
+        let only_on_the_node = !abs.starts_with(&self.root) && !abs.exists();
+        if !self.opened.contains(&uri) && !abs.is_dir() && !only_on_the_node {
             let text = tokio::fs::read_to_string(&abs)
                 .await
                 .with_context(|| format!("failed to read {}", abs.display()))?;

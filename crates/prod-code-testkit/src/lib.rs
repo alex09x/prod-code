@@ -26,8 +26,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec, SyncProbeResponse, SyncResponse,
-    WireMessage,
+    HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec, ReadFileResponse, SyncProbeResponse,
+    SyncResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -126,6 +126,27 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         server_workspace_root: req.client_workspace_root.clone(),
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
+                    }))
+                    .await?;
+            }
+            // A file that lives only on the node (a dependency's source) is read through the
+            // script as the pseudo-method `prod-code/readFile`: a string is the file's text,
+            // anything else means it cannot be read.
+            WireMessage::ReadFileRequest(req) => {
+                let text = answer(
+                    "prod-code/readFile",
+                    &serde_json::json!({ "path": req.path.clone() }),
+                );
+                let (content, error) = match text.as_str() {
+                    Some(text) => (Some(text.as_bytes().to_vec()), None),
+                    None => (None, Some(format!("no such file: {}", req.path))),
+                };
+                framed
+                    .send(WireMessage::ReadFileResponse(ReadFileResponse {
+                        path: req.path,
+                        content,
+                        truncated: false,
+                        error,
                     }))
                     .await?;
             }
