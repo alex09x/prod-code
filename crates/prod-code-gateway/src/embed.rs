@@ -36,13 +36,20 @@ struct Recipe {
     passage_prefix: &'static str,
 }
 
-/// The recipe of the model in `dir`, told by its name: e5 models by `e5`, BGE otherwise.
+/// The recipe of the model in `dir`, told by its name: e5 and Jina models by theirs, BGE
+/// otherwise.
 fn recipe_for(dir: &Path) -> Recipe {
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    if name.contains("e5") {
+    if name.contains("jina") {
+        Recipe {
+            cls: false,
+            query_prefix: "",
+            passage_prefix: "",
+        }
+    } else if name.contains("e5") {
         Recipe {
             cls: false,
             query_prefix: "query: ",
@@ -253,6 +260,9 @@ mod tests {
             (e5.query_prefix, e5.passage_prefix),
             ("query: ", "passage: ")
         );
+        let jina = recipe_for(Path::new("/m/jina-embeddings-v2-base-code"));
+        assert!(!jina.cls);
+        assert_eq!((jina.query_prefix, jina.passage_prefix), ("", ""));
         let mut v = vec![3.0, 4.0];
         normalize(&mut v);
         assert_eq!(v, vec![0.6, 0.8]);

@@ -37,6 +37,9 @@ pub const DEFAULT_LIMIT: usize = 10;
 const POOL: usize = 50;
 /// Reciprocal-rank fusion's constant: a hit at rank r scores 1 / (RRF_K + r) in each list.
 const RRF_K: f64 = 60.0;
+/// How much the dense list counts against the lexical one in the fusion. Chosen by
+/// `eval_ranking_on_this_repository`.
+const DENSE_WEIGHT: f64 = 1.0;
 /// Declarations embedded per model call.
 const EMBED_BATCH: usize = 64;
 /// Characters of a declaration handed to the model.
@@ -912,16 +915,28 @@ fn rank_with(
     limit: usize,
     subpath: Option<&str>,
 ) -> Vec<SearchHit> {
+    rank_weighted(index, query, query_vector, limit, subpath, DENSE_WEIGHT)
+}
+
+/// [`rank_with`] with the dense list's weight in the fusion given.
+fn rank_weighted(
+    index: &WorkspaceIndex,
+    query: &str,
+    query_vector: Option<&[f32]>,
+    limit: usize,
+    subpath: Option<&str>,
+    dense_weight: f64,
+) -> Vec<SearchHit> {
     let terms = tokenize(query);
     let docs = candidates(index, &terms, subpath);
-    let mut lists = vec![lexical(&docs, &terms)];
+    let mut lists = vec![(1.0, lexical(&docs, &terms))];
     if let Some(q) = query_vector {
-        lists.push(dense(&docs, q));
+        lists.push((dense_weight, dense(&docs, q)));
     }
     let mut fused: Vec<(f64, &Declaration)> = Vec::new();
-    for list in &lists {
+    for (weight, list) in &lists {
         for (rank, decl) in list.iter().take(POOL).enumerate() {
-            let score = 1.0 / (RRF_K + rank as f64 + 1.0);
+            let score = weight / (RRF_K + rank as f64 + 1.0);
             match fused.iter_mut().find(|(_, d)| std::ptr::eq(*d, *decl)) {
                 Some((total, _)) => *total += score,
                 None => fused.push((score, decl)),
@@ -1442,6 +1457,150 @@ impl Metrics {
         // A question of stopwords alone still has a dense answer.
         assert!(rank(&index, "the", 5, None).is_empty());
         assert!(!rank_with(&index, "the", Some(&q), 5, None).is_empty());
+    }
+
+    /// Measures the ranking on this repository: how often an expected answer is in the top
+    /// three, for questions phrased in other words than the code, by the lexical half, the
+    /// dense half and their fusion at several weights. Needs the model, so it runs on a build
+    /// node: `cargo test -p prod-code-gateway --lib eval_ranking -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn eval_ranking_on_this_repository() {
+        const QUESTIONS: &[(&str, &[&str])] = &[
+            (
+                "which machine should host this checkout",
+                &["pick_node", "rendezvous_order", "place"],
+            ),
+            (
+                "put the files back when writing fails halfway",
+                &["restore", "apply_workspace_edit"],
+            ),
+            (
+                "kill the command when it takes too long",
+                &["kill_exec_group", "kill_exec_tree"],
+            ),
+            (
+                "split an identifier into its words whatever its casing",
+                &["words", "split_humps", "tokenize"],
+            ),
+            (
+                "apply a patch without touching the disk",
+                &["apply", "apply_hunks"],
+            ),
+            (
+                "keep only the last few kilobytes of output",
+                &["TailBuffer"],
+            ),
+            (
+                "make compiler paths relative to the project",
+                &["relativize_diagnostics"],
+            ),
+            (
+                "which language a nested folder is written in",
+                &["engine_project", "language_of"],
+            ),
+            (
+                "the fixes rustc says are safe to apply automatically",
+                &["parse_fixes", "machine_applicable"],
+            ),
+            (
+                "walk up the directories to find the repository top",
+                &["find_workspace_root"],
+            ),
+            (
+                "cpu time and peak memory of a finished command",
+                &["ExecUsage"],
+            ),
+            (
+                "the first sentence of a comment for a one-line summary",
+                &["first_sentence"],
+            ),
+            (
+                "where a command runs on the server relative to the checkout root",
+                &["subdir_of"],
+            ),
+        ];
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let storage = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("prod-code-storage/workspaces");
+        let mut model = crate::embed::OnnxEmbedder::load(&crate::embed::model_dir(&storage))
+            .expect("the model is installed on this node");
+        let mut index = WorkspaceIndex::default();
+        refresh(&root, &mut index);
+        let started = Instant::now();
+        let mut count = 0;
+        for entry in index.files.values_mut() {
+            for chunk in entry.decls.chunks_mut(EMBED_BATCH) {
+                let texts: Vec<String> = chunk.iter().map(|d| d.passage()).collect();
+                for (d, v) in chunk.iter_mut().zip(model.passages(&texts).unwrap()) {
+                    d.vector = Some(v);
+                    count += 1;
+                }
+            }
+        }
+        let took = started.elapsed().as_secs_f64();
+        println!(
+            "embedded {count} declarations of {} files in {took:.1}s ({:.0}/s)",
+            index.files.len(),
+            count as f64 / took
+        );
+        let mut vectors = Vec::new();
+        let started = Instant::now();
+        for (question, _) in QUESTIONS {
+            vectors.push(model.query(question).unwrap());
+        }
+        println!(
+            "a query vector takes {:.1} ms",
+            started.elapsed().as_secs_f64() * 1000.0 / QUESTIONS.len() as f64
+        );
+        let hit = |hits: &[SearchHit], expected: &[&str]| {
+            hits.iter()
+                .take(3)
+                .any(|h| expected.contains(&h.name.as_str()))
+        };
+        let mut rows: Vec<(String, usize)> = Vec::new();
+        let lexical_only = QUESTIONS
+            .iter()
+            .filter(|(q, e)| hit(&rank(&index, q, 3, None), e))
+            .count();
+        rows.push(("lexical".into(), lexical_only));
+        let docs_all: Vec<&Indexed> = index.declarations().filter(|d| !d.decl.is_test).collect();
+        let dense_only = QUESTIONS
+            .iter()
+            .zip(&vectors)
+            .filter(|((_, e), v)| {
+                dense(&docs_all, v)
+                    .iter()
+                    .take(3)
+                    .any(|d| e.contains(&d.name.as_str()))
+            })
+            .count();
+        rows.push(("dense".into(), dense_only));
+        for weight in [1.0, 1.5, 2.0, 3.0] {
+            let fused = QUESTIONS
+                .iter()
+                .zip(&vectors)
+                .filter(|((q, e), v)| hit(&rank_weighted(&index, q, Some(v), 3, None, weight), e))
+                .count();
+            rows.push((format!("fused, dense weight {weight}"), fused));
+        }
+        for (name, n) in &rows {
+            println!("{name:<24} top-3 {n}/{}", QUESTIONS.len());
+        }
+        for ((q, e), v) in QUESTIONS.iter().zip(&vectors) {
+            let fused = rank_with(&index, q, Some(v), 3, None);
+            println!(
+                "{} {q}: {}",
+                if hit(&fused, e) { "ok  " } else { "MISS" },
+                fused
+                    .iter()
+                    .map(|h| h.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
 
     #[test]

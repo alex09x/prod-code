@@ -261,6 +261,15 @@
   `prod-code status` end to end 1315.5 ms → 5.0 ms (median of 5, development build).
 
 ### Added
+- **Intent search ranks by meaning too** (roadmap 8.4, #218).
+  - The gateway embeds every declaration with a small sentence-embedding model (BGE-small,
+    int8 ONNX, run in process), in a background pass after the index is built. A file that
+    changes is embedded again.
+  - A question is ranked lexically and by cosine, and the two lists are fused by reciprocal
+    rank. The result says how far the embedding has got, or that the search is lexical only
+    when the gateway has no model.
+  - On this repository, 13 questions phrased in other words than the code find an expected
+    answer in the top three 7 times fused, against 5 lexically and 6 by meaning alone.
 - **schema-rename: OpenAPI and GraphQL by structure, and one change across repositories**
   (roadmap 7.6, #216).
   - An OpenAPI document (YAML or JSON with an `openapi` or `swagger` key) is rewritten only
