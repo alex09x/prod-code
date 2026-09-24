@@ -1520,7 +1520,17 @@ impl RustEngine {
         match text {
             Some(text) => self.apply_file_change(norm, text),
             None => {
-                if let Some(file_id) = self.file_id_for_path(norm) {
+                // Removing a file that is already empty changes nothing, and any change starts
+                // a new revision, which evicts rust-analyzer's size-capped caches: the next
+                // diagnostics pass of a large file is as slow as a cold one (#235).
+                if let Some(file_id) = self.file_id_for_path(norm)
+                    && self
+                        .host
+                        .analysis()
+                        .file_text(file_id)
+                        .is_ok_and(|text| !text.is_empty())
+                {
+                    tracing::debug!(file = %norm.display(), "file removed from the database");
                     let mut change = ChangeWithProcMacros::default();
                     change.change_file(file_id, None);
                     self.host.apply_change(change);
@@ -2043,6 +2053,7 @@ impl RustEngine {
 
         let mut change = ChangeWithProcMacros::default();
         if is_new {
+            tracing::debug!(file = %norm.display(), "new file: source roots set again");
             let vfs_guard = self
                 .vfs
                 .read()
