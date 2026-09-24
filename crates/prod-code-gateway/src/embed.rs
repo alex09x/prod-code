@@ -7,7 +7,8 @@
 //! with the lexical one.
 //!
 //! The model is an ONNX export run in process by ONNX Runtime: BGE-small (English, 384
-//! dimensions, 34 MB quantized) by default, found in `<storage>/models/bge-small-en-v1.5` or
+//! dimensions, 34 MB quantized) by default, found in `models/bge-small-en-v1.5` next to the
+//! workspaces directory (`~/prod-code-storage/models/…`, beside the metrics) or
 //! wherever `PROD_CODE_EMBED_MODEL` points. It is optional: without it the search is lexical
 //! only and says so.
 
@@ -56,11 +57,17 @@ fn recipe_for(dir: &Path) -> Recipe {
     }
 }
 
-/// Where the model is looked for.
+/// Where the model is looked for: `PROD_CODE_EMBED_MODEL`, or `models/bge-small-en-v1.5` beside
+/// the workspaces directory. It is read once, on the first search; a model installed later is
+/// used after a restart.
 pub fn model_dir(storage_root: &Path) -> PathBuf {
     match std::env::var_os("PROD_CODE_EMBED_MODEL") {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => storage_root.join("models").join("bge-small-en-v1.5"),
+        _ => storage_root
+            .parent()
+            .unwrap_or(storage_root)
+            .join("models")
+            .join("bge-small-en-v1.5"),
     }
 }
 
@@ -254,7 +261,7 @@ mod tests {
         assert_eq!(zero, vec![0.0, 0.0]);
         assert!((dot(&v, &v) - 1.0).abs() < 1e-6);
         assert_eq!(
-            model_dir(Path::new("/s")),
+            model_dir(Path::new("/s/workspaces")),
             std::env::var_os("PROD_CODE_EMBED_MODEL")
                 .filter(|d| !d.is_empty())
                 .map(PathBuf::from)
@@ -296,11 +303,12 @@ mod tests {
         );
     }
 
-    /// The gateway's default storage root, where the nodes keep the model.
+    /// The gateway's default workspaces directory; the nodes keep the model beside it.
     fn dirs_storage() -> PathBuf {
         std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_default()
             .join("prod-code-storage")
+            .join("workspaces")
     }
 }
