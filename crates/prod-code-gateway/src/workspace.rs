@@ -799,6 +799,46 @@ pub fn forget_stale_paths(workspace_dir: &Path) {
     let _ = std::fs::remove_file(workspace_dir.join(STALE_MARKER));
 }
 
+/// What each file of a workspace copy last received from a client sync, and when: the hash of
+/// its text, or `None` for a deletion. A restore after a lost client (#262) must not put a
+/// command's old text back over a newer one that a sync delivered while the command ran; the
+/// client's watermark already counts that newer text as being on the node.
+type SyncedFiles = HashMap<String, (std::time::Instant, Option<u64>)>;
+
+static SYNCED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, SyncedFiles>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Notes that a sync just wrote (or deleted) `files` in the workspace copy.
+pub fn record_synced(workspace_dir: &Path, files: &[(String, Option<u64>)]) {
+    if files.is_empty() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let mut all = SYNCED.lock().unwrap_or_else(|e| e.into_inner());
+    let known = all.entry(workspace_dir.to_path_buf()).or_default();
+    for (path, hash) in files {
+        known.insert(path.clone(), (now, *hash));
+    }
+}
+
+/// The files a sync delivered to the workspace copy at or after `since`, with the hash of the
+/// text it wrote (`None` for a deletion).
+pub fn synced_since(
+    workspace_dir: &Path,
+    since: std::time::Instant,
+) -> HashMap<String, Option<u64>> {
+    let all = SYNCED.lock().unwrap_or_else(|e| e.into_inner());
+    all.get(workspace_dir)
+        .map(|known| {
+            known
+                .iter()
+                .filter(|(_, (at, _))| *at >= since)
+                .map(|(path, (_, hash))| (path.clone(), *hash))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Removes the paths a sync just carried from the workspace's stale files, since the copy now
 /// holds the checkout's version of them, and returns the ones still recorded.
 pub fn clear_stale_paths<'a>(
