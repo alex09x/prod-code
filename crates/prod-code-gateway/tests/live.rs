@@ -1074,6 +1074,7 @@ async fn the_gateway_answers_the_protocol_directly() {
         .send(WireMessage::PlaceRequest(PlaceRequest {
             workspace_name: "subject".to_string(),
             engine: Some("rust".to_string()),
+            os: None,
         }))
         .await
         .expect("send place");
@@ -1602,6 +1603,7 @@ async fn two_gateways_find_each_other_and_place_work() {
         .send(WireMessage::PlaceRequest(PlaceRequest {
             workspace_name: "a-go-project".to_string(),
             engine: Some("go".to_string()),
+            os: None,
         }))
         .await
         .expect("send place");

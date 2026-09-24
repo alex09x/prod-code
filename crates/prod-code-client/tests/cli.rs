@@ -127,6 +127,7 @@ async fn handle_client(
                                 active_queries: 0,
                                 load_average_millis: Some(100),
                                 cpu_count: Some(8),
+                                platform: None,
                             },
                             last_seen_secs: 0,
                             workspaces: vec![],
@@ -148,6 +149,7 @@ async fn handle_client(
                         active_queries: 0,
                         load_average_millis: Some(200),
                         cpu_count: Some(4),
+                        platform: None,
                     }))
                     .await?;
             }

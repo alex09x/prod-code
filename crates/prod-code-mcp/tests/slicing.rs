@@ -34,6 +34,7 @@ fn sample_status() -> StatusResponse {
         active_queries: 0,
         load_average_millis: Some(800),
         cpu_count: Some(8),
+        platform: None,
     }
 }
 
@@ -1151,7 +1152,7 @@ async fn cluster_probes_answer_view_placement_metrics_and_status() {
     assert_eq!(view.nodes.len(), 1);
     assert!(view.nodes[0].alive);
 
-    let place = cluster::ask_placement(addr, "ws-x", Some("rust"))
+    let place = cluster::ask_placement(addr, "ws-x", Some("rust"), None)
         .await
         .unwrap();
     assert_eq!(place.node.as_deref(), Some(addr.to_string().as_str()));
@@ -1204,6 +1205,7 @@ async fn placement_server() -> SocketAddr {
                                 active_queries: 0,
                                 load_average_millis: Some(500),
                                 cpu_count: Some(4),
+                                platform: None,
                             }))
                             .await;
                     }
@@ -1226,12 +1228,12 @@ async fn pick_node_asks_the_cluster_then_reports_when_nothing_serves_the_engine(
     let temp = tempfile::tempdir().unwrap();
     let placement = temp.path().join("placement.json");
 
-    let picked = cluster::pick_node_with(&nodes, "ws-a", None, Some(&placement))
+    let picked = cluster::pick_node_with(&nodes, "ws-a", None, None, Some(&placement))
         .await
         .expect("home is reachable");
     assert_eq!(picked, home);
 
-    let err = cluster::pick_node_with(&nodes, "ws-a", Some("rust"), Some(&placement))
+    let err = cluster::pick_node_with(&nodes, "ws-a", Some("rust"), None, Some(&placement))
         .await
         .expect_err("home only serves python");
     let text = format!("{err:#}");

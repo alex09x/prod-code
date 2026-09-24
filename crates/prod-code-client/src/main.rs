@@ -1070,7 +1070,30 @@ async fn main() -> Result<()> {
         return run_cluster(&remotes, &placement_key, cwd_engine).await;
     }
 
-    let remote = prod_code_mcp::cluster::pick_node(&remotes, &placement_key, cwd_engine).await?;
+    // A Go module whose cgo includes macOS headers builds only on macOS; a Linux node would
+    // report the headers as missing on every check (#248).
+    let macos_cgo = match (cwd_root.as_deref(), cwd_engine) {
+        (Some(root), Some("go")) => prod_code_mcp::sync::macos_only_cgo(
+            &cwd_subproject
+                .as_deref()
+                .map_or_else(|| root.to_path_buf(), |sub| root.join(sub)),
+        ),
+        _ => None,
+    };
+    startup.mark("macos_only_cgo");
+    let remote = prod_code_mcp::cluster::pick_node(
+        &remotes,
+        &placement_key,
+        cwd_engine,
+        macos_cgo.as_ref().map(|_| "macos"),
+    )
+    .await
+    .map_err(|err| match &macos_cgo {
+        Some((file, named)) => err.context(format!(
+            "this Go module uses macOS-only cgo ({file}: {named})"
+        )),
+        None => err,
+    })?;
     prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
     startup.mark("pick_node");
     startup.report();

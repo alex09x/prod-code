@@ -44,6 +44,18 @@
     symbol in its file's outline; the children of an `impl` block for the type count too.
   - When nothing matches, the error lists up to five of the closest names the index returned
     (`did you mean: a, b, c`) instead of picking one.
+- **A Go module with macOS-only cgo is built and tested on a macOS node** (#248). cgo code that
+  includes `libproc.h`, `mach/`, `CoreFoundation/`, `IOKit/` or other Apple headers, or links a
+  `-framework`, compiles only on macOS. Such a Go module used to be placed on a Linux build node
+  like any other, and every remote build and test failed with errors about missing headers. The
+  client now reads the module's `.go` files at startup, up to 4,000 of them. When one imports
+  `"C"` with such a preamble and Linux would build it, the checkout goes to a node that runs
+  macOS. Files that Linux skips anyway do not count: a `//go:build darwin` line, a `_darwin.go`
+  name, an include inside `#if`, a `#cgo darwin` flag. Gateways now report their platform in
+  their status, and a cluster placement request can name the OS it needs. A gateway too old to
+  report its platform does not count as macOS. With no macOS node the client stops with the
+  reason, for example `this Go module uses macOS-only cgo (proc.go: libproc.h): no reachable
+  gateway runs macOS`. Checkouts that need no macOS are placed as before.
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.

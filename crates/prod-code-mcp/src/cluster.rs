@@ -75,7 +75,7 @@ pub async fn route_in(
         return Ok(default);
     }
     let key = format!("{workspace}#{engine}");
-    pick_node_with(nodes, &key, Some(engine), placement_file)
+    pick_node_with(nodes, &key, Some(engine), None, placement_file)
         .await
         .with_context(|| format!("`{path}` is in a {engine} project"))
 }
@@ -151,14 +151,36 @@ pub async fn is_alive(addr: SocketAddr) -> bool {
 const RESTART_RETRIES: usize = 4;
 const RESTART_WAIT: std::time::Duration = std::time::Duration::from_millis(750);
 
-/// Can `node` take the workspace: alive, and serving `engine` when one is needed.
-async fn node_fits(node: SocketAddr, engine: Option<&str>) -> bool {
-    match engine {
-        None => is_alive(node).await,
-        Some(engine) => node_status(node)
-            .await
-            .map(|status| supports_engine(&status, engine))
-            .unwrap_or(false),
+/// Can `node` take the workspace: alive, serving `engine` and running `os` when they are needed.
+async fn node_fits(node: SocketAddr, engine: Option<&str>, os: Option<&str>) -> bool {
+    if engine.is_none() && os.is_none() {
+        return is_alive(node).await;
+    }
+    node_status(node)
+        .await
+        .is_ok_and(|status| status_fits(&status, engine, os))
+}
+
+/// Whether a gateway with `status` serves `engine` and runs `os`, those that are given.
+fn status_fits(status: &StatusResponse, engine: Option<&str>, os: Option<&str>) -> bool {
+    engine.is_none_or(|engine| supports_engine(status, engine))
+        && os.is_none_or(|os| runs_os(status, os))
+}
+
+/// Whether a gateway runs `os` (`macos`, `linux`). One too old to report its platform does not.
+pub fn runs_os(status: &StatusResponse, os: &str) -> bool {
+    status
+        .platform
+        .as_deref()
+        .is_some_and(|platform| platform.starts_with(os))
+}
+
+/// How an OS is written in a message: `macOS` for `macos`.
+fn os_name(os: &str) -> &str {
+    match os {
+        "macos" => "macOS",
+        "linux" => "Linux",
+        other => other,
     }
 }
 
@@ -202,22 +224,39 @@ pub fn supports_engine(status: &StatusResponse, engine: &str) -> bool {
 /// Chooses the gateway for `workspace_name` among `nodes`: the remembered placement when it
 /// is still one of the nodes, alive and able to serve `engine`, otherwise the quietest alive
 /// node that can serve `engine`, in rendezvous order, which is then remembered. A single
-/// node is returned as is. `engine` is the engine the checkout needs (`swift` only runs on a
-/// macOS node, for example); `None` accepts any node.
+/// node is returned as is, unless it must run `os` and does not. `engine` is the engine the
+/// checkout needs (`swift` only runs on a macOS node, for example); `os` is the OS it needs (a
+/// Go module whose cgo includes macOS headers, #248); `None` accepts any node.
 pub async fn pick_node(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    os: Option<&str>,
 ) -> Result<SocketAddr> {
-    pick_node_with(nodes, workspace_name, engine, placement_path().as_deref()).await
+    pick_node_with(
+        nodes,
+        workspace_name,
+        engine,
+        os,
+        placement_path().as_deref(),
+    )
+    .await
 }
 
 pub async fn pick_node_with(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    os: Option<&str>,
     placement_file: Option<&Path>,
 ) -> Result<SocketAddr> {
+    let listed = |nodes: &[SocketAddr]| {
+        nodes
+            .iter()
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     let [only] = nodes else {
         if nodes.is_empty() {
             return Err(anyhow!("no gateway addresses given"));
@@ -226,14 +265,14 @@ pub async fn pick_node_with(
         if let Some(remembered) = placement.workspaces.get(workspace_name).copied()
             && nodes.contains(&remembered)
         {
-            let mut still_fits = node_fits(remembered, engine).await;
+            let mut still_fits = node_fits(remembered, engine, os).await;
             // A node that does not answer at all may be restarting: ask again before moving.
             // One that answers but cannot serve the engine is left at once.
             let mut tries = 0;
             while !still_fits && tries < RESTART_RETRIES && !is_alive(remembered).await {
                 tokio::time::sleep(RESTART_WAIT).await;
                 tries += 1;
-                still_fits = node_fits(remembered, engine).await;
+                still_fits = node_fits(remembered, engine, os).await;
             }
             if still_fits {
                 return Ok(remembered);
@@ -243,14 +282,15 @@ pub async fn pick_node_with(
         // workspace and who is quietest, and it can move an idle workspace off an
         // overloaded node.
         for seed in rendezvous_order(nodes, workspace_name) {
-            let Ok(answer) = ask_placement(seed, workspace_name, engine).await else {
+            let Ok(answer) = ask_placement(seed, workspace_name, engine, os).await else {
                 continue;
             };
+            // An older gateway ignores the OS the request names, so its choice is checked.
             if let Some(chosen) = answer
                 .node
                 .as_deref()
                 .and_then(|a| a.parse::<SocketAddr>().ok())
-                && is_alive(chosen).await
+                && node_fits(chosen, None, os).await
             {
                 tracing::debug!(%chosen, reason = %answer.reason, "cluster placement");
                 if let Some(path) = placement_file {
@@ -269,16 +309,14 @@ pub async fn pick_node_with(
         let mut unsupported = Vec::new();
         for candidate in rendezvous_order(nodes, workspace_name) {
             match node_status(candidate).await {
-                Ok(status) => match engine {
-                    Some(engine) if !supports_engine(&status, engine) => {
-                        unsupported.push(candidate);
-                    }
-                    _ => candidates.push((candidate, status.load_per_cpu())),
-                },
+                Ok(status) if status_fits(&status, engine, os) => {
+                    candidates.push((candidate, status.load_per_cpu()));
+                }
+                Ok(_) => unsupported.push(candidate),
                 Err(_) => {
                     // A node that accepts TCP but answers no status is only usable when
                     // nothing specific is required of it.
-                    if engine.is_none() && is_alive(candidate).await {
+                    if engine.is_none() && os.is_none() && is_alive(candidate).await {
                         candidates.push((candidate, None));
                     }
                 }
@@ -293,21 +331,34 @@ pub async fn pick_node_with(
             }
             return Ok(chosen);
         }
-        let listed = |nodes: &[SocketAddr]| {
-            nodes
-                .iter()
-                .map(|n| n.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        return Err(match engine {
-            Some(engine) if !unsupported.is_empty() => anyhow!(
+        return Err(match (os, engine) {
+            (Some(os), _) if unsupported.is_empty() => anyhow!(
+                "no reachable gateway runs {} (none of {} answered)",
+                os_name(os),
+                listed(nodes)
+            ),
+            (Some(os), _) => anyhow!(
+                "no reachable gateway runs {} (reachable without it: {})",
+                os_name(os),
+                listed(&unsupported)
+            ),
+            (None, Some(engine)) if !unsupported.is_empty() => anyhow!(
                 "no reachable gateway serves {engine} (reachable without it: {}); add a node with the {engine} language server installed",
                 listed(&unsupported)
             ),
             _ => anyhow!("no gateway reachable among {}", listed(nodes)),
         });
     };
+    // One node is used without asking, unless the checkout needs an OS it has to be shown to
+    // run: a build there would fail on headers that do not exist (#248).
+    if let Some(os) = os
+        && !node_fits(*only, None, Some(os)).await
+    {
+        return Err(anyhow!(
+            "no reachable gateway runs {} (reachable without it: {only})",
+            os_name(os)
+        ));
+    }
     Ok(*only)
 }
 
@@ -350,11 +401,13 @@ pub async fn cluster_view(addr: SocketAddr) -> Result<ClusterResponse> {
     }
 }
 
-/// Asks one node where `workspace_name` (needing `engine`) should be placed.
+/// Asks one node where `workspace_name` (needing `engine`, and a node running `os`) should be
+/// placed.
 pub async fn ask_placement(
     addr: SocketAddr,
     workspace_name: &str,
     engine: Option<&str>,
+    os: Option<&str>,
 ) -> Result<PlaceResponse> {
     let stream = tokio::time::timeout(PROBE_TIMEOUT, TcpStream::connect(addr))
         .await
@@ -365,6 +418,7 @@ pub async fn ask_placement(
         .send(WireMessage::PlaceRequest(PlaceRequest {
             workspace_name: workspace_name.to_string(),
             engine: engine.map(String::from),
+            os: os.map(String::from),
         }))
         .await?;
     match tokio::time::timeout(Duration::from_secs(3), framed.next()).await {
@@ -550,6 +604,15 @@ mod tests {
 
     /// A node that answers a status request with the engines it serves and nothing else.
     async fn node_serving(engines: &'static [&'static str]) -> SocketAddr {
+        node_on(engines, Some("linux x86_64")).await
+    }
+
+    /// A node that answers a status request with the engines it serves and the platform it
+    /// runs, `None` for a gateway too old to report one.
+    async fn node_on(
+        engines: &'static [&'static str],
+        platform: Option<&'static str>,
+    ) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -569,6 +632,7 @@ mod tests {
                                 active_queries: 0,
                                 load_average_millis: Some(100),
                                 cpu_count: Some(4),
+                                platform: platform.map(String::from),
                             };
                             let _ = framed.send(WireMessage::StatusResponse(status)).await;
                         } else {
@@ -626,6 +690,53 @@ mod tests {
         assert!(text.contains("serves swift"), "{text}");
     }
 
+    /// A checkout that needs macOS leaves a remembered Linux node for the macOS one, and a node
+    /// too old to report its platform does not count as macOS. Without a macOS node the error
+    /// says so, with one node or several; a checkout that needs no OS still takes Linux (#248).
+    #[tokio::test]
+    async fn a_checkout_that_needs_macos_is_placed_on_a_macos_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+        let linux = node_on(&["go"], Some("linux x86_64")).await;
+        let old = node_on(&["go"], None).await;
+        let mac = node_on(&["go", "swift (sourcekit-lsp)"], Some("macos aarch64")).await;
+        let mut remembered = Placement::default();
+        remembered.workspaces.insert("cgo".to_string(), linux);
+        save_placement(&placement, &remembered);
+
+        let nodes = [linux, old, mac];
+        let picked = pick_node_with(&nodes, "cgo", Some("go"), Some("macos"), Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(picked, mac);
+        assert_eq!(load_placement(&placement).workspaces.get("cgo"), Some(&mac));
+        let anywhere = pick_node_with(&[linux, old], "plain", Some("go"), None, None)
+            .await
+            .unwrap();
+        assert!(anywhere == linux || anywhere == old, "{anywhere}");
+
+        let err = pick_node_with(&[linux, old], "cgo", Some("go"), Some("macos"), None)
+            .await
+            .expect_err("no node runs macOS");
+        let text = format!("{err:#}");
+        assert!(text.contains("no reachable gateway runs macOS"), "{text}");
+        assert!(text.contains(&linux.to_string()), "{text}");
+        assert!(text.contains(&old.to_string()), "{text}");
+        let err = pick_node_with(&[linux], "cgo", Some("go"), Some("macos"), None)
+            .await
+            .expect_err("the one node runs Linux");
+        assert!(
+            format!("{err:#}").contains("no reachable gateway runs macOS"),
+            "{err:#}"
+        );
+        assert_eq!(
+            pick_node_with(&[mac], "cgo", Some("go"), Some("macos"), None)
+                .await
+                .unwrap(),
+            mac
+        );
+    }
+
     #[test]
     fn engine_support_matches_labelled_entries() {
         let status = StatusResponse {
@@ -643,6 +754,7 @@ mod tests {
             active_queries: 0,
             load_average_millis: None,
             cpu_count: None,
+            platform: None,
         };
         assert!(supports_engine(&status, "rust"));
         assert!(supports_engine(&status, "swift"));
@@ -671,7 +783,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             drop(listener);
         });
-        let picked = pick_node_with(&[other_addr, home], "ws", None, Some(&placement))
+        let picked = pick_node_with(&[other_addr, home], "ws", None, None, Some(&placement))
             .await
             .unwrap();
         assert_eq!(picked, home, "the restarted node keeps the workspace");
@@ -684,9 +796,15 @@ mod tests {
         let mut remembered = Placement::default();
         remembered.workspaces.insert("ws2".to_string(), gone_addr);
         save_placement(&placement, &remembered);
-        let picked = pick_node_with(&[other_addr, gone_addr], "ws2", None, Some(&placement))
-            .await
-            .unwrap();
+        let picked = pick_node_with(
+            &[other_addr, gone_addr],
+            "ws2",
+            None,
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
         assert_eq!(picked, other_addr);
         drop(other);
     }
@@ -699,7 +817,7 @@ mod tests {
         let alive = listener.local_addr().unwrap();
         let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
         let nodes = vec![dead, alive];
-        let picked = pick_node_with(&nodes, "ws", None, Some(&placement))
+        let picked = pick_node_with(&nodes, "ws", None, None, Some(&placement))
             .await
             .unwrap();
         assert_eq!(picked, alive);
@@ -707,10 +825,12 @@ mod tests {
         assert_eq!(saved.workspaces.get("ws"), Some(&alive));
         // A single node is used without probing.
         assert_eq!(
-            pick_node_with(&[dead], "ws", None, None).await.unwrap(),
+            pick_node_with(&[dead], "ws", None, None, None)
+                .await
+                .unwrap(),
             dead
         );
-        assert!(pick_node_with(&[dead], "", None, None).await.is_ok());
-        assert!(pick_node_with(&[], "ws", None, None).await.is_err());
+        assert!(pick_node_with(&[dead], "", None, None, None).await.is_ok());
+        assert!(pick_node_with(&[], "ws", None, None, None).await.is_err());
     }
 }
