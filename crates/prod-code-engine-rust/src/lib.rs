@@ -6,8 +6,8 @@ use ra_ap_ide::{
     Analysis, AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig,
     DiagnosticsConfig, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
     GotoDefinitionConfig, GotoImplementationConfig, HighlightConfig, HlTag, HoverConfig,
-    HoverDocFormat, NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve,
-    StructureNodeKind, SymbolKind, TextRange, TextSize,
+    HoverDocFormat, MonikerDescriptorKind, MonikerResult, NavigationTarget, RaFixtureConfig,
+    RenameConfig, SingleResolve, StructureNodeKind, SymbolKind, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -1357,35 +1357,110 @@ impl RustEngineSnapshot {
     }
 
     /// Workspace-wide symbol search by name (what `workspace/symbol` answers): fuzzy on the
-    /// name, workspace crates only, associated items included. Positions point at the name.
+    /// name, associated items included. Positions point at the name.
+    ///
+    /// The workspace's own crates are searched first, and their hits come alone: an agent
+    /// asking for a name almost always means its own code, and library matches would crowd it
+    /// out of the limit. Only when the workspace has no match does the search fall back to the
+    /// dependency (library) crates, so a type the code uses from a dependency can still be
+    /// found by name. A library hit's container is its module path, starting with its crate,
+    /// because its file path alone (a registry checkout on the node) does not say which
+    /// dependency it came from.
     pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
-        let query = ra_ap_ide::Query::new(query.to_string());
-        let targets = self.analysis.symbol_search(query, limit.max(1))?;
-        let mut out = Vec::with_capacity(targets.len());
-        for target in targets {
-            let Some(path) = self.path_for_file_id(target.file_id) else {
-                continue;
-            };
-            let Ok(text) = self.analysis.file_text(target.file_id) else {
-                continue;
-            };
-            let focus = target.focus_range.unwrap_or(target.full_range);
-            let (line, col) = offset_to_line_col(&text, focus.start());
-            let (end_line, _) = offset_to_line_col(&text, target.full_range.end());
-            out.push(WorkspaceSymbol {
-                path,
-                name: target.name.to_string(),
-                kind: target
-                    .kind
-                    .map(|k| format!("{k:?}"))
-                    .unwrap_or_else(|| "Symbol".to_string()),
-                line,
-                col,
-                end_line: end_line.max(line),
-                container: target.container_name.map(|c| c.to_string()),
-            });
+        let limit = limit.max(1);
+        let local = ra_ap_ide::Query::new(query.to_string());
+        let out: Vec<WorkspaceSymbol> = self
+            .analysis
+            .symbol_search(local, limit)?
+            .into_iter()
+            .filter_map(|target| self.workspace_symbol(target, None))
+            .collect();
+        if !out.is_empty() {
+            return Ok(out);
         }
-        Ok(out)
+
+        let mut libs = ra_ap_ide::Query::new(query.to_string());
+        libs.libs();
+        let targets = self.analysis.symbol_search(libs, limit)?;
+        if targets.is_empty() {
+            return Ok(out);
+        }
+        // Crate names keyed by root file; a hit's file maps to its crate through that root.
+        let crate_names: HashMap<FileId, String> = self
+            .analysis
+            .fetch_crates()?
+            .into_iter()
+            .filter_map(|info| Some((info.root_file_id, info.name?.replace('-', "_"))))
+            .collect();
+        Ok(targets
+            .into_iter()
+            .filter_map(|target| {
+                let module = self.module_path(&target).or_else(|| {
+                    self.analysis
+                        .crates_for(target.file_id)
+                        .ok()?
+                        .into_iter()
+                        .find_map(|k| crate_names.get(&self.analysis.crate_root(k).ok()?))
+                        .cloned()
+                });
+                self.workspace_symbol(target, module)
+            })
+            .collect())
+    }
+
+    /// `crate::module::path` a library hit is declared in, from its moniker. The library
+    /// symbol index keeps no container name, so this is what tells the caller where the hit
+    /// lives.
+    fn module_path(&self, target: &NavigationTarget) -> Option<String> {
+        let focus = target.focus_range.unwrap_or(target.full_range);
+        let position = FilePosition {
+            file_id: target.file_id,
+            offset: focus.start(),
+        };
+        let monikers = self.analysis.moniker(position).ok()??.info;
+        monikers.into_iter().find_map(|result| {
+            let MonikerResult::Moniker(moniker) = result else {
+                return None;
+            };
+            let identifier = moniker.identifier;
+            let mut path = identifier.crate_name;
+            for descriptor in identifier
+                .description
+                .iter()
+                .take_while(|d| d.desc == MonikerDescriptorKind::Namespace)
+                .take(identifier.description.len().saturating_sub(1))
+            {
+                path.push_str("::");
+                path.push_str(&descriptor.name);
+            }
+            Some(path)
+        })
+    }
+
+    /// One search hit as a `WorkspaceSymbol`; `None` when its file is not on disk. `module`
+    /// replaces the container, for hits outside the workspace.
+    fn workspace_symbol(
+        &self,
+        target: NavigationTarget,
+        module: Option<String>,
+    ) -> Option<WorkspaceSymbol> {
+        let path = self.path_for_file_id(target.file_id)?;
+        let text = self.analysis.file_text(target.file_id).ok()?;
+        let focus = target.focus_range.unwrap_or(target.full_range);
+        let (line, col) = offset_to_line_col(&text, focus.start());
+        let (end_line, _) = offset_to_line_col(&text, target.full_range.end());
+        Some(WorkspaceSymbol {
+            path,
+            name: target.name.to_string(),
+            kind: target
+                .kind
+                .map(|k| format!("{k:?}"))
+                .unwrap_or_else(|| "Symbol".to_string()),
+            line,
+            col,
+            end_line: end_line.max(line),
+            container: module.or_else(|| target.container_name.map(|c| c.to_string())),
+        })
     }
 }
 
@@ -1399,7 +1474,9 @@ pub struct WorkspaceSymbol {
     pub line: u32,
     pub col: u32,
     pub end_line: u32,
-    /// Enclosing item (`impl` self type, module, trait), when the index knows it.
+    /// Enclosing item (`impl` self type, module, trait), when the index knows it. For a hit in
+    /// a dependency crate it is the module path, starting with that crate
+    /// (`tokio_util::codec::framed`).
     pub container: Option<String>,
 }
 
@@ -2203,6 +2280,77 @@ impl PathTranslator {
             "Must resolve definition for PathTranslator"
         );
         assert!(defs.iter().any(|d| d.name == "PathTranslator"));
+    }
+
+    /// A name the workspace's own crates lack is looked up in the dependency crates, and the
+    /// hit names its crate; a workspace hit keeps the dependencies out (#246). The dependency
+    /// is a vendored registry crate: rust-analyzer counts a path dependency as a workspace
+    /// crate, so only a registry-sourced one lands in the library roots.
+    #[test]
+    fn symbol_search_falls_back_to_dependency_crates() {
+        let temp = tempfile::tempdir().unwrap();
+        let vendor = temp.path().join("vendor");
+        let dep = vendor.join("gadget");
+        std::fs::create_dir_all(dep.join("src")).unwrap();
+        std::fs::write(
+            dep.join("Cargo.toml"),
+            "[package]\nname = \"gadget\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dep.join(".cargo-checksum.json"),
+            "{\"files\":{},\"package\":null}",
+        )
+        .unwrap();
+        std::fs::write(
+            dep.join("src/lib.rs"),
+            "pub mod parts {\n    pub struct DepOnlyGadget;\n}\n\npub struct SharedName;\n",
+        )
+        .unwrap();
+
+        let ws = temp.path().join("app");
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::create_dir_all(ws.join(".cargo")).unwrap();
+        std::fs::write(
+            ws.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngadget = \"0.1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join(".cargo/config.toml"),
+            format!(
+                "[source.crates-io]\nreplace-with = \"vendored\"\n\n[source.vendored]\ndirectory = \"{}\"\n",
+                vendor.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            ws.join("src/lib.rs"),
+            "pub struct SharedName;\n\npub fn make() -> gadget::parts::DepOnlyGadget {\n    gadget::parts::DepOnlyGadget\n}\n",
+        )
+        .unwrap();
+        let engine = RustEngine::load(&ws).expect("Must load fixture");
+
+        let found = engine.workspace_symbols("DepOnlyGadget", 10).unwrap();
+        let hit = found
+            .iter()
+            .find(|s| s.name == "DepOnlyGadget")
+            .unwrap_or_else(|| panic!("the dependency's struct is found: {found:?}"));
+        assert!(
+            hit.path.to_string_lossy().contains("/vendor/gadget/"),
+            "{hit:?}"
+        );
+        assert_eq!(hit.container.as_deref(), Some("gadget::parts"), "{hit:?}");
+        assert_eq!((hit.line, hit.col), (2, 16), "{hit:?}");
+
+        let shared = engine.workspace_symbols("SharedName", 10).unwrap();
+        assert!(!shared.is_empty(), "the workspace struct is found");
+        assert!(
+            shared
+                .iter()
+                .all(|s| !s.path.to_string_lossy().contains("/vendor/") && s.container.is_none()),
+            "a workspace hit suppresses the fallback: {shared:?}"
+        );
     }
 
     /// A priming job is made under the engine and runs without it: it infers every function of
