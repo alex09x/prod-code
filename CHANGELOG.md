@@ -56,6 +56,14 @@
   report its platform does not count as macOS. With no macOS node the client stops with the
   reason, for example `this Go module uses macOS-only cgo (proc.go: libproc.h): no reachable
   gateway runs macOS`. Checkouts that need no macOS are placed as before.
+- **The peak memory of a remote build or test is the command's own, not the gateway's** (#255).
+  `prod-code exec`, `code_check` and `code_test` reported the gateway's resident set as the
+  peak of every command: `prod-code exec -- true` showed more than 21 GB on a Linux build node,
+  because Linux carries a process's memory high-water mark into a child it forks. The gateway
+  now starts each command through a small shim, its own binary run with `--exec-shim`, which
+  starts the command and reports what the command and its descendants used. The peak is now
+  the largest resident set among the command's processes, and exit codes and signals pass
+  through unchanged.
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.
