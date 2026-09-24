@@ -161,6 +161,77 @@ async fn run_remote_streams_output_and_writes_back_pulled_files() {
     assert_eq!(ws.read("generated/out.txt"), "built\n");
 }
 
+/// A file edited here while the command ran keeps the local edit, and a file the node already
+/// has with this machine's text (synced during the run) is neither written nor reported (#254).
+#[tokio::test]
+async fn run_remote_keeps_a_file_edited_here_during_the_run() {
+    let ws = Workspace::new(&[
+        ("src/lib.rs", "pub fn a() {}\n"),
+        ("src/edited.rs", "pub fn before() {}\n"),
+        ("src/synced.rs", "pub fn synced() {}\n"),
+    ]);
+    let root = ws.root();
+    let edited = root.join("src/edited.rs");
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let mut framed = accept_one(listener).await;
+        assert!(matches!(
+            expect_after_sync(&mut framed).await,
+            WireMessage::ExecRequest(_)
+        ));
+        // The edit lands while the command runs; the node still has the old text.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        std::fs::write(&edited, "pub fn edited_here() {}\n").unwrap();
+        let file = |path: &str, text: &str| FileDelta {
+            relative_path: path.to_string(),
+            content: Some(text.as_bytes().to_vec()),
+            is_executable: false,
+        };
+        framed
+            .send(WireMessage::ExecChanges(ExecChanges {
+                files: vec![
+                    file("src/edited.rs", "pub fn from_the_node() {}\n"),
+                    file("src/synced.rs", "pub fn synced() {}\n"),
+                    file("src/lib.rs", "pub fn a() {}\npub fn b() {}\n"),
+                ],
+            }))
+            .await
+            .unwrap();
+        framed
+            .send(WireMessage::ExecExit(ExecExit {
+                exit_code: Some(0),
+                duration_ms: 1,
+                server_workspace_root: "/srv/ws".to_string(),
+                timed_out: false,
+                error: None,
+                usage: None,
+                platform: None,
+            }))
+            .await
+            .unwrap();
+    });
+
+    let outcome = prod_code_mcp::exec::run_remote(
+        addr,
+        &root,
+        None,
+        vec!["cargo".to_string(), "fmt".to_string()],
+        Vec::new(),
+        0,
+        true,
+        |_, _| {},
+    )
+    .await
+    .expect("the command runs");
+
+    assert_eq!(outcome.pulled_files, vec!["src/lib.rs".to_string()]);
+    assert_eq!(outcome.kept_files, vec!["src/edited.rs".to_string()]);
+    assert_eq!(ws.read("src/edited.rs"), "pub fn edited_here() {}\n");
+    assert_eq!(ws.read("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n");
+}
+
 #[tokio::test]
 async fn run_remote_refuses_an_empty_command_without_connecting() {
     let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);

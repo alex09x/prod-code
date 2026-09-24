@@ -3547,6 +3547,13 @@ async fn handle_exec(
             outcome.pulled_files.join(", ")
         ));
     }
+    if !outcome.kept_files.is_empty() {
+        text.push_str(&format!(
+            "[{} file(s) changed here while the command ran were kept, and the node's version was not written: {}]\n",
+            outcome.kept_files.len(),
+            outcome.kept_files.join(", ")
+        ));
+    }
     if let Some(warning) =
         crate::exec::platform_warning(workspace_root, exit.platform.as_deref(), &changed_code)
     {

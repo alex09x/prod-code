@@ -71,6 +71,10 @@ struct Script {
     exec_exit: Option<i32>,
     /// Files the command rewrote, sent back as the gateway does for a formatter.
     exec_changes: Vec<prod_code_protocol::FileDelta>,
+    /// Sends `exec_changes` only for a command with this argument, the way a linter rewrites
+    /// files only in its fix mode. The client writes back only what differs from the checkout,
+    /// so changes sent for every command would all land with the first one (#254).
+    exec_changes_only_for: Option<&'static str>,
     /// What the command used, as the gateway reports it from `wait4`.
     exec_usage: Option<prod_code_protocol::ExecUsage>,
     /// The node's platform, as the gateway reports it (#140).
@@ -90,6 +94,7 @@ impl Default for Script {
             exec_stderr: Vec::new(),
             exec_exit: Some(0),
             exec_changes: Vec::new(),
+            exec_changes_only_for: None,
             exec_usage: None,
             exec_platform: None,
             exec_env: Arc::default(),
@@ -208,7 +213,11 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         }))
                         .await?;
                 }
-                if !script.exec_changes.is_empty() {
+                if !script.exec_changes.is_empty()
+                    && script
+                        .exec_changes_only_for
+                        .is_none_or(|arg| req.command.iter().any(|a| a == arg))
+                {
                     framed
                         .send(WireMessage::ExecChanges(prod_code_protocol::ExecChanges {
                             files: script.exec_changes.clone(),
@@ -3053,6 +3062,7 @@ async fn lint_fix_runs_the_linters_own_fix_mode_for_python() {
             content: Some(b"def price(q: int) -> int:\n    return q\n".to_vec()),
             is_executable: false,
         }],
+        exec_changes_only_for: Some("--fix"),
         ..Script::default()
     })
     .await;
