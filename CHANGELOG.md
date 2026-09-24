@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.2 — 2026-09-24
+
 ### Fixed
 - **Go to definition, hover and references work on Rust types from dependency crates** (#271).
   `--symbol Framed` called tokio-util's `Framed` ambiguous: the resolver told a definition
