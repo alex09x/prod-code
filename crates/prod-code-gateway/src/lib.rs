@@ -434,6 +434,91 @@ impl ServerState {
     }
 }
 
+/// The parts of a cargo target directory that a new worktree's copy takes from the main copy
+/// when it is seeded: compiled crates, build-script outputs and cargo's fingerprints. A registry
+/// crate has the same source path in every copy, so its fingerprint still matches and it is not
+/// compiled again; only the workspace's own crates are (#278: 8 crates in 37.0 s against 305 in
+/// 106.2 s). Incremental caches belong to those crates and are left behind. The copy is the
+/// worktree's own: nothing is shared afterwards, so no build waits on another's lock.
+const SEEDED_BUILD_DIRS: &[&str] = &["deps", "build", ".fingerprint"];
+
+/// Copies the seed copy's `target/debug` build cache into the new copy at `to`, when there is
+/// one and at least as much free disk as its size remains afterwards. Returns the bytes copied,
+/// or `None` when there was nothing to copy or no room for it.
+fn seed_build_cache(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<Option<u64>> {
+    seed_build_cache_within(from, to, free_disk_bytes(to))
+}
+
+fn seed_build_cache_within(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    free_bytes: Option<u64>,
+) -> std::io::Result<Option<u64>> {
+    let source = from.join("target").join("debug");
+    let parts: Vec<&str> = SEEDED_BUILD_DIRS
+        .iter()
+        .copied()
+        .filter(|part| source.join(part).is_dir())
+        .collect();
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let size: u64 = parts.iter().map(|part| tree_size(&source.join(part))).sum();
+    if free_bytes.is_none_or(|free| free < size.saturating_mul(2)) {
+        return Ok(None);
+    }
+    let dest = to.join("target").join("debug");
+    std::fs::create_dir_all(&dest)?;
+    for part in parts {
+        // `cp -a` keeps modification times: cargo compares a crate's outputs with those of the
+        // crates it depends on, and fresh times in copy order would make half of them stale.
+        let status = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(source.join(part))
+            .arg(&dest)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "copying {} failed: {status}",
+                source.join(part).display()
+            )));
+        }
+    }
+    Ok(Some(size))
+}
+
+/// Bytes of every regular file under `dir`.
+fn tree_size(dir: &std::path::Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => tree_size(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Free bytes on the filesystem that holds `path` (or its nearest existing parent).
+fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let existing = path.ancestors().find(|p| p.exists())?;
+    let c_path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+    // SAFETY: an all-zero `statvfs` is a valid value for the call to fill in.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: `c_path` is a valid NUL-terminated path and `stat` is valid for writes.
+    if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    // The two fields are `u64` on Linux and narrower on macOS.
+    #[allow(clippy::unnecessary_cast)]
+    let free = stat.f_bavail as u64 * stat.f_frsize as u64;
+    Some(free)
+}
+
 fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usize> {
     let mut copied = 0;
     std::fs::create_dir_all(dst)?;
@@ -620,13 +705,25 @@ pub async fn apply_sync_probe(
         let seed_dir = storage_root.join(workspace::sanitize_identifier(seed.trim()));
         if seed_dir.is_dir() && seed_dir != target {
             let (from, to) = (seed_dir.clone(), target.clone());
-            match tokio::task::spawn_blocking(move || copy_tree(&from, &to)).await {
-                Ok(Ok(files)) => {
+            match tokio::task::spawn_blocking(move || {
+                let files = copy_tree(&from, &to)?;
+                let started = Instant::now();
+                let cache = seed_build_cache(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding the build cache failed");
+                    None
+                });
+                Ok::<_, std::io::Error>((files, cache, started.elapsed()))
+            })
+            .await
+            {
+                Ok(Ok((files, cache, cache_took))) => {
                     seeded = true;
                     tracing::info!(
                         workspace = %target.display(),
                         seed = %seed_dir.display(),
                         files,
+                        build_cache_mb = cache.map(|bytes| bytes / (1024 * 1024)),
+                        build_cache_ms = cache_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -4725,6 +4822,76 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A new worktree's copy takes the seed's compiled crates, build-script outputs and
+    /// fingerprints with their modification times, and not its incremental caches (#278).
+    #[test]
+    fn a_seeded_copy_takes_the_build_cache_with_its_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
+        let debug = seed.join("target/debug");
+        for (rel, text) in [
+            ("deps/libdep-1a.rlib", "rlib"),
+            ("build/dep-2b/out/generated.rs", "pub const X: u8 = 1;"),
+            (".fingerprint/dep-1a/lib-dep", "fingerprint"),
+            ("incremental/shop-3c/s-1/query-cache.bin", "incremental"),
+        ] {
+            let path = debug.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(debug.join("deps/libdep-1a.rlib"))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        let copied = seed_build_cache_within(&seed, &fresh, Some(u64::MAX)).unwrap();
+        assert_eq!(copied, Some(4 + 20 + 11));
+        let out = fresh.join("target/debug");
+        assert_eq!(
+            std::fs::read_to_string(out.join("build/dep-2b/out/generated.rs")).unwrap(),
+            "pub const X: u8 = 1;"
+        );
+        assert!(out.join(".fingerprint/dep-1a/lib-dep").is_file());
+        assert!(!out.join("incremental").exists());
+        let modified = std::fs::metadata(out.join("deps/libdep-1a.rlib"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            modified, old,
+            "cargo compares these times; the copy must keep them"
+        );
+    }
+
+    /// No build cache, or not enough room for two of it, leaves the new copy without one.
+    #[test]
+    fn a_seeded_copy_goes_without_a_build_cache_it_has_no_room_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
+        assert_eq!(
+            seed_build_cache_within(&seed, &fresh, Some(u64::MAX)).unwrap(),
+            None
+        );
+        let deps = seed.join("target/debug/deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        std::fs::write(deps.join("libbig.rlib"), vec![0u8; 1000]).unwrap();
+        assert_eq!(
+            seed_build_cache_within(&seed, &fresh, Some(1999)).unwrap(),
+            None
+        );
+        assert_eq!(seed_build_cache_within(&seed, &fresh, None).unwrap(), None);
+        assert!(!fresh.join("target").exists());
+        assert_eq!(
+            seed_build_cache_within(&seed, &fresh, Some(2000)).unwrap(),
+            Some(1000)
+        );
+        assert!(free_disk_bytes(dir.path()).is_some_and(|free| free > 0));
+        assert!(free_disk_bytes(&dir.path().join("not/yet/created")).is_some());
+    }
 
     /// A running command is in the status for as long as its handler runs, and gone however the
     /// handler returns (#273).
