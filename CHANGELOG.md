@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Performance
+- **A new git worktree of a Rust project no longer compiles every dependency on the build node**
+  (#278). When the gateway seeds a new worktree's copy from the main checkout's copy, it now
+  also copies that copy's `target/debug` compiled crates, build-script outputs and cargo
+  fingerprints, keeping their modification times. It skips the copy when the disk would keep
+  less free space than the cache's size. Registry crates have the same source path in every
+  copy, so only the workspace's own crates are compiled. For this repository, on a Linux aarch64
+  node, `cargo test --workspace --no-run` compiled 8 crates in 37.0 s after a 5.9 s copy,
+  against 305 crates in 106.2 s. The cache is the worktree's own afterwards, with no shared
+  directory and no shared build lock.
+
 ## v0.3.2 — 2026-09-24
 
 ### Fixed
