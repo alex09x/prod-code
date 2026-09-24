@@ -34,6 +34,16 @@
     with its old and new length.
 
 ### Fixed
+- **A symbol name resolves only to a symbol of that name** (#253). `--symbol NAME` in the CLI
+  and `symbol` in the MCP tools took the best-scored `workspace/symbol` hit. The index also
+  returns fuzzy matches, so a Rust struct field, which rust-analyzer does not index, resolved
+  to an unrelated function, and `code_rename` or `code_safe_delete` would have acted on it.
+  - A hit counts only when its name is the requested one, ignoring ASCII case, a trailing
+    parameter list (`bar()`) and a qualifier the server put in the name (`Type.bar`).
+  - `Type::member` that the index does not list is looked up among the children of the type's
+    symbol in its file's outline; the children of an `impl` block for the type count too.
+  - When nothing matches, the error lists up to five of the closest names the index returned
+    (`did you mean: a, b, c`) instead of picking one.
 - **`cargo fmt` no longer triggers the platform warning when rustfmt drops a closure's braces**
   (#244). The layout rule of #239 ignored whitespace and commas only, and rustfmt also removes
   the braces around a closure whose body is one expression. Braces now count as layout.

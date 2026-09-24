@@ -1275,6 +1275,192 @@ async fn a_symbol_name_with_two_unrelated_hits_is_ambiguous() {
     assert!(format!("{err:#}").contains("is ambiguous"), "{err:#}");
 }
 
+/// The index answers a name with fuzzy matches too. A name that only a fuzzy match answers is
+/// not resolved to it (#253): the error names the closest names instead, nearest first.
+#[tokio::test]
+async fn a_name_only_fuzzy_hits_answer_is_refused_with_the_closest_names() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "pub fn query_with_text_opens_a_private_overlay() {}\npub fn relay() {}\n",
+    )]);
+    let root = ws.root();
+    let lib = root.join("src/lib.rs");
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("query_with_text_opens_a_private_overlay", 12, &lib, 1, 8),
+            answers::symbol("relay", 12, &lib, 2, 8),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let err = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "relaid_files", None)
+        .await
+        .expect_err("no hit is called `relaid_files`");
+    assert_eq!(
+        format!("{err:#}"),
+        "no symbol named `relaid_files` in the workspace index; did you mean: relay, \
+         query_with_text_opens_a_private_overlay"
+    );
+}
+
+/// A struct field is not in rust-analyzer's index. `Type::field` resolves through the outline
+/// of the type's file, as a child of the type, and `Type::method` as a child of an `impl`
+/// block for it; both the nested outline of a language server and the flat one of the
+/// gateway's own engine are read. A fuzzy hit for the member's name is not taken.
+#[tokio::test]
+async fn a_qualified_field_resolves_through_the_types_outline() {
+    let source = "pub struct RemoteOutcome {\n    pub relaid_files: usize,\n}\n\nimpl RemoteOutcome {\n    pub fn merge(&mut self) {}\n}\n\npub fn relay_files_elsewhere() {}\n";
+    let ws = Workspace::new(&[("src/lib.rs", source)]);
+    let root = ws.root();
+    let lib = root.join("src/lib.rs");
+
+    let index = {
+        let lib = lib.clone();
+        move |params: &serde_json::Value| match params.get("query").and_then(|q| q.as_str()) {
+            Some("relaid_files") => {
+                serde_json::json!([answers::symbol("relay_files_elsewhere", 12, &lib, 9, 8)])
+            }
+            Some("RemoteOutcome") => {
+                serde_json::json!([answers::symbol("RemoteOutcome", 23, &lib, 1, 12)])
+            }
+            _ => serde_json::json!([]),
+        }
+    };
+    let mut ty = answers::document_symbol("RemoteOutcome", 23, 1, 3, 12);
+    ty["children"] = serde_json::json!([answers::document_symbol("relaid_files", 8, 2, 2, 9)]);
+    let mut imp = answers::document_symbol("impl RemoteOutcome", 19, 5, 7, 6);
+    imp["children"] = serde_json::json!([answers::document_symbol("merge", 6, 6, 6, 12)]);
+    let nested = serde_json::json!([
+        ty,
+        imp,
+        answers::document_symbol("relay_files_elsewhere", 12, 9, 9, 8)
+    ]);
+    let script = index.clone();
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "workspace/symbol" => script(params),
+        "textDocument/documentSymbol" => nested.clone(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let field = prod_code_mcp::tools::resolve_symbol(
+        gateway.addr(),
+        &root,
+        "RemoteOutcome::relaid_files",
+        None,
+    )
+    .await
+    .expect("the field is a child of the type");
+    assert_eq!(
+        (field.path.clone(), field.line, field.col, field.kind),
+        (lib.clone(), 2, 9, "Field")
+    );
+    let method =
+        prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "RemoteOutcome::merge", None)
+            .await
+            .expect("the method is a child of the type's impl block");
+    assert_eq!((method.line, method.col), (6, 12));
+
+    let uri = format!("file://{}", lib.display());
+    let flat_entry = |name: &str, kind: u32, line: u32, col: u32, container: &str| {
+        serde_json::json!({
+            "name": name,
+            "kind": kind,
+            "location": { "uri": uri, "range": {
+                "start": { "line": line - 1, "character": col - 1 },
+                "end": { "line": line - 1, "character": 0 }
+            } },
+            "containerName": container
+        })
+    };
+    let flat = serde_json::json!([
+        flat_entry("RemoteOutcome", 23, 1, 12, "pub struct RemoteOutcome"),
+        flat_entry("relaid_files", 8, 2, 9, "RemoteOutcome"),
+        flat_entry("impl RemoteOutcome", 19, 5, 6, "impl RemoteOutcome"),
+        flat_entry("merge", 6, 6, 12, "impl RemoteOutcome"),
+    ]);
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "workspace/symbol" => index(params),
+        "textDocument/documentSymbol" => flat.clone(),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let field = prod_code_mcp::tools::resolve_symbol(
+        gateway.addr(),
+        &root,
+        "RemoteOutcome::relaid_files",
+        None,
+    )
+    .await
+    .expect("a flat outline names the field's type as its container");
+    assert_eq!((field.path, field.line, field.col), (lib.clone(), 2, 9));
+    let method =
+        prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "RemoteOutcome::merge", None)
+            .await
+            .expect("a flat outline names the impl block as the method's container");
+    assert_eq!((method.line, method.col), (6, 12));
+}
+
+/// Among several hits, the one whose name is exactly the requested one wins: a prefix match
+/// (`records`) is not a candidate, and a hit that differs only in case (`Record`) loses to the
+/// exact spelling while still answering its own.
+#[tokio::test]
+async fn an_exact_hit_wins_over_the_others() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "pub fn records() {}\npub fn record() {}\npub struct Record;\n",
+    )]);
+    let root = ws.root();
+    let lib = root.join("src/lib.rs");
+    let path = lib.clone();
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("records", 12, &path, 1, 8),
+            answers::symbol("record", 12, &path, 2, 8),
+            answers::symbol("Record", 23, &path, 3, 12),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "record", None)
+        .await
+        .expect("the exact spelling wins");
+    assert_eq!((hit.path, hit.line, hit.col), (lib.clone(), 2, 8));
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "Record", None)
+        .await
+        .expect("the exact spelling wins");
+    assert_eq!((hit.line, hit.col), (3, 12));
+}
+
+/// A server that decorates the names it lists (`bar()`, `Api.baz`) still answers the bare
+/// name, and `bar` is not confused with `barrel()`.
+#[tokio::test]
+async fn a_decorated_server_name_matches_the_bare_name() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "pub fn bar() {}\npub fn barrel() {}\npub fn baz() {}\n",
+    )]);
+    let root = ws.root();
+    let lib = root.join("src/lib.rs");
+    let path = lib.clone();
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("barrel()", 12, &path, 2, 8),
+            answers::symbol("bar()", 12, &path, 1, 8),
+            answers::symbol("Api.baz", 6, &path, 3, 8),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "bar", None)
+        .await
+        .expect("`bar()` is `bar`");
+    assert_eq!((hit.path, hit.line, hit.col), (lib.clone(), 1, 8));
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "baz", None)
+        .await
+        .expect("`Api.baz` is `baz`");
+    assert_eq!((hit.line, hit.col), (3, 8));
+}
+
 // ---------------------------------------------------------------------------------------
 // Diagnostics and edit validation.
 // ---------------------------------------------------------------------------------------
