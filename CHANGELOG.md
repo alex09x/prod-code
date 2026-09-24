@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.4 — 2026-09-24
+
 ### Fixed
 - **Signature refactorings in Python, TypeScript and Go no longer miss call sites while the
   language server is still indexing** (#284). A language server that has just read the project
