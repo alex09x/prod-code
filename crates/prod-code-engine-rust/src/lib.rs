@@ -888,16 +888,26 @@ impl RustEngineSnapshot {
             .with_context(|| format!("File not found in VFS: {:?}", path))?;
         let text = self.analysis.file_text(file_id)?;
         let config = DiagnosticsConfig::test_sample();
+        let started = std::time::Instant::now();
         let diagnostics =
             self.analysis
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
+        let analyzer = started.elapsed();
         let unused_imports = self.unused_imports(file_id, &text);
+        let imports = started.elapsed() - analyzer;
         let covered: Vec<TextRange> = diagnostics
             .iter()
             .filter(|d| d.range.file_id == file_id)
             .map(|d| d.range.range)
             .collect();
         let unresolved = self.unresolved_paths(file_id, &text, &covered);
+        tracing::debug!(
+            file = %path.display(),
+            analyzer_ms = analyzer.as_millis() as u64,
+            unused_imports_ms = imports.as_millis() as u64,
+            unresolved_paths_ms = (started.elapsed() - analyzer - imports).as_millis() as u64,
+            "diagnostics pass by part"
+        );
         Ok(diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
