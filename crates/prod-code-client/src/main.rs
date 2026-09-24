@@ -2123,6 +2123,13 @@ async fn execute_lsp_query(
                     .await;
                 continue;
             }
+            // Files the gateway lost from its copy (#262) that the pre-flight sync did not
+            // carry: the next sync sends them again.
+            prod_code_mcp::sync::resend_lost_files(
+                &ws_root,
+                &prod_code_mcp::sync::gateway_node(&framed),
+                &handshake.stale_paths,
+            );
             timing.mark("handshake");
             break framed;
         }
@@ -3029,6 +3036,13 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
         session_id = handshake_resp.session_id,
         engine = handshake_resp.detected_engine,
         "Connected to remote gateway"
+    );
+    // Files the gateway lost from its copy (#262): the next sync from this checkout sends them
+    // again.
+    prod_code_mcp::sync::resend_lost_files(
+        &cwd,
+        &prod_code_mcp::sync::gateway_node(&framed),
+        &handshake_resp.stale_paths,
     );
 
     let (mut socket_tx, mut socket_rx) = framed.split();

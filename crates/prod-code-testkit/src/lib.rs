@@ -111,6 +111,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         bytes_transferred: 0,
                         duration_ms: 0,
                         workspace_was_fresh: false,
+                        stale_paths: Vec::new(),
                     }))
                     .await?;
             }
@@ -124,6 +125,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         // a script can answer with the test's own paths.
                         server_workspace_root: req.client_workspace_root.clone(),
                         detected_engine: "rust".to_string(),
+                        stale_paths: Vec::new(),
                     }))
                     .await?;
             }

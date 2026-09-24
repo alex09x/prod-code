@@ -51,6 +51,7 @@ async fn handle_connection(stream: TcpStream) {
                     session_id,
                     server_workspace_root: req.client_workspace_root.clone(),
                     detected_engine: "mock".to_string(),
+                    stale_paths: Vec::new(),
                 });
                 if framed.send(resp).await.is_err() {
                     break;
@@ -81,6 +82,7 @@ async fn handle_connection(stream: TcpStream) {
                     duration_ms: 0,
                     server_workspace_root: req.client_workspace_root.clone(),
                     workspace_was_fresh: false,
+                    stale_paths: Vec::new(),
                 });
                 if framed.send(resp).await.is_err() {
                     break;

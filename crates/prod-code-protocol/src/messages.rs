@@ -147,6 +147,11 @@ pub struct HandshakeResponse {
     pub session_id: u64,
     pub server_workspace_root: String,
     pub detected_engine: String,
+    /// Files the gateway removed from its copy of the workspace because a command changed them
+    /// after its client left and their old contents were not kept (#262). The client drops them
+    /// from its sync watermark for this node, so that its next sync sends them again.
+    #[serde(default)]
+    pub stale_paths: Vec<String>,
 }
 
 /// Real-time health and session status of the remote gateway.
@@ -352,6 +357,10 @@ pub struct SyncResponse {
     /// the client must forget it and resend the full manifest.
     #[serde(default)]
     pub workspace_was_fresh: bool,
+    /// [`HandshakeResponse::stale_paths`] still recorded once this sync has been applied. A
+    /// remote command syncs without a handshake, so the list comes back here as well.
+    #[serde(default)]
+    pub stale_paths: Vec<String>,
 }
 
 /// FNV-1a hash of file content, shared by client manifests and gateway probes.
@@ -814,6 +823,7 @@ mod wire_tests {
             bytes_transferred: 4096,
             duration_ms: 12,
             workspace_was_fresh: true,
+            stale_paths: vec!["src/big.rs".to_string()],
         });
         let json = serde_json::to_string(&original).expect("encode");
         let back: WireMessage = serde_json::from_str(&json).expect("decode");

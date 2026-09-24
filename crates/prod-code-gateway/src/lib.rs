@@ -392,6 +392,7 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<us
             || name_str == "target"
             || name_str == "node_modules"
             || name_str == workspace::LAST_USED_MARKER
+            || name_str == workspace::STALE_MARKER
         {
             continue;
         }
@@ -434,6 +435,7 @@ fn is_node_cache(name: &str) -> bool {
             | ".swiftpm"
             | ".gradle"
     ) || name == workspace::LAST_USED_MARKER
+        || name == workspace::STALE_MARKER
 }
 
 fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, PathBuf)>) {
@@ -588,10 +590,13 @@ pub async fn apply_sync_probe(
     let root = target.clone();
     let stamps = req.files;
     let manifest_len = stamps.len();
-    let (missing, deleted) =
-        tokio::task::spawn_blocking(move || reconcile_manifest(&root, &stamps))
-            .await
-            .unwrap_or_default();
+    let (missing, deleted) = tokio::task::spawn_blocking(move || {
+        let reconciled = reconcile_manifest(&root, &stamps);
+        workspace::forget_stale_paths(&root);
+        reconciled
+    })
+    .await
+    .unwrap_or_default();
 
     if !deleted.is_empty()
         && let Some(ws) = workspace_manager.get_loaded(&target).await
@@ -1216,9 +1221,35 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
 /// Default wall-clock limit for a remote command when the client does not set one.
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 3600;
 
+/// Largest file whose old bytes a pre-command snapshot keeps, so that the gateway can put it
+/// back when the command's changes never reach the client (#262). Source files are far smaller;
+/// what is larger is mostly data a command regenerates anyway.
+const RESTORE_MAX_FILE: u64 = 1024 * 1024;
+
+/// Most bytes one pre-command snapshot keeps in memory. A command runs while its snapshot is
+/// held, so a checkout with a large tree of small files must not cost the node gigabytes; a
+/// file past the budget is marked stale when it has to be restored, and the client sends it.
+const RESTORE_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// The old contents of a file, kept to restore it.
+struct KeptFile {
+    bytes: Vec<u8>,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+/// What a workspace copy held before a remote command ran.
+#[derive(Default)]
+struct TreeSnapshot {
+    /// Size and content hash of every file, for detecting what the command changed.
+    stamps: std::collections::HashMap<String, (u64, u64)>,
+    /// The bytes of every file up to [`RESTORE_MAX_FILE`], within [`RESTORE_BUDGET`].
+    kept: std::collections::HashMap<String, KeptFile>,
+}
+
 /// Size and content hash of every file under `root` the sync layer cares about (build output
-/// and VCS internals excluded), for detecting what a remote command changed.
-fn snapshot_tree(root: &std::path::Path) -> std::collections::HashMap<String, (u64, u64)> {
+/// and VCS internals excluded).
+fn stamp_tree(root: &std::path::Path) -> std::collections::HashMap<String, (u64, u64)> {
     let mut present = Vec::new();
     walk_files(root, root, &mut present);
     present
@@ -1230,6 +1261,181 @@ fn snapshot_tree(root: &std::path::Path) -> std::collections::HashMap<String, (u
         .collect()
 }
 
+/// [`stamp_tree`] plus the bytes of the files small enough to keep, for detecting what a remote
+/// command changed and for undoing it when the client cannot receive the changes.
+fn snapshot_tree(root: &std::path::Path) -> TreeSnapshot {
+    snapshot_tree_within(root, RESTORE_MAX_FILE, RESTORE_BUDGET)
+}
+
+/// [`snapshot_tree`] with its limits given, so that a test can exceed them cheaply.
+fn snapshot_tree_within(root: &std::path::Path, max_file: u64, mut budget: u64) -> TreeSnapshot {
+    let mut present = Vec::new();
+    walk_files(root, root, &mut present);
+    // Walked in a fixed order, so which files fit the budget does not depend on the directory
+    // listing order.
+    present.sort();
+    let mut snapshot = TreeSnapshot::default();
+    for (rel, path) in present {
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let size = bytes.len() as u64;
+        snapshot
+            .stamps
+            .insert(rel.clone(), (size, content_hash(&bytes)));
+        if size > max_file || size > budget {
+            continue;
+        }
+        budget -= size;
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&path)
+                .map(|m| m.permissions().mode())
+                .unwrap_or(0o644)
+        };
+        snapshot.kept.insert(
+            rel,
+            KeptFile {
+                bytes,
+                #[cfg(unix)]
+                mode,
+            },
+        );
+    }
+    snapshot
+}
+
+/// What [`restore_tree`] did to a workspace copy.
+#[derive(Debug, Default)]
+struct Restored {
+    /// Every file put back as it was, created by the command and removed, or removed because
+    /// its old bytes were not kept: what a warm engine must be told.
+    files: Vec<FileDelta>,
+    /// The files among them that could not be put back and are gone from the copy.
+    stale: Vec<String>,
+}
+
+/// Undoes what a command changed in the workspace copy since `before`: a changed file gets its
+/// old bytes back, a file the command created is removed, a file it deleted is recreated. A
+/// changed or deleted file whose old bytes were not kept is removed and reported as stale, so
+/// that the client sends its own version. The comparison is made here rather than with
+/// [`changed_since`], which leaves out files above the size the client is sent: a restore must
+/// not leave any of them behind.
+///
+/// `synced` holds the files a client sync delivered while the command ran, with the hash of the
+/// text it wrote. Such a file is the checkout's newer text, not the command's, and stays; if the
+/// command changed it again after it arrived, that text is gone, so the file is removed and
+/// reported as stale like one whose bytes were not kept.
+fn restore_tree(
+    root: &std::path::Path,
+    before: &TreeSnapshot,
+    synced: &std::collections::HashMap<String, Option<u64>>,
+) -> Restored {
+    let after = stamp_tree(root);
+    let mut restored = Restored::default();
+    let mut touched: Vec<&String> = after
+        .iter()
+        .filter(|(rel, stamp)| before.stamps.get(*rel) != Some(*stamp))
+        .map(|(rel, _)| rel)
+        .chain(before.stamps.keys().filter(|rel| !after.contains_key(*rel)))
+        .collect();
+    touched.sort();
+    for rel in touched {
+        let target = root.join(rel);
+        if let Some(synced_hash) = synced.get(rel) {
+            if after.get(rel).map(|stamp| stamp.1) == *synced_hash {
+                continue;
+            }
+            if target.exists() && std::fs::remove_file(&target).is_err() {
+                continue;
+            }
+            prune_empty_parents(root, target.parent());
+            restored.stale.push(rel.clone());
+            restored.files.push(FileDelta {
+                relative_path: rel.clone(),
+                content: None,
+                is_executable: false,
+            });
+            continue;
+        }
+        match before.kept.get(rel) {
+            Some(kept) => {
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&target, &kept.bytes) {
+                    tracing::warn!(error = %e, file = %target.display(), "restoring a file failed");
+                    continue;
+                }
+                #[cfg(unix)]
+                let is_executable = {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &target,
+                        std::fs::Permissions::from_mode(kept.mode),
+                    );
+                    kept.mode & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let is_executable = false;
+                restored.files.push(FileDelta {
+                    relative_path: rel.clone(),
+                    content: Some(kept.bytes.clone()),
+                    is_executable,
+                });
+            }
+            None => {
+                if target.exists() && std::fs::remove_file(&target).is_err() {
+                    continue;
+                }
+                prune_empty_parents(root, target.parent());
+                if before.stamps.contains_key(rel) {
+                    restored.stale.push(rel.clone());
+                }
+                restored.files.push(FileDelta {
+                    relative_path: rel.clone(),
+                    content: None,
+                    is_executable: false,
+                });
+            }
+        }
+    }
+    restored
+}
+
+/// Puts the workspace copy back the way `before` found it when the changes a command made will
+/// never reach its client (#262), and returns how many files were put back. Without this the
+/// copy keeps changes the checkout does not have: the next sync sends only what changed locally,
+/// so a later check would run on code nobody committed. The files that could not be put back
+/// are recorded as stale for the next handshake or sync. The warm engines are told, like after
+/// a sync, so that they see the old text again.
+async fn restore_after_lost_client(
+    workspace_manager: &WorkspaceManager,
+    workspace: &std::path::Path,
+    before: Arc<TreeSnapshot>,
+    started: Instant,
+) -> usize {
+    let root = workspace.to_path_buf();
+    let restored = tokio::task::spawn_blocking(move || {
+        let synced = workspace::synced_since(&root, started);
+        let restored = restore_tree(&root, &before, &synced);
+        workspace::record_stale_paths(&root, &restored.stale);
+        restored
+    })
+    .await
+    .unwrap_or_default();
+    if !restored.stale.is_empty() {
+        tracing::warn!(
+            workspace = %workspace.display(),
+            stale = restored.stale.len(),
+            "🛠️ [EXEC] files a command changed were too large to keep; removed until the client sends them"
+        );
+    }
+    refresh_engines(workspace_manager, workspace, &restored.files).await;
+    restored.files.len() - restored.stale.len()
+}
+
 /// Files that differ between `before` and the tree now: new/changed ones with content,
 /// removed ones as deletions. Files above 5 MiB are ignored.
 fn changed_since(
@@ -1237,7 +1443,7 @@ fn changed_since(
     before: &std::collections::HashMap<String, (u64, u64)>,
 ) -> Vec<FileDelta> {
     const MAX_PULL_FILE: u64 = 5 * 1024 * 1024;
-    let after = snapshot_tree(root);
+    let after = stamp_tree(root);
     let mut out = Vec::new();
     for (rel, stamp) in &after {
         if before.get(rel) == Some(stamp) || stamp.0 > MAX_PULL_FILE {
@@ -1410,14 +1616,16 @@ pub async fn run_exec(
             .await?;
         return Ok(());
     };
-    let before = if req.pull_changes {
+    // Syncs that land after this are the client's newer text, which a restore leaves alone.
+    let snapshot_started = Instant::now();
+    let before = Arc::new(if req.pull_changes {
         let root = workspace.clone();
         tokio::task::spawn_blocking(move || snapshot_tree(&root))
             .await
             .unwrap_or_default()
     } else {
-        Default::default()
-    };
+        TreeSnapshot::default()
+    });
 
     let run_dir = match req.subdir.as_deref() {
         Some(sub)
@@ -1539,10 +1747,13 @@ pub async fn run_exec(
     let mut timed_out = false;
     let mut status = None;
     let mut chunks_open = true;
+    let mut client_left = false;
     loop {
         tokio::select! {
             chunk = rx.recv(), if chunks_open => match chunk {
-                Ok(chunk) => framed.send(WireMessage::ExecChunk(chunk)).await?,
+                // A client that can no longer be written to is gone as surely as one that
+                // hung up, and the command must not outlive it either way.
+                Ok(chunk) => client_left = framed.send(WireMessage::ExecChunk(chunk)).await.is_err(),
                 Err(_) => chunks_open = false,
             },
             exit = &mut exit_rx, if status.is_none() => {
@@ -1553,18 +1764,40 @@ pub async fn run_exec(
                 kill_exec_group(pid, &exited);
             }
             incoming = framed.next(), if status.is_none() => match incoming {
-                Some(Ok(WireMessage::Ping)) => framed.send(WireMessage::Pong).await?,
-                Some(Ok(WireMessage::Disconnect { .. })) | None => {
-                    kill_exec_group(pid, &exited);
-                    tracing::info!(workspace = %workspace_str, "🛠️ [EXEC] client left; command killed");
-                    return Ok(());
+                Some(Ok(WireMessage::Ping)) => {
+                    client_left = framed.send(WireMessage::Pong).await.is_err();
                 }
+                // A connection that fails is as gone as one that closed: nothing the command
+                // changes can reach the client anymore.
+                Some(Ok(WireMessage::Disconnect { .. })) | Some(Err(_)) | None => client_left = true,
                 _ => {}
             }
         }
-        if !chunks_open && status.is_some() {
+        if client_left || (!chunks_open && status.is_some()) {
             break;
         }
+    }
+    if client_left {
+        kill_exec_group(pid, &exited);
+        // Readers blocked on a full channel see it close and let go of the pipes.
+        drop(rx);
+        // The command has to be gone before its changes are undone, or it could write again
+        // after the restore.
+        if status.is_none() {
+            let _ = exit_rx.await;
+        }
+        if req.pull_changes {
+            let restored =
+                restore_after_lost_client(workspace_manager, &workspace, before, snapshot_started)
+                    .await;
+            tracing::info!(
+                workspace = %workspace_str,
+                "🛠️ [EXEC] client left; command killed; {restored} file(s) it changed restored"
+            );
+        } else {
+            tracing::info!(workspace = %workspace_str, "🛠️ [EXEC] client left; command killed");
+        }
+        return Ok(());
     }
     for reader in readers {
         let _ = reader.await;
@@ -1613,8 +1846,8 @@ pub async fn run_exec(
         metrics.record(ev);
     }
     if req.pull_changes {
-        let root = workspace.clone();
-        let files = tokio::task::spawn_blocking(move || changed_since(&root, &before))
+        let (root, snapshot) = (workspace.clone(), Arc::clone(&before));
+        let files = tokio::task::spawn_blocking(move || changed_since(&root, &snapshot.stamps))
             .await
             .unwrap_or_default();
         if !files.is_empty() {
@@ -1624,9 +1857,24 @@ pub async fn run_exec(
                 "🛠️ [EXEC] sending back files the command changed"
             );
             refresh_engines(workspace_manager, &workspace, &files).await;
-            framed
+            if let Err(e) = framed
                 .send(WireMessage::ExecChanges(ExecChanges { files }))
-                .await?;
+                .await
+            {
+                // The client never receives these changes, so the copy must not keep them.
+                let restored = restore_after_lost_client(
+                    workspace_manager,
+                    &workspace,
+                    before,
+                    snapshot_started,
+                )
+                .await;
+                tracing::info!(
+                    workspace = %workspace_str,
+                    "🛠️ [EXEC] client left before the changes were sent; {restored} file(s) the command changed restored"
+                );
+                return Err(e.into());
+            }
         }
     }
     framed
@@ -1732,6 +1980,17 @@ pub async fn apply_sync_with_metrics(
     let mut files_deleted = 0;
     let mut bytes_transferred = 0;
 
+    let arrived: Vec<String> = req.files.iter().map(|f| f.relative_path.clone()).collect();
+    let synced: Vec<(String, Option<u64>)> = req
+        .files
+        .iter()
+        .map(|f| {
+            (
+                f.relative_path.clone(),
+                f.content.as_deref().map(content_hash),
+            )
+        })
+        .collect();
     let mut project_config_changed = false;
     for delta in req.files {
         let target_path = server_workspace.join(&delta.relative_path);
@@ -1777,6 +2036,9 @@ pub async fn apply_sync_with_metrics(
             }
         }
     }
+    workspace::record_synced(&server_workspace, &synced);
+    let stale_paths =
+        workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
 
     // A changed project manifest (tsconfig, package.json, pyproject, CMakeLists, Package.swift,
     // go.mod, Cargo.toml ...) changes what the language server should see: drop the loaded
@@ -1819,6 +2081,7 @@ pub async fn apply_sync_with_metrics(
         duration_ms,
         server_workspace_root: server_workspace.to_string_lossy().to_string(),
         workspace_was_fresh,
+        stale_paths,
     }
 }
 
@@ -2012,6 +2275,7 @@ pub async fn handle_client(
                         session_id,
                         server_workspace_root: server_workspace_str,
                         detected_engine: engine.to_string(),
+                        stale_paths: workspace::stale_paths(&server_workspace),
                     }))
                     .await?;
 
@@ -3009,6 +3273,10 @@ async fn on_client_message(
                 }
             }
 
+            let stale_paths = workspace::clear_stale_paths(
+                &view.workspace.root,
+                req.files.iter().map(|delta| delta.relative_path.as_str()),
+            );
             let duration_ms = start.elapsed().as_millis() as u64;
             let _ = out_tx
                 .send(WireMessage::SyncResponse(SyncResponse {
@@ -3018,6 +3286,7 @@ async fn on_client_message(
                     duration_ms,
                     server_workspace_root: view.workspace.root.to_string_lossy().to_string(),
                     workspace_was_fresh: false,
+                    stale_paths,
                 }))
                 .await;
         }
@@ -4476,7 +4745,7 @@ mod tests {
         std::fs::remove_file(root.join("src/gone.rs")).unwrap();
         std::fs::write(root.join("target/debug/junk.o"), "x").unwrap();
 
-        let changed = changed_since(root, &before);
+        let changed = changed_since(root, &before.stamps);
         let names: Vec<(&str, bool)> = changed
             .iter()
             .map(|f| (f.relative_path.as_str(), f.content.is_some()))
@@ -4493,6 +4762,225 @@ mod tests {
             changed[0].content.as_deref(),
             Some(b"a formatted".as_slice())
         );
+    }
+
+    /// A command whose client goes away mid-run leaves the copy exactly as it found it (#262):
+    /// the file it rewrote has its old text back, the files it created are gone with the
+    /// directory it made, and the file it deleted is there again, executable bit included.
+    #[tokio::test]
+    async fn a_command_whose_client_leaves_changes_nothing_in_the_copy() {
+        let storage = tempfile::tempdir().unwrap();
+        let workspace = storage.path().join("restore-ws");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(workspace.join("src/gone.rs"), "fn gone() {}\n").unwrap();
+        std::fs::write(workspace.join("run.sh"), "#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                workspace.join("run.sh"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let before = stamp_tree(&workspace);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (server, _) = listener.accept().await.unwrap();
+        let storage_root = storage.path().to_path_buf();
+        let metrics_dir = tempfile::tempdir().unwrap();
+        let metrics = metrics::Metrics::new(metrics_dir.path().to_path_buf());
+        let gateway = tokio::spawn(async move {
+            let manager = WorkspaceManager::new();
+            let mut framed = Framed::new(server, ProdCodeCodec::new());
+            let req = ExecRequest {
+                client_workspace_root: "/tmp/restore-ws".to_string(),
+                base_workspace_name: Some("restore-ws".to_string()),
+                command: [
+                    "sh",
+                    "-c",
+                    "printf 'fn a() { formatted }' > src/a.rs; printf new > src/new.rs; \
+                     rm src/gone.rs run.sh; mkdir -p src/deep; printf x > src/deep/made.rs; \
+                     echo ready; sleep 60",
+                ]
+                .map(str::to_string)
+                .to_vec(),
+                env: Vec::new(),
+                timeout_secs: 120,
+                pull_changes: true,
+                subdir: None,
+                client_agent: None,
+                client_host: None,
+            };
+            run_exec(&storage_root, &metrics, &manager, &mut framed, req).await
+        });
+
+        let mut framed = Framed::new(client, ProdCodeCodec::new());
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&output).contains("ready") {
+            match tokio::time::timeout(std::time::Duration::from_secs(30), framed.next()).await {
+                Ok(Some(Ok(WireMessage::ExecChunk(chunk)))) => {
+                    output.extend(chunk.data.unwrap_or_default())
+                }
+                other => panic!("no output from the command: {other:?}"),
+            }
+        }
+        assert!(workspace.join("src/new.rs").is_file(), "the command ran");
+        drop(framed);
+
+        tokio::time::timeout(std::time::Duration::from_secs(30), gateway)
+            .await
+            .expect("the command was killed, not left to run out its sleep")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stamp_tree(&workspace), before);
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("src/a.rs")).unwrap(),
+            "fn a() {}\n"
+        );
+        assert!(!workspace.join("src/deep").exists());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(workspace.join("run.sh"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
+        }
+        assert!(workspace::stale_paths(&workspace).is_empty());
+    }
+
+    /// A file that a client sync delivered while the command ran is the checkout's text and is
+    /// left alone; one the command changed again after it arrived is removed and reported stale;
+    /// one only the command changed gets its old bytes back (#262).
+    #[test]
+    fn a_restore_keeps_what_a_sync_delivered_during_the_command() {
+        let storage = tempfile::tempdir().unwrap();
+        let root = storage.path();
+        for name in ["cmd.txt", "synced.txt", "both.txt"] {
+            std::fs::write(root.join(name), "old\n").unwrap();
+        }
+        let before = snapshot_tree_within(root, RESTORE_MAX_FILE, RESTORE_BUDGET);
+        std::fs::write(root.join("cmd.txt"), "the command's\n").unwrap();
+        std::fs::write(root.join("synced.txt"), "the client's\n").unwrap();
+        std::fs::write(root.join("both.txt"), "the command's, after the sync\n").unwrap();
+        let synced = std::collections::HashMap::from([
+            (
+                "synced.txt".to_string(),
+                Some(content_hash(b"the client's\n")),
+            ),
+            (
+                "both.txt".to_string(),
+                Some(content_hash(b"the client's\n")),
+            ),
+        ]);
+
+        let restored = restore_tree(root, &before, &synced);
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("cmd.txt")).unwrap(),
+            "old\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("synced.txt")).unwrap(),
+            "the client's\n"
+        );
+        assert!(!root.join("both.txt").exists());
+        assert_eq!(restored.stale, vec!["both.txt".to_string()]);
+        let mut files: Vec<&str> = restored
+            .files
+            .iter()
+            .map(|f| f.relative_path.as_str())
+            .collect();
+        files.sort();
+        assert_eq!(files, vec!["both.txt", "cmd.txt"]);
+    }
+
+    #[test]
+    fn a_sync_is_remembered_per_workspace_from_the_time_it_lands() {
+        let one = std::path::Path::new("/nonexistent/sync-log-one");
+        let other = std::path::Path::new("/nonexistent/sync-log-other");
+        let start = Instant::now();
+        workspace::record_synced(
+            one,
+            &[("a.rs".to_string(), Some(7)), ("gone.rs".to_string(), None)],
+        );
+        let synced = workspace::synced_since(one, start);
+        assert_eq!(synced.get("a.rs"), Some(&Some(7)));
+        assert_eq!(synced.get("gone.rs"), Some(&None));
+        assert!(workspace::synced_since(other, start).is_empty());
+        assert!(workspace::synced_since(one, Instant::now()).is_empty());
+        workspace::record_synced(one, &[]);
+    }
+
+    /// A file whose old bytes did not fit the snapshot's limits cannot be put back: it leaves the
+    /// copy and is reported stale by every sync answer until the client has sent it (#262).
+    #[tokio::test]
+    async fn a_file_past_the_snapshot_limits_is_removed_and_reported_stale() {
+        let storage = tempfile::tempdir().unwrap();
+        let root = storage.path().join("ws");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "aaaa").unwrap();
+        std::fs::write(root.join("src/b.rs"), "bbbb").unwrap();
+        std::fs::write(root.join("src/big.rs"), "0123456789").unwrap();
+        // Files are kept in path order: a.rs fits, b.rs is over the budget a.rs leaves, and
+        // big.rs is over the per-file limit.
+        let before = snapshot_tree_within(&root, 8, 6);
+        assert_eq!(before.kept.keys().collect::<Vec<_>>(), ["src/a.rs"]);
+
+        std::fs::write(root.join("src/a.rs"), "changed").unwrap();
+        std::fs::write(root.join("src/b.rs"), "changed").unwrap();
+        std::fs::remove_file(root.join("src/big.rs")).unwrap();
+        let manager = WorkspaceManager::new();
+        let restored =
+            restore_after_lost_client(&manager, &root, Arc::new(before), Instant::now()).await;
+        assert_eq!(restored, 1);
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/a.rs")).unwrap(),
+            "aaaa"
+        );
+        assert!(
+            !root.join("src/b.rs").exists(),
+            "a changed file not kept leaves"
+        );
+        assert_eq!(
+            workspace::stale_paths(&root),
+            ["src/b.rs".to_string(), "src/big.rs".to_string()]
+        );
+
+        // The next sync answers with what it still lacks until the client has sent both.
+        let sync = |files: Vec<FileDelta>| SyncRequest {
+            client_workspace_root: "/tmp/ws".to_string(),
+            files,
+            clean_others: false,
+            base_workspace_name: Some("ws".to_string()),
+        };
+        let first = apply_sync(
+            storage.path(),
+            &manager,
+            sync(vec![FileDelta {
+                relative_path: "src/b.rs".to_string(),
+                content: Some(b"bbbb".to_vec()),
+                is_executable: false,
+            }]),
+        )
+        .await;
+        assert_eq!(first.stale_paths, ["src/big.rs".to_string()]);
+        let second = apply_sync(
+            storage.path(),
+            &manager,
+            sync(vec![FileDelta {
+                relative_path: "src/big.rs".to_string(),
+                content: None,
+                is_executable: false,
+            }]),
+        )
+        .await;
+        assert!(second.stale_paths.is_empty());
+        assert!(!root.join(workspace::STALE_MARKER).exists());
     }
 
     #[tokio::test]

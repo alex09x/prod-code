@@ -3,7 +3,10 @@
 //! opened once). Batch features (impact analysis, dead-code scans) use this instead of a
 //! connection per query.
 
-use crate::sync::{WorkspaceIdentity, engine_project, push_workspace_sync, workspace_identity};
+use crate::sync::{
+    WorkspaceIdentity, engine_project, gateway_node, push_workspace_sync, resend_lost_files,
+    workspace_identity,
+};
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
@@ -113,6 +116,13 @@ impl LspSession {
             next_id: 1,
             engine: handshake.detected_engine,
         };
+        // Files the gateway lost from its copy (#262) that the sync above did not carry: the
+        // next sync sends them again.
+        resend_lost_files(
+            &session.root,
+            &gateway_node(&session.framed),
+            &handshake.stale_paths,
+        );
         let init = serde_json::json!({
             "processId": null,
             "rootUri": format!("file://{root_str}"),
