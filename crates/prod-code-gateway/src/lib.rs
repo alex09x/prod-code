@@ -37,6 +37,58 @@ use workspace::{SessionView, WorkspaceManager};
 
 pub static NEXT_REQ_ID: AtomicU64 = AtomicU64::new(1);
 pub static ACTIVE_QUERIES: AtomicUsize = AtomicUsize::new(0);
+
+/// Remote commands running now, by a per-process id: workspace directory name, command line and
+/// start. Status answers list them, so that a node running a build or test is not taken for
+/// idle and restarted under it (#273).
+type RunningTable = std::collections::HashMap<u64, (String, String, Instant)>;
+static RUNNING_COMMANDS: std::sync::LazyLock<std::sync::Mutex<RunningTable>> =
+    std::sync::LazyLock::new(Default::default);
+static NEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A command's entry in [`RUNNING_COMMANDS`], removed when the command's handler returns,
+/// however it returns.
+struct RunningEntry(u64);
+
+impl RunningEntry {
+    fn start(workspace: &std::path::Path, command: &[String]) -> Self {
+        let id = NEXT_COMMAND_ID.fetch_add(1, Ordering::Relaxed);
+        let name = workspace
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        RUNNING_COMMANDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, (name, command.join(" "), Instant::now()));
+        Self(id)
+    }
+}
+
+impl Drop for RunningEntry {
+    fn drop(&mut self) {
+        RUNNING_COMMANDS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+/// The commands running now, as a status answer reports them.
+fn running_commands() -> Vec<prod_code_protocol::RunningCommand> {
+    RUNNING_COMMANDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .map(
+            |(workspace, command, started)| prod_code_protocol::RunningCommand {
+                workspace: workspace.clone(),
+                command: command.clone(),
+                running_seconds: started.elapsed().as_secs(),
+            },
+        )
+        .collect()
+}
 pub static TOTAL_QUERIES: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_QUERIES: AtomicU64 = AtomicU64::new(0);
 
@@ -377,6 +429,7 @@ impl ServerState {
             load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
             platform: Some(prod_code_protocol::platform()),
+            running_commands: running_commands(),
         }
     }
 }
@@ -1671,6 +1724,7 @@ pub async fn run_exec(
         command = %req.command.join(" "),
         "🛠️ [EXEC] started"
     );
+    let _running = RunningEntry::start(&workspace, &req.command);
 
     // rapidfire (lock-free MPSC): stdout and stderr readers fan in, the session task drains.
     let (tx, mut rx) = rapidfire::mpsc::bounded::<ExecChunk>(256);
@@ -3308,6 +3362,7 @@ async fn on_client_message(
                     load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
                     cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
                     platform: Some(prod_code_protocol::platform()),
+                    running_commands: running_commands(),
                 }))
                 .await;
         }
@@ -4670,6 +4725,28 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A running command is in the status for as long as its handler runs, and gone however the
+    /// handler returns (#273).
+    #[test]
+    fn a_running_command_is_listed_until_its_handler_returns() {
+        let workspace = Path::new("/srv/workspaces/shop--wt-status-test");
+        let mine = |list: &[prod_code_protocol::RunningCommand]| {
+            list.iter()
+                .filter(|c| c.workspace == "shop--wt-status-test")
+                .count()
+        };
+        let entry = RunningEntry::start(workspace, &["cargo".to_string(), "test".to_string()]);
+        let listed = running_commands();
+        assert_eq!(mine(&listed), 1);
+        let command = listed
+            .iter()
+            .find(|c| c.workspace == "shop--wt-status-test")
+            .unwrap();
+        assert_eq!(command.command, "cargo test");
+        drop(entry);
+        assert_eq!(mine(&running_commands()), 0);
+    }
 
     #[test]
     fn a_compiler_cache_is_shared_across_worktrees_when_the_node_has_ccache() {

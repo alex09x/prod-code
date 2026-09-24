@@ -2981,6 +2981,10 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
                     println!("Memory RSS:        {:.2} MB", mb);
                 }
                 println!("Active Sessions:   {}", resp.active_sessions);
+                println!("Running Commands:  {}", resp.running_commands.len());
+                for line in resp.running_lines() {
+                    println!("  • {line}");
+                }
                 println!("Loaded Workspaces: {}", resp.loaded_workspaces);
                 println!(
                     "Queries Handled:   {} (in-flight: {})",
@@ -3392,7 +3396,7 @@ async fn run_cluster(
         match prod_code_mcp::cluster::node_status(*node).await {
             Ok(status) => {
                 println!(
-                    "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  rss {:.0} MB",
+                    "{node:<22} UP    {:>6.2} ms  load {:>5.2}/cpu ({} cpus)  uptime {}h{:02}m  workspaces {}  sessions {}  commands {}  rss {:.0} MB",
                     started.elapsed().as_secs_f64() * 1000.0,
                     status.load_per_cpu().unwrap_or(0.0),
                     status.cpu_count.unwrap_or(0),
@@ -3400,6 +3404,7 @@ async fn run_cluster(
                     (status.uptime_seconds % 3600) / 60,
                     status.loaded_workspaces,
                     status.active_sessions,
+                    status.running_commands.len(),
                     status.memory_rss_mb().unwrap_or(0.0)
                 );
                 let engines: Vec<&str> = status

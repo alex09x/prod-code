@@ -130,6 +130,7 @@ async fn handle_client(
                                 load_average_millis: Some(100),
                                 cpu_count: Some(8),
                                 platform: None,
+                                running_commands: Vec::new(),
                             },
                             last_seen_secs: 0,
                             workspaces: vec![],
@@ -152,6 +153,11 @@ async fn handle_client(
                         load_average_millis: Some(200),
                         cpu_count: Some(4),
                         platform: None,
+                        running_commands: vec![prod_code_protocol::RunningCommand {
+                            workspace: "test-ws--wt-1a2b".to_string(),
+                            command: "cargo test --workspace".to_string(),
+                            running_seconds: 125,
+                        }],
                     }))
                     .await?;
             }
@@ -398,6 +404,12 @@ async fn cli_reports_status_and_health_from_gateway() {
     assert!(stdout.contains("prod-code Remote Code Intelligence Gateway"));
     assert!(stdout.contains("Status:            HEALTHY"));
     assert!(stdout.contains("Server PID:"));
+    // A build running on the node is shown, so the node is not taken for idle (#273).
+    assert!(stdout.contains("Running Commands:  1"), "{stdout}");
+    assert!(
+        stdout.contains("  • test-ws--wt-1a2b  2m 5s  cargo test --workspace"),
+        "{stdout}"
+    );
 }
 
 #[tokio::test]

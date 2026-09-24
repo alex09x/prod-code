@@ -628,6 +628,7 @@ mod tests {
                                 load_average_millis: Some(100),
                                 cpu_count: Some(4),
                                 platform: platform.map(String::from),
+                                running_commands: Vec::new(),
                             };
                             let _ = framed.send(WireMessage::StatusResponse(status)).await;
                         } else {
@@ -750,6 +751,7 @@ mod tests {
             load_average_millis: None,
             cpu_count: None,
             platform: None,
+            running_commands: Vec::new(),
         };
         assert!(supports_engine(&status, "rust"));
         assert!(supports_engine(&status, "swift"));

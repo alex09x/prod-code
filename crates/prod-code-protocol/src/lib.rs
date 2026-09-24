@@ -11,7 +11,7 @@ pub use messages::{
     ExecMetric, ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse,
     LoadedWorkspaceInfo, MetricsRequest, MetricsResponse, NodeGossip, PROTOCOL_VERSION,
     PURPOSE_VALIDATION, PeerInfo, PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest,
-    ReadFileResponse, SearchHit, SearchRequest, SearchResponse, ShadowHypothesis,
+    ReadFileResponse, RunningCommand, SearchHit, SearchRequest, SearchResponse, ShadowHypothesis,
     ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host, content_hash,
     detect_client_agent, platform,

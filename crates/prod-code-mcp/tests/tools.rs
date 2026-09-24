@@ -175,6 +175,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         load_average_millis: Some(200),
                         cpu_count: Some(4),
                         platform: None,
+                        running_commands: Vec::new(),
                     }))
                     .await?;
             }
