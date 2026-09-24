@@ -16,8 +16,21 @@ ra_ap_ide_diagnostics=warn,ra_ap_ide_assists=warn,ra_ap_ide_completion=warn,ra_a
 ra_ap_load_cargo=warn,ra_ap_project_model=warn,ra_ap_vfs=warn,\
 prod_code_gateway=debug,prod_code_engine_rust=debug";
 
+fn main() -> Result<()> {
+    // The exec shim is recognised before anything else: it sets up no logging, parses none of
+    // the server's arguments and runs no async runtime, so that it stays small (#255).
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args
+        .get(1)
+        .is_some_and(|flag| flag == prod_code_gateway::exec_shim::SHIM_FLAG)
+    {
+        std::process::exit(prod_code_gateway::exec_shim::run(&args[2..]));
+    }
+    serve()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn serve() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

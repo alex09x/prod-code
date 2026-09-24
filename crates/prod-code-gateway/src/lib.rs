@@ -7,6 +7,7 @@
 pub mod backend;
 pub mod detect;
 pub mod embed;
+pub mod exec_shim;
 pub mod memory;
 mod metrics;
 pub mod priming;
@@ -1430,8 +1431,9 @@ pub async fn run_exec(
         _ => workspace.clone(),
     };
     // A std child, reaped here with `wait4` so its resource use comes back with the exit
-    // status (#180); tokio only gets the pipes.
-    let mut cmd = std::process::Command::new(program);
+    // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
+    // shim, so that the peak memory reported is the command's and not the gateway's (#255).
+    let (mut cmd, report) = exec_shim::command(program);
     cmd.args(args)
         .current_dir(&run_dir)
         .envs(compiler_cache_env(&workspace, on_path("ccache")))
@@ -1567,7 +1569,14 @@ pub async fn run_exec(
     for reader in readers {
         let _ = reader.await;
     }
-    let (exit_code, usage) = match status.flatten() {
+    // The shim's report describes the command itself. There is none when the group was killed
+    // on a timeout, and then what `wait4` said about the shim stands in for it.
+    let status = report
+        .as_ref()
+        .and_then(exec_shim::ReportFile::read)
+        .or(status.flatten());
+    drop(report);
+    let (exit_code, usage) = match status {
         Some((raw, usage)) => {
             use std::os::unix::process::ExitStatusExt;
             (std::process::ExitStatus::from_raw(raw).code(), Some(usage))
@@ -1663,36 +1672,7 @@ fn wait_with_usage(
     }
     let mut done = exited.lock().unwrap_or_else(|e| e.into_inner());
     *done = true;
-    let mut status: libc::c_int = 0;
-    // SAFETY: an all-zero `rusage` is a valid value for `wait4` to fill in.
-    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    loop {
-        // SAFETY: `status` and `usage` are valid for writes for the duration of the call, and
-        // `pid` is a child of this process that nothing else waits for.
-        let got = unsafe { libc::wait4(pid, &mut status, 0, &mut usage) };
-        if got == pid {
-            break;
-        }
-        if got == -1 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
-            continue;
-        }
-        return None;
-    }
-    let ms = |t: libc::timeval| t.tv_sec as u64 * 1000 + t.tv_usec as u64 / 1000;
-    // Linux reports the peak in KiB, macOS in bytes.
-    let max_rss_kb = if cfg!(target_os = "macos") {
-        usage.ru_maxrss as u64 / 1024
-    } else {
-        usage.ru_maxrss as u64
-    };
-    Some((
-        status,
-        prod_code_protocol::ExecUsage {
-            cpu_user_ms: ms(usage.ru_utime),
-            cpu_sys_ms: ms(usage.ru_stime),
-            max_rss_kb,
-        },
-    ))
+    exec_shim::reap_with_usage(pid)
 }
 
 /// Kills the process group led by `pid` (the command and everything it spawned), and `pid`
