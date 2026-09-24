@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Performance
+- **The gateway warms rust-analyzer for the files an agent is editing** (#233). The first
+  validation of a large file after the analyzer starts inferred every function and computed
+  every diagnostic cold: 53–58 s for the 4,246-line `crates/prod-code-client/src/main.rs` on a
+  Linux build node.
+  - When a sync writes Rust files, the gateway loads the validation engine in the background if
+    needed. Loading it warms the 10 most recently modified files, and the synced files are
+    warmed on the engine that is already loaded.
+  - A warm-up infers each file's functions on 16 threads and computes its full diagnostics, all
+    on snapshots without the engine lock. The three newest files then also go through the
+    engine's own diagnostics call.
+  - The same validation after the warm-up took 24 s. The rest is one diagnostics pass that the
+    session buffer's open makes cold again (#235).
+  - The diagnostics pass logs its parts (`analyzer_ms`, `unused_imports_ms`,
+    `unresolved_paths_ms`) at debug level, and a text change applied to the database is logged
+    with its old and new length.
+
 ### Fixed
 - **impact asks a cold language server again before it reports no callers** (#202). A Python
   server that had just started answered the call hierarchy with nothing, and `impact` said "none

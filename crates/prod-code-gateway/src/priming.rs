@@ -107,8 +107,9 @@ pub fn warm_in_background(
         // Then the diagnostics a validation asks for, through the same call, for the files
         // likeliest to be validated next. This holds the engine, which on the validation engine
         // only delays another validation, and that one would have paid the same.
-        for path in files.iter().take(DIAGNOSED_FILES).cloned() {
+        for path in files.iter().take(DIAGNOSED_FILES) {
             let engine = Arc::clone(&engine);
+            let path = path.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 let _ = engine.blocking_lock().diagnostics(&path);
             })

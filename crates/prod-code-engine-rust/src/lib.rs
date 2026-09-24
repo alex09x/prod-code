@@ -1922,7 +1922,10 @@ impl RustEngine {
             // Salsa revision: that would invalidate every derived query for nothing and turn a
             // cached 1 ms hover into a 10-40 ms recomputation.
             let current = self.host.analysis().file_text(fid).ok();
-            if current.as_deref().is_some_and(|current| *current == *new_text) {
+            if current
+                .as_deref()
+                .is_some_and(|current| *current == *new_text)
+            {
                 return Ok(());
             }
             tracing::debug!(
@@ -2184,6 +2187,23 @@ impl PathTranslator {
             "Must resolve definition for PathTranslator"
         );
         assert!(defs.iter().any(|d| d.name == "PathTranslator"));
+    }
+
+    /// A priming job is made under the engine and runs without it: it infers every function of
+    /// its files and warms their diagnostics, and a file the engine does not know adds nothing
+    /// (#233).
+    #[test]
+    fn a_priming_job_infers_the_functions_of_its_files() {
+        let (temp, lib_path) = create_test_fixture();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let unknown = temp.path().join("src/nowhere.rs");
+        let job = engine.priming_job(&[lib_path.as_path(), unknown.as_path()]);
+        assert_eq!(job.threads(), 1, "one function, one thread");
+        assert_eq!(job.files.len(), 1, "the unknown file is left out");
+        assert_eq!(job.run(), 1);
+        assert_eq!(engine.priming_job(&[unknown.as_path()]).threads(), 0);
+        // The diagnostics that follow find the work done.
+        assert!(engine.diagnostics(&lib_path).is_ok());
     }
 
     #[test]
