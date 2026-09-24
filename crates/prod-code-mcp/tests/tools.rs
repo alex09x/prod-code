@@ -1443,6 +1443,49 @@ async fn an_exact_hit_wins_over_the_others() {
     assert_eq!((hit.line, hit.col), (3, 12));
 }
 
+/// A dependency type is listed twice by the index, at its definition and at the `pub use` that
+/// re-exports it. Its source is only on the node, so the resolver reads it from the gateway to
+/// tell them apart, and the answer is the definition (#271).
+#[tokio::test]
+async fn a_dependency_type_resolves_past_its_reexport_read_from_the_node() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn local() {}\n")]);
+    let root = ws.root();
+    let registry = std::path::PathBuf::from("/nonexistent-registry/tokio-util/src/codec");
+    let definition = registry.join("framed.rs");
+    let reexport = registry.join("mod.rs");
+    let mut source = vec![String::new(); 400];
+    source[37] = "pub struct Framed<T, U> {".to_string();
+    source[340] = "pub use self::framed::{Framed, FramedParts};".to_string();
+    let source = source.join("\n");
+    let (def, re) = (definition.clone(), reexport.clone());
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("Framed", 23, &re, 341, 24),
+            answers::symbol("Framed", 23, &def, 38, 12),
+        ]),
+        "prod-code/readFile" => serde_json::json!(source),
+        "textDocument/hover" => answers::hover("```rust\npub struct Framed<T, U>\n```"),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let hit = prod_code_mcp::tools::resolve_symbol(gateway.addr(), &root, "Framed", None)
+        .await
+        .expect("the re-export is not a second candidate");
+    assert_eq!((hit.path, hit.line, hit.col), (definition, 38, 12));
+
+    // A position query on that file is sent without opening it here: the node's analyzer
+    // already has it, and reading it on this machine would fail.
+    let hover = execute_tool(
+        gateway.addr(),
+        &root,
+        "code_hover",
+        serde_json::json!({ "symbol": "Framed" }),
+    )
+    .await
+    .expect("a hover on a file that exists only on the node");
+    assert!(!hover.is_error, "{}", text_of(&hover));
+}
+
 /// A server that decorates the names it lists (`bar()`, `Api.baz`) still answers the bare
 /// name, and `bar` is not confused with `barrel()`.
 #[tokio::test]

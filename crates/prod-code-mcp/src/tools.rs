@@ -4501,6 +4501,7 @@ pub async fn resolve_symbol(
     if exact.is_empty() {
         anyhow::bail!(no_symbol_message(symbol, name, &others));
     }
+    let remote_texts = remote_sources(remote, &exact).await;
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
     let mut scored: Vec<(i32, SymbolHit)> = exact
         .into_iter()
@@ -4530,8 +4531,8 @@ pub async fn resolve_symbol(
             // An index can be stale or (clangd) point the right range at the wrong file:
             // the name must actually be at that position. A server that decorates the name
             // (`Type.name`) may point at the bare name, so either spelling counts.
-            if !identifier_at(&hit.path, hit.line, hit.col, &hit.name)
-                && !identifier_at(&hit.path, hit.line, hit.col, bare)
+            if !identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
+                && !identifier_at(&hit.path, &remote_texts, hit.line, hit.col, bare)
             {
                 score -= 1000;
             }
@@ -4554,7 +4555,7 @@ pub async fn resolve_symbol(
     let definitions: Vec<&SymbolHit> = ties
         .iter()
         .copied()
-        .filter(|h| !is_use_declaration(&h.path, h.line))
+        .filter(|h| !is_use_declaration(&h.path, &remote_texts, h.line))
         .collect();
     let ties = if definitions.is_empty() {
         ties
@@ -4678,7 +4679,7 @@ async fn type_members(
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for hit in &types {
         if bare_symbol_name(&hit.name).eq_ignore_ascii_case(type_name)
-            && !is_use_declaration(&hit.path, hit.line)
+            && !is_use_declaration(&hit.path, &RemoteSources::new(), hit.line)
             && !files.contains(&hit.path)
         {
             files.push(hit.path.clone());
@@ -4914,8 +4915,48 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
 /// Whether the 1-based `line` of `path` is in a `use` declaration (`use a::b;`, `pub use`,
 /// `pub(crate) use`, and any line of one that spans lines, `pub use m::{\n    A,\n    B,\n};`):
 /// what the workspace index lists for a re-export, next to the definition it names (#128, #225).
-fn is_use_declaration(path: &Path, line: u32) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
+/// Texts of files a symbol hit points at that are not on this machine, keyed by path.
+type RemoteSources = std::collections::HashMap<std::path::PathBuf, String>;
+
+/// The most dependency files read from the gateway for one resolution.
+const MAX_REMOTE_SOURCES: usize = 16;
+
+/// Reads from the gateway the files of `hits` that do not exist here. A dependency crate's
+/// source lives only in the build node's cargo registry, and the checks that tell a definition
+/// from its re-export read the file (#271).
+async fn remote_sources(remote: SocketAddr, hits: &[SymbolHit]) -> RemoteSources {
+    let mut texts = RemoteSources::new();
+    for hit in hits {
+        if texts.len() >= MAX_REMOTE_SOURCES {
+            break;
+        }
+        if hit.path.exists() || texts.contains_key(&hit.path) {
+            continue;
+        }
+        if let Ok((bytes, _)) =
+            crate::remote_fs::read_remote_file(remote, &hit.path.to_string_lossy(), 4 << 20).await
+        {
+            texts.insert(
+                hit.path.clone(),
+                String::from_utf8_lossy(&bytes).into_owned(),
+            );
+        }
+    }
+    texts
+}
+
+/// The text of `path`: from `remote` when it was read from the gateway, otherwise from disk.
+fn source_text<'a>(path: &Path, remote: &'a RemoteSources) -> Option<std::borrow::Cow<'a, str>> {
+    match remote.get(path) {
+        Some(text) => Some(std::borrow::Cow::Borrowed(text.as_str())),
+        None => std::fs::read_to_string(path)
+            .ok()
+            .map(std::borrow::Cow::Owned),
+    }
+}
+
+fn is_use_declaration(path: &Path, remote: &RemoteSources, line: u32) -> bool {
+    let Some(text) = source_text(path, remote) else {
         return false;
     };
     let lines: Vec<&str> = text.lines().collect();
@@ -4956,8 +4997,8 @@ fn starts_use(row: &str) -> bool {
 
 /// Whether `name` is the identifier at the 1-based line/column of `path` (false when the
 /// file cannot be read).
-fn identifier_at(path: &Path, line: u32, col: u32, name: &str) -> bool {
-    let Ok(text) = std::fs::read_to_string(path) else {
+fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name: &str) -> bool {
+    let Some(text) = source_text(path, remote) else {
         return false;
     };
     let Some(row) = text.lines().nth(line.saturating_sub(1) as usize) else {
