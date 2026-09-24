@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- **`--symbol` no longer calls a re-exported name ambiguous when its `pub use` spans lines**
+  (#225). `pub use messages::{ …, WireMessage, … };` put `WireMessage` on a continuation line,
+  which was not recognised as part of a `use`. So `hover --symbol WireMessage` listed the
+  re-export and the enum as two candidates. Every line of a `use`, up to its `;`, now counts.
 - **move_method: three gaps found by the review of the post about it** (#207).
   - A path call (`Order::price_with(f(), g(), 2)`) swapped its arguments without the effects
     check a method call gets. It is now blocked the same way.

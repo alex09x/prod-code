@@ -4551,16 +4551,37 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
     best.map(|(_, _, p)| p)
 }
 
-/// Whether the 1-based `line` of `path` is a `use` declaration (`use a::b;`, `pub use`,
-/// `pub(crate) use`): what the workspace index lists for a re-export, next to the definition it
-/// names (#128).
+/// Whether the 1-based `line` of `path` is in a `use` declaration (`use a::b;`, `pub use`,
+/// `pub(crate) use`, and any line of one that spans lines, `pub use m::{\n    A,\n    B,\n};`):
+/// what the workspace index lists for a re-export, next to the definition it names (#128, #225).
 fn is_use_declaration(path: &Path, line: u32) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
-    let Some(row) = text.lines().nth(line.saturating_sub(1) as usize) else {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(target) = (line as usize).checked_sub(1) else {
         return false;
     };
+    // Every `use` runs from its first line to the line with its `;`.
+    let mut at = 0;
+    while at <= target && at < lines.len() {
+        if !starts_use(lines[at]) {
+            at += 1;
+            continue;
+        }
+        let end = (at..lines.len())
+            .find(|n| lines[*n].contains(';'))
+            .unwrap_or(at);
+        if (at..=end).contains(&target) {
+            return true;
+        }
+        at = end + 1;
+    }
+    false
+}
+
+/// Does this line start a `use` declaration, with or without a visibility?
+fn starts_use(row: &str) -> bool {
     let row = row.trim_start();
     let row = match row.strip_prefix("pub") {
         Some(rest) if rest.starts_with('(') => rest
