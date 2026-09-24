@@ -498,7 +498,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_parameter".to_string(),
-            description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the analyzer when it gives one in a shape this can read, otherwise pass `type`. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports. Rust only."
+            description: "Promote an expression inside a function into a parameter of it, passing what the body used to say at every existing call site — so no caller changes behaviour and the next one can choose. Give the selection (path plus 1-based start and end line/character) and the parameter's name; the type comes from the literal or the analyzer when it gives one in a shape this can read, otherwise pass `type`. Works in Rust, TypeScript, JavaScript, Python and Go, on functions and methods, with each language's spelling: `name: T` in Rust and TypeScript, `name T` in Go, `name` or `name: T` in Python (untyped when no type is known), and `name` in JavaScript, which takes no type. The parameter is added at the end of the list, keeping the list's shape, and the argument at the end of every call; a list that ends in a rest or variadic parameter (`...rest`, `...T`, `*args`) is refused, because the new argument would not reach the new parameter. `replace_all` puts the parameter in every identical occurrence inside the body rather than only the selected one. A reference that is not a call with this arity is named rather than mangled; imports are left alone. The whole change is type-checked in one overlay before anything is written: an expression that names a local or anything private to the function it came from cannot be spelled at a call site, and that is what the check reports."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -511,7 +511,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "name": { "type": "string", "description": "What the new parameter is called" },
                     "type": { "type": "string", "description": "The parameter's type, when the analyzer gives none" },
                     "replace_all": { "type": "boolean", "description": "Replace every identical occurrence in the body (default false: only the selection)" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile` (Rust files only): also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -2025,6 +2025,15 @@ async fn handle_extract_parameter(
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    // The compile gate runs `cargo check`, which says nothing about a TypeScript, Python or Go
+    // file; letting it pass one would claim a verdict nobody gave.
+    anyhow::ensure!(
+        !verify
+            || crate::extract_parameter::Syntax::of(&file_path)
+                == Some(crate::extract_parameter::Syntax::Rust),
+        "`verify: compile` runs `cargo check` and is for Rust files; the analyzer's check of \
+         the result is reported without it"
+    );
     let mut done = crate::extract_parameter::extract(
         remote,
         workspace_root,
