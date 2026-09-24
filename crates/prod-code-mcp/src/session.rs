@@ -71,10 +71,9 @@ impl LspSession {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         let identity: WorkspaceIdentity = workspace_identity(&root);
-        let stream = TcpStream::connect(remote)
+        let stream = prod_code_protocol::transport::connect(remote)
             .await
             .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-        let _ = stream.set_nodelay(true);
         let mut framed = Framed::new(stream, ProdCodeCodec::new());
         push_workspace_sync(&mut framed, &root, &identity, None)
             .await

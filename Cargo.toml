@@ -39,6 +39,7 @@ bytes = "1.10"
 tokio-util = { version = "0.7", features = ["codec"] }
 futures-util = { version = "0.3", features = ["sink"] }
 url = "2.5"
+socket2 = { version = "0.6", features = ["all"] }
 
 [profile.dev]
 opt-level = 0

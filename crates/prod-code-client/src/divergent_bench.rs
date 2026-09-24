@@ -914,10 +914,9 @@ pub async fn initial_sync(
         base: None,
     };
     let start = Instant::now();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
     let outcome =
         prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
@@ -941,10 +940,9 @@ async fn open_session(
     client_name: String,
 ) -> Result<Framed<TcpStream, ProdCodeCodec>> {
     let ws_root_str = wt.root.to_string_lossy().to_string();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     // Transparent pre-flight sync before the handshake, exactly like a live editor session: a

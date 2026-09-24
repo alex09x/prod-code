@@ -4370,8 +4370,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                 return Ok(());
             }
         };
-        // Small request/response frames must not wait for delayed ACKs (Nagle).
-        let _ = socket.set_nodelay(true);
+        // Small request/response frames must not wait for delayed ACKs (Nagle), and a client
+        // that went away without a close must not keep its session and its command (#256).
+        prod_code_protocol::transport::tune(&socket);
         let state_clone = Arc::clone(&state);
         tokio::spawn(async move {
             if let Err(err) = handle_client(socket, addr, state_clone).await {

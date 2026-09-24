@@ -1557,6 +1557,7 @@ dependencies = [
  "lsp-types",
  "serde",
  "serde_json",
+ "socket2",
  "thiserror",
  "tokio",
  "tokio-util",

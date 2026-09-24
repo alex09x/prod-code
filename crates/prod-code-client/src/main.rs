@@ -10,7 +10,6 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use url::Url;
 
@@ -2064,10 +2063,9 @@ async fn execute_lsp_query(
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let stream = TcpStream::connect(remote)
+            let stream = prod_code_protocol::transport::connect(remote)
                 .await
                 .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-            let _ = stream.set_nodelay(true);
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
             timing.mark("connect");
 
@@ -2952,10 +2950,9 @@ async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()
 /// Query remote gateway for health and status snapshot.
 async fn run_status_probe(remote: SocketAddr) -> Result<()> {
     let start = std::time::Instant::now();
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to prod-code gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let rtt = start.elapsed();
 
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
@@ -2999,10 +2996,9 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
     let cwd_str = cwd.to_string_lossy().to_string();
 
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     // Perform handshake
@@ -3118,10 +3114,9 @@ async fn run_sync(remote: SocketAddr, subpath: Option<PathBuf>) -> Result<()> {
     let start = std::time::Instant::now();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
-    let stream = TcpStream::connect(remote)
+    let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let _ = stream.set_nodelay(true);
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
     let outcome =
@@ -4055,14 +4050,13 @@ async fn run_benchmark(
             let ws_str = ws_path.to_string_lossy().to_string();
             let base_name = detect_workspace_name(&ws_path);
 
-            let stream = match TcpStream::connect(remote).await {
+            let stream = match prod_code_protocol::transport::connect(remote).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!("Worker {worker_id} connection failed: {e}");
                     return (completed, errors + 1, latencies_us);
                 }
             };
-            let _ = stream.set_nodelay(true);
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             // 1. Handshake
