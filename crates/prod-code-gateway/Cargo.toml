@@ -30,6 +30,11 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 libc = "0.2"
+# Dense intent search (roadmap 8.4): a sentence-embedding model run in process. The model file
+# itself is optional and lives outside the repository.
+ort = { version = "2.0.0-rc.10", features = ["ndarray"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.17"
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -749,6 +749,20 @@ pub struct SearchResponse {
     pub took_ms: u64,
     #[serde(default)]
     pub error: Option<String>,
+    /// The dense half of the ranking; `None` when the gateway has no embedding model and the
+    /// ranking was lexical only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dense: Option<DenseStatus>,
+}
+
+/// How far the dense half of a search had got.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DenseStatus {
+    /// The question was ranked by meaning too: the model is there and some declarations have
+    /// vectors.
+    pub used: bool,
+    /// Declarations with a vector so far; the rest are being embedded in the background.
+    pub embedded: usize,
 }
 
 #[cfg(test)]

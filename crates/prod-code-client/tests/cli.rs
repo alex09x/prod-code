@@ -258,6 +258,7 @@ async fn handle_client(
                         indexed_declarations: 1,
                         took_ms: 5,
                         error: None,
+                        dense: None,
                     }))
                     .await?;
             }
