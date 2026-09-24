@@ -179,7 +179,9 @@ pub fn impl_trait(header: &str) -> Option<String> {
     None
 }
 
-/// The supertraits in a trait header: `Send + Sync` in `pub trait Embed: Send + Sync {`.
+/// The supertraits in a trait header: `Send + Sync` in `pub trait Embed: Send + Sync {`, and
+/// the bounds on `Self` in its `where` clause, which the Rust Reference counts as supertraits
+/// too (`trait Circle where Self: Shape`, #227).
 pub fn supertraits(header: &str) -> Vec<String> {
     let Some(at) = header.find("trait ") else {
         return Vec::new();
@@ -189,11 +191,32 @@ pub fn supertraits(header: &str) -> Vec<String> {
         .find(|c: char| !(c.is_alphanumeric() || c == '_'))
         .unwrap_or(after.len());
     let rest = skip_generics(&after[name_end..]).trim_start();
-    let Some(bounds) = rest.strip_prefix(':') else {
-        return Vec::new();
+    // `where` as a word, not inside a name such as `Somewhere`.
+    let keyword = rest.match_indices("where").map(|(i, _)| i).find(|&i| {
+        (i == 0 || rest[..i].ends_with(char::is_whitespace))
+            && rest[i + 5..].starts_with(char::is_whitespace)
+    });
+    let (bounds, clause) = match keyword {
+        Some(w) => (&rest[..w], &rest[w + "where".len()..]),
+        None => (rest, ""),
     };
-    let bounds = bounds.split(" where ").next().unwrap_or(bounds);
-    split_top(bounds, '+')
+    let mut out = bounds
+        .trim_start()
+        .strip_prefix(':')
+        .map(|b| split_top(b, '+'))
+        .unwrap_or_default();
+    for predicate in split_top(clause, ',') {
+        if let Some(on_self) = predicate.strip_prefix("Self")
+            && let Some(b) = on_self.trim_start().strip_prefix(':')
+        {
+            for bound in split_top(b, '+') {
+                if !out.contains(&bound) {
+                    out.push(bound);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// The traits derived by the `#[derive(…)]` attributes directly above the declaration on line
@@ -499,6 +522,16 @@ mod tests {
             vec!["Clone", "Iterator<Item = (K, u8)>", "'static"]
         );
         assert!(supertraits("pub trait Plain ").is_empty());
+        assert_eq!(
+            supertraits("pub trait Circle where Self: Shape "),
+            vec!["Shape"]
+        );
+        assert_eq!(
+            supertraits("trait Both: Clone where Self: Shape + Clone, T: Copy, Self: Debug"),
+            vec!["Clone", "Shape", "Debug"]
+        );
+        assert!(supertraits("trait Other where T: Copy ").is_empty());
+        assert_eq!(supertraits("trait Near: Somewhere "), vec!["Somewhere"]);
         assert!(supertraits("struct Nope ").is_empty());
         assert!(is_trait_decl("pub(crate) unsafe trait Raw {"));
         assert!(!is_trait_decl("pub struct Traits;"));
