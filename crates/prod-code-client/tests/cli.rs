@@ -2054,6 +2054,8 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         &["validate", "--diff", "no-such.patch"][..],
         &["impact", "--ci", "--depth", "1"][..],
         &["move-method", "src/lib.rs", "1", "8", "--to-type", "X"][..],
+        &["callers", "src/lib.rs", "5", "8", "--depth", "3"][..],
+        &["callees", "--symbol", "calculate", "--depth", "2"][..],
         &[
             "schema-rename",
             "order_id",

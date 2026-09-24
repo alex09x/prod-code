@@ -800,6 +800,72 @@ async fn code_callers_and_callees_walk_the_call_hierarchy() {
     );
 }
 
+/// `depth` walks the callers of the callers. `mid` calls `leaf`, `top` and `leaf` call `mid`:
+/// the tree reaches `top`, and `leaf` appears again under `mid`, marked, not expanded a second
+/// time.
+#[tokio::test]
+async fn code_callers_to_a_depth_is_a_tree_that_ends_at_recursion() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub fn leaf() {\n    mid();\n}\n\npub fn mid() {\n    leaf();\n}\n\npub fn top() {\n    mid();\n}\n",
+    );
+    commit(&ws);
+    let uri = format!("file://{}", lib.display());
+    let item = |name: &str, line: u32| {
+        serde_json::json!({ "name": name, "uri": uri.clone(),
+            "selectionRange": { "start": { "line": line, "character": 7 }, "end": { "line": line, "character": 10 } } })
+    };
+    let edge = |name: &str, line: u32, call: u32| {
+        serde_json::json!({ "from": item(name, line),
+            "fromRanges": [ { "start": { "line": call, "character": 4 }, "end": { "line": call, "character": 7 } } ] })
+    };
+    let answers = (
+        serde_json::json!([item("leaf", 0)]),
+        serde_json::json!([edge("mid", 4, 5)]),
+        serde_json::json!([edge("leaf", 0, 1), edge("top", 8, 9)]),
+    );
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/prepareCallHierarchy" => answers.0.clone(),
+        "callHierarchy/incomingCalls" => {
+            match params.pointer("/item/name").and_then(|n| n.as_str()) {
+                Some("leaf") => answers.1.clone(),
+                Some("mid") => answers.2.clone(),
+                _ => serde_json::json!([]),
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let at = |depth: u64| serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8, "depth": depth });
+    let tree = text_of(
+        &execute_tool(remote, &ws.root(), "code_callers", at(3))
+            .await
+            .expect("callers run"),
+    );
+    let u = format!("file://{}", lib.display());
+    assert_eq!(
+        tree,
+        format!(
+            "`leaf`: 1 caller(s), 3 in all to depth 3\n  \
+             • mid  {u}:5:8  [call sites: 6:5]\n    \
+             • leaf  {u}:1:8  [call sites: 2:5]  (shown above)\n    \
+             • top  {u}:9:8  [call sites: 10:5]"
+        )
+    );
+    // Depth 1 is the direct callers only, as before.
+    let direct = text_of(
+        &execute_tool(remote, &ws.root(), "code_callers", at(1))
+            .await
+            .expect("callers run"),
+    );
+    assert_eq!(
+        direct,
+        format!("`leaf`: 1 caller(s)\n  • mid  {u}:5:8  [call sites: 6:5]")
+    );
+}
+
 #[tokio::test]
 async fn code_callers_reports_no_function_at_position() {
     let ws = workspace();
