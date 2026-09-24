@@ -20,7 +20,11 @@ pub struct ExtractedParameter {
     pub root: PathBuf,
     pub file: String,
     pub name: String,
+    /// Empty when the parameter is written without one (JavaScript, or Python with no type).
     pub ty: String,
+    /// The new parameter as the declaration now spells it: `name: T`, `name T` or `name`.
+    #[serde(skip)]
+    pub parameter: String,
     /// The expression that left the body, as it was written.
     pub expression: String,
     /// How many places in the body now read the parameter.
@@ -36,15 +40,9 @@ impl ExtractedParameter {
     /// The report: what moved out of the body, and whether the result compiles.
     pub fn render(&self, diff_budget: usize) -> String {
         let mut out = format!(
-            "`{}` ({})\n\n- new parameter: `{}: {}`\n- from the body: `{}`\n- {} place(s) in the \
+            "`{}` ({})\n\n- new parameter: `{}`\n- from the body: `{}`\n- {} place(s) in the \
              body now read it, {} call site(s) pass it\n\n",
-            self.symbol,
-            self.file,
-            self.name,
-            self.ty,
-            self.expression,
-            self.replaced,
-            self.call_sites
+            self.symbol, self.file, self.parameter, self.expression, self.replaced, self.call_sites
         );
         let mut body = String::new();
         let mut changed_lines = 0usize;
@@ -133,17 +131,260 @@ pub fn type_from_hover(hover: &str) -> Option<String> {
     None
 }
 
+/// The language of the file an extraction happens in.
+///
+/// The steps are the same everywhere: find the function, add a parameter, read it in the body,
+/// pass the expression at every call. What differs is how a declaration is found, how a
+/// parameter is spelled, and how each language server names a type in a hover, so those are
+/// the parts chosen by the file's language.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Syntax {
+    Rust,
+    TypeScript,
+    JavaScript,
+    Python,
+    Go,
+}
+
+impl Syntax {
+    /// The syntax of `path`, from the language it is opened with; `None` for a language this
+    /// cannot extract a parameter in.
+    pub fn of(path: &Path) -> Option<Self> {
+        match crate::lang::language_id_for_path(path) {
+            "rust" => Some(Self::Rust),
+            "typescript" | "typescriptreact" => Some(Self::TypeScript),
+            "javascript" | "javascriptreact" => Some(Self::JavaScript),
+            "python" => Some(Self::Python),
+            "go" => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    /// The new parameter as the declaration spells it, or `None` when this language needs a
+    /// type and there is none. JavaScript has no annotations, and a Python parameter without
+    /// one is still a parameter, so those two never need one.
+    pub fn parameter(self, name: &str, ty: Option<&str>) -> Option<String> {
+        match (self, ty) {
+            (Self::JavaScript, _) | (Self::Python, None) => Some(name.to_string()),
+            (Self::Go, Some(ty)) => Some(format!("{name} {ty}")),
+            (_, Some(ty)) => Some(format!("{name}: {ty}")),
+            (_, None) => None,
+        }
+    }
+
+    /// The type in a hover answer from this language's server, when it is one this can read.
+    pub fn type_from_hover(self, hover: &str) -> Option<String> {
+        match self {
+            Self::Rust => type_from_hover(hover),
+            Self::JavaScript => None,
+            Self::TypeScript => typescript_type(hover),
+            Self::Python => python_type(hover),
+            Self::Go => go_type(hover),
+        }
+    }
+
+    /// The type of a literal expression. No language server answers a hover on `80` or `"x"`,
+    /// yet a literal is the most common thing to extract, and its type is not in doubt.
+    pub fn literal_type(self, expression: &str) -> Option<&'static str> {
+        let e = expression.trim();
+        let integer = !e.is_empty()
+            && e.strip_prefix('-')
+                .unwrap_or(e)
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '_')
+            && e.chars().any(|c| c.is_ascii_digit());
+        let float = !integer && e.contains('.') && e.replace('_', "").parse::<f64>().is_ok();
+        let quoted = |q: char| e.len() >= 2 && e.starts_with(q) && e.ends_with(q);
+        let string = quoted('"') || (self != Self::Go && quoted('\'')) || quoted('`');
+        let boolean = match self {
+            Self::Python => e == "True" || e == "False",
+            _ => e == "true" || e == "false",
+        };
+        match self {
+            Self::Rust | Self::JavaScript => None,
+            Self::TypeScript if integer || float => Some("number"),
+            Self::TypeScript if string => Some("string"),
+            Self::TypeScript if boolean => Some("boolean"),
+            Self::Python if integer => Some("int"),
+            Self::Python if float => Some("float"),
+            Self::Python if string => Some("str"),
+            Self::Python if boolean => Some("bool"),
+            Self::Go if integer => Some("int"),
+            Self::Go if float => Some("float64"),
+            Self::Go if string => Some("string"),
+            Self::Go if quoted('\'') => Some("rune"),
+            Self::Go if boolean => Some("bool"),
+            _ => None,
+        }
+    }
+
+    /// Whether the parameter list ends in one that takes whatever arguments are left: `...rest`
+    /// in TypeScript and JavaScript, `...T` in Go, `*args`, a bare `*` or `**kwargs` in Python.
+    /// A parameter added after it would not receive the argument every call site passes, so
+    /// the callers would change behaviour, which is exactly what this refactoring promises not
+    /// to do.
+    fn catch_all(self, list: &str) -> Option<String> {
+        let params = crate::signature::split_params(list);
+        match self {
+            Self::Rust => None,
+            Self::TypeScript | Self::JavaScript => {
+                params.last().filter(|p| p.starts_with("...")).cloned()
+            }
+            Self::Go => params.last().filter(|p| p.contains("...")).cloned(),
+            Self::Python => params.into_iter().find(|p| p.starts_with('*')),
+        }
+    }
+
+    /// Whether `line` imports a name rather than using it. The TypeScript server leaves imports
+    /// out of `references`, basedpyright does not, and an import needs no argument.
+    fn is_import(self, line: &str) -> bool {
+        let line = line.trim_start();
+        match self {
+            Self::TypeScript | Self::JavaScript => {
+                line.starts_with("import ")
+                    || line.starts_with("import{")
+                    || line.starts_with("export {")
+                    || line.starts_with("export{")
+            }
+            Self::Python => line.starts_with("import ") || line.starts_with("from "),
+            Self::Rust | Self::Go => false,
+        }
+    }
+}
+
+/// The type in a TypeScript hover for a binding: `const width: 80`, `let n: number`,
+/// `(parameter) text: string`, `(property) Store.entries: number[]`. A literal type is widened,
+/// because a parameter typed `80` would accept nothing else. A function or a method is not a
+/// binding: its hover names what it returns, not what it is.
+fn typescript_type(hover: &str) -> Option<String> {
+    const BINDINGS: [&str; 6] = [
+        "const ",
+        "let ",
+        "var ",
+        "(parameter) ",
+        "(property) ",
+        "(variable) ",
+    ];
+    for line in hover.lines() {
+        let line = line.trim();
+        let Some(rest) = BINDINGS.iter().find_map(|p| line.strip_prefix(p)) else {
+            continue;
+        };
+        let Some((name, ty)) = rest.split_once(':') else {
+            continue;
+        };
+        let ty = ty.trim().trim_end_matches(';').trim();
+        if name.contains('(') || ty.is_empty() {
+            continue;
+        }
+        // An object type is written over several lines, and its first line is not a type.
+        let opened = ty.matches(['{', '(', '[', '<']).count();
+        let closed = ty.matches(['}', ')', ']']).count() + ty.matches('>').count()
+            - ty.matches("=>").count();
+        if opened != closed {
+            return None;
+        }
+        return Some(
+            Syntax::TypeScript
+                .literal_type(ty)
+                .map(str::to_string)
+                .unwrap_or_else(|| ty.to_string()),
+        );
+    }
+    None
+}
+
+/// The type in a basedpyright hover for a binding: `(variable) width: Literal[80]`,
+/// `(constant) WIDTH: Literal[80]`, `(parameter) text: str`. `Literal[80]` is widened to `int`
+/// for the reason TypeScript's `80` is; a type the checker made up, like `Self@Store` or one with
+/// `Unknown` in it, cannot be written in an annotation and gives none.
+fn python_type(hover: &str) -> Option<String> {
+    const BINDINGS: [&str; 3] = ["(variable) ", "(constant) ", "(parameter) "];
+    for line in hover.lines() {
+        let line = line.trim();
+        let Some(rest) = BINDINGS.iter().find_map(|p| line.strip_prefix(p)) else {
+            continue;
+        };
+        let Some((_, ty)) = rest.split_once(':') else {
+            continue;
+        };
+        let ty = ty.trim();
+        if ty.is_empty() || ty.contains('@') || ty.contains("Unknown") {
+            return None;
+        }
+        if let Some(values) = ty
+            .strip_prefix("Literal[")
+            .and_then(|v| v.strip_suffix(']'))
+        {
+            let kinds: std::collections::BTreeSet<&str> = values
+                .split(',')
+                .map(|v| Syntax::Python.literal_type(v).unwrap_or("?"))
+                .collect();
+            return match kinds.into_iter().collect::<Vec<_>>().as_slice() {
+                [kind] if *kind != "?" => Some(kind.to_string()),
+                _ => Some(ty.to_string()),
+            };
+        }
+        return Some(ty.to_string());
+    }
+    None
+}
+
+/// The type in a gopls hover for a binding: `var width int`, `field entries []int`,
+/// `const Base untyped int = 80`. An untyped constant takes its default type, which is what a
+/// variable initialised from it would have.
+fn go_type(hover: &str) -> Option<String> {
+    const BINDINGS: [&str; 3] = ["var ", "field ", "const "];
+    for line in hover.lines() {
+        let line = line.trim();
+        let Some(rest) = BINDINGS.iter().find_map(|p| line.strip_prefix(p)) else {
+            continue;
+        };
+        let Some((_, ty)) = rest.split_once(' ') else {
+            continue;
+        };
+        let ty = ty.split(" = ").next().unwrap_or("").trim();
+        let ty = match ty.strip_prefix("untyped ") {
+            Some("float") => "float64",
+            Some("complex") => "complex128",
+            Some(kind) => kind,
+            None => ty,
+        };
+        if !ty.is_empty() {
+            return Some(ty.to_string());
+        }
+    }
+    None
+}
+
 /// The smallest *function* containing `line`, and its line span.
 ///
 /// Not the smallest declaration: `textDocument/documentSymbol` reports local bindings too, so
 /// the innermost thing containing an expression is usually the `let` it is part of. Only a
 /// function or a method can take a parameter, so only those are candidates.
 pub fn enclosing_function(symbols: &serde_json::Value, line: u32) -> Option<(String, u32, u32)> {
+    enclosing_declaration(symbols, line).map(|d| (d.name, d.start, d.end))
+}
+
+/// A function or method as `textDocument/documentSymbol` reports it, 1-based.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Enclosing {
+    pub name: String,
+    pub start: u32,
+    pub end: u32,
+    /// The column the range ends at on `end`.
+    pub end_col: u32,
+    /// Where the name is written (`selectionRange`), when the analyzer says.
+    pub name_at: Option<(u32, u32)>,
+}
+
+/// [`enclosing_function`], with the name's position and the exact end of the range.
+pub fn enclosing_declaration(symbols: &serde_json::Value, line: u32) -> Option<Enclosing> {
     /// LSP `SymbolKind`: a free function, and a method on a type.
     const FUNCTION: u64 = 12;
     const METHOD: u64 = 6;
 
-    fn walk(nodes: &[serde_json::Value], line: u32, best: &mut Option<(String, u32, u32)>) {
+    fn walk(nodes: &[serde_json::Value], line: u32, best: &mut Option<Enclosing>) {
         for node in nodes {
             let range = node
                 .get("range")
@@ -157,14 +398,27 @@ pub fn enclosing_function(symbols: &serde_json::Value, line: u32) -> Option<(Str
                 )
             {
                 let (s, e) = (s as u32 + 1, e as u32 + 1);
-                if s <= line && line <= e && best.as_ref().is_none_or(|(_, bs, be)| e - s < be - bs)
-                {
-                    let name = node
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    *best = Some((name, s, e));
+                if s <= line && line <= e && best.as_ref().is_none_or(|b| e - s < b.end - b.start) {
+                    let at = |pointer: &str| {
+                        node.pointer(pointer)
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32 + 1)
+                    };
+                    *best = Some(Enclosing {
+                        name: node
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        start: s,
+                        end: e,
+                        end_col: range
+                            .pointer("/end/character")
+                            .and_then(|c| c.as_u64())
+                            .map_or(1, |c| c as u32 + 1),
+                        name_at: at("/selectionRange/start/line")
+                            .zip(at("/selectionRange/start/character")),
+                    });
                 }
             }
             if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
@@ -175,6 +429,67 @@ pub fn enclosing_function(symbols: &serde_json::Value, line: u32) -> Option<(Str
     let mut best = None;
     walk(symbols.as_array().map(|a| a.as_slice())?, line, &mut best);
     best
+}
+
+/// The offset of a function's name in a language whose declarations do not start with `fn`.
+///
+/// The analyzer's `selectionRange` is the name itself, and it is trusted when the text there
+/// says so; gopls calls a method `(*Store).Limit` but selects only `Limit`, which is why `bare`
+/// is the name after the last dot. Without it, the first whole-word occurrence of the name
+/// from the declaration's first line on that is followed by a parameter list.
+fn name_offset(text: &str, bare: &str, start: u32, name_at: Option<(u32, u32)>) -> Option<usize> {
+    if let Some((line, col)) = name_at
+        && let Some(at) = crate::signature::offset_of(text, line, col)
+        && text[at..].starts_with(bare)
+    {
+        return Some(at);
+    }
+    let from = crate::signature::offset_of(text, start, 1)?;
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text[from..]
+        .match_indices(bare)
+        .map(|(i, _)| from + i)
+        .find(|&at| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + bare.len()..].trim_start().chars().next();
+            !before.is_some_and(is_word) && matches!(after, Some('(' | '<' | '['))
+        })
+}
+
+/// The span between the parentheses of the parameter list that follows a function's name, in
+/// a language other than Rust. Type parameters come first and are skipped: `<T>` in TypeScript,
+/// `[T any]` in Go and `[T]` in Python.
+fn parameter_list(text: &str, name_end: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = name_end;
+    loop {
+        while bytes.get(i).is_some_and(|b| b.is_ascii_whitespace()) {
+            i += 1;
+        }
+        match bytes.get(i)? {
+            b'(' => {
+                let close = crate::parameter_object::matching_bracket(text, i)?;
+                return Some((i + 1, close));
+            }
+            b'[' => i = crate::parameter_object::matching_bracket(text, i)? + 1,
+            b'<' => {
+                // `=>` in a bound such as `<F extends () => void>` does not close anything.
+                let mut depth = 0i32;
+                loop {
+                    match bytes.get(i)? {
+                        b'<' => depth += 1,
+                        b'>' if i == 0 || bytes[i - 1] != b'=' => depth -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// The parameter list with `param` added at the end.
@@ -216,6 +531,59 @@ fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+/// The type a hover gives for the selection `from..to`, outside Rust.
+///
+/// A hover describes one token. When the selection is longer than the token the hover
+/// covers, the type is the token's, not the expression's (in `name + 1`, `name` may be a string
+/// and the sum a number), so it is taken only when the two spans are the same.
+async fn hover_type(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    from: usize,
+    to: usize,
+    syntax: Syntax,
+) -> Option<String> {
+    let selected = &text[from..to];
+    let start = from + (selected.len() - selected.trim_start().len());
+    let end = from + selected.trim_end().len();
+    let (line, col) = crate::signature::line_col_at(text, start);
+    let hover = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": url::Url::from_file_path(file).ok()?.to_string() },
+            "position": { "line": line - 1, "character": col - 1 },
+        }),
+    )
+    .await
+    .ok()?;
+    if let Some(range) = hover.get("range") {
+        let at = |pointer: &str| {
+            range
+                .pointer(pointer)
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32 + 1)
+        };
+        let covered = (
+            at("/start/line").zip(at("/start/character")),
+            at("/end/line").zip(at("/end/character")),
+        );
+        if covered
+            != (
+                Some((line, col)),
+                Some(crate::signature::line_col_at(text, end)),
+            )
+        {
+            return None;
+        }
+    }
+    syntax.type_from_hover(hover.pointer("/contents/value")?.as_str()?)
+}
+
 /// Promotes the expression selected in `file` into a parameter of the function that contains it.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract(
@@ -243,6 +611,13 @@ pub async fn extract(
     anyhow::ensure!(to > from, "the selection is empty");
     let expression = text[from..to].trim().to_string();
     anyhow::ensure!(!expression.is_empty(), "the selection is only whitespace");
+    let syntax = Syntax::of(file).with_context(|| {
+        format!(
+            "{} is not in a language this can extract a parameter in (Rust, TypeScript, \
+             JavaScript, Python, Go)",
+            display(root, file)
+        )
+    })?;
 
     // The function the selection is inside, and its parameter list.
     let symbols = crate::tools::execute_lsp_query(
@@ -254,30 +629,57 @@ pub async fn extract(
             .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?.to_string() } }),
     )
     .await?;
-    let (callee, fn_start, fn_end) =
-        enclosing_function(&symbols, start.0).context("the selection is not inside a function")?;
-    let fn_offset = {
-        let lines: Vec<&str> = text.lines().collect();
-        let head = lines
-            .get(fn_start as usize - 1)
-            .context("the declaration's first line is not in the file")?;
-        let at = head
-            .find(&format!("fn {callee}"))
-            .map(|i| i + 3)
-            .with_context(|| format!("`{callee}` is not a function"))?;
-        crate::signature::offset_of(&text, fn_start, at as u32 + 1)
-            .context("the declaration is not where the analyzer put it")?
+    let declaration = enclosing_declaration(&symbols, start.0)
+        .context("the selection is not inside a function")?;
+    let (callee, fn_start, fn_end) = (declaration.name, declaration.start, declaration.end);
+    // What a call site spells: gopls names a method `(*Store).Limit`, its callers write `Limit`.
+    let bare = callee.rsplit('.').next().unwrap_or(&callee).to_string();
+    let (fn_offset, open, close) = if syntax == Syntax::Rust {
+        let fn_offset = {
+            let lines: Vec<&str> = text.lines().collect();
+            let head = lines
+                .get(fn_start as usize - 1)
+                .context("the declaration's first line is not in the file")?;
+            let at = head
+                .find(&format!("fn {callee}"))
+                .map(|i| i + 3)
+                .with_context(|| format!("`{callee}` is not a function"))?;
+            crate::signature::offset_of(&text, fn_start, at as u32 + 1)
+                .context("the declaration is not where the analyzer put it")?
+        };
+        let (_, open, close) = crate::signature::param_span(&text, fn_offset)
+            .with_context(|| format!("`{callee}` has no parameter list"))?;
+        (fn_offset, open, close)
+    } else {
+        let fn_offset = name_offset(&text, &bare, fn_start, declaration.name_at)
+            .with_context(|| format!("`{callee}` is not declared where the analyzer put it"))?;
+        let (open, close) = parameter_list(&text, fn_offset + bare.len())
+            .with_context(|| format!("`{callee}` has no parameter list"))?;
+        (fn_offset, open, close)
     };
-    let (_, open, close) = crate::signature::param_span(&text, fn_offset)
-        .with_context(|| format!("`{callee}` has no parameter list"))?;
     anyhow::ensure!(
         from > close,
         "the selection is in the signature, not in the body"
     );
+    if let Some(rest) = syntax.catch_all(&text[open..close]) {
+        anyhow::bail!(
+            "`{callee}` takes `{rest}`, which collects whatever arguments are left: a parameter \
+             after it would not receive the one every call site passes, so the callers would \
+             change behaviour"
+        );
+    }
 
-    // The type: the caller's, or the one hover gives when it gives a shape this can read.
+    // The type: the caller's, the literal's, or the one hover gives when it gives a shape this
+    // can read. JavaScript has no annotations, so it needs none of them.
     let ty = match ty {
+        _ if syntax == Syntax::JavaScript => String::new(),
         Some(ty) => ty.to_string(),
+        None if syntax != Syntax::Rust => match syntax.literal_type(&expression) {
+            Some(ty) => ty.to_string(),
+            None => hover_type(remote, root, file, &text, from, to, syntax)
+                .await
+                .unwrap_or_default(),
+        },
         None => {
             let hover = crate::tools::execute_lsp_query(
                 remote,
@@ -304,10 +706,24 @@ pub async fn extract(
             )?
         }
     };
+    let parameter = syntax
+        .parameter(name, Some(ty.as_str()).filter(|t| !t.is_empty()))
+        .context(
+            "the analyzer does not give a type for this selection in a shape this can read; \
+             pass the type explicitly",
+        )?;
 
     // Every edit against the file as it is, applied from the last offset backwards.
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
-    let body_range = close..crate::signature::offset_of(&text, fn_end, 1).unwrap_or(text.len());
+    // A Rust function ends on a line of its own, `}`. A Python one ends with its last
+    // statement, which is still body, so elsewhere the range ends exactly where the analyzer
+    // says.
+    let body_end = if syntax == Syntax::Rust {
+        crate::signature::offset_of(&text, fn_end, 1)
+    } else {
+        crate::signature::offset_of(&text, fn_end, declaration.end_col)
+    };
+    let body_range = close..body_end.unwrap_or(text.len());
     let mut replaced = 0usize;
     if replace_all {
         let mut at = body_range.start;
@@ -331,7 +747,7 @@ pub async fn extract(
     edits.entry(file.to_path_buf()).or_default().push((
         open,
         close - open,
-        with_parameter(&text[open..close], &format!("{name}: {ty}")),
+        with_parameter(&text[open..close], &parameter),
     ));
 
     // Every call site passes what the body used to say.
@@ -350,10 +766,17 @@ pub async fn extract(
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
             continue;
         };
+        // The declaration's own name is not a call, whatever the answer includes, and an import
+        // names the function without calling it.
+        let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = body[at..].find('\n').map_or(body.len(), |i| at + i);
+        if (path == *file && at == fn_offset) || syntax.is_import(&body[line_start..line_end]) {
+            continue;
+        }
         // The analyzer's position is trusted only when the name is actually there. If the file
         // changed since it was analysed, the position points at something else, and appending
         // an argument to whatever call follows it is the one mistake this must never make (#75).
-        if !body[at..].starts_with(callee.as_str()) {
+        if !body[at..].starts_with(bare.as_str()) {
             unmatched.push(format!(
                 "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
                 display(root, &path)
@@ -361,7 +784,7 @@ pub async fn extract(
             continue;
         }
         let Some((args_start, args_end)) =
-            crate::parameter_object::call_args_span(&body, at + callee.len())
+            crate::parameter_object::call_args_span(&body, at + bare.len())
         else {
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
@@ -431,6 +854,7 @@ pub async fn extract(
         file: display(root, file),
         name: name.to_string(),
         ty,
+        parameter,
         expression,
         replaced,
         call_sites,
@@ -506,6 +930,7 @@ mod tests {
             file: "src/lib.rs".into(),
             name: "width_limit".into(),
             ty: "usize".into(),
+            parameter: "width_limit: usize".into(),
             expression: "80".into(),
             replaced: 1,
             call_sites: 2,
@@ -559,6 +984,162 @@ mod tests {
     fn a_diff_longer_than_the_budget_is_cut_and_says_so() {
         let cut = report(Vec::new(), Vec::new(), false).render(10);
         assert!(cut.contains("… diff truncated"), "{cut}");
+    }
+
+    #[test]
+    fn each_languages_hover_for_a_binding_gives_a_type_that_can_be_written() {
+        // What the TypeScript server, basedpyright and gopls answer, verbatim.
+        let ts = Syntax::TypeScript;
+        assert_eq!(
+            ts.type_from_hover("```typescript\nconst cap: number\n```\n")
+                .as_deref(),
+            Some("number")
+        );
+        assert_eq!(
+            ts.type_from_hover("```typescript\nconst width: 80\n```\n")
+                .as_deref(),
+            Some("number"),
+            "a literal type is widened"
+        );
+        assert_eq!(
+            ts.type_from_hover("```typescript\n(property) Store.entries: number[]\n```\n")
+                .as_deref(),
+            Some("number[]")
+        );
+        assert_eq!(
+            ts.type_from_hover("```typescript\n(method) Store.limit(): number\n```\n"),
+            None,
+            "a method's hover names what it returns, not what it is"
+        );
+        assert_eq!(
+            ts.type_from_hover("```typescript\nconst o: {\n    a: number;\n}\n```\n"),
+            None
+        );
+
+        let py = Syntax::Python;
+        assert_eq!(
+            py.type_from_hover("```python\n(variable) width: Literal[80]\n```")
+                .as_deref(),
+            Some("int")
+        );
+        assert_eq!(
+            py.type_from_hover("```python\n(parameter) text: str\n```")
+                .as_deref(),
+            Some("str")
+        );
+        assert_eq!(
+            py.type_from_hover("```python\n(parameter) self: Self@Store\n```"),
+            None
+        );
+        assert_eq!(
+            py.type_from_hover(
+                "```python\n(function) def len(\n    obj: Sized,\n    /\n) -> int\n```"
+            ),
+            None
+        );
+
+        let go = Syntax::Go;
+        assert_eq!(
+            go.type_from_hover("```go\nvar width int\n```").as_deref(),
+            Some("int")
+        );
+        assert_eq!(
+            go.type_from_hover("```go\nfield entries []int\n```")
+                .as_deref(),
+            Some("[]int")
+        );
+        assert_eq!(
+            go.type_from_hover("```go\nconst Base untyped int = 80\n```\n\n---\n\n[`shop.Base` on pkg.go.dev](https://pkg.go.dev/example.com/xp/shop#Base)")
+                .as_deref(),
+            Some("int")
+        );
+        assert_eq!(go.type_from_hover("```go\nfunc len(v Type) int\n```"), None);
+        assert_eq!(Syntax::JavaScript.type_from_hover("const a: number"), None);
+    }
+
+    #[test]
+    fn a_literal_has_its_type_in_every_language_but_rust() {
+        assert_eq!(Syntax::TypeScript.literal_type("80"), Some("number"));
+        assert_eq!(Syntax::TypeScript.literal_type("'x'"), Some("string"));
+        assert_eq!(Syntax::Python.literal_type("1.5"), Some("float"));
+        assert_eq!(Syntax::Python.literal_type("True"), Some("bool"));
+        assert_eq!(Syntax::Go.literal_type("64"), Some("int"));
+        assert_eq!(Syntax::Go.literal_type("'x'"), Some("rune"));
+        assert_eq!(Syntax::Go.literal_type("\"x\""), Some("string"));
+        assert_eq!(Syntax::Go.literal_type("64 * 1024"), None);
+        assert_eq!(
+            Syntax::Rust.literal_type("80"),
+            None,
+            "Rust has several integer types"
+        );
+    }
+
+    #[test]
+    fn each_language_spells_the_parameter_its_own_way() {
+        assert_eq!(
+            Syntax::Rust.parameter("n", Some("usize")).as_deref(),
+            Some("n: usize")
+        );
+        assert_eq!(
+            Syntax::TypeScript.parameter("n", Some("number")).as_deref(),
+            Some("n: number")
+        );
+        assert_eq!(Syntax::TypeScript.parameter("n", None), None);
+        assert_eq!(
+            Syntax::JavaScript.parameter("n", Some("number")).as_deref(),
+            Some("n")
+        );
+        assert_eq!(Syntax::Python.parameter("n", None).as_deref(), Some("n"));
+        assert_eq!(
+            Syntax::Python.parameter("n", Some("int")).as_deref(),
+            Some("n: int")
+        );
+        assert_eq!(
+            Syntax::Go.parameter("n", Some("int")).as_deref(),
+            Some("n int")
+        );
+        assert_eq!(Syntax::Go.parameter("n", None), None);
+        assert_eq!(Syntax::of(Path::new("a/b.tsx")), Some(Syntax::TypeScript));
+        assert_eq!(Syntax::of(Path::new("a/b.mjs")), Some(Syntax::JavaScript));
+        assert_eq!(Syntax::of(Path::new("a/b.swift")), None);
+    }
+
+    #[test]
+    fn the_parameter_list_is_found_after_type_parameters_and_a_go_receiver() {
+        let go = "func (s *Store) Limit[T any](n T) int {\n";
+        let at = name_offset(go, "Limit", 1, None).expect("the name");
+        assert_eq!(&go[at..at + 5], "Limit");
+        let (open, close) = parameter_list(go, at + 5).expect("the list");
+        assert_eq!(&go[open..close], "n T");
+
+        let ts = "export function pick<F extends () => void>(f: F): F {\n";
+        let at = name_offset(ts, "pick", 1, Some((1, 17))).expect("the name");
+        let (open, close) = parameter_list(ts, at + 4).expect("the list");
+        assert_eq!(&ts[open..close], "f: F");
+
+        // A selection range that does not hold the name is not trusted.
+        let py = "def limit(self) -> int:\n";
+        assert_eq!(name_offset(py, "limit", 1, Some((1, 1))), Some(4));
+    }
+
+    #[test]
+    fn a_parameter_after_one_that_collects_the_rest_is_refused() {
+        assert_eq!(
+            Syntax::TypeScript
+                .catch_all("a: number, ...rest: string[]")
+                .as_deref(),
+            Some("...rest: string[]")
+        );
+        assert_eq!(
+            Syntax::Go.catch_all("a int, xs ...int").as_deref(),
+            Some("xs ...int")
+        );
+        assert_eq!(
+            Syntax::Python.catch_all("self, *, key: int").as_deref(),
+            Some("*")
+        );
+        assert_eq!(Syntax::Python.catch_all("self, a: int = 3"), None);
+        assert_eq!(Syntax::Rust.catch_all("a: u8"), None);
     }
 
     #[test]

@@ -10,6 +10,24 @@
   language other than Rust, an empty answer is now asked again three times, 800 ms apart, as
   `impact` already does for its call hierarchy (#202).
 
+### Added
+- **The extract parameter refactoring works on TypeScript, JavaScript, Python and Go** (part of
+  epic #13, refactorings beyond Rust). `code_extract_parameter` and `prod-code
+  extract-parameter` used to handle Rust functions only. They now also turn a selected
+  expression in a TypeScript, JavaScript, Python or Go function or method into a new last
+  parameter. The parameter is written the way the language writes one: `name: T` in
+  TypeScript, `name T` in Go, `name: T` or `name` in Python, and `name` in JavaScript. The body
+  reads the parameter at the selection, or at every identical occurrence with `replace_all`.
+  Every call site the language server reports passes the original expression, so no caller
+  changes behaviour; imports of the function are left as they are. The type comes from the
+  literal (`80` is a `number` in TypeScript and an `int` in Python and Go), from the TypeScript
+  server's, basedpyright's
+  or gopls's hover when it covers the whole selection, or from `type`. As in Rust, an expression
+  that names a local of the function cannot be written at a call site: the check reports it
+  and `apply` writes nothing. A parameter list that ends in `...rest`, `...T` or `*args` is
+  refused, because the new argument would not reach the new parameter. `verify: compile` stays
+  Rust-only and says so.
+
 ## v0.3.3 — 2026-09-24
 
 ### Performance

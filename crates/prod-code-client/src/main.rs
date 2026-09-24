@@ -745,7 +745,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Promote an expression in a function body into a parameter, passed at every call site.
+    /// Promote an expression in a function body into a parameter, passed at every call site
+    /// (Rust, TypeScript, JavaScript, Python, Go).
     ExtractParameter {
         /// The file the selection is in.
         file: PathBuf,
@@ -765,8 +766,9 @@ enum Commands {
         /// Replace every identical occurrence in the body, not only the selection.
         #[arg(long, default_value_t = false)]
         replace_all: bool,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
-        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        /// `compile` (Rust files only): also run `cargo check` on the result in a shadow of the
+        /// workspace, and write only if the compiler accepts it too. Seconds rather than
+        /// milliseconds.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting it.
