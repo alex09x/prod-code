@@ -70,6 +70,7 @@ async fn handle_test_client(
                     active_queries: 0,
                     load_average_millis: None,
                     cpu_count: None,
+                    platform: None,
                 };
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }

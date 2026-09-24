@@ -169,6 +169,10 @@ pub struct StatusResponse {
     /// Logical CPUs of the host, when known.
     #[serde(default)]
     pub cpu_count: Option<usize>,
+    /// The gateway's OS and architecture, as [`crate::platform`] gives them (`macos aarch64`).
+    /// Absent from older gateways, which a checkout that needs macOS must not be placed on.
+    #[serde(default)]
+    pub platform: Option<String>,
 }
 
 impl StatusResponse {
@@ -543,6 +547,10 @@ pub struct PlaceRequest {
     pub workspace_name: String,
     #[serde(default)]
     pub engine: Option<String>,
+    /// The OS the node must run (`macos`), matched against the start of its status platform.
+    /// A Go module whose cgo includes macOS headers compiles nowhere else.
+    #[serde(default)]
+    pub os: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -280,9 +280,22 @@ impl ServerState {
         // else. A workspace whose engine the client could not determine must not be sent
         // there: it would be refused at the handshake, or worse, accepted by an older
         // gateway that does not know it is specialised.
-        let capable = |n: &PeerInfo| match engine {
-            Some(e) => cluster_supports_engine(&n.status, e),
-            None => n.status.detected_engines.len() > 1,
+        // A node that reports no platform is an older gateway: it cannot be shown to run the
+        // OS the workspace needs, so it does not get it.
+        let runs_os = |n: &PeerInfo| {
+            req.os.as_deref().is_none_or(|os| {
+                n.status
+                    .platform
+                    .as_deref()
+                    .is_some_and(|p| p.starts_with(os))
+            })
+        };
+        let capable = |n: &PeerInfo| {
+            runs_os(n)
+                && match engine {
+                    Some(e) => cluster_supports_engine(&n.status, e),
+                    None => n.status.detected_engines.len() > 1,
+                }
         };
         let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
         let quietest = view
@@ -337,7 +350,15 @@ impl ServerState {
             },
             None => PlaceResponse {
                 node: None,
-                reason: format!("no live node serves {}", engine.unwrap_or("this workspace")),
+                reason: match req.os.as_deref() {
+                    Some(os) => format!(
+                        "no live node runs {os} and serves {}",
+                        engine.unwrap_or("this workspace")
+                    ),
+                    None => {
+                        format!("no live node serves {}", engine.unwrap_or("this workspace"))
+                    }
+                },
             },
         }
     }
@@ -354,6 +375,7 @@ impl ServerState {
             active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
             load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
+            platform: Some(prod_code_protocol::platform()),
         }
     }
 }
@@ -3036,6 +3058,7 @@ async fn on_client_message(
                     active_queries: ACTIVE_QUERIES.load(Ordering::Relaxed),
                     load_average_millis: memory::load_average_1m().map(|l| (l * 1000.0) as u32),
                     cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
+                    platform: Some(prod_code_protocol::platform()),
                 }))
                 .await;
         }
