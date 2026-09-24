@@ -20,6 +20,12 @@
     with its old and new length.
 
 ### Fixed
+- **The exec platform warning no longer fires on `cargo fmt`** (#234). The #140 warning named
+  every written-back file that mentions `cfg(target_…)` or `libc::`, including files a
+  formatter only laid out again, so every format-and-check run showed a false alarm. A
+  write-back whose characters are the same apart from whitespace and commas, in any order, is
+  now layout: rustfmt re-wraps lines, adds trailing commas and sorts imports. It is not named.
+  An edit that adds or removes characters, such as `&mut win` to `&win`, still is.
 - **impact asks a cold language server again before it reports no callers** (#202). A Python
   server that had just started answered the call hierarchy with nothing, and `impact` said "none
   reach the changed functions", so an agent would skip the tests. For every language but Rust, an

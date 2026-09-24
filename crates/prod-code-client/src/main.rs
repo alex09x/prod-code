@@ -3924,6 +3924,7 @@ async fn run_exec(
         },
     )
     .await?;
+    let changed_code = outcome.changed_code();
     let exit = outcome.exit;
     if let Some(err) = &exit.error {
         anyhow::bail!("remote exec failed: {err}");
@@ -3935,11 +3936,9 @@ async fn run_exec(
             outcome.pulled_files.join(", ")
         );
     }
-    if let Some(warning) = prod_code_mcp::exec::platform_warning(
-        &root,
-        exit.platform.as_deref(),
-        &outcome.pulled_files,
-    ) {
+    if let Some(warning) =
+        prod_code_mcp::exec::platform_warning(&root, exit.platform.as_deref(), &changed_code)
+    {
         eprintln!("[prod-code exec] {warning}");
     }
     eprintln!(

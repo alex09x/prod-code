@@ -73,6 +73,8 @@ struct Script {
     exec_changes: Vec<prod_code_protocol::FileDelta>,
     /// What the command used, as the gateway reports it from `wait4`.
     exec_usage: Option<prod_code_protocol::ExecUsage>,
+    /// The node's platform, as the gateway reports it (#140).
+    exec_platform: Option<String>,
     /// The environment of every command the mock was asked to run.
     exec_env: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     search_hits: Vec<SearchHit>,
@@ -89,6 +91,7 @@ impl Default for Script {
             exec_exit: Some(0),
             exec_changes: Vec::new(),
             exec_usage: None,
+            exec_platform: None,
             exec_env: Arc::default(),
             search_hits: Vec::new(),
             shadow_results: Vec::new(),
@@ -219,7 +222,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         timed_out: false,
                         error: None,
                         usage: script.exec_usage,
-                        platform: None,
+                        platform: script.exec_platform.clone(),
                     }))
                     .await?;
             }
@@ -2746,6 +2749,51 @@ async fn code_impact_finds_a_test_by_its_attribute() {
     assert!(text.contains("1 test(s)"), "{text}");
     assert!(text.contains("• prices  src/lib.rs:8"), "{text}");
     assert!(text.contains("cargo test --workspace -- prices"), "{text}");
+}
+
+/// A file written back from a node of another platform is named when its code changed, and
+/// not when a formatter only laid it out again: rustfmt cannot depend on the platform (#234).
+#[tokio::test]
+async fn code_exec_names_a_platform_dependent_edit_but_not_a_reformat() {
+    let original =
+        "pub fn open() {\n    let mut win = 0u8; let _ = &mut win; // libc::openpty\n}\n";
+    let other = if cfg!(target_os = "macos") {
+        "linux x86_64"
+    } else {
+        "macos aarch64"
+    };
+    let run = |content: &'static str| async move {
+        let ws = rust_workspace(original);
+        let remote = mock_gateway(Script {
+            exec_platform: Some(other.to_string()),
+            exec_changes: vec![prod_code_protocol::FileDelta {
+                relative_path: "src/lib.rs".to_string(),
+                content: Some(content.as_bytes().to_vec()),
+                is_executable: false,
+            }],
+            ..Script::default()
+        })
+        .await;
+        text_of(
+            &execute_tool(
+                remote,
+                &ws.root(),
+                "code_exec",
+                serde_json::json!({ "argv": ["cargo", "fmt"] }),
+            )
+            .await
+            .expect("exec runs"),
+        )
+    };
+    let formatted =
+        run("pub fn open() {\n    let mut win = 0u8;\n    let _ = &mut win; // libc::openpty\n}\n")
+            .await;
+    assert!(formatted.contains(&format!("({other})")), "{formatted}");
+    assert!(!formatted.contains("warning:"), "{formatted}");
+    let edited =
+        run("pub fn open() {\n    let win = 0u8; let _ = &win; // libc::openpty\n}\n").await;
+    assert!(edited.contains("warning: the command ran on"), "{edited}");
+    assert!(edited.contains("(src/lib.rs)"), "{edited}");
 }
 
 /// `code_lint` with `fix` on a Python project runs ruff's own fix mode on the node and brings
