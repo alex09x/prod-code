@@ -116,6 +116,12 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     .await?;
             }
             WireMessage::HandshakeRequest(req) => {
+                // Shown to the script as `prod-code/handshake`, so a test can see which engine
+                // a session asked for (`purpose`); the answer is ignored.
+                let _ = answer(
+                    "prod-code/handshake",
+                    &serde_json::json!({ "purpose": req.purpose.clone() }),
+                );
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {
                         protocol_version: PROTOCOL_VERSION,

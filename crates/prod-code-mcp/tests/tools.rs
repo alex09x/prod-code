@@ -1568,6 +1568,61 @@ async fn code_validate_edit_checks_proposed_text_without_writing() {
     assert_eq!(std::fs::read_to_string(&lib).unwrap(), "pub fn a() {}\n");
 }
 
+/// Every session a validation opens, the one that reads the file as it is on disk included,
+/// asks for the validation engine: that is the engine the gateway warms, and the main engine
+/// is cold for a large file's diagnostics after a restart (#235).
+#[tokio::test]
+async fn a_validation_asks_only_the_validation_engine() {
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub fn a() {}\n");
+    write(&ws, "src/other.rs", "pub fn b() {}\n");
+    commit(&ws);
+    let purposes: Arc<std::sync::Mutex<Vec<Option<String>>>> = Arc::default();
+    let seen = Arc::clone(&purposes);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "prod-code/handshake" => {
+            let purpose = params
+                .get("purpose")
+                .and_then(|p| p.as_str())
+                .map(str::to_string);
+            seen.lock().unwrap().push(purpose);
+            serde_json::Value::Null
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    for (tool, args) in [
+        (
+            "code_validate_edit",
+            serde_json::json!({ "path": "src/lib.rs", "new_text": "pub fn b() {}\n" }),
+        ),
+        (
+            "code_validate_edits",
+            serde_json::json!({
+                "edits": [ { "path": "src/lib.rs", "new_text": "pub fn a2() {}\n" } ],
+                "also_check": [ "src/other.rs" ]
+            }),
+        ),
+    ] {
+        let result = execute_tool(remote, &ws.root(), tool, args)
+            .await
+            .expect("validation runs");
+        assert!(!result.is_error, "{}", text_of(&result));
+    }
+    let purposes = purposes.lock().unwrap().clone();
+    assert!(
+        purposes.len() >= 4,
+        "two sessions per validation: {purposes:?}"
+    );
+    assert!(
+        purposes
+            .iter()
+            .all(|p| p.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION)),
+        "{purposes:?}"
+    );
+}
+
 #[tokio::test]
 async fn code_validate_edits_checks_several_files_together() {
     let ws = workspace();
