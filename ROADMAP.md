@@ -2,8 +2,8 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.3.0, 2026-09-24): 55 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift, 707 tests, and every file a change touches held at or above 80% of regions.
+**Where it stands** (v0.3.1, 2026-09-24): 55 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift, more than 700 tests, and every file a change touches held at or above 80% of regions.
 The refactoring catalog (7.1) is complete for Rust. Across the other languages it works through
 the language servers' own code actions, and `extract_parameter` and `introduce_parameter_object`
 are still Rust-only. Partial: caches shared across worktrees beyond the C/C++ compiler cache — the
