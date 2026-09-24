@@ -17,6 +17,8 @@ use tokio::sync::Mutex;
 
 /// Files warmed after the validation engine loads, the most recently modified first.
 pub const RECENT_FILES: usize = 10;
+/// Files whose diagnostics are computed through the engine after the snapshots are done.
+pub const DIAGNOSED_FILES: usize = 3;
 /// Files warmed after one sync; a sync that writes more is a checkout arriving, not an edit.
 pub const SYNCED_FILES: usize = 20;
 
@@ -102,6 +104,16 @@ pub fn warm_in_background(
         let done = tokio::task::spawn_blocking(move || job.run())
             .await
             .unwrap_or(0);
+        // Then the diagnostics a validation asks for, through the same call, for the files
+        // likeliest to be validated next. This holds the engine, which on the validation engine
+        // only delays another validation, and that one would have paid the same.
+        for path in files.iter().take(DIAGNOSED_FILES).cloned() {
+            let engine = Arc::clone(&engine);
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = engine.blocking_lock().diagnostics(&path);
+            })
+            .await;
+        }
         tracing::info!(
             workspace = %workspace.display(),
             files = files.len(),
