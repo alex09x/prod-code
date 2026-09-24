@@ -4462,10 +4462,14 @@ pub async fn workspace_symbol_search(
     Ok(hits)
 }
 
-/// Resolves a (possibly qualified) symbol name to one position. Qualifiers (`Type::name`,
+/// Resolves a (possibly qualified) symbol name to one position. Only a hit whose name is the
+/// requested name (ignoring ASCII case and the server's decoration, see `bare_symbol_name`)
+/// is a candidate: the index also returns prefix and fuzzy matches, and acting on one of those
+/// renames or deletes a symbol the caller never named (#253). Qualifiers (`Type::name`,
 /// `pkg.Func`, `Class.method`) are matched against the hit's container, `hint` (a file or
-/// directory) prefers hits under it. A tie between different locations is an error listing
-/// the candidates.
+/// directory) prefers hits under it. A member the index does not list, such as a Rust struct
+/// field, is found through its type's outline. A tie between different locations is an error
+/// listing the candidates; no match is an error listing the closest names.
 pub async fn resolve_symbol(
     remote: SocketAddr,
     root: &Path,
@@ -4477,21 +4481,35 @@ pub async fn resolve_symbol(
         .map(|p| p.trim().trim_end_matches("()"))
         .filter(|p| !p.is_empty())
         .collect();
-    let name = parts.last().copied().unwrap_or(symbol);
+    let name = bare_symbol_name(parts.last().copied().unwrap_or(symbol));
     let qualifier = parts.len().checked_sub(2).map(|i| parts[i]);
     let hits = workspace_symbol_search(remote, root, name, hint, 200).await?;
+    let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
+        .into_iter()
+        .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
+    if let Some(q) = qualifier {
+        // rust-analyzer's index leaves struct fields out, so `Type::field` has no hit of its
+        // own, and an exact hit outside the named type (a free function `field`) is not what
+        // `Type::field` means. The type's outline is what knows its members.
+        let inside_type = exact
+            .iter()
+            .any(|hit| hit.container.as_deref().is_some_and(|c| c.contains(q)));
+        if !inside_type {
+            let members = type_members(remote, root, q, name, hint).await?;
+            if !members.is_empty() {
+                return single_candidate(root, symbol, &members.iter().collect::<Vec<_>>());
+            }
+        }
+    }
+    if exact.is_empty() {
+        anyhow::bail!(no_symbol_message(symbol, name, &others));
+    }
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
-    let mut scored: Vec<(i32, SymbolHit)> = hits
+    let mut scored: Vec<(i32, SymbolHit)> = exact
         .into_iter()
         .map(|hit| {
-            let mut score = 0;
-            if hit.name == name {
-                score += 100;
-            } else if hit.name.eq_ignore_ascii_case(name) {
-                score += 60;
-            } else if hit.name.starts_with(name) {
-                score += 20;
-            }
+            let bare = bare_symbol_name(&hit.name);
+            let mut score = if bare == name { 100 } else { 60 };
             if let Some(q) = qualifier {
                 match &hit.container {
                     Some(c)
@@ -4513,8 +4531,11 @@ pub async fn resolve_symbol(
                 }
             }
             // An index can be stale or (clangd) point the right range at the wrong file:
-            // the name must actually be at that position.
-            if !identifier_at(&hit.path, hit.line, hit.col, &hit.name) {
+            // the name must actually be at that position. A server that decorates the name
+            // (`Type.name`) may point at the bare name, so either spelling counts.
+            if !identifier_at(&hit.path, hit.line, hit.col, &hit.name)
+                && !identifier_at(&hit.path, hit.line, hit.col, bare)
+            {
                 score -= 1000;
             }
             (score, hit)
@@ -4525,11 +4546,7 @@ pub async fn resolve_symbol(
             .then_with(|| a.1.path.cmp(&b.1.path))
             .then_with(|| a.1.line.cmp(&b.1.line))
     });
-    let Some(best) = scored.first().map(|(s, _)| *s) else {
-        anyhow::bail!(
-            "no symbol named `{symbol}` in the workspace index (try code_symbols with a shorter name)"
-        );
-    };
+    let best = scored[0].0;
     let ties: Vec<&SymbolHit> = scored
         .iter()
         .filter(|(s, _)| *s == best)
@@ -4547,6 +4564,11 @@ pub async fn resolve_symbol(
     } else {
         definitions
     };
+    single_candidate(root, symbol, &ties)
+}
+
+/// The one location `ties` point at, or an error listing them when they point at several.
+fn single_candidate(root: &Path, symbol: &str, ties: &[&SymbolHit]) -> Result<SymbolHit> {
     if ties.len() > 1
         && ties
             .iter()
@@ -4562,6 +4584,240 @@ pub async fn resolve_symbol(
         anyhow::bail!(msg.trim_end().to_string());
     }
     Ok(ties[0].clone())
+}
+
+/// A symbol name without the decoration some servers put around it: a trailing parameter list
+/// (`bar()`, `bar(x: u32)`) and a leading qualifier (`Type.bar`, `Type::bar`, `(*T).Bar`).
+/// What is left is the name a caller types.
+fn bare_symbol_name(name: &str) -> &str {
+    let mut name = name.trim();
+    if name.ends_with(')') {
+        // The `(` that opens the final parameter list, found by balancing from the end so
+        // that a nested `fn(u8)` parameter does not cut the name short.
+        let mut depth = 0usize;
+        let mut open = None;
+        for (i, c) in name.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        open = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(i) = open.filter(|&i| i > 0) {
+            name = name[..i].trim_end();
+        }
+    }
+    let after_path = name.rfind("::").map(|i| i + 2);
+    let after_dot = name.rfind('.').map(|i| i + 1);
+    match after_path.max(after_dot) {
+        Some(i) if i < name.len() => &name[i..],
+        _ => name,
+    }
+}
+
+/// The error for a name nothing in the index is called. The first sentence stays the same
+/// whatever follows it; the closest names the index returned are listed so that the caller can
+/// pick the symbol it meant instead of the tool guessing one.
+fn no_symbol_message(symbol: &str, name: &str, others: &[SymbolHit]) -> String {
+    let wanted = name.to_ascii_lowercase();
+    let mut close: Vec<(usize, &str)> = Vec::new();
+    for hit in others {
+        let bare = bare_symbol_name(&hit.name);
+        if !close.iter().any(|(_, n)| *n == bare) {
+            close.push((edit_distance(&wanted, &bare.to_ascii_lowercase()), bare));
+        }
+    }
+    close.sort();
+    let close: Vec<&str> = close.into_iter().take(5).map(|(_, n)| n).collect();
+    if close.is_empty() {
+        format!(
+            "no symbol named `{symbol}` in the workspace index (try code_symbols with a shorter name)"
+        )
+    } else {
+        format!(
+            "no symbol named `{symbol}` in the workspace index; did you mean: {}",
+            close.join(", ")
+        )
+    }
+}
+
+/// The Levenshtein distance between two names, counted in characters.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = if ca == *cb {
+                diagonal
+            } else {
+                1 + diagonal.min(above).min(row[j])
+            };
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// The members called `member` of the type called `type_name`, read from the outline of each
+/// file that declares the type. The type is resolved the way a symbol is, by its exact name;
+/// with a `hint`, members under it are preferred.
+async fn type_members(
+    remote: SocketAddr,
+    root: &Path,
+    type_name: &str,
+    member: &str,
+    hint: Option<&Path>,
+) -> Result<Vec<SymbolHit>> {
+    let types = workspace_symbol_search(remote, root, type_name, hint, 200).await?;
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for hit in &types {
+        if bare_symbol_name(&hit.name).eq_ignore_ascii_case(type_name)
+            && !is_use_declaration(&hit.path, hit.line)
+            && !files.contains(&hit.path)
+        {
+            files.push(hit.path.clone());
+        }
+    }
+    let mut members: Vec<SymbolHit> = Vec::new();
+    for file in files.iter().take(8) {
+        let Ok(uri) = Url::from_file_path(file) else {
+            continue;
+        };
+        let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
+        // A file the outline cannot be had for leaves the member unresolved through it; the
+        // caller then reports the name as unknown or falls back to the index's hits.
+        let Ok(outline) =
+            execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+        else {
+            continue;
+        };
+        let mut found = Vec::new();
+        collect_members(&outline, type_name, member, &mut found);
+        for (name, kind, line, col) in found {
+            let hit = SymbolHit {
+                path: file.clone(),
+                name,
+                kind: symbol_kind_name(kind),
+                container: Some(type_name.to_string()),
+                line,
+                col,
+            };
+            if !members
+                .iter()
+                .any(|m| m.path == hit.path && m.line == hit.line && m.col == hit.col)
+            {
+                members.push(hit);
+            }
+        }
+    }
+    if let Some(h) = hint.map(|h| h.to_string_lossy().into_owned()) {
+        let under_hint = |m: &SymbolHit| m.path.to_string_lossy().starts_with(h.as_str());
+        if members.iter().any(under_hint) {
+            members.retain(under_hint);
+        }
+    }
+    Ok(members)
+}
+
+/// Walks a `textDocument/documentSymbol` answer for the members called `member` of the type
+/// called `type_name`, as (name, LSP kind, 1-based line, 1-based column) of the member's name.
+/// A nested answer lists them as children of the type, or of an `impl` block for it (that is
+/// where rust-analyzer puts methods); a flat one, as the gateway's own engine answers, names the
+/// parent in `containerName`, innermost last after ` > `.
+fn collect_members(
+    symbols: &serde_json::Value,
+    type_name: &str,
+    member: &str,
+    out: &mut Vec<(String, u64, u32, u32)>,
+) {
+    let is_member = |sym: &serde_json::Value| {
+        let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        bare_symbol_name(name).eq_ignore_ascii_case(member)
+    };
+    for sym in symbols.as_array().into_iter().flatten() {
+        let parent = sym
+            .get("containerName")
+            .and_then(|c| c.as_str())
+            .and_then(|c| c.rsplit(" > ").next());
+        if is_member(sym) && parent.is_some_and(|p| names_type(p, type_name)) {
+            out.extend(member_at(sym));
+        }
+        let Some(children) = sym.get("children") else {
+            continue;
+        };
+        let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if names_type(name, type_name) {
+            for child in children.as_array().into_iter().flatten() {
+                if is_member(child) {
+                    out.extend(member_at(child));
+                }
+            }
+        }
+        collect_members(children, type_name, member, out);
+    }
+}
+
+/// A document symbol as (name, kind, line, column) of its name, 1-based: the selection range
+/// when there is one, which is the name rather than the doc comment the range starts at.
+fn member_at(sym: &serde_json::Value) -> Option<(String, u64, u32, u32)> {
+    let start = sym
+        .pointer("/selectionRange/start")
+        .or_else(|| sym.pointer("/range/start"))
+        .or_else(|| sym.pointer("/location/range/start"))?;
+    let line = start.get("line").and_then(|l| l.as_u64())? as u32 + 1;
+    let col = start.get("character").and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1;
+    Some((
+        sym.get("name")?.as_str()?.to_string(),
+        sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
+        line,
+        col,
+    ))
+}
+
+/// Whether an outline label names the type `type_name`: the type itself, or an `impl` block
+/// for it (`impl Type`, `impl<T> Type<T>`, `impl Trait for Type`), whose members are the
+/// type's too.
+fn names_type(label: &str, type_name: &str) -> bool {
+    let label = label.trim();
+    let target = match label.strip_prefix("impl") {
+        Some(rest) if rest.starts_with([' ', '<']) => {
+            let mut rest = rest.trim_start();
+            if rest.starts_with('<') {
+                // The impl's own generic parameters, which may nest (`impl<T: Into<U>>`).
+                let mut depth = 0usize;
+                for (i, c) in rest.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                rest = &rest[i + 1..];
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let rest = rest.split(" where ").next().unwrap_or(rest);
+            rest.rsplit_once(" for ").map_or(rest, |(_, ty)| ty)
+        }
+        _ => label,
+    };
+    let target = target.trim().trim_start_matches('&').trim();
+    let target = target.strip_prefix("mut ").unwrap_or(target).trim();
+    let target = target.split('<').next().unwrap_or(target).trim();
+    let target = target.rsplit("::").next().unwrap_or(target);
+    target.eq_ignore_ascii_case(type_name)
 }
 
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
