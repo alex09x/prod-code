@@ -1508,13 +1508,7 @@ pub async fn outline_directory(
                     .join(entry.file_name())
                     .display()
                     .to_string();
-                let block = render_outline(
-                    &res,
-                    &display_path,
-                    max_depth,
-                    include_locals,
-                    hint,
-                );
+                let block = render_outline(&res, &display_path, max_depth, include_locals, hint);
                 blocks.push(block);
                 outlined += 1;
             }
@@ -1531,7 +1525,6 @@ pub async fn outline_directory(
         Ok(format!("{}\n\n{summary}", blocks.join("\n\n")))
     }
 }
-
 
 /// The start and end line (0-based) of a symbol from `textDocument/documentSymbol`.
 fn symbol_lines(sym: &serde_json::Value) -> (u64, u64) {
