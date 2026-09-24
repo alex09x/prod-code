@@ -104,6 +104,13 @@ impl SharedWorkspace {
                             all.push(Arc::clone(&engine));
                         }
                         tracing::info!(workspace = ?root, "validation engine loaded");
+                        // Nothing is warm after a load, and the files modified last are the
+                        // ones an agent validates next (#233).
+                        crate::priming::warm_in_background(
+                            Arc::clone(&engine),
+                            root.clone(),
+                            crate::priming::recent_rust_files(&root, crate::priming::RECENT_FILES),
+                        );
                         Some(engine)
                     }
                     Ok(Err(err)) => {

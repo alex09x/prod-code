@@ -9,6 +9,7 @@ pub mod detect;
 pub mod embed;
 pub mod memory;
 mod metrics;
+pub mod priming;
 pub mod search;
 pub mod shadow;
 pub mod workspace;
@@ -1830,6 +1831,23 @@ pub async fn handle_client(
                     req,
                 )
                 .await;
+                // The files an agent is editing are the ones it validates next: warm them now
+                // (#233).
+                let synced_rust = priming::synced_rust_files(&workspace, &touched);
+                if !synced_rust.is_empty()
+                    && let Some(loaded) = state.workspace_manager.get_loaded(&workspace).await
+                    && loaded.rust_engine.is_some()
+                {
+                    // Validation runs on its own engine: that is the one to warm. Loading it
+                    // warms the newest files, these among them.
+                    let workspace = workspace.clone();
+                    tokio::spawn(async move {
+                        let view = loaded.validation_view().await;
+                        if let Some(engine) = view.rust_engine.clone() {
+                            priming::warm_in_background(engine, workspace, synced_rust);
+                        }
+                    });
+                }
                 // The search index is kept current by what the sync wrote, so a query never
                 // has to walk the tree.
                 state.search_indexes.invalidate(&workspace, touched);

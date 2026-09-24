@@ -3,11 +3,11 @@
 use anyhow::{Context, Result};
 use ra_ap_cfg::{CfgAtom, CfgDiff};
 use ra_ap_ide::{
-    AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig, DiagnosticsConfig,
-    FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig, GotoDefinitionConfig,
-    GotoImplementationConfig, HighlightConfig, HlTag, HoverConfig, HoverDocFormat,
-    NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve, StructureNodeKind, SymbolKind,
-    TextRange, TextSize,
+    Analysis, AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig,
+    DiagnosticsConfig, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
+    GotoDefinitionConfig, GotoImplementationConfig, HighlightConfig, HlTag, HoverConfig,
+    HoverDocFormat, NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve,
+    StructureNodeKind, SymbolKind, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -280,6 +280,85 @@ pub fn normalize_vfs_path(path: &Path, workspace_root: &Path) -> PathBuf {
         }
     }
     components.into_iter().collect()
+}
+
+/// Functions to infer, dealt out to threads, each share with its own snapshot. Made by
+/// [`RustEngine::priming_job`]; see there.
+pub struct PrimingJob {
+    shares: Vec<(Analysis, Vec<FileRange>)>,
+    /// The files whose full diagnostics are computed after the inference, each on its own
+    /// snapshot: rust-analyzer caches them, and a validation asks for exactly these.
+    files: Vec<(Analysis, FileId)>,
+}
+
+impl PrimingJob {
+    /// How many threads the job runs on (0 when there is nothing to infer).
+    pub fn threads(&self) -> usize {
+        self.shares.len()
+    }
+
+    /// Infers the functions, one thread per share, then computes each file's full diagnostics,
+    /// one thread per file. Highlighting a range resolves every name in it, and so infers the
+    /// bodies there; the diagnostics pass that follows is most of what a validation costs cold
+    /// (21 s of 22 for a 4,246-line file on a Linux build node, #233). Returns how many
+    /// functions were inferred; a thread stops at its first error, which is a write to the
+    /// database cancelling it. The snapshots are dropped before this returns: one kept alive
+    /// would block the next write.
+    pub fn run(self) -> usize {
+        let files = self.files;
+        let workers: Vec<_> = self
+            .shares
+            .into_iter()
+            .map(|(analysis, share)| {
+                std::thread::spawn(move || {
+                    let config = HighlightConfig {
+                        strings: false,
+                        comments: false,
+                        punctuation: false,
+                        specialize_punctuation: false,
+                        operator: false,
+                        specialize_operator: false,
+                        inject_doc_comment: false,
+                        macro_bang: false,
+                        syntactic_name_ref_highlighting: false,
+                        ra_fixture: RaFixtureConfig::default(),
+                    };
+                    let mut done = 0;
+                    for range in share {
+                        if analysis.highlight_range(config, range).is_err() {
+                            break;
+                        }
+                        done += 1;
+                    }
+                    done
+                })
+            })
+            .collect();
+        let inferred = workers.into_iter().map(|w| w.join().unwrap_or(0)).sum();
+        let diagnosed: Vec<_> = files
+            .into_iter()
+            .map(|(analysis, file_id)| {
+                std::thread::spawn(move || {
+                    let started = std::time::Instant::now();
+                    let outcome = analysis.full_diagnostics(
+                        &DiagnosticsConfig::test_sample(),
+                        AssistResolveStrategy::None,
+                        file_id,
+                    );
+                    tracing::debug!(
+                        ?file_id,
+                        done = outcome.is_ok(),
+                        ms = started.elapsed().as_millis() as u64,
+                        "warmed the diagnostics of a file"
+                    );
+                })
+            })
+            .collect();
+        for worker in diagnosed {
+            let _ = worker.join();
+        }
+        inferred
+    }
 }
 
 /// Thread-safe, multi-core analysis snapshot backed by warm Salsa database.
@@ -839,16 +918,26 @@ impl RustEngineSnapshot {
             .with_context(|| format!("File not found in VFS: {:?}", path))?;
         let text = self.analysis.file_text(file_id)?;
         let config = DiagnosticsConfig::test_sample();
+        let started = std::time::Instant::now();
         let diagnostics =
             self.analysis
                 .full_diagnostics(&config, AssistResolveStrategy::None, file_id)?;
+        let analyzer = started.elapsed();
         let unused_imports = self.unused_imports(file_id, &text);
+        let imports = started.elapsed() - analyzer;
         let covered: Vec<TextRange> = diagnostics
             .iter()
             .filter(|d| d.range.file_id == file_id)
             .map(|d| d.range.range)
             .collect();
         let unresolved = self.unresolved_paths(file_id, &text, &covered);
+        tracing::debug!(
+            file = %path.display(),
+            analyzer_ms = analyzer.as_millis() as u64,
+            unused_imports_ms = imports.as_millis() as u64,
+            unresolved_paths_ms = (started.elapsed() - analyzer - imports).as_millis() as u64,
+            "diagnostics pass by part"
+        );
         Ok(diagnostics
             .into_iter()
             .filter(|d| d.range.file_id == file_id)
@@ -1668,75 +1757,74 @@ impl RustEngine {
     /// one huge function gains nothing. The snapshots are used and dropped before this returns:
     /// a snapshot kept alive would block the next write to the database.
     fn infer_functions_in_parallel(&self, path: &Path) {
-        let Some(file_id) = self.file_id_for_path(path) else {
-            return;
-        };
+        // The diagnostics pass runs next under the caller's lock; the job only infers.
+        let mut job = self.priming_job(&[path]);
+        job.files.clear();
+        // One function gains nothing from a thread of its own.
+        if job.threads() >= 2 {
+            job.run();
+        }
+    }
+
+    /// The work of inferring every function of `paths` on several threads, with its snapshots
+    /// already taken. Making it is quick and needs the engine; running it does not, so a caller
+    /// behind a lock makes the job under the lock and runs it after letting go (#233). A write
+    /// to the database cancels a running job, which then stops.
+    pub fn priming_job(&self, paths: &[&Path]) -> PrimingJob {
         let analysis = self.host.analysis();
-        let Ok(nodes) = analysis.file_structure(
-            &FileStructureConfig {
-                exclude_locals: true,
-            },
-            file_id,
-        ) else {
-            return;
-        };
-        let mut ranges: Vec<TextRange> = nodes
-            .iter()
-            .filter(|n| {
-                matches!(
-                    n.kind,
-                    StructureNodeKind::SymbolKind(SymbolKind::Function | SymbolKind::Method)
-                )
-            })
-            .map(|n| n.node_range)
-            .collect();
+        let mut ranges: Vec<FileRange> = Vec::new();
+        let mut files: Vec<FileId> = Vec::new();
+        for path in paths {
+            let Some(file_id) = self.file_id_for_path(path) else {
+                continue;
+            };
+            files.push(file_id);
+            let Ok(nodes) = analysis.file_structure(
+                &FileStructureConfig {
+                    exclude_locals: true,
+                },
+                file_id,
+            ) else {
+                continue;
+            };
+            ranges.extend(
+                nodes
+                    .iter()
+                    .filter(|n| {
+                        matches!(
+                            n.kind,
+                            StructureNodeKind::SymbolKind(
+                                SymbolKind::Function | SymbolKind::Method
+                            )
+                        )
+                    })
+                    .map(|n| FileRange {
+                        file_id,
+                        range: n.node_range,
+                    }),
+            );
+        }
         drop(analysis);
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
             .min(16)
             .min(ranges.len());
-        if threads < 2 {
-            return;
-        }
         // Largest first, dealt out in turn, so no thread is left with all the big ones.
-        ranges.sort_by_key(|r| std::cmp::Reverse(r.len()));
-        let mut shares: Vec<Vec<TextRange>> = vec![Vec::new(); threads];
+        ranges.sort_by_key(|r| std::cmp::Reverse(r.range.len()));
+        let mut shares: Vec<Vec<FileRange>> = vec![Vec::new(); threads];
         for (i, range) in ranges.into_iter().enumerate() {
             shares[i % threads].push(range);
         }
-        // Each thread owns its snapshot; all of them are joined, and so dropped, before this
-        // returns.
-        let workers: Vec<_> = shares
-            .into_iter()
-            .map(|share| {
-                let analysis = self.host.analysis();
-                std::thread::spawn(move || {
-                    for range in share {
-                        let config = HighlightConfig {
-                            strings: false,
-                            comments: false,
-                            punctuation: false,
-                            specialize_punctuation: false,
-                            operator: false,
-                            specialize_operator: false,
-                            inject_doc_comment: false,
-                            macro_bang: false,
-                            syntactic_name_ref_highlighting: false,
-                            ra_fixture: RaFixtureConfig::default(),
-                        };
-                        if analysis
-                            .highlight_range(config, FileRange { file_id, range })
-                            .is_err()
-                        {
-                            return;
-                        }
-                    }
-                })
-            })
-            .collect();
-        for worker in workers {
-            let _ = worker.join();
+        PrimingJob {
+            shares: shares
+                .into_iter()
+                .map(|share| (self.host.analysis(), share))
+                .collect(),
+            files: files
+                .into_iter()
+                .map(|file_id| (self.host.analysis(), file_id))
+                .collect(),
         }
     }
 
@@ -1833,14 +1921,19 @@ impl RustEngine {
             // Identical text (the common didOpen of an unmodified file) must not bump the
             // Salsa revision: that would invalidate every derived query for nothing and turn a
             // cached 1 ms hover into a 10-40 ms recomputation.
-            if self
-                .host
-                .analysis()
-                .file_text(fid)
-                .is_ok_and(|current| *current == *new_text)
+            let current = self.host.analysis().file_text(fid).ok();
+            if current
+                .as_deref()
+                .is_some_and(|current| *current == *new_text)
             {
                 return Ok(());
             }
+            tracing::debug!(
+                file = %norm.display(),
+                old_len = current.as_deref().map(|c| c.len()),
+                new_len = new_text.len(),
+                "file text changed in the database"
+            );
             (fid, false)
         } else {
             let mut vfs = self
@@ -2094,6 +2187,23 @@ impl PathTranslator {
             "Must resolve definition for PathTranslator"
         );
         assert!(defs.iter().any(|d| d.name == "PathTranslator"));
+    }
+
+    /// A priming job is made under the engine and runs without it: it infers every function of
+    /// its files and warms their diagnostics, and a file the engine does not know adds nothing
+    /// (#233).
+    #[test]
+    fn a_priming_job_infers_the_functions_of_its_files() {
+        let (temp, lib_path) = create_test_fixture();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let unknown = temp.path().join("src/nowhere.rs");
+        let job = engine.priming_job(&[lib_path.as_path(), unknown.as_path()]);
+        assert_eq!(job.threads(), 1, "one function, one thread");
+        assert_eq!(job.files.len(), 1, "the unknown file is left out");
+        assert_eq!(job.run(), 1);
+        assert_eq!(engine.priming_job(&[unknown.as_path()]).threads(), 0);
+        // The diagnostics that follow find the work done.
+        assert!(engine.diagnostics(&lib_path).is_ok());
     }
 
     #[test]
