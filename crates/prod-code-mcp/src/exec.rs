@@ -18,6 +18,37 @@ use tokio_util::codec::Framed;
 pub struct RemoteOutcome {
     pub exit: ExecExit,
     pub pulled_files: Vec<String>,
+    /// Of `pulled_files`, the ones whose new text has the same characters as the old apart
+    /// from whitespace and commas, in any order: a formatter's layout, not a change (#234).
+    pub relaid_files: Vec<String>,
+}
+
+impl RemoteOutcome {
+    /// The written-back files whose code changed, not only its layout.
+    pub fn changed_code(&self) -> Vec<String> {
+        self.pulled_files
+            .iter()
+            .filter(|f| !self.relaid_files.contains(f))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether `new` has the same characters as `old` apart from whitespace and commas, in any
+/// order, and is not the same text: what a formatter makes of a file (rustfmt re-wraps lines,
+/// adds trailing commas and sorts imports). A real edit, such as `&mut win` to `&win`, adds or
+/// removes characters.
+pub fn layout_only(old: &[u8], new: &[u8]) -> bool {
+    let counts = |text: &[u8]| {
+        let mut counts = [0usize; 256];
+        for &b in text {
+            if !b.is_ascii_whitespace() && b != b',' {
+                counts[b as usize] += 1;
+            }
+        }
+        counts
+    };
+    old != new && counts(old) == counts(new)
 }
 
 /// What in a file makes its meaning depend on the platform: conditional compilation on the
@@ -135,6 +166,7 @@ pub async fn run_remote(
         .await?;
 
     let mut pulled_files = Vec::new();
+    let mut relaid_files = Vec::new();
     loop {
         match framed.next().await {
             Some(Ok(WireMessage::ExecChunk(chunk))) => {
@@ -143,6 +175,15 @@ pub async fn run_remote(
                 }
             }
             Some(Ok(WireMessage::ExecChanges(changes))) => {
+                for delta in &changes.files {
+                    if let (Ok(old), Some(new)) = (
+                        std::fs::read(root.join(&delta.relative_path)),
+                        delta.content.as_deref(),
+                    ) && layout_only(&old, new)
+                    {
+                        relaid_files.push(delta.relative_path.clone());
+                    }
+                }
                 pulled_files.extend(apply_pulled_files_for(
                     root,
                     &remote.to_string(),
@@ -155,7 +196,11 @@ pub async fn run_remote(
                         reason: "exec finished".to_string(),
                     })
                     .await;
-                return Ok(RemoteOutcome { exit, pulled_files });
+                return Ok(RemoteOutcome {
+                    exit,
+                    pulled_files,
+                    relaid_files,
+                });
             }
             Some(Ok(WireMessage::Pong)) | Some(Ok(WireMessage::LspPayload(_))) => {}
             Some(Ok(other)) => anyhow::bail!("unexpected message during exec: {other:?}"),
@@ -234,6 +279,30 @@ mod tests {
         std::fs::write(root.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
         let apple = platform_warning(root, Some(other), &plain).expect("an Apple project is named");
         assert!(apple.contains("also an Apple project"), "{apple}");
+    }
+
+    #[test]
+    fn a_formatter_s_rewrite_is_layout_and_an_edit_is_not() {
+        let old = b"use b::B;\nuse a::A;\nfn f(x: u8,y: u8) { g(&mut win) }\n";
+        let formatted = b"use a::A;\nuse b::B;\nfn f(x: u8, y: u8) {\n    g(&mut win,)\n}\n";
+        let edited = b"use b::B;\nuse a::A;\nfn f(x: u8,y: u8) { g(&win) }\n";
+        assert!(layout_only(old, formatted));
+        assert!(!layout_only(old, edited));
+        assert!(!layout_only(old, old), "the same text is not a rewrite");
+        let outcome = RemoteOutcome {
+            exit: ExecExit {
+                exit_code: Some(0),
+                duration_ms: 1,
+                server_workspace_root: String::new(),
+                timed_out: false,
+                error: None,
+                usage: None,
+                platform: None,
+            },
+            pulled_files: vec!["a.rs".into(), "b.rs".into()],
+            relaid_files: vec!["a.rs".into()],
+        };
+        assert_eq!(outcome.changed_code(), vec!["b.rs".to_string()]);
     }
 
     #[test]

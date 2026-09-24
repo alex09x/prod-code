@@ -3423,6 +3423,7 @@ async fn handle_exec(
         |_, data| tail.push(data),
     )
     .await?;
+    let changed_code = outcome.changed_code();
     let exit = outcome.exit;
     let status = match (&exit.error, exit.timed_out, exit.exit_code) {
         (Some(err), _, _) => format!("failed to start: {err}"),
@@ -3456,11 +3457,9 @@ async fn handle_exec(
             outcome.pulled_files.join(", ")
         ));
     }
-    if let Some(warning) = crate::exec::platform_warning(
-        workspace_root,
-        exit.platform.as_deref(),
-        &outcome.pulled_files,
-    ) {
+    if let Some(warning) =
+        crate::exec::platform_warning(workspace_root, exit.platform.as_deref(), &changed_code)
+    {
         text.push_str(&format!("[{warning}]\n"));
     }
     text.push_str(&tail.text());
