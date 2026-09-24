@@ -257,6 +257,53 @@ mod tests {
         assert!(parse_report("").is_none());
     }
 
+    fn args(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    /// The shim's own paths, run in this process: a report and the exit code for a command that
+    /// exits, and the codes for arguments it cannot use and a command it cannot start. The
+    /// signal path ends the process and is covered by the binary's tests.
+    #[test]
+    fn the_shim_reports_a_command_and_refuses_what_it_cannot_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("report");
+        let report_arg = report.to_str().unwrap();
+
+        assert_eq!(run(&args(&[report_arg, "--", "sh", "-c", "exit 3"])), 3);
+        let (status, usage) = parse_report(&std::fs::read_to_string(&report).unwrap()).unwrap();
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 3);
+        assert!(usage.max_rss_kb > 0);
+
+        assert_eq!(run(&args(&[report_arg, "sh"])), 2, "no `--`");
+        assert_eq!(run(&args(&[report_arg])), 2, "no command");
+        assert_eq!(
+            run(&args(&[report_arg, "--", "/nonexistent/prod-code-no-such-command"])),
+            127
+        );
+
+        // A report that cannot be written does not change the exit code.
+        let unwritable = dir.path().join("missing-dir").join("report");
+        assert_eq!(
+            run(&args(&[unwritable.to_str().unwrap(), "--", "true"])),
+            0
+        );
+    }
+
+    #[test]
+    fn a_report_file_is_unique_empty_until_written_and_removed_when_dropped() {
+        let first = ReportFile::new();
+        let second = ReportFile::new();
+        assert_ne!(first.0, second.0);
+        assert!(first.read().is_none());
+        std::fs::write(&first.0, "status=0 user_ms=1 sys_ms=2 max_rss_kb=3\n").unwrap();
+        assert_eq!(first.read().map(|(s, u)| (s, u.max_rss_kb)), Some((0, 3)));
+        let path = first.0.clone();
+        drop(first);
+        assert!(!path.exists());
+    }
+
     #[test]
     fn a_test_binary_starts_commands_directly() {
         let (cmd, report) = command("true");
