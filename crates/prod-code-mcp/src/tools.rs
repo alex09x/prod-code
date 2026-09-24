@@ -520,7 +520,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_introduce_parameter_object".to_string(),
-            description: "Bundle several of a function's parameters into a struct, with the body and every call site. `params` names the parameters to bundle (two or more, by the names the declaration gives them); they become fields of a new `pub struct` written directly above the function, in declaration order and with the types the declaration gave — a single lifetime is introduced when any of those types borrows. The declaration takes one parameter in place of them, every use of them in the body is rewritten to reach through it (at the positions the analyzer reports, not by text search), and the call sites are rewritten by a structural rule built from the declaration's own arity, so an argument that is a method chain or a closure survives and the unbundled arguments stay where they were. References the rule did not match are named. The whole change is type-checked in one overlay before anything is written, and `apply` is what writes it. Rust only; re-run your formatter afterwards."
+            description: "Bundle several of a function's parameters into a new type, with the body and every call site, in Rust, TypeScript, Python and Go. `params` names the parameters to bundle (two or more, by the names the declaration gives them); they become fields of the new type, in declaration order and with the types the declaration gave: in Rust a `pub struct` written directly above the function (a single lifetime is introduced when any of those types borrows); in TypeScript an `interface` above the function or its class; in Python a `@dataclass` above the function or its class, with `from dataclasses import dataclass` added once (a plain class with an `__init__` when a parameter has no annotation and the analyzer cannot type it); in Go a `struct` whose fields keep the parameters' names. The declaration takes one parameter in place of them, every use of them in the body is rewritten to reach through it (at the positions the analyzer reports, not by text search), and every call site passes one literal of the new type where the first bundled argument was (`Opts { a: x, b: y }`, TypeScript `{ a: x, b: y }`, Python `Opts(a=x, b=y)` with keyword arguments matched by name, Go `Opts{a: x, b: y}`), so an argument that is a method chain or a closure survives and the unbundled arguments stay where they were. A caller in another Rust module gets the `use`, a Python caller gets the name added to its import from the declaring module. References that are not a call with the declaration's arity are named, not rewritten. The whole change is type-checked in one overlay before anything is written, and `apply` is what writes it. Re-run your formatter afterwards."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -533,9 +533,9 @@ pub fn list_tools() -> Vec<McpTool> {
                         "items": { "type": "string" },
                         "description": "The parameters to bundle, by name; two or more. Order does not matter — the struct keeps the declaration's order."
                     },
-                    "name": { "type": "string", "description": "The struct's name, UpperCamelCase (`Opts`, `SyncRequest`)" },
-                    "binding": { "type": "string", "description": "What the new parameter is called in the body (default: the struct name in snake_case)" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
+                    "name": { "type": "string", "description": "The new type's name, UpperCamelCase (`Opts`, `SyncRequest`); a Go type may be lower case, which leaves it unexported" },
+                    "binding": { "type": "string", "description": "What the new parameter is called in the body (default: the type's name in snake_case in Rust and Python, lowerCamelCase in TypeScript and Go)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Rust only. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -1944,15 +1944,25 @@ async fn handle_introduce_parameter_object(
                 .to_string(),
         );
     }
+    let file_path = resolve_file_path(workspace_root, path_str);
     let binding = args
         .get("binding")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .unwrap_or_else(|| crate::fixture::snake_case(name));
+        .unwrap_or_else(|| crate::parameter_object::default_binding(&file_path, name));
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    let file_path = resolve_file_path(workspace_root, path_str);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    // The compile gate is `cargo check`; it has nothing to say about another language, and a
+    // pass from it would be read as a verdict on files it never compiled.
+    anyhow::ensure!(
+        !verify
+            || crate::parameter_object::Language::of(&file_path)
+                == Some(crate::parameter_object::Language::Rust),
+        "`verify: compile` runs `cargo check`, which judges Rust only; {} is checked by its \
+         language server's diagnostics alone",
+        path_str
+    );
     let mut done = crate::parameter_object::introduce(
         remote,
         workspace_root,

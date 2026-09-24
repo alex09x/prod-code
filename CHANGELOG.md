@@ -27,6 +27,24 @@
   and `apply` writes nothing. A parameter list that ends in `...rest`, `...T` or `*args` is
   refused, because the new argument would not reach the new parameter. `verify: compile` stays
   Rust-only and says so.
+- **Introduce parameter object refactoring for TypeScript, Python and Go** (part of epic #13,
+  refactorings beyond Rust). `code_introduce_parameter_object` and `prod-code parameter-object`
+  bundled parameters only in Rust. They now do the same in the other three languages, chosen by
+  the declaring file's extension. TypeScript gets an `interface` with the parameters' declared
+  types, and each call passes `{ a: x, b: y }`. Python gets a `@dataclass` with the parameters'
+  annotations and defaults, `from dataclasses import dataclass` is added once, and each call
+  passes `Opts(a=x, b=y)`. Keyword arguments are matched by name. A Python caller in another
+  module gets the name added to its import from the declaring module. Go gets a `struct` whose
+  fields keep the parameters' names, a group like `width, height int` is split correctly, and
+  each call passes `Opts{a: x, b: y}`, with the package qualifier when the call has one. A
+  method (TypeScript class method, Python method with `self`, Go method with a receiver) gets
+  the new type above its class, or above the method in Go. Uses in the body read the fields
+  through the new parameter. A parameter without a declared type takes the type the language
+  server's hover gives it. Python falls back to a plain class when basedpyright reports
+  `Unknown`. A reference that is not a call with the declaration's arity is reported, not
+  rewritten, as in Rust. basedpyright lists the keyword in a call such as `build(n, height=2)`
+  as a reference to the parameter `height`, so only references inside the function body are
+  rewritten as uses. Rust output is unchanged.
 
 ## v0.3.3 — 2026-09-24
 
