@@ -1106,7 +1106,7 @@ async fn main() -> Result<()> {
         _ => None,
     };
     startup.mark("macos_only_cgo");
-    let remote = prod_code_mcp::cluster::pick_node(
+    let picked = prod_code_mcp::cluster::pick_node(
         &remotes,
         &placement_key,
         cwd_engine,
@@ -1118,7 +1118,35 @@ async fn main() -> Result<()> {
             "this Go module uses macOS-only cgo ({file}: {named})"
         )),
         None => err,
-    })?;
+    });
+    // A bug report needs no workspace: the node only fills in one line of it, and a checkout
+    // the cluster cannot place is exactly what may need reporting (#307).
+    if let Some(Commands::ReportIssue {
+        title,
+        body,
+        body_file,
+        private_ref,
+        force,
+        dry_run,
+    }) = cli.command
+    {
+        startup.report();
+        let unplaced = picked.as_ref().err().map(|err| format!("{err:#}"));
+        return run_report_issue(
+            picked.ok(),
+            unplaced,
+            ReportArgs {
+                title,
+                body,
+                body_file,
+                private_ref,
+                force,
+                dry_run,
+            },
+        )
+        .await;
+    }
+    let remote = picked?;
     prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
     startup.mark("pick_node");
     startup.report();
@@ -1129,38 +1157,7 @@ async fn main() -> Result<()> {
         Commands::Status => run_status_probe(seeds[0]).await,
         Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
-        Commands::ReportIssue {
-            title,
-            body,
-            body_file,
-            private_ref,
-            force,
-            dry_run,
-        } => {
-            let body = match (body, body_file) {
-                (Some(body), _) => body,
-                (None, Some(path)) if path.as_os_str() == "-" => {
-                    let mut text = String::new();
-                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
-                    text
-                }
-                (None, Some(path)) => std::fs::read_to_string(&path)
-                    .with_context(|| format!("failed to read {}", path.display()))?,
-                (None, None) => anyhow::bail!("give the report a --body or a --body-file"),
-            };
-            let outcome = prod_code_mcp::report::report(
-                Some(remote),
-                &title,
-                &body,
-                force,
-                dry_run,
-                &prod_code_mcp::report::gh_program(),
-                private_ref.as_deref(),
-            )
-            .await?;
-            println!("{}", outcome.render());
-            Ok(())
-        }
+        Commands::ReportIssue { .. } => unreachable!("handled before placement"),
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
         Commands::Def {
@@ -3013,6 +3010,55 @@ async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()
 }
 
 /// Query remote gateway for health and status snapshot.
+/// The arguments of `report-issue`, as given.
+struct ReportArgs {
+    title: String,
+    body: Option<String>,
+    body_file: Option<PathBuf>,
+    private_ref: Option<String>,
+    force: bool,
+    dry_run: bool,
+}
+
+/// Files (or drafts) a prod-code bug report. `remote` is where the checkout is placed, when it
+/// could be; `unplaced` is why it could not, which then goes into the report (scrubbed, like
+/// the rest of it), since a checkout the cluster refuses is itself worth reporting (#307).
+async fn run_report_issue(
+    remote: Option<std::net::SocketAddr>,
+    unplaced: Option<String>,
+    args: ReportArgs,
+) -> anyhow::Result<()> {
+    let mut body = match (args.body, args.body_file) {
+        (Some(body), _) => body,
+        (None, Some(path)) if path.as_os_str() == "-" => {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+            text
+        }
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
+        (None, None) => anyhow::bail!("give the report a --body or a --body-file"),
+    };
+    if let Some(reason) = unplaced {
+        body.push_str(&format!(
+            "\n\nThis checkout could not be placed on a node: {}",
+            reason.replace('\n', " ")
+        ));
+    }
+    let outcome = prod_code_mcp::report::report(
+        remote,
+        &args.title,
+        &body,
+        args.force,
+        args.dry_run,
+        &prod_code_mcp::report::gh_program(),
+        args.private_ref.as_deref(),
+    )
+    .await?;
+    println!("{}", outcome.render());
+    Ok(())
+}
+
 async fn run_status_probe(remote: SocketAddr) -> Result<()> {
     let start = std::time::Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)
