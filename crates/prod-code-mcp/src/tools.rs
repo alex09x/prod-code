@@ -622,11 +622,15 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_definition".to_string(),
-            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it."
+            description: "Find where a symbol (function, struct, type, variable, module) is defined. Give `symbol` (its name, e.g. `WorkspaceSymbol` or `Metrics::record`) or a file position (path + 1-based line/column) of a use of it. `body: true` also returns the definition's code (a function with its body, a type with its fields, with the doc comments above it), numbered, so there is no need to read the file or grep for it."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "body": {
+                        "type": "boolean",
+                        "description": "Also return the definition's code, numbered (at most 300 lines)"
+                    },
                     "path": {
                         "type": "string",
                         "description": "File path (relative to workspace or absolute)"
@@ -3463,6 +3467,7 @@ async fn handle_definition(
         .get("character")
         .and_then(|v| v.as_u64())
         .context("Missing 'character' argument")? as u32;
+    let body = args.get("body").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
@@ -3507,6 +3512,26 @@ async fn handle_definition(
                     out.push('\n');
                 }
                 out.push_str(&format!("📍 Definition: {uri}:{start_line}:{start_col}"));
+                if body && i < 3 {
+                    match definition_body(
+                        remote,
+                        workspace_root,
+                        uri,
+                        start_line as u32,
+                        start_col as u32,
+                    )
+                    .await
+                    {
+                        Ok(text) => {
+                            out.push('\n');
+                            out.push_str(&text);
+                        }
+                        Err(e) => out.push_str(&format!(
+                            "\n   (the definition's code could not be read: {e:#})"
+                        )),
+                    }
+                    continue;
+                }
                 // Outside the checkout the file exists only on the gateway: include
                 // the lines around the definition so the agent can read it.
                 let path = crate::remote_fs::uri_to_path(uri);
@@ -3545,6 +3570,203 @@ async fn handle_definition(
         out.push_str("No definition found.");
     }
     Ok(McpToolCallResult::text(out))
+}
+
+/// The most lines of a definition `body: true` shows.
+const MAX_BODY_LINES: usize = 300;
+
+/// The code of the definition at 1-based `line`/`col` of `uri`, numbered (#306): the item's
+/// range from the file's outline or, for a file outside the checkout or a server without an
+/// outline, the lines its brackets (or, after a `:`, its indentation) span. The doc comments,
+/// attributes and decorators right above it come with it.
+async fn definition_body(
+    remote: SocketAddr,
+    root: &Path,
+    uri: &str,
+    line: u32,
+    col: u32,
+) -> Result<String> {
+    let path = crate::remote_fs::uri_to_path(uri);
+    let external = crate::remote_fs::is_external(root, &path);
+    let text = if external {
+        let (bytes, _) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        std::fs::read_to_string(&path).with_context(|| format!("reading {path}"))?
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    anyhow::ensure!(!lines.is_empty(), "{path} is empty");
+    let start = (line as usize).saturating_sub(1).min(lines.len() - 1);
+    let outlined = if external {
+        None
+    } else {
+        outlined_range(
+            remote,
+            root,
+            Path::new(&path),
+            start,
+            col.saturating_sub(1) as usize,
+        )
+        .await
+    };
+    let (first, last) = match outlined {
+        Some((first, last)) if last >= start => (first.min(start), last),
+        _ => (start, item_end(&lines, start)),
+    };
+    Ok(numbered_lines(
+        &lines,
+        with_leading_docs(&lines, first),
+        last,
+    ))
+}
+
+/// The 0-based first and last lines of the innermost symbol of `path`'s outline whose range
+/// holds the 0-based position.
+async fn outlined_range(
+    remote: SocketAddr,
+    root: &Path,
+    path: &Path,
+    line: usize,
+    col: usize,
+) -> Option<(usize, usize)> {
+    let uri = Url::from_file_path(path).ok()?;
+    let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
+    let outline = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params)
+        .await
+        .ok()?;
+    let mut best: Option<Span> = None;
+    innermost_holding(&outline, (line, col), &mut best);
+    best.map(|(start, end)| (start.0, end.0))
+}
+
+/// An outline range: its 0-based (line, character) start and end.
+type Span = ((usize, usize), (usize, usize));
+
+/// Walks an outline, nested or flat, for the smallest range that holds `at`.
+fn innermost_holding(symbols: &serde_json::Value, at: (usize, usize), best: &mut Option<Span>) {
+    let point = |p: Option<&serde_json::Value>| -> Option<(usize, usize)> {
+        let p = p?;
+        Some((
+            p.get("line")?.as_u64()? as usize,
+            p.get("character")?.as_u64()? as usize,
+        ))
+    };
+    for symbol in symbols.as_array().into_iter().flatten() {
+        let range = symbol
+            .get("range")
+            .or_else(|| symbol.pointer("/location/range"));
+        if let (Some(start), Some(end)) = (
+            point(range.and_then(|r| r.get("start"))),
+            point(range.and_then(|r| r.get("end"))),
+        ) && start <= at
+            && at <= end
+            && best.is_none_or(|(s, e)| (end.0 - start.0, end.1) < (e.0 - s.0, e.1))
+        {
+            *best = Some((start, end));
+        }
+        if let Some(children) = symbol.get("children") {
+            innermost_holding(children, at, best);
+        }
+    }
+}
+
+/// The last line of the item that starts on 0-based line `start`: where its first `{` is
+/// closed; for a line that ends in `:` (Python), the last line indented deeper; else the line
+/// itself (`type A = B;`).
+fn item_end(lines: &[&str], start: usize) -> usize {
+    let mut depth = 0i64;
+    let mut opened = false;
+    for (i, line) in lines.iter().enumerate().skip(start).take(2000) {
+        let chars: Vec<char> = line.chars().collect();
+        let mut quote: Option<char> = None;
+        let mut k = 0;
+        while k < chars.len() {
+            let c = chars[k];
+            if let Some(q) = quote {
+                if c == '\\' {
+                    k += 1;
+                } else if c == q {
+                    quote = None;
+                }
+                k += 1;
+                continue;
+            }
+            match c {
+                '"' | '`' => quote = Some(c),
+                // A comment's brackets are not the code's.
+                '/' if chars.get(k + 1) == Some(&'/') => break,
+                // A char literal (`'{'`, `'\\''`), not a lifetime (`'a`).
+                '\'' if chars.get(k + 2) == Some(&'\'') => k += 2,
+                '\'' if chars.get(k + 1) == Some(&'\\') && chars.get(k + 3) == Some(&'\'') => {
+                    k += 3
+                }
+                '{' => {
+                    depth += 1;
+                    opened = true;
+                }
+                '}' => depth -= 1,
+                _ => {}
+            }
+            k += 1;
+        }
+        if opened && depth <= 0 {
+            return i;
+        }
+        let trimmed = line.trim_end();
+        if !opened && i == start {
+            if trimmed.ends_with(':') {
+                let indent = line.len() - line.trim_start().len();
+                let mut last = start;
+                for (j, next) in lines.iter().enumerate().skip(start + 1) {
+                    if next.trim().is_empty() {
+                        continue;
+                    }
+                    if next.len() - next.trim_start().len() <= indent {
+                        break;
+                    }
+                    last = j;
+                }
+                return last;
+            }
+            if trimmed.ends_with(';') {
+                return start;
+            }
+        }
+        if !opened && i > start + 3 {
+            return start;
+        }
+    }
+    start
+}
+
+/// The first line of the doc comments, attributes and decorators right above 0-based `first`.
+fn with_leading_docs(lines: &[&str], mut first: usize) -> usize {
+    while first > 0 {
+        let above = lines[first - 1].trim_start();
+        let doc = ["///", "//", "#[", "@", "/*", "*"]
+            .iter()
+            .any(|prefix| above.starts_with(prefix));
+        if !doc {
+            break;
+        }
+        first -= 1;
+    }
+    first
+}
+
+/// Lines `first..=last` (0-based), numbered from 1, at most [`MAX_BODY_LINES`] of them.
+fn numbered_lines(lines: &[&str], first: usize, last: usize) -> String {
+    let last = last.min(lines.len().saturating_sub(1));
+    let shown = last.min(first + MAX_BODY_LINES - 1);
+    let width = (shown + 1).to_string().len();
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate().take(shown + 1).skip(first) {
+        out.push_str(&format!("{:>width$} | {line}\n", i + 1));
+    }
+    if shown < last {
+        out.push_str(&format!("… {} more line(s)\n", last - shown));
+    }
+    out.trim_end().to_string()
 }
 
 async fn handle_exec(
@@ -4652,6 +4874,11 @@ pub async fn resolve_symbol(
                     score += 30;
                 }
             }
+            // The checkout's own symbol before a same-named one of the standard library or a
+            // dependency, which gopls lists alongside (#345).
+            if hit.path.starts_with(root) {
+                score += 5;
+            }
             // An index can be stale or (clangd) point the right range at the wrong file:
             // the name must actually be at that position. A server that decorates the name
             // (`Type.name`) may point at the bare name, so either spelling counts.
@@ -5405,6 +5632,69 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_item_ends_where_its_brackets_or_its_indentation_do() {
+        let rust = [
+            "/// Adds.",
+            "#[inline]",
+            "fn add(a: u8) -> u8 {",
+            "    let open = '{'; // a { in a comment",
+            "    let s = \"}}\";",
+            "    a",
+            "}",
+            "fn next() {}",
+        ];
+        assert_eq!(super::item_end(&rust, 2), 6);
+        assert_eq!(super::with_leading_docs(&rust, 2), 0);
+        assert_eq!(super::item_end(&rust, 7), 7);
+        let python = ["def f(x):", "    y = x", "", "    return y", "z = 1"];
+        assert_eq!(super::item_end(&python, 0), 3);
+        assert_eq!(super::item_end(&["type A = B;", "fn c() {}"], 0), 0);
+        let go = ["type T struct {", "\tA int", "\tB string", "}"];
+        assert_eq!(super::item_end(&go, 0), 3);
+    }
+
+    #[test]
+    fn a_body_is_numbered_and_capped() {
+        let lines: Vec<String> = (1..=400).map(|n| format!("line {n}")).collect();
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let text = super::numbered_lines(&refs, 9, 12);
+        assert_eq!(
+            text,
+            "10 | line 10\n11 | line 11\n12 | line 12\n13 | line 13"
+        );
+        // Numbers are right-aligned to the widest.
+        assert!(super::numbered_lines(&refs, 7, 10).starts_with(" 8 | line 8"));
+        let long = super::numbered_lines(&refs, 0, 399);
+        assert!(
+            long.ends_with("… 100 more line(s)"),
+            "{}",
+            &long[long.len() - 40..]
+        );
+        assert_eq!(long.lines().count(), super::MAX_BODY_LINES + 1);
+    }
+
+    #[test]
+    fn the_innermost_outline_range_holding_a_position_wins() {
+        let outline = serde_json::json!([{
+            "name": "Store",
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 20, "character": 1 } },
+            "children": [{
+                "name": "sum",
+                "range": { "start": { "line": 4, "character": 4 }, "end": { "line": 8, "character": 5 } }
+            }]
+        }, {
+            "name": "flat",
+            "location": { "range": { "start": { "line": 30, "character": 0 }, "end": { "line": 33, "character": 1 } } }
+        }]);
+        let mut best = None;
+        super::innermost_holding(&outline, (4, 11), &mut best);
+        assert_eq!(best, Some(((4, 4), (8, 5))));
+        let mut flat = None;
+        super::innermost_holding(&outline, (30, 3), &mut flat);
+        assert_eq!(flat, Some(((30, 0), (33, 1))));
+    }
+
     #[test]
     fn a_workspace_query_is_anchored_in_the_root_project_not_a_crate_it_leaves_out() {
         let dir = tempfile::tempdir().unwrap();

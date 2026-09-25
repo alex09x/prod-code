@@ -1,9 +1,11 @@
 //! Usage metrics: every LSP query, exec and sync round is appended as one JSON line to
 //! `<storage>/../metrics/events-YYYY-MM-DD.jsonl` (long-term, importable into ClickHouse) and
-//! kept in a bounded in-memory ring for `MetricsRequest` summaries.
+//! kept in a bounded in-memory ring for `MetricsRequest` summaries. A window that reaches back
+//! past the ring (a restart empties it) is summed from the files for the part the ring does not
+//! hold (#305).
 
 use prod_code_protocol::{ExecMetric, MetricsResponse, QueryMetric};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
@@ -108,7 +110,9 @@ impl Metrics {
         ring.push_back(event);
     }
 
-    /// Aggregates the ring over the last `since_secs` (0 = all).
+    /// Aggregates the last `since_secs` (0 = all the ring holds). The part of the window older
+    /// than the oldest event in memory comes from the daily files, so a restart does not erase
+    /// what the node served before it (#305); the ring's own events are not read twice.
     pub fn summary(&self, node: &str, since_secs: u64) -> MetricsResponse {
         let ring = self.ring.lock().unwrap_or_else(|e| e.into_inner());
         let cutoff = if since_secs == 0 {
@@ -116,11 +120,42 @@ impl Metrics {
         } else {
             now_ms().saturating_sub(since_secs * 1000)
         };
-        type Key = (String, String, String, String);
-        let mut queries: BTreeMap<Key, Vec<(u64, bool)>> = BTreeMap::new();
-        let mut execs: BTreeMap<Key, (u64, u64, u64)> = BTreeMap::new();
-        let (mut sync_rounds, mut sync_files, mut sync_bytes) = (0, 0, 0);
+        let mut sum = Summary::default();
+        if since_secs > 0 {
+            let oldest_in_memory = ring.front().map_or_else(now_ms, |e| e.ts_ms);
+            if cutoff < oldest_in_memory {
+                for_each_stored(&self.dir, cutoff, oldest_in_memory, |ev| sum.add(&ev));
+            }
+        }
         for ev in ring.iter().filter(|e| e.ts_ms >= cutoff) {
+            sum.add(ev);
+        }
+        sum.response(node, since_secs, ring.len() as u64)
+    }
+}
+
+type Key = (String, String, String, String);
+
+/// Events summed by agent, host, workspace and method (or command).
+#[derive(Default)]
+struct Summary {
+    queries: BTreeMap<Key, Vec<(u64, bool)>>,
+    execs: BTreeMap<Key, (u64, u64, u64)>,
+    sync_rounds: u64,
+    sync_files: u64,
+    sync_bytes: u64,
+}
+
+impl Summary {
+    fn add(&mut self, ev: &Event) {
+        let Summary {
+            queries,
+            execs,
+            sync_rounds,
+            sync_files,
+            sync_bytes,
+        } = self;
+        {
             match ev.kind {
                 "lsp" => queries
                     .entry((
@@ -147,13 +182,23 @@ impl Metrics {
                     e.2 += ev.duration_ms;
                 }
                 "sync" => {
-                    sync_rounds += 1;
-                    sync_files += ev.items;
-                    sync_bytes += ev.bytes;
+                    *sync_rounds += 1;
+                    *sync_files += ev.items;
+                    *sync_bytes += ev.bytes;
                 }
                 _ => {}
             }
         }
+    }
+
+    fn response(self, node: &str, since_secs: u64, events_in_memory: u64) -> MetricsResponse {
+        let Summary {
+            queries,
+            execs,
+            sync_rounds,
+            sync_files,
+            sync_bytes,
+        } = self;
         let queries = queries
             .into_iter()
             .map(|((agent, host, workspace, method), mut samples)| {
@@ -196,12 +241,85 @@ impl Metrics {
         MetricsResponse {
             node: node.to_string(),
             since_secs,
-            events_in_memory: ring.len() as u64,
+            events_in_memory,
             queries,
             execs,
             sync_rounds,
             sync_files,
             sync_bytes,
+        }
+    }
+}
+
+/// An event as a daily file holds it.
+#[derive(Deserialize)]
+#[serde(default)]
+struct Stored {
+    ts_ms: u64,
+    kind: String,
+    agent: String,
+    host: String,
+    workspace: String,
+    method: String,
+    duration_ms: u64,
+    ok: bool,
+    items: u64,
+    command: String,
+    bytes: u64,
+}
+
+impl Default for Stored {
+    fn default() -> Self {
+        Self {
+            ts_ms: 0,
+            kind: String::new(),
+            agent: String::new(),
+            host: String::new(),
+            workspace: String::new(),
+            method: String::new(),
+            duration_ms: 0,
+            ok: true,
+            items: 0,
+            command: String::new(),
+            bytes: 0,
+        }
+    }
+}
+
+/// Calls `f` with every event in the daily files of `dir` from `from_ms` (inclusive) to
+/// `to_ms` (exclusive), a line at a time, so a week of events is never held at once.
+fn for_each_stored(dir: &std::path::Path, from_ms: u64, to_ms: u64, mut f: impl FnMut(Event)) {
+    use std::io::BufRead;
+    for day in days_since_epoch(from_ms)..=days_since_epoch(to_ms) {
+        let path = dir.join(format!("events-{}.jsonl", format_day(day)));
+        let Ok(file) = std::fs::File::open(&path) else {
+            continue;
+        };
+        for line in std::io::BufReader::new(file).lines().map_while(Result::ok) {
+            let Ok(stored) = serde_json::from_str::<Stored>(&line) else {
+                continue;
+            };
+            if stored.ts_ms < from_ms || stored.ts_ms >= to_ms {
+                continue;
+            }
+            let kind = match stored.kind.as_str() {
+                "lsp" => "lsp",
+                "exec" => "exec",
+                "sync" => "sync",
+                _ => continue,
+            };
+            let mut ev = Event::blank(kind);
+            ev.ts_ms = stored.ts_ms;
+            ev.agent = stored.agent;
+            ev.host = stored.host;
+            ev.workspace = stored.workspace;
+            ev.method = stored.method;
+            ev.duration_ms = stored.duration_ms;
+            ev.ok = stored.ok;
+            ev.items = stored.items;
+            ev.command = stored.command;
+            ev.bytes = stored.bytes;
+            f(ev);
         }
     }
 }
@@ -266,6 +384,52 @@ mod tests {
     fn days_format_as_dates() {
         assert_eq!(format_day(0), "1970-01-01");
         assert_eq!(format_day(20_716), "2026-09-20");
+    }
+
+    /// A restart empties the ring, not the files: a window that reaches back before the oldest
+    /// event in memory is summed from them, and an event both hold counts once (#305).
+    #[test]
+    fn a_summary_reaches_past_a_restart_into_the_daily_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("metrics");
+        let hover = |ts_ms: u64, duration_ms: u64| {
+            let mut e = Event::blank("lsp");
+            e.ts_ms = ts_ms;
+            e.agent = "codex".into();
+            e.workspace = "ws".into();
+            e.method = "textDocument/hover".into();
+            e.duration_ms = duration_ms;
+            e
+        };
+        let day = 86_400_000;
+        let now = now_ms();
+        // Before the restart: two days ago, and a week and a half ago.
+        let before = Metrics::new(dir.clone());
+        write_events(
+            before.dir(),
+            [hover(now - 2 * day, 10), hover(now - 10 * day, 20)].into_iter(),
+        );
+        drop(before);
+        // After it: one event in memory, which the writer has also put in today's file.
+        let after = Metrics::new(dir.clone());
+        let recent = hover(now, 30);
+        after.record(recent.clone());
+        write_events(after.dir(), [recent].into_iter());
+
+        let week = after.summary("n", 7 * 86_400);
+        assert_eq!(week.queries.len(), 1);
+        assert_eq!(
+            week.queries[0].count, 2,
+            "two days ago and now, the latter once"
+        );
+        assert_eq!(week.queries[0].max_ms, 30);
+        assert_eq!(week.events_in_memory, 1);
+        let hour = after.summary("n", 3600);
+        assert_eq!(hour.queries[0].count, 1);
+        let all = after.summary("n", 0);
+        assert_eq!(all.queries[0].count, 1, "0 is what memory holds");
+        let month = after.summary("n", 30 * 86_400);
+        assert_eq!(month.queries[0].count, 3);
     }
 
     #[test]

@@ -71,6 +71,9 @@ enum Commands {
         /// FILE, the one declared or used there (#330).
         #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
+        /// Also print the definition's code, numbered, with its doc comments (#306).
+        #[arg(long, default_value_t = false)]
+        body: bool,
     },
     /// Inspect symbol type & docs: prod-code hover <file> <line> <col>, or --symbol NAME
     Hover {
@@ -1228,8 +1231,28 @@ async fn main() -> Result<()> {
             line,
             col,
             symbol,
+            body,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_definition", &symbol, file).await,
+            Some(symbol) => {
+                let mut args = symbol_args(&symbol, file);
+                args["body"] = serde_json::json!(body);
+                run_tool(remote, "code_definition", args).await
+            }
+            None if body => {
+                let (file, line, col) = position(file, line, col)?;
+                let file = std::fs::canonicalize(&file).unwrap_or(file);
+                run_tool(
+                    remote,
+                    "code_definition",
+                    serde_json::json!({
+                        "path": file.to_string_lossy(),
+                        "line": line,
+                        "character": col,
+                        "body": true,
+                    }),
+                )
+                .await
+            }
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_definition(remote, &file, line, col).await
