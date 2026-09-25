@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 use workspace::{SessionView, WorkspaceManager};
@@ -178,6 +178,12 @@ pub struct SessionMeta {
     pub engine: String,
     pub engine_root: PathBuf,
     pub metrics: Arc<metrics::Metrics>,
+    /// The session is an editor's ([`prod_code_protocol::PURPOSE_EDITOR`]): the Rust engine
+    /// pushes the diagnostics of every document it opens or changes.
+    pub editor: bool,
+    /// Per document, how many edits the session has sent: a diagnostics pass waits out a burst
+    /// of typing and runs only for the last edit of it.
+    pub edits: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>>,
 }
 
 /// An LSP request awaiting its answer.
@@ -2471,6 +2477,8 @@ pub async fn handle_client(
                     engine: engine.to_string(),
                     engine_root: engine_root.clone(),
                     metrics: Arc::clone(&state.metrics),
+                    editor: req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR),
+                    edits: Arc::default(),
                 });
                 let session_res = run_session_loop(framed, &translator, &session_view, meta).await;
 
@@ -2618,8 +2626,9 @@ async fn run_session_loop(
 ///
 /// A language server on the node advertises its own, except for document sync: the gateway
 /// hands every change on as the document's full text, so the editor is asked for exactly that
-/// whatever the server would take. The in-memory Rust engine advertises what it answers; a
-/// workspace with neither only takes documents.
+/// whatever the server would take. The in-memory Rust engine advertises what it answers, with
+/// the trigger characters rust-analyzer's own server uses; a workspace with neither only takes
+/// documents.
 fn editor_capabilities(server: Option<serde_json::Value>, rust: bool) -> serde_json::Value {
     let mut caps = match server {
         Some(caps) if caps.is_object() => caps,
@@ -2631,7 +2640,16 @@ fn editor_capabilities(server: Option<serde_json::Value>, rust: bool) -> serde_j
             "documentSymbolProvider": true,
             "workspaceSymbolProvider": true,
             "renameProvider": true,
-            "callHierarchyProvider": true
+            "callHierarchyProvider": true,
+            "completionProvider": {
+                "triggerCharacters": [":", ".", "'", "("],
+                "resolveProvider": true
+            },
+            "signatureHelpProvider": { "triggerCharacters": ["(", ",", "<"] },
+            "inlayHintProvider": true,
+            "documentHighlightProvider": true,
+            "codeActionProvider": { "resolveProvider": true },
+            "documentFormattingProvider": true
         }),
         _ => serde_json::json!({}),
     };
@@ -2876,6 +2894,19 @@ async fn on_client_message(
                                 return Flow::Next;
                             }
                         }
+                        Some(m) if prod_code_engine_rust::editor::EDITOR_METHODS.contains(&m) => {
+                            let params = val.get("params").cloned().unwrap_or_default();
+                            lsp_editor_request(
+                                out_tx,
+                                translator,
+                                view,
+                                &id,
+                                m,
+                                params,
+                                engine_lock,
+                            );
+                            return Flow::Next;
+                        }
                         Some("textDocument/didOpen") => {
                             if let Some(params) = val.get("params") {
                                 let uri = params
@@ -2908,6 +2939,14 @@ async fn on_client_message(
                                         bytes = text_len,
                                         duration_ms = format!("{:.2}ms", ms),
                                         "📝 [OVERLAY] didOpen recorded as session buffer in Salsa DB"
+                                    );
+                                    publish_rust_diagnostics(
+                                        out_tx,
+                                        translator,
+                                        view,
+                                        meta,
+                                        file_path.clone(),
+                                        engine_lock,
                                     );
                                 }
                             }
@@ -2947,6 +2986,14 @@ async fn on_client_message(
                                         duration_ms = format!("{:.2}ms", ms),
                                         "📝 [OVERLAY] didChange recorded as session buffer in Salsa DB"
                                     );
+                                    publish_rust_diagnostics(
+                                        out_tx,
+                                        translator,
+                                        view,
+                                        meta,
+                                        file_path.clone(),
+                                        engine_lock,
+                                    );
                                 }
                             }
                         }
@@ -2965,6 +3012,19 @@ async fn on_client_message(
                                     tracing::warn!(error = %e, file = %file_path.display(), "session overlay close failed");
                                 }
                             }
+                            return Flow::Next;
+                        }
+                        // A request the in-memory engine has no answer for is refused rather
+                        // than left without a reply, which an editor waits on for good.
+                        Some(m) if id.as_ref().is_some_and(|i| !i.is_null()) => {
+                            let refused = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "error": { "code": -32601, "message": format!("{m} is not supported by prod-code for Rust") }
+                            });
+                            let _ = out_tx
+                                .send(WireMessage::LspPayload(refused.to_string()))
+                                .await;
                             return Flow::Next;
                         }
                         _ => {}
@@ -4564,6 +4624,131 @@ fn lsp_hover(
     });
 }
 
+/// One of the requests an editor needs beyond navigation (completion, signature help, inlay
+/// hints, highlights, code actions, formatting), answered by the in-memory Rust engine in the
+/// session's view (#310).
+fn lsp_editor_request(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    id: &Option<serde_json::Value>,
+    method: &str,
+    params: serde_json::Value,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    let engine_arc = Arc::clone(engine_lock);
+    let req_id = id.clone().unwrap_or(serde_json::json!(1));
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+    let method = method.to_string();
+    let started = Instant::now();
+    TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
+    tokio::task::spawn(async move {
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            let m = method.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine
+                    .editor_request(&m, &params)
+                    .unwrap_or_else(|| Err(anyhow::anyhow!("{m} is not an editor request")))
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("query task failed: {e}")))
+        };
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        let resp = match outcome {
+            Ok(result) => {
+                tracing::info!(session = session_id, method = %method, duration_ms = format!("{ms:.2}ms"), "✅ [LSP DONE]");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "result": result })
+            }
+            Err(e) => {
+                tracing::warn!(session = session_id, method = %method, error = %format!("{e:#}"), "editor request failed");
+                serde_json::json!({ "jsonrpc": "2.0", "id": req_id, "error": { "code": -32603, "message": format!("{e:#}") } })
+            }
+        };
+        let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
+        let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
+    });
+}
+
+/// How long an editor session's document must stay unchanged before its diagnostics are
+/// computed: a burst of typing costs one pass, for its last edit.
+const EDITOR_DIAGNOSTICS_DELAY: Duration = Duration::from_millis(300);
+
+/// Pushes the diagnostics of `path` to an editor session once the document has stopped
+/// changing for [`EDITOR_DIAGNOSTICS_DELAY`] (#310). Sessions of agents and tools ask for
+/// diagnostics when they want them and get none pushed.
+fn publish_rust_diagnostics(
+    out_tx: &rapidfire::Sender<WireMessage>,
+    translator: &PathTranslator,
+    view: &SessionView,
+    meta: &Arc<SessionMeta>,
+    path: PathBuf,
+    engine_lock: &Arc<tokio::sync::Mutex<prod_code_engine_rust::RustEngine>>,
+) {
+    if !meta.editor {
+        return;
+    }
+    let edit = {
+        let mut edits = meta.edits.lock().unwrap_or_else(|e| e.into_inner());
+        let count = edits.entry(path.clone()).or_default();
+        *count += 1;
+        *count
+    };
+    let edits = Arc::clone(&meta.edits);
+    let engine_arc = Arc::clone(engine_lock);
+    let out_tx_task = out_tx.clone();
+    let translator_task = translator.clone();
+    let session_id = view.session_id;
+    tokio::task::spawn(async move {
+        tokio::time::sleep(EDITOR_DIAGNOSTICS_DELAY).await;
+        let latest = |edits: &std::sync::Mutex<std::collections::HashMap<PathBuf, u64>>| {
+            edits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&path)
+                .copied()
+        };
+        if latest(&edits) != Some(edit) {
+            return;
+        }
+        let file = path.clone();
+        let outcome = {
+            let mut engine = engine_arc.lock_owned().await;
+            tokio::task::spawn_blocking(move || {
+                if let Err(e) = engine.activate_session(session_id) {
+                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
+                }
+                engine.editor_diagnostics(&file)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("diagnostics task failed: {e}")))
+        };
+        // An edit that arrived during the pass gets a pass of its own.
+        if latest(&edits) != Some(edit) {
+            return;
+        }
+        match outcome {
+            Ok(diagnostics) => {
+                let note = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/publishDiagnostics",
+                    "params": { "uri": format!("file://{}", path.display()), "diagnostics": diagnostics }
+                });
+                let client_note = translator_task.translate_lsp_to_client(&note.to_string());
+                let _ = out_tx_task.send(WireMessage::LspPayload(client_note)).await;
+            }
+            Err(e) => {
+                tracing::warn!(session = session_id, file = %path.display(), error = %format!("{e:#}"), "editor diagnostics failed");
+            }
+        }
+    });
+}
+
 /// Puts the user's toolchain directories (`~/.cargo/bin`, `~/go/bin`) first on PATH so remote
 /// commands, rust-analyzer's `cargo metadata` and the gopls engine use the toolchains the
 /// workspaces were built with, not a distro/snap binary a systemd user session resolves first.
@@ -4918,7 +5103,27 @@ mod tests {
         let rust = editor_capabilities(None, true);
         assert_eq!(rust["renameProvider"], true);
         assert_eq!(rust["callHierarchyProvider"], true);
+        assert_eq!(rust["completionProvider"]["resolveProvider"], true);
+        assert_eq!(rust["codeActionProvider"]["resolveProvider"], true);
         assert_eq!(rust["textDocumentSync"]["change"], 1);
+        // Every method advertised for Rust is one the engine answers.
+        for (capability, method) in [
+            ("completionProvider", "textDocument/completion"),
+            ("signatureHelpProvider", "textDocument/signatureHelp"),
+            ("inlayHintProvider", "textDocument/inlayHint"),
+            (
+                "documentHighlightProvider",
+                "textDocument/documentHighlight",
+            ),
+            ("codeActionProvider", "textDocument/codeAction"),
+            ("documentFormattingProvider", "textDocument/formatting"),
+        ] {
+            assert!(rust.get(capability).is_some(), "{capability}");
+            assert!(
+                prod_code_engine_rust::editor::EDITOR_METHODS.contains(&method),
+                "{method}"
+            );
+        }
 
         assert_eq!(
             editor_capabilities(None, false),

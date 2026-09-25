@@ -13,6 +13,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 toml = "0.9"
 
 ra_ap_ide = "=0.0.344"
@@ -21,6 +22,7 @@ ra_ap_project_model = "=0.0.344"
 ra_ap_vfs = "=0.0.344"
 ra_ap_syntax = "=0.0.344"
 ra_ap_ide_db = "=0.0.344"
+ra_ap_hir = "=0.0.344"
 ra_ap_paths = "=0.0.344"
 ra_ap_base_db = "=0.0.344"
 ra_ap_cfg = "=0.0.344"

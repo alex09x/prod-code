@@ -28,6 +28,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod editor;
+
 /// Per-repository analysis settings, read from `prod-code.toml` at the workspace root:
 ///
 /// ```toml
