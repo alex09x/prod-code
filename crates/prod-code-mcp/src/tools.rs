@@ -712,13 +712,14 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_validate_edit".to_string(),
-            description: "Check a proposed new content for a file BEFORE writing it: the analyzer sees the proposed text as the document and reports errors and warnings. Nothing is written anywhere. Use it to catch hallucinated APIs, type errors and unresolved imports before touching the checkout."
+            description: "Check a proposed new content for a file BEFORE writing it: the analyzer sees the proposed text as the document and reports errors and warnings. Nothing is written anywhere. Use it to catch hallucinated APIs, type errors and unresolved imports before touching the checkout. For Rust the analyzer runs no borrow checker; `compile: true` has the compiler judge the text too."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
-                    "new_text": { "type": "string", "description": "The complete proposed content of the file" }
+                    "new_text": { "type": "string", "description": "The complete proposed content of the file" },
+                    "compile": { "type": "boolean", "description": "Also run the project's check command (`cargo check` for Rust, `go build`, `tsc`, ...) on the proposed text in a private shadow copy on the node, and report the compiler's errors: the analyzer does not check everything the compiler does (rust-analyzer runs no borrow checker: a reference to a local, E0515, or a use after a move, E0382, passes without it). Slower: a build, warm on the node" }
                 },
                 "required": ["path", "new_text"]
             }),
@@ -748,7 +749,8 @@ pub fn list_tools() -> Vec<McpTool> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Unchanged files to diagnose against the proposed edits (optional)"
-                    }
+                    },
+                    "compile": { "type": "boolean", "description": "Also run the project's check command (`cargo check` for Rust, `go build`, `tsc`, ...) on the proposed text in a private shadow copy on the node, and report the compiler's errors: the analyzer does not check everything the compiler does (rust-analyzer runs no borrow checker: a reference to a local, E0515, or a use after a move, E0382, passes without it). Slower: a build, warm on the node" }
                 },
                 "required": ["edits"]
             }),
@@ -3424,6 +3426,12 @@ async fn handle_validate_edits(
     for report in &reports {
         text.push_str(&report.render());
     }
+    let mut errors = errors;
+    if args.get("compile").and_then(|v| v.as_bool()) == Some(true) {
+        let (compiled_errors, compiled) = compile_check(remote, workspace_root, &edits).await?;
+        text.push_str(&format!("\n{compiled}"));
+        errors += compiled_errors;
+    }
     let text = text.trim_end().to_string();
     Ok(if errors == 0 {
         McpToolCallResult::text(text)
@@ -3454,12 +3462,140 @@ async fn handle_diagnostics(
         }
         _ => crate::diagnostics::diagnostics(remote, workspace_root, &file_path).await?,
     };
-    let text = report.render();
-    Ok(if report.ok() {
+    let mut text = report.render();
+    let mut ok = report.ok();
+    if tool_name == "code_validate_edit"
+        && args.get("compile").and_then(|v| v.as_bool()) == Some(true)
+        && let Some(proposed) = args.get("new_text").and_then(|v| v.as_str())
+    {
+        let (errors, compiled) =
+            compile_check(remote, workspace_root, &[(file_path, proposed.to_string())]).await?;
+        text.push('\n');
+        text.push_str(&compiled);
+        ok = ok && errors == 0;
+    }
+    Ok(if ok {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)
     })
+}
+
+/// Runs the checkout's check command (`cargo check` for Rust, `go build`, `tsc`, ...) in a
+/// shadow copy on the node that holds the proposed texts, for `compile: true`. The analyzer's
+/// overlay misses what only the compiler checks: rust-analyzer runs no borrow checker, so a
+/// reference to a local (E0515) or a use after a move (E0382) validated clean (#364). Returns
+/// the compiler's error count and a report of them.
+pub async fn compile_check(
+    remote: SocketAddr,
+    root: &Path,
+    edits: &[(std::path::PathBuf, String)],
+) -> Result<(usize, String)> {
+    let language = crate::sync::expected_engine(root)
+        .context("`compile` needs a project manifest at the checkout root")?;
+    let command = crate::verify::plan_command_with(
+        &crate::verify::detect_tools(root),
+        language,
+        crate::verify::VerifyKind::Check,
+        None,
+    )?;
+    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let spec = crate::shadow::HypothesisSpec {
+        name: "proposed".to_string(),
+        edits: edits
+            .iter()
+            .map(|(path, text)| crate::shadow::HypothesisEdit {
+                relative_path: path
+                    .strip_prefix(&canonical)
+                    .or_else(|_| path.strip_prefix(root))
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+                text: Some(text.clone()),
+            })
+            .collect(),
+    };
+    let outcome = crate::shadow::run_shadow(
+        remote,
+        root,
+        None,
+        &[spec],
+        command.clone(),
+        Vec::new(),
+        900,
+        1,
+        1 << 20,
+    )
+    .await?;
+    let result = outcome
+        .results
+        .first()
+        .context("the shadow run returned no result")?;
+    let run = format!("`{}` on the proposed text", command.join(" "));
+    if let Some(error) = &result.error {
+        anyhow::bail!("{run} could not run: {error}");
+    }
+    if result.timed_out {
+        anyhow::bail!("{run} timed out");
+    }
+    // `--all-targets` builds a crate's library and its tests: the same error comes twice.
+    let mut seen = std::collections::HashSet::new();
+    let errors: Vec<crate::verify::Diagnostic> = compile_diagnostics(language, &result.output)
+        .into_iter()
+        .filter(|d| d.level == "error" && seen.insert(d.render()))
+        .collect();
+    let mut report = if errors.is_empty() && result.exit_code != Some(0) {
+        // A failure whose output names no error: say so rather than claim it is clean.
+        format!(
+            "compiler: {run} exited {}; no error in its output could be read:\n{}",
+            result.exit_code.map_or("?".to_string(), |c| c.to_string()),
+            result
+                .output
+                .lines()
+                .rev()
+                .take(5)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    } else {
+        format!("compiler: {run}: {} error(s)", errors.len())
+    };
+    for diagnostic in errors.iter().take(20) {
+        report.push_str(&format!("\n  {}", diagnostic.render()));
+    }
+    if errors.len() > 20 {
+        report.push_str(&format!("\n  … {} more", errors.len() - 20));
+    }
+    let count = if errors.is_empty() && result.exit_code != Some(0) {
+        1
+    } else {
+        errors.len()
+    };
+    Ok((count, report))
+}
+
+/// The findings in a check command's output, by the language's format.
+fn compile_diagnostics(language: &str, output: &str) -> Vec<crate::verify::Diagnostic> {
+    match language {
+        "rust" => {
+            let json: Vec<_> = output
+                .lines()
+                .filter_map(crate::verify::parse_cargo_json_line)
+                .collect();
+            if json.is_empty() {
+                crate::verify::parse_rustc_text(output)
+            } else {
+                json
+            }
+        }
+        "go" => crate::verify::parse_go_text(output),
+        "typescript" => crate::verify::parse_tsc_text(output),
+        "python" => crate::verify::parse_pyright_json(output),
+        _ => crate::verify::parse_colon_diagnostics(output),
+    }
 }
 
 async fn handle_diagnose_failure(

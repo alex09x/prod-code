@@ -29,6 +29,13 @@
     from the MCP tool and the CLI; the CLI printed `null`.
   - `.m` and `.mm` count as C-family sources.
 
+### Added
+- **`compile: true` for `code_validate_edit` and `code_validate_edits`** (#364). The project's
+  check command (`cargo check` for Rust, `go build`, `tsc`, ...) runs on the proposed text in a
+  shadow copy on the node, and its errors are reported with the analyzer's. rust-analyzer runs
+  no borrow checker, so a reference to a local (E0515) or a use after a move (E0382) validated
+  as clean; the tools' descriptions now say so.
+
 ## v0.3.11 — 2026-09-25
 
 ### Fixed
