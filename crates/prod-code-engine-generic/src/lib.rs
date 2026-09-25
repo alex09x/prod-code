@@ -150,13 +150,16 @@ impl GenericLspConfig {
     }
 
     /// Create a configuration for C/C++ (clangd). A `compile_commands.json` at the workspace
-    /// root or under `build/` gives clangd the real flags.
+    /// root or under `build/` gives clangd the real flags. Without `--use-dirty-headers` clangd
+    /// parses an included header from disk even when its proposed text is open, so a check of a
+    /// header edit together with its sources judged the sources against the old header (#292).
     pub fn for_cpp() -> Self {
         Self {
             command: "clangd".to_string(),
             args: vec![
                 "--background-index".to_string(),
                 "--header-insertion=never".to_string(),
+                "--use-dirty-headers".to_string(),
                 "--log=error".to_string(),
                 "--compile-commands-dir=build".to_string(),
             ],

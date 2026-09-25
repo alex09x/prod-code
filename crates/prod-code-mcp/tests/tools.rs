@@ -1651,6 +1651,83 @@ async fn code_validate_edits_checks_several_files_together() {
     assert!(text_of(&result).contains("2 file(s) checked together: 0 error(s), 0 warning(s)"));
 }
 
+/// clangd judges a source against the header text that is open when it builds the source, and
+/// asking about a source builds it. A header listed after its sources was opened too late: the
+/// sources kept the old prototype's errors (#292). Its proposed text goes to the analyzer
+/// first, and the report keeps the order the edits were given in.
+#[tokio::test]
+async fn code_validate_edits_opens_a_changed_header_before_the_sources_that_include_it() {
+    let ws = workspace();
+    write(&ws, "src/pricing.h", "int price(int qty);\n");
+    write(
+        &ws,
+        "src/pricing.c",
+        "#include \"pricing.h\"\nint price(int qty) { return qty * 80; }\n",
+    );
+    write(
+        &ws,
+        "src/main.c",
+        "#include \"pricing.h\"\nint main(void) { return price(3); }\n",
+    );
+    commit(&ws);
+    let opened: Arc<std::sync::Mutex<Vec<(String, String)>>> = Arc::default();
+    let seen = Arc::clone(&opened);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        // A file the session has already asked about is open with its disk text, and its
+        // proposed text arrives as a change.
+        "textDocument/didOpen" | "textDocument/didChange" => {
+            let doc = &params["textDocument"];
+            let uri = doc["uri"].as_str().unwrap_or_default();
+            let name = uri.rsplit('/').next().unwrap_or_default().to_string();
+            let text = doc["text"]
+                .as_str()
+                .or_else(|| params.pointer("/contentChanges/0/text")?.as_str())
+                .unwrap_or_default()
+                .to_string();
+            seen.lock().unwrap().push((name, text));
+            serde_json::Value::Null
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({
+            "edits": [
+                { "path": "src/main.c",
+                  "new_text": "#include \"pricing.h\"\nint main(void) { return price(3, 80); }\n" },
+                { "path": "src/pricing.c",
+                  "new_text": "#include \"pricing.h\"\nint price(int qty, int rate) { return qty * rate; }\n" },
+                { "path": "src/pricing.h", "new_text": "int price(int qty, int rate);\n" }
+            ]
+        }),
+    )
+    .await
+    .expect("validation runs");
+    let text = text_of(&result);
+    assert!(!result.is_error, "{text}");
+    let proposed: Vec<String> = opened
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, text)| text.contains("rate"))
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert_eq!(
+        proposed.first().map(String::as_str),
+        Some("pricing.h"),
+        "the header's proposed text is open before any source is: {proposed:?}"
+    );
+    let at = |file: &str| text.find(&format!("{file}: ")).expect(file);
+    assert!(
+        at("src/main.c") < at("src/pricing.c") && at("src/pricing.c") < at("src/pricing.h"),
+        "{text}"
+    );
+}
+
 /// A new file has nothing on disk to compare with; the analyzer's "type annotations needed" on
 /// its `#[derive(Deserialize)]` line is still not an error of the edit (#159).
 #[tokio::test]

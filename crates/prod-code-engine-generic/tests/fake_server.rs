@@ -330,6 +330,11 @@ fn each_language_gets_a_configuration_that_names_its_server() {
         "C++'s server: {}",
         cpp.command
     );
+    assert!(
+        cpp.args.iter().any(|a| a == "--use-dirty-headers"),
+        "clangd must parse an open header's proposed text, not the file on disk (#292): {:?}",
+        cpp.args
+    );
     let swift = GenericLspConfig::for_swift();
     assert!(
         swift.command.contains("sourcekit"),
