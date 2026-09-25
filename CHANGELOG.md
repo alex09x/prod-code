@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.9 — 2026-09-25
+
 ### Added
 - **`code_definition {body: true}` / `prod-code def --body`** (#306): the definition's code,
   numbered, with its doc comments: the item's outline range, or where there is none its brackets

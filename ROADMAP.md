@@ -2,8 +2,10 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.3.8, 2026-09-24): 56 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift, more than 700 tests, and every file a change touches held at or above 80% of regions.
+**Where it stands** (v0.3.9, 2026-09-25): 56 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift and macOS-only Go, more than 700 tests, and every file held at or above 80% of regions.
+Editors get the language's own server on the node through `prod-code lsp`, with a Zed extension
+in `editors/zed`.
 The refactoring catalog (7.1) is complete for Rust. Across the other languages it works through
 the language servers' own code actions; `extract_parameter` and `introduce_parameter_object` also
 cover TypeScript, Python, Go, C, C++ and Swift. Agents report prod-code bugs themselves with
