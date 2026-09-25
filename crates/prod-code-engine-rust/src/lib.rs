@@ -6,8 +6,8 @@ use ra_ap_ide::{
     Analysis, AnalysisHost, AssistConfig, AssistResolveStrategy, CallHierarchyConfig,
     DiagnosticsConfig, FileId, FilePosition, FileRange, FileStructureConfig, FindAllRefsConfig,
     GotoDefinitionConfig, GotoImplementationConfig, HighlightConfig, HlTag, HoverConfig,
-    HoverDocFormat, MonikerDescriptorKind, MonikerResult, NavigationTarget, RaFixtureConfig,
-    RenameConfig, SingleResolve, StructureNodeKind, SymbolKind, TextRange, TextSize,
+    HoverDocFormat, MonikerResult, NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve,
+    StructureNodeKind, SymbolKind, TextRange, TextSize,
 };
 use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
@@ -1384,13 +1384,34 @@ impl RustEngineSnapshot {
             .into_iter()
             .filter_map(|target| self.workspace_symbol(target, None))
             .collect();
-        if !out.is_empty() {
+        if out.iter().any(|s| s.name.eq_ignore_ascii_case(query)) {
             return Ok(out);
         }
+        // Nothing in the workspace has the name, only names like it: a dependency's symbol of
+        // that very name comes first (#328). `ra_ap_ide::Analysis` was never found, since the
+        // workspace's `RustAnalysisOptions` kept the libraries from being searched at all.
+        let mut exact = ra_ap_ide::Query::new(query.to_string());
+        exact.libs();
+        exact.exact();
+        let mut found = self.library_symbols(exact, limit)?;
+        if found.is_empty() && out.is_empty() {
+            let mut libs = ra_ap_ide::Query::new(query.to_string());
+            libs.libs();
+            found = self.library_symbols(libs, limit)?;
+        }
+        found.extend(out);
+        found.truncate(limit);
+        Ok(found)
+    }
 
-        let mut libs = ra_ap_ide::Query::new(query.to_string());
-        libs.libs();
-        let targets = self.analysis.symbol_search(libs, limit)?;
+    /// Library symbols matching `query`, each with the module path it is declared in.
+    fn library_symbols(
+        &self,
+        query: ra_ap_ide::Query,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceSymbol>> {
+        let out = Vec::new();
+        let targets = self.analysis.symbol_search(query, limit)?;
         if targets.is_empty() {
             return Ok(out);
         }
@@ -1433,11 +1454,13 @@ impl RustEngineSnapshot {
             };
             let identifier = moniker.identifier;
             let mut path = identifier.crate_name;
+            // Modules, and the type a method belongs to (`ra_ap_ide::Analysis` for
+            // `completions`, #328); not the item itself, nor the `impl` block between.
             for descriptor in identifier
                 .description
                 .iter()
-                .take_while(|d| d.desc == MonikerDescriptorKind::Namespace)
                 .take(identifier.description.len().saturating_sub(1))
+                .filter(|d| d.name != "impl")
             {
                 path.push_str("::");
                 path.push_str(&descriptor.name);
@@ -2349,7 +2372,7 @@ impl PathTranslator {
         .unwrap();
         std::fs::write(
             dep.join("src/lib.rs"),
-            "pub mod parts {\n    pub struct DepOnlyGadget;\n}\n\npub struct SharedName;\n",
+            "pub mod parts {\n    pub struct DepOnlyGadget;\n}\n\npub struct SharedName;\n\npub struct Analysis;\n\nimpl Analysis {\n    pub fn completions(&self) {}\n}\n",
         )
         .unwrap();
 
@@ -2371,7 +2394,7 @@ impl PathTranslator {
         .unwrap();
         std::fs::write(
             ws.join("src/lib.rs"),
-            "pub struct SharedName;\n\npub fn make() -> gadget::parts::DepOnlyGadget {\n    gadget::parts::DepOnlyGadget\n}\n",
+            "pub struct SharedName;\n\npub struct RustAnalysisOptions;\n\npub fn make() -> gadget::parts::DepOnlyGadget {\n    gadget::parts::DepOnlyGadget\n}\n",
         )
         .unwrap();
         let engine = RustEngine::load(&ws).expect("Must load fixture");
@@ -2387,6 +2410,26 @@ impl PathTranslator {
         );
         assert_eq!(hit.container.as_deref(), Some("gadget::parts"), "{hit:?}");
         assert_eq!((hit.line, hit.col), (2, 16), "{hit:?}");
+
+        // A workspace name that only resembles the query does not keep the dependency's own
+        // symbol of that name out, and that one comes first (#328).
+        let analysis = engine.workspace_symbols("Analysis", 10).unwrap();
+        assert!(
+            analysis
+                .first()
+                .is_some_and(|s| s.name == "Analysis"
+                    && s.path.to_string_lossy().contains("/vendor/gadget/")),
+            "the dependency's `Analysis` first: {analysis:?}"
+        );
+        // A method's container is its type's path, so `Analysis::completions` resolves.
+        let completions = engine.workspace_symbols("completions", 10).unwrap();
+        assert!(
+            completions
+                .iter()
+                .any(|s| s.name == "completions"
+                    && s.container.as_deref() == Some("gadget::Analysis")),
+            "{completions:?}"
+        );
 
         let shared = engine.workspace_symbols("SharedName", 10).unwrap();
         assert!(!shared.is_empty(), "the workspace struct is found");

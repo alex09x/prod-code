@@ -4244,18 +4244,59 @@ async fn handle_symbols(
         .get("path")
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
-    let hits =
-        workspace_symbol_search(remote, workspace_root, query, hint.as_deref(), limit).await?;
+    // More than are shown: a server lists its fuzzy matches in its own order, and the names
+    // that hold the query may come after the limit.
+    let mut hits = symbol_search_across_projects(
+        remote,
+        workspace_root,
+        query,
+        hint.as_deref(),
+        limit.max(SYMBOL_CANDIDATES),
+    )
+    .await?;
     if hits.is_empty() {
         return Ok(McpToolCallResult::text(format!(
             "No symbols match `{query}`."
         )));
     }
-    let mut out = format!("{} symbol(s) matching `{query}`:\n", hits.len());
-    for hit in &hits {
-        out.push_str(&format!("  {}\n", hit.render(workspace_root)));
+    Ok(McpToolCallResult::text(render_symbol_hits(
+        workspace_root,
+        query,
+        &mut hits,
+        limit,
+    )))
+}
+
+/// How many hits `code_symbols` asks the server for before ranking them.
+const SYMBOL_CANDIDATES: usize = 100;
+
+/// The hits of a name search, best matches first (#326). Names that only have the query's
+/// letters in order are shown when there is nothing better, and said to be that.
+fn render_symbol_hits(root: &Path, query: &str, hits: &mut Vec<SymbolHit>, limit: usize) -> String {
+    hits.sort_by_key(|hit| match_rank(&hit.name, query));
+    let fuzzy = hits
+        .iter()
+        .filter(|hit| match_rank(&hit.name, query) == 4)
+        .count();
+    let all_fuzzy = fuzzy == hits.len();
+    let mut out = if all_fuzzy {
+        format!(
+            "No symbol is named like `{query}`; {} whose names have its letters in order:\n",
+            hits.len().min(limit)
+        )
+    } else {
+        hits.retain(|hit| match_rank(&hit.name, query) < 4);
+        format!("{} symbol(s) matching `{query}`:\n", hits.len().min(limit))
+    };
+    for hit in hits.iter().take(limit) {
+        out.push_str(&format!("  {}\n", hit.render(root)));
     }
-    Ok(McpToolCallResult::text(out.trim_end()))
+    if fuzzy > 0 && !all_fuzzy {
+        out.push_str(&format!(
+            "  ({fuzzy} more only have its letters in order; not shown)\n"
+        ));
+    }
+    out.trim_end().to_string()
 }
 
 async fn handle_migrate_type(
@@ -4554,7 +4595,9 @@ pub async fn resolve_symbol(
         .collect();
     let name = bare_symbol_name(parts.last().copied().unwrap_or(symbol));
     let qualifier = parts.len().checked_sub(2).map(|i| parts[i]);
-    let hits = workspace_symbol_search(remote, root, name, hint, 200).await?;
+    // Every qualifying segment, for a path (`crate::module::item`) the hit's file spells out.
+    let qualifiers = &parts[..parts.len().saturating_sub(1)];
+    let hits = symbol_search_across_projects(remote, root, name, hint, 200).await?;
     let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
         .into_iter()
         .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
@@ -4583,18 +4626,25 @@ pub async fn resolve_symbol(
             let bare = bare_symbol_name(&hit.name);
             let mut score = if bare == name { 100 } else { 60 };
             if let Some(q) = qualifier {
-                match &hit.container {
+                let by_container = match &hit.container {
                     Some(c)
                         if c == q
                             || c.ends_with(&format!("::{q}"))
                             || c.ends_with(&format!(".{q}")) =>
                     {
-                        score += 50
+                        Some(50)
                     }
-                    Some(c) if c.contains(q) => score += 30,
-                    Some(_) => score -= 10,
-                    None => {}
-                }
+                    Some(c) if c.contains(q) => Some(30),
+                    Some(_) => Some(-10),
+                    None => None,
+                };
+                // A free function has no container: its module path is its file's (#324).
+                let by_module = module_path_ends_with(root, &hit.path, qualifiers).then_some(50);
+                score += by_module.max(by_container).unwrap_or(0);
+            } else if hit.kind == "EnumMember" {
+                // A bare name is the type's, not an enum's variant of the same name, which Rust
+                // reaches as `Enum::Variant` (#325).
+                score -= 20;
             }
             if let Some(h) = &hint_str {
                 let p = hit.path.to_string_lossy();
@@ -4637,6 +4687,60 @@ pub async fn resolve_symbol(
         definitions
     };
     single_candidate(root, symbol, &ties)
+}
+
+/// Whether the module path `path`'s file gives it ends with `qualifiers`:
+/// `crates/prod-code-mcp/src/report.rs` is `crates::prod_code_mcp::report`, which ends with
+/// `prod_code_mcp::report` and with `report`. `src`, `lib`, `main`, `mod`, `__init__` and
+/// `index` name no module of their own, and `-` is `_`.
+fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str]) -> bool {
+    if qualifiers.is_empty() {
+        return false;
+    }
+    let rel = path.strip_prefix(root).unwrap_or(path).with_extension("");
+    let segments: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().replace('-', "_"))
+        .filter(|s| {
+            !matches!(
+                s.as_str(),
+                "src" | "lib" | "main" | "mod" | "__init__" | "index"
+            )
+        })
+        .collect();
+    let ends_with = |qualifiers: &[&str]| {
+        segments.len() >= qualifiers.len()
+            && segments[segments.len() - qualifiers.len()..]
+                .iter()
+                .zip(qualifiers)
+                .all(|(segment, q)| segment.eq_ignore_ascii_case(&q.replace('-', "_")))
+    };
+    // The first segment may be the crate's name (or `crate`), which a single crate's paths do
+    // not spell.
+    ends_with(qualifiers) || (qualifiers.len() > 1 && ends_with(&qualifiers[1..]))
+}
+
+/// How closely a symbol's name matches a query (#326): 0 the name itself, 1 a name that starts
+/// with it, 2 one that holds it at a word boundary (`start_watcher` for `watcher`), 3 one that
+/// holds it elsewhere, 4 one that only has its letters in order.
+fn match_rank(name: &str, query: &str) -> u8 {
+    let bare = bare_symbol_name(name);
+    let lower = bare.to_ascii_lowercase();
+    let query = bare_symbol_name(query).to_ascii_lowercase();
+    if lower == query {
+        return 0;
+    }
+    if lower.starts_with(&query) {
+        return 1;
+    }
+    let Some(at) = lower.find(&query) else {
+        return 4;
+    };
+    let before = bare[..at].chars().next_back();
+    let first = bare[at..].chars().next();
+    let boundary = matches!(before, Some('_' | ':' | '.'))
+        || (before.is_some_and(|c| c.is_lowercase()) && first.is_some_and(|c| c.is_uppercase()));
+    if boundary { 2 } else { 3 }
 }
 
 /// The one location `ties` point at, or an error listing them when they point at several.
@@ -4924,6 +5028,228 @@ pub(crate) fn rewritten_files(edit: &serde_json::Value) -> Vec<(String, String)>
     out
 }
 
+/// Directories no project's sources live in: dependencies, build output, virtual environments.
+const SKIPPED_DIRS: &[&str] = &[
+    "node_modules",
+    "target",
+    ".git",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".build",
+    "vendor",
+    "Pods",
+    "DerivedData",
+];
+
+/// The most nested projects a name search asks besides the checkout's own.
+const MAX_NESTED_PROJECTS: usize = 6;
+
+/// `workspace/symbol` in the checkout's project and, when that knows no symbol of the name and
+/// no hint names a project, in the checkout's nested projects of other languages too (#318):
+/// a Swift file in a Go module is in no index gopls keeps.
+async fn symbol_search_across_projects(
+    remote: SocketAddr,
+    root: &Path,
+    query: &str,
+    hint: Option<&Path>,
+    limit: usize,
+) -> Result<Vec<SymbolHit>> {
+    let mut hits = workspace_symbol_search(remote, root, query, hint, limit).await?;
+    let name = bare_symbol_name(query);
+    if hint.is_some()
+        || hits
+            .iter()
+            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
+    {
+        return Ok(hits);
+    }
+    for (anchor, subpath, engine) in nested_project_anchors(root) {
+        // Its own node: the checkout's may not serve its language (a Swift file needs a macOS
+        // node, a Go module is placed on Linux).
+        let node = crate::cluster::route_for_path(remote, root, anchor.to_str())
+            .await
+            .unwrap_or(remote);
+        let found = match workspace_symbol_search(node, root, query, Some(&anchor), limit).await {
+            Ok(found) => found,
+            Err(err) => {
+                tracing::debug!(
+                    anchor = %anchor.display(),
+                    error = %format!("{err:#}"),
+                    "a nested project's symbol search failed"
+                );
+                Vec::new()
+            }
+        };
+        let named = found
+            .iter()
+            .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
+        hits.extend(found);
+        if !named {
+            // sourcekit-lsp has no index for Swift files a package does not build, and answers
+            // `workspace/symbol` with nothing: their outlines still name what they declare.
+            let files = files_naming(&root.join(&subpath), engine, name);
+            hits.extend(declarations_in(node, root, &files, name).await);
+        }
+    }
+    Ok(hits)
+}
+
+/// The most files of a project read for the declarations of a name its server has no index of.
+const MAX_OUTLINED_FILES: usize = 8;
+
+/// Files of `engine`'s language under `dir` whose text has `name` as a word.
+fn files_naming(dir: &Path, engine: &str, name: &str) -> Vec<std::path::PathBuf> {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let names = |text: &str| {
+        text.match_indices(name).any(|(at, _)| {
+            !text[..at].chars().next_back().is_some_and(is_word)
+                && !text[at + name.len()..].chars().next().is_some_and(is_word)
+        })
+    };
+    let mut files = Vec::new();
+    let mut stack = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let file_name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if path.is_dir() {
+                if depth < 5
+                    && !SKIPPED_DIRS.contains(&file_name.as_str())
+                    && !file_name.starts_with('.')
+                {
+                    stack.push((path, depth + 1));
+                }
+            } else if crate::sync::engine_for_file(&path) == Some(engine)
+                && std::fs::read_to_string(&path).is_ok_and(|text| names(&text))
+            {
+                files.push(path);
+                if files.len() >= MAX_OUTLINED_FILES {
+                    return files;
+                }
+            }
+        }
+    }
+    files
+}
+
+/// The declarations called `name` in the outlines of `files`.
+async fn declarations_in(
+    remote: SocketAddr,
+    root: &Path,
+    files: &[std::path::PathBuf],
+    name: &str,
+) -> Vec<SymbolHit> {
+    let mut hits = Vec::new();
+    for file in files {
+        let Ok(uri) = Url::from_file_path(file) else {
+            continue;
+        };
+        let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
+        let Ok(outline) =
+            execute_lsp_query(remote, root, file, "textDocument/documentSymbol", params).await
+        else {
+            continue;
+        };
+        collect_named(&outline, name, None, file, &mut hits);
+    }
+    hits
+}
+
+/// Walks a `textDocument/documentSymbol` answer, nested or flat, for the symbols called `name`.
+fn collect_named(
+    symbols: &serde_json::Value,
+    name: &str,
+    parent: Option<&str>,
+    file: &Path,
+    out: &mut Vec<SymbolHit>,
+) {
+    for symbol in symbols.as_array().into_iter().flatten() {
+        let own = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
+        if bare_symbol_name(own).eq_ignore_ascii_case(name) {
+            let start = symbol
+                .pointer("/selectionRange/start")
+                .or_else(|| symbol.pointer("/location/range/start"));
+            if let Some(start) = start {
+                let at = |key: &str| start.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                out.push(SymbolHit {
+                    path: file.to_path_buf(),
+                    name: own.to_string(),
+                    kind: symbol_kind_name(
+                        symbol.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
+                    ),
+                    container: parent.map(str::to_string).or_else(|| {
+                        symbol
+                            .get("containerName")
+                            .and_then(|c| c.as_str())
+                            .filter(|c| !c.is_empty())
+                            .map(str::to_string)
+                    }),
+                    line: at("line") + 1,
+                    col: at("character") + 1,
+                });
+            }
+        }
+        if let Some(children) = symbol.get("children") {
+            collect_named(children, name, Some(own), file, out);
+        }
+    }
+}
+
+/// One source file of each project in the checkout besides the root's, with the project's
+/// directory (relative) and engine: a nested project of another language, or a loose file of
+/// one, as `engine_project` places them (#247, #318).
+fn nested_project_anchors(root: &Path) -> Vec<(std::path::PathBuf, String, &'static str)> {
+    let mut seen_dirs = std::collections::HashSet::new();
+    let mut projects = std::collections::HashSet::new();
+    let mut anchors = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((dir, depth)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if path.is_dir() {
+                if depth < 5 && !SKIPPED_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
+                    stack.push((path, depth + 1));
+                }
+                continue;
+            }
+            let Some(engine) = crate::sync::engine_for_file(&path) else {
+                continue;
+            };
+            // One look per directory and language: its files belong to the same project.
+            if !seen_dirs.insert((dir.clone(), engine)) {
+                continue;
+            }
+            if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
+                && projects.insert((subpath.clone(), engine))
+            {
+                anchors.push((path, subpath, engine));
+                if anchors.len() >= MAX_NESTED_PROJECTS {
+                    return anchors;
+                }
+            }
+        }
+    }
+    anchors
+}
+
 /// A source file of the project at `dir` in its main language (shortest path under `src`
 /// first), used to make an LSP server load the project before a workspace-level query.
 fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
@@ -4937,20 +5263,6 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
         "swift" => &["swift"],
         _ => return None,
     };
-    const SKIP: &[&str] = &[
-        "node_modules",
-        "target",
-        ".git",
-        "build",
-        "dist",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".build",
-        "vendor",
-        "Pods",
-        "DerivedData",
-    ];
     let mut best: Option<(usize, usize, std::path::PathBuf)> = None;
     let mut stack = vec![(dir.to_path_buf(), 0usize)];
     while let Some((d, depth)) = stack.pop() {
@@ -4961,7 +5273,7 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
             if path.is_dir() {
-                if depth < 4 && !SKIP.contains(&name.as_str()) && !name.starts_with('.') {
+                if depth < 4 && !SKIPPED_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
                     stack.push((path, depth + 1));
                 }
                 continue;

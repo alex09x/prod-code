@@ -1288,6 +1288,230 @@ async fn a_symbol_name_with_two_unrelated_hits_is_ambiguous() {
     assert!(format!("{err:#}").contains("is ambiguous"), "{err:#}");
 }
 
+/// A hover answer that says which file it was asked in.
+fn hover_naming_its_file(params: &serde_json::Value) -> serde_json::Value {
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+    answers::hover(&format!("asked in {uri}"))
+}
+
+/// A qualifier that is a module path picks the function whose file is that module (#324): a
+/// free function has no container to match, so `a::record` used to be as ambiguous as `record`.
+/// The crate's own name may lead the path.
+#[tokio::test]
+async fn a_module_path_qualifier_picks_the_function_in_that_modules_file() {
+    let ws = workspace();
+    let a = write(&ws, "src/a.rs", "pub fn record() {}\n");
+    let b = write(&ws, "src/b.rs", "pub fn record() {}\n");
+    commit(&ws);
+    let (a, b) = (a.clone(), b.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::Value::Array(vec![
+            answers::symbol("record", 12, &a, 1, 8),
+            answers::symbol("record", 12, &b, 1, 8),
+        ]),
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    for symbol in ["a::record", "demo::a::record", "b::record"] {
+        let text = text_of(
+            &execute_tool(
+                remote,
+                &ws.root(),
+                "code_hover",
+                serde_json::json!({ "symbol": symbol }),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{symbol}: {err:#}")),
+        );
+        let file = if symbol.starts_with("b::") {
+            "src/b.rs"
+        } else {
+            "src/a.rs"
+        };
+        assert!(text.contains(file), "{symbol}: {text}");
+    }
+}
+
+/// A bare name is the type's, not the variant of an enum that carries it (#325):
+/// `Handshake` is the struct, `Message::Handshake` the variant.
+#[tokio::test]
+async fn a_bare_name_is_the_type_and_the_enum_qualifies_its_variant() {
+    let ws = workspace();
+    let messages = write(
+        &ws,
+        "src/messages.rs",
+        "pub enum Message {\n    Handshake(Handshake),\n}\n\npub struct Handshake;\n",
+    );
+    commit(&ws);
+    let path = messages.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => {
+            let mut variant = answers::symbol("Handshake", 22, &path, 2, 5);
+            variant["containerName"] = serde_json::json!("Message");
+            serde_json::Value::Array(vec![
+                variant,
+                answers::symbol("Handshake", 23, &path, 5, 12),
+            ])
+        }
+        "textDocument/hover" => {
+            let line = params["position"]["line"].as_u64().unwrap_or_default();
+            answers::hover(&format!("asked at line {}", line + 1))
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    for (symbol, line) in [("Handshake", 5), ("Message::Handshake", 2)] {
+        let text = text_of(
+            &execute_tool(
+                remote,
+                &ws.root(),
+                "code_hover",
+                serde_json::json!({ "symbol": symbol }),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{symbol}: {err:#}")),
+        );
+        assert!(
+            text.contains(&format!("asked at line {line}")),
+            "{symbol}: {text}"
+        );
+    }
+}
+
+/// A name the root project's server does not know is looked for in the checkout's nested
+/// projects of other languages (#318): a Swift class next to a Go module is in no index gopls
+/// keeps. The first searches are the Go module's (the second a retry for a loading index), and
+/// the Swift file's project answers after them.
+#[tokio::test]
+async fn a_name_only_a_nested_project_declares_is_found_there() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+        (
+            "ios/Widget.swift",
+            "public final class NestedWidget {\n    public init() {}\n}\n",
+        ),
+    ]);
+    let swift = ws.path("ios/Widget.swift");
+    let searches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&searches);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => {
+            if counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                serde_json::json!([])
+            } else {
+                serde_json::json!([answers::symbol("NestedWidget", 5, &swift, 1, 20)])
+            }
+        }
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "NestedWidget" }),
+        )
+        .await
+        .expect("the Swift class resolves"),
+    );
+    assert!(text.contains("ios/Widget.swift"), "{text}");
+    assert!(
+        searches.load(std::sync::atomic::Ordering::SeqCst) >= 3,
+        "the nested project was asked"
+    );
+}
+
+/// sourcekit-lsp keeps no index for Swift files a package does not build, and answers
+/// `workspace/symbol` with nothing: the outline of the nested project's files that name the
+/// symbol finds the declaration instead (#318).
+#[tokio::test]
+async fn a_nested_project_without_an_index_is_searched_through_its_outlines() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+        ("ios/Other.swift", "public struct Other {}\n"),
+        (
+            "ios/Widget.swift",
+            "public final class NestedWidget {\n    public init() {}\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" => {
+            let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+            assert!(
+                uri.ends_with("ios/Widget.swift"),
+                "only the file that names the symbol is outlined: {uri}"
+            );
+            serde_json::json!([{
+                "name": "NestedWidget",
+                "kind": 5,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 2, "character": 1 } },
+                "selectionRange": { "start": { "line": 0, "character": 19 }, "end": { "line": 0, "character": 31 } },
+                "children": []
+            }])
+        }
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "NestedWidget" }),
+        )
+        .await
+        .expect("the Swift class resolves through the outline"),
+    );
+    assert!(text.contains("ios/Widget.swift"), "{text}");
+}
+
+/// `code_symbols` lists the names that hold the query before the ones that only have its
+/// letters in order, and leaves those out when there is anything better (#326).
+#[tokio::test]
+async fn names_that_hold_the_query_come_before_fuzzy_ones() {
+    let ws = workspace();
+    let lib = write(&ws, "src/lib.rs", "pub fn a() {}\n");
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => serde_json::Value::Array(vec![
+            answers::symbol("a_migration_checks_what_types_check", 12, &path, 1, 8),
+            answers::symbol("start_watcher", 12, &path, 2, 8),
+            answers::symbol("watcher", 12, &path, 3, 8),
+            answers::symbol("watchers_seen", 12, &path, 4, 8),
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_symbols",
+            serde_json::json!({ "query": "watcher" }),
+        )
+        .await
+        .expect("symbols"),
+    );
+    let order: Vec<usize> = ["watcher —", "watchers_seen", "start_watcher"]
+        .iter()
+        .map(|name| text.find(name).unwrap_or_else(|| panic!("{name}: {text}")))
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{text}");
+    assert!(!text.contains("a_migration"), "{text}");
+    assert!(
+        text.contains("1 more only have its letters in order"),
+        "{text}"
+    );
+}
+
 /// The index answers a name with fuzzy matches too. A name that only a fuzzy match answers is
 /// not resolved to it (#253): the error names the closest names instead, nearest first.
 #[tokio::test]

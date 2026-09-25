@@ -35,6 +35,17 @@
   labels every issue and pull request carries.
 
 ### Fixed
+- **Symbol lookup** (#318, #324, #325, #326, #328, #342):
+  - A module path qualifies a free function (`prod_code_mcp::report::report`).
+  - A bare name is the type's, not a same-named enum variant's.
+  - `symbols` ranks the names that hold the query first and leaves out letters-in-order
+    matches when better ones exist.
+  - A dependency's own symbol of the exact name (`ra_ap_ide::Analysis`) is found even when a
+    workspace name resembles it, and its methods qualify by `Type::method`.
+  - A name the root project lacks is looked up in nested projects of other languages, each on
+    its own node, through their outlines when their server keeps no index (a Swift class in a
+    Go module).
+  - `introduce_parameter_object` writes field shorthand.
 - **Command-line fixes** (#322, #323, #329, #330):
   - `validate --diff` no longer panics on a blank line after the patch. A blank line past the
     hunk's counted lines is not taken for a context line.

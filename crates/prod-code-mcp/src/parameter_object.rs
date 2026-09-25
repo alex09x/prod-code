@@ -390,7 +390,16 @@ pub fn rewritten_args(
         let inner: Vec<String> = bundled
             .iter()
             .enumerate()
-            .map(|(n, arg)| format!("{}: {}", fields[n].0, args[*arg]))
+            .map(|(n, arg)| {
+                // A variable of the field's name is passed in shorthand, as clippy's
+                // `redundant_field_names` wants it (#342).
+                let (field, value) = (&fields[n].0, args[*arg].trim());
+                if value == field {
+                    field.clone()
+                } else {
+                    format!("{field}: {value}")
+                }
+            })
             .collect();
         format!("{spelling} {{ {} }}", inner.join(", "))
     };
@@ -3052,6 +3061,15 @@ mod tests {
         assert_eq!(
             rewritten_args(&args, &[1, 2], "the_crate::home::Opts", &fields),
             "w, the_crate::home::Opts { b: x, c: y }, z"
+        );
+        // A variable named like its field goes in shorthand (#342).
+        let named: Vec<String> = ["w", "b", "self.c", "z"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            rewritten_args(&named, &[1, 2], "Opts", &fields),
+            "w, Opts { b, c: self.c }, z"
         );
     }
 
