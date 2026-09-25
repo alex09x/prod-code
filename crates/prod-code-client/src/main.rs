@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
+use prod_code_mcp::report::ReportRequest;
 use prod_code_mcp::verify::VerifyKind;
 use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
 use std::env;
@@ -193,6 +194,11 @@ enum Commands {
         /// Show the scrubbed issue without filing it
         #[arg(long)]
         dry_run: bool,
+        /// A label, repeated for each: one type (bug, enhancement, documentation, perf; bug when
+        /// none is given) and the areas it is about (gateway, client, mcp, cluster, worktree,
+        /// infra, test)
+        #[arg(long = "label")]
+        labels: Vec<String>,
     },
     /// Usage metrics of every node: who queried what, how often, how fast; exec runs; syncs
     Metrics {
@@ -1128,6 +1134,7 @@ async fn main() -> Result<()> {
         private_ref,
         force,
         dry_run,
+        labels,
     }) = cli.command
     {
         startup.report();
@@ -1142,6 +1149,7 @@ async fn main() -> Result<()> {
                 private_ref,
                 force,
                 dry_run,
+                labels,
             },
         )
         .await;
@@ -3009,7 +3017,6 @@ async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()
     Ok(())
 }
 
-/// Query remote gateway for health and status snapshot.
 /// The arguments of `report-issue`, as given.
 struct ReportArgs {
     title: String,
@@ -3018,6 +3025,7 @@ struct ReportArgs {
     private_ref: Option<String>,
     force: bool,
     dry_run: bool,
+    labels: Vec<String>,
 }
 
 /// Files (or drafts) a prod-code bug report. `remote` is where the checkout is placed, when it
@@ -3047,18 +3055,22 @@ async fn run_report_issue(
     }
     let outcome = prod_code_mcp::report::report(
         remote,
-        &args.title,
-        &body,
-        args.force,
-        args.dry_run,
+        ReportRequest {
+            title: &args.title,
+            body: &body,
+            force: args.force,
+            dry_run: args.dry_run,
+            private_ref: args.private_ref.as_deref(),
+            labels: &args.labels,
+        },
         &prod_code_mcp::report::gh_program(),
-        args.private_ref.as_deref(),
     )
     .await?;
     println!("{}", outcome.render());
     Ok(())
 }
 
+/// Query remote gateway for health and status snapshot.
 async fn run_status_probe(remote: SocketAddr) -> Result<()> {
     let start = std::time::Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)

@@ -35,6 +35,23 @@ records what was run and what it showed.
 6. **Ship the knowledge with the code**: update `ROADMAP.md` when a phase item lands,
    `CHANGELOG.md` for user-visible changes, and the CLI/MCP help texts.
 
+## Labels
+
+Every issue and every pull request is labelled when it is opened, not later:
+
+- **One type**: `bug`, `enhancement`, `documentation` or `perf` (latency, throughput, memory).
+  Pull requests that only add tests carry `test`; a release carries `release`.
+- **The areas it touches**, one or more: `gateway` (the server daemon and its engines),
+  `client` (the CLI, sync and the `lsp` bridge), `mcp` (the MCP tools), `cluster` (placement
+  and gossip across nodes), `worktree` (per-worktree copies and isolation), `infra` (node setup,
+  deploy scripts, the coverage gate), `test` (tests and coverage).
+- `roadmap` marks a roadmap epic, which concrete issues reference.
+
+A pull request carries the labels of the issue it closes. `prod-code report-issue --label <name>`
+(repeat it) and `code_report_issue {labels: [...]}` label the issue they file, with `bug` when no
+type is given; by hand it is `gh issue create --label bug --label gateway` and
+`gh pr create --label ...`.
+
 ## Reproduction commands that belong in issues and PRs
 
 ```sh
