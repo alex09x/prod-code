@@ -1472,6 +1472,203 @@ async fn a_nested_project_without_an_index_is_searched_through_its_outlines() {
     assert!(text.contains("ios/Widget.swift"), "{text}");
 }
 
+/// A range on the lines `from` to `to`, for a scripted outline.
+fn lines(from: u32, to: u32) -> serde_json::Value {
+    serde_json::json!({
+        "start": { "line": from, "character": 0 },
+        "end": { "line": to, "character": 1 }
+    })
+}
+
+/// A Swift package declaring `DeclaredThing`, and a gateway whose `workspace/symbol` knows
+/// nothing (sourcekit-lsp before a build) while the package file's outline names it.
+async fn a_swift_package_without_an_index(
+    package: &str,
+    extra: &[(String, String)],
+) -> (Workspace, std::net::SocketAddr) {
+    let mut files: Vec<(String, String)> = vec![
+        (
+            "go.mod".into(),
+            "module example.com/app\n\ngo 1.22\n".into(),
+        ),
+        ("main.go".into(), "package main\n\nfunc main() {}\n".into()),
+        (
+            format!("{package}/Package.swift"),
+            "// swift-tools-version:5.9\n".into(),
+        ),
+        (
+            format!("{package}/Sources/Pkg/Thing.swift"),
+            "public struct DeclaredThing {}\n".into(),
+        ),
+    ];
+    files.extend(extra.iter().cloned());
+    let refs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(p, t)| (p.as_str(), t.as_str()))
+        .collect();
+    let ws = Workspace::new(&refs);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" => {
+            let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+            if uri.ends_with("Sources/Pkg/Thing.swift") {
+                serde_json::json!([{
+                    "name": "DeclaredThing",
+                    "kind": 23,
+                    "range": lines(0, 0),
+                    "selectionRange": { "start": { "line": 0, "character": 14 }, "end": { "line": 0, "character": 27 } },
+                    "children": []
+                }])
+            } else {
+                serde_json::json!([])
+            }
+        }
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    (ws, remote)
+}
+
+/// A name only a nested package declares is found there even when more projects than a search
+/// asks come before it: the projects whose sources name it are asked first (#358). The walk that
+/// took the first six projects it met spent them on directories of loose scripts.
+#[tokio::test]
+async fn the_nested_project_that_names_the_symbol_is_asked_before_the_others() {
+    let scripts: Vec<(String, String)> = (0..8)
+        .map(|i| {
+            (
+                format!("ztools/t{i}/run.py"),
+                "print('hello')\n".to_string(),
+            )
+        })
+        .collect();
+    let (ws, remote) = a_swift_package_without_an_index("apkg", &scripts).await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "DeclaredThing" }),
+        )
+        .await
+        .expect("the Swift struct resolves past the scripts"),
+    );
+    assert!(text.contains("apkg/Sources/Pkg/Thing.swift"), "{text}");
+}
+
+/// A Swift `extension` of a type is listed by the index under the type's name; the type's own
+/// declaration is the answer, not an ambiguity between the two (#358).
+#[tokio::test]
+async fn a_types_extension_does_not_make_its_name_ambiguous() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "Sources/App/Session.swift",
+            "public final class Session {}\n",
+        ),
+        (
+            "Sources/App/Transport.swift",
+            "extension Session: CustomStringConvertible {\n    public var description: String { \"\" }\n}\n",
+        ),
+    ]);
+    let class = ws.path("Sources/App/Session.swift");
+    let extension = ws.path("Sources/App/Transport.swift");
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("Session", 3, &extension, 1, 11),
+            answers::symbol("Session", 5, &class, 1, 20),
+        ]),
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "Session" }),
+        )
+        .await
+        .expect("the class resolves"),
+    );
+    assert!(text.contains("Sources/App/Session.swift"), "{text}");
+}
+
+/// A search given the path of a nested project whose server keeps no index finds what that
+/// project declares, through the outlines of its files that name it (#358).
+#[tokio::test]
+async fn a_symbol_search_in_a_project_without_an_index_reads_its_outlines() {
+    let (ws, remote) = a_swift_package_without_an_index("apkg", &[]).await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_symbols",
+            serde_json::json!({ "query": "DeclaredThing", "path": "apkg" }),
+        )
+        .await
+        .expect("the search runs"),
+    );
+    assert!(
+        text.contains("DeclaredThing") && text.contains("Sources/Pkg/Thing.swift"),
+        "{text}"
+    );
+}
+
+/// A nested outline answer (`children`, as sourcekit-lsp, clangd, pyright and the TypeScript
+/// server give) lists the members down to `max_depth`, not only the top-level types, and a
+/// function's own variables stay hidden (#358).
+#[tokio::test]
+async fn a_nested_outline_lists_members_down_to_the_depth_asked() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "Sources/App/Session.swift",
+            "final class Session {\n    var state = 0\n    func connect() {\n        let attempt = 1\n    }\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([{
+            "name": "Session", "kind": 5, "range": lines(0, 5), "selectionRange": lines(0, 0),
+            "children": [
+                { "name": "state", "kind": 7, "range": lines(1, 1), "selectionRange": lines(1, 1), "children": [] },
+                { "name": "connect()", "kind": 6, "range": lines(2, 4), "selectionRange": lines(2, 2), "children": [
+                    { "name": "attempt", "kind": 13, "range": lines(3, 3), "selectionRange": lines(3, 3), "children": [] }
+                ] }
+            ]
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let root = ws.root();
+    let outline = |depth: u64| {
+        execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "Sources/App/Session.swift", "max_depth": depth }),
+        )
+    };
+
+    let two = text_of(&outline(2).await.expect("the outline"));
+    assert!(two.contains("[Class] Session (line 1)"), "{two}");
+    assert!(two.contains("[Property] state (line 2)"), "{two}");
+    assert!(two.contains("[Method] connect() (line 3)"), "{two}");
+    assert!(
+        !two.contains("attempt"),
+        "a function's own variable is hidden: {two}"
+    );
+    assert!(two.contains("1 local variable(s) hidden"), "{two}");
+
+    let one = text_of(&outline(1).await.expect("the outline"));
+    assert!(
+        one.contains("[Class] Session") && !one.contains("connect()"),
+        "{one}"
+    );
+}
+
 /// `code_symbols` lists the names that hold the query before the ones that only have its
 /// letters in order, and leaves those out when there is anything better (#326).
 #[tokio::test]

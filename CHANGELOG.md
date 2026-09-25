@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+- **Swift in a repository rooted in another language** (#358).
+  - A name search asks first the nested projects whose sources name the symbol, and walks the
+    checkout the way git sees it. In a Go module with nested Swift packages, the six projects a
+    search asked were a C++ dependency's build output and loose scripts, so a Swift class was
+    "no symbol named ...".
+  - A search given a nested project's path reads the outlines of its files that name the symbol
+    when the server has no index (sourcekit-lsp before a build).
+  - An outline lists members (methods, properties) of servers that answer with nested symbols
+    (sourcekit-lsp, clangd, pyright, the TypeScript server), not only the top-level types.
+  - A Swift `extension` of a type no longer makes the type's name ambiguous.
+  - A Swift reference or caller search that finds nothing builds the package's index on its node
+    once (`swift build --build-tests`) and asks again, and says so; when the build fails, the
+    answer says why instead of a bare "No references found".
+
 ## v0.3.11 — 2026-09-25
 
 ### Fixed
