@@ -1216,3 +1216,35 @@ async fn a_file_of_another_checkout_is_asked_about_in_that_checkouts_session() {
         "one session, the other checkout's"
     );
 }
+
+/// A document the session opened from disk is sent again when its file changed, even when
+/// another client (the CLI, an `exec` whose formatter's output came back) already pushed the
+/// new text to the node and this session's own sync pushes nothing (#360).
+#[tokio::test]
+async fn refresh_sends_an_open_file_another_client_already_pushed() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let root = ws.root();
+    let file = ws.path("src/lib.rs");
+    let gateway = RecordingGateway::start(hover_answer()).await;
+    let mut session = LspSession::open(gateway.addr(), &root, Some(&file))
+        .await
+        .expect("the session opens");
+    sync_barrier(&mut session, &file).await;
+
+    let moved = "// moved\npub fn a() {}\n";
+    std::fs::write(&file, moved).expect("rewrite the file");
+    let other = LspSession::open(gateway.addr(), &root, None)
+        .await
+        .expect("another client syncs the checkout");
+    other.close().await;
+
+    session.refresh().await.expect("the refresh");
+    sync_barrier(&mut session, &file).await;
+    let changes = gateway.events_for("textDocument/didChange");
+    assert!(
+        changes
+            .iter()
+            .any(|e| e["params"]["contentChanges"][0]["text"] == moved),
+        "the open document gets the file's new text: {changes:?}"
+    );
+}
