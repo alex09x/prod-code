@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.5 — 2026-09-24
+
 ### Added
 - **Agents can report prod-code bugs as GitHub issues** (#290). MCP `code_report_issue` and
   `prod-code report-issue --title … --body …` file an issue in `alex09x/prod-code` through the
