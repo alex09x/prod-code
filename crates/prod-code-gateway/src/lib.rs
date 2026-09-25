@@ -328,92 +328,7 @@ impl ServerState {
     /// overloaded gateway moves to a much quieter one.
     pub async fn place(&self, req: &PlaceRequest) -> PlaceResponse {
         let view = self.cluster_view().await;
-        let engine = req.engine.as_deref();
-        // A node started with `--engines swift` advertises one engine and serves nothing
-        // else. A workspace whose engine the client could not determine must not be sent
-        // there: it would be refused at the handshake, or worse, accepted by an older
-        // gateway that does not know it is specialised.
-        // A node that reports no platform is an older gateway: it cannot be shown to run the
-        // OS the workspace needs, so it does not get it.
-        let runs_os = |n: &PeerInfo| {
-            req.os.as_deref().is_none_or(|os| {
-                n.status
-                    .platform
-                    .as_deref()
-                    .is_some_and(|p| p.starts_with(os))
-            })
-        };
-        let capable = |n: &PeerInfo| {
-            runs_os(n)
-                && match engine {
-                    Some(e) => cluster_supports_engine(&n.status, e),
-                    None => n.status.detected_engines.len() > 1,
-                }
-        };
-        let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
-        let quietest = view
-            .nodes
-            .iter()
-            .filter(|n| n.alive && capable(n))
-            .min_by(|a, b| {
-                load(a)
-                    .partial_cmp(&load(b))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        let holder = view.nodes.iter().find(|n| {
-            n.alive && capable(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
-        });
-        if let Some(h) = holder {
-            let idle = h
-                .workspaces
-                .iter()
-                .find(|w| w.name == req.workspace_name)
-                .map(|w| w.sessions == 0)
-                .unwrap_or(true);
-            if let Some(q) = quietest
-                && idle
-                && q.addr != h.addr
-                && load(h) > 1.0
-                && load(q) < load(h) * 0.5
-            {
-                return PlaceResponse {
-                    node: Some(q.addr.clone()),
-                    reason: format!(
-                        "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
-                        h.addr,
-                        load(h),
-                        q.addr,
-                        load(q)
-                    ),
-                };
-            }
-            return PlaceResponse {
-                node: Some(h.addr.clone()),
-                reason: format!("already loaded on {}", h.addr),
-            };
-        }
-        match quietest {
-            Some(q) => PlaceResponse {
-                node: Some(q.addr.clone()),
-                reason: format!(
-                    "quietest node serving {} ({:.2}/cpu)",
-                    engine.unwrap_or("any engine"),
-                    load(q)
-                ),
-            },
-            None => PlaceResponse {
-                node: None,
-                reason: match req.os.as_deref() {
-                    Some(os) => format!(
-                        "no live node runs {os} and serves {}",
-                        engine.unwrap_or("this workspace")
-                    ),
-                    None => {
-                        format!("no live node serves {}", engine.unwrap_or("this workspace"))
-                    }
-                },
-            },
-        }
+        place_in(req, view)
     }
 
     pub async fn status(&self) -> StatusResponse {
@@ -431,6 +346,112 @@ impl ServerState {
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
         }
+    }
+}
+
+/// The node `req` should be placed on, given the cluster `view`: the one that already holds it,
+/// otherwise the quietest live node that can serve it. A macOS node takes only work that needs
+/// macOS, or that no other live node can serve (#308): it is a developer's Mac, running Swift
+/// and Go with macOS-only cgo, and plain Go or Rust is placed on the Linux nodes even when the
+/// Mac is quieter.
+fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
+    let engine = req.engine.as_deref();
+    // A node started with `--engines swift` advertises one engine and serves nothing
+    // else. A workspace whose engine the client could not determine must not be sent
+    // there: it would be refused at the handshake, or worse, accepted by an older
+    // gateway that does not know it is specialised.
+    // A node that reports no platform is an older gateway: it cannot be shown to run the
+    // OS the workspace needs, so it does not get it.
+    let runs_os = |n: &PeerInfo| {
+        req.os.as_deref().is_none_or(|os| {
+            n.status
+                .platform
+                .as_deref()
+                .is_some_and(|p| p.starts_with(os))
+        })
+    };
+    let capable = |n: &PeerInfo| {
+        runs_os(n)
+            && match engine {
+                Some(e) => cluster_supports_engine(&n.status, e),
+                None => n.status.detected_engines.len() > 1,
+            }
+    };
+    let on_macos = |n: &PeerInfo| {
+        n.status
+            .platform
+            .as_deref()
+            .is_some_and(|p| p.starts_with("macos"))
+    };
+    let other_than_macos = req.os.is_none()
+        && view
+            .nodes
+            .iter()
+            .any(|n| n.alive && capable(n) && !on_macos(n));
+    let capable = |n: &PeerInfo| capable(n) && !(other_than_macos && on_macos(n));
+    let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
+    let quietest = view
+        .nodes
+        .iter()
+        .filter(|n| n.alive && capable(n))
+        .min_by(|a, b| {
+            load(a)
+                .partial_cmp(&load(b))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    let holder = view.nodes.iter().find(|n| {
+        n.alive && capable(n) && n.workspaces.iter().any(|w| w.name == req.workspace_name)
+    });
+    if let Some(h) = holder {
+        let idle = h
+            .workspaces
+            .iter()
+            .find(|w| w.name == req.workspace_name)
+            .map(|w| w.sessions == 0)
+            .unwrap_or(true);
+        if let Some(q) = quietest
+            && idle
+            && q.addr != h.addr
+            && load(h) > 1.0
+            && load(q) < load(h) * 0.5
+        {
+            return PlaceResponse {
+                node: Some(q.addr.clone()),
+                reason: format!(
+                    "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
+                    h.addr,
+                    load(h),
+                    q.addr,
+                    load(q)
+                ),
+            };
+        }
+        return PlaceResponse {
+            node: Some(h.addr.clone()),
+            reason: format!("already loaded on {}", h.addr),
+        };
+    }
+    match quietest {
+        Some(q) => PlaceResponse {
+            node: Some(q.addr.clone()),
+            reason: format!(
+                "quietest node serving {} ({:.2}/cpu)",
+                engine.unwrap_or("any engine"),
+                load(q)
+            ),
+        },
+        None => PlaceResponse {
+            node: None,
+            reason: match req.os.as_deref() {
+                Some(os) => format!(
+                    "no live node runs {os} and serves {}",
+                    engine.unwrap_or("this workspace")
+                ),
+                None => {
+                    format!("no live node serves {}", engine.unwrap_or("this workspace"))
+                }
+            },
+        },
     }
 }
 
@@ -4796,6 +4817,101 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn peer(addr: &str, platform: &str, engines: &[&str], load_per_cpu: f64) -> PeerInfo {
+        let cpus = 8usize;
+        PeerInfo {
+            addr: addr.to_string(),
+            status: StatusResponse {
+                server_pid: 1,
+                uptime_seconds: 1,
+                active_sessions: 0,
+                loaded_workspaces: 0,
+                detected_engines: engines.iter().map(|e| e.to_string()).collect(),
+                memory_rss_bytes: None,
+                total_queries: 0,
+                active_queries: 0,
+                load_average_millis: Some((load_per_cpu * cpus as f64 * 1000.0) as u32),
+                cpu_count: Some(cpus),
+                platform: Some(platform.to_string()),
+                running_commands: Vec::new(),
+            },
+            workspaces: Vec::new(),
+            last_seen_secs: 0,
+            alive: true,
+        }
+    }
+
+    /// A macOS node is a developer's Mac: it takes work that needs macOS, or that no other live
+    /// node serves, and nothing else, however quiet it is (#308).
+    #[test]
+    fn a_macos_node_takes_only_what_needs_macos_or_what_nothing_else_serves() {
+        let view = ClusterResponse {
+            this_node: "linux:9400".to_string(),
+            nodes: vec![
+                peer(
+                    "linux:9400",
+                    "linux x86_64",
+                    &["rust (ra_ap_ide)", "go (gopls)"],
+                    0.9,
+                ),
+                peer(
+                    "mac:9400",
+                    "macos aarch64",
+                    &["swift (sourcekit-lsp)", "go (gopls)"],
+                    0.01,
+                ),
+            ],
+        };
+        let place = |view: &ClusterResponse, engine: Option<&str>, os: Option<&str>| {
+            place_in(
+                &PlaceRequest {
+                    workspace_name: "subject".to_string(),
+                    engine: engine.map(str::to_string),
+                    os: os.map(str::to_string),
+                },
+                view.clone(),
+            )
+            .node
+        };
+        assert_eq!(
+            place(&view, Some("go"), None).as_deref(),
+            Some("linux:9400"),
+            "plain Go stays on Linux though the Mac is far quieter"
+        );
+        assert_eq!(
+            place(&view, None, None).as_deref(),
+            Some("linux:9400"),
+            "so does a workspace whose engine is unknown"
+        );
+        assert_eq!(
+            place(&view, Some("go"), Some("macos")).as_deref(),
+            Some("mac:9400"),
+            "Go with macOS-only cgo goes to the Mac"
+        );
+        assert_eq!(
+            place(&view, Some("swift"), None).as_deref(),
+            Some("mac:9400"),
+            "only the Mac serves Swift"
+        );
+
+        // A workspace already on the Mac that does not need macOS moves to Linux.
+        let mut held = view.clone();
+        held.nodes[1].workspaces.push(LoadedWorkspaceInfo {
+            name: "subject".to_string(),
+            engine: "go".to_string(),
+            sessions: 0,
+        });
+        assert_eq!(
+            place(&held, Some("go"), None).as_deref(),
+            Some("linux:9400")
+        );
+
+        // With the Linux node down, the Mac takes plain Go rather than nothing.
+        let mut down = view.clone();
+        down.nodes[0].alive = false;
+        assert_eq!(place(&down, Some("go"), None).as_deref(), Some("mac:9400"));
+    }
 
     /// A new worktree's copy takes the seed's compiled crates, build-script outputs and
     /// fingerprints with their modification times, and not its incremental caches (#278).

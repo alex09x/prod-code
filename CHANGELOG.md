@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Fixed
+- **A Go module with macOS-only cgo can use prod-code: a macOS node serves Go for it, and only
+  for it** (#308). #248 rightly places such a module on macOS, but the macOS nodes served Swift
+  only, so every tool failed there with a placement error. A macOS node can now run with
+  `--engines swift,go`. Placement, in the gateway and in the client's fallback, keeps every
+  workspace that does not need macOS off a macOS node while another live node can serve it, so
+  plain Go stays on the Linux nodes however quiet the Mac is, and a workspace already on the Mac
+  that does not need it moves back.
+
+### Fixed
 - **`prod-code report-issue` works in a checkout the cluster cannot place** (#307). It used to
   fail with the placement error before drafting anything, for example in a Go module with
   macOS-only cgo when no macOS node serves Go, so that very limitation could not be reported.

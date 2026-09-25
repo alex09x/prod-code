@@ -306,9 +306,13 @@ pub async fn pick_node_with(
         // the ones that answer and can serve the engine, rendezvous order as tie-break.
         let mut candidates = Vec::new();
         let mut unsupported = Vec::new();
+        let mut on_macos = Vec::new();
         for candidate in rendezvous_order(nodes, workspace_name) {
             match node_status(candidate).await {
                 Ok(status) if status_fits(&status, engine, os) => {
+                    if runs_os(&status, "macos") {
+                        on_macos.push(candidate);
+                    }
                     candidates.push((candidate, status.load_per_cpu()));
                 }
                 Ok(_) => unsupported.push(candidate),
@@ -320,6 +324,11 @@ pub async fn pick_node_with(
                     }
                 }
             }
+        }
+        // A macOS node is a developer's Mac: work that does not need macOS goes there only when
+        // no other node can take it, however quiet the Mac is (#308).
+        if os.is_none() && candidates.iter().any(|(c, _)| !on_macos.contains(c)) {
+            candidates.retain(|(c, _)| !on_macos.contains(c));
         }
         if let Some(chosen) = choose_quietest(&candidates) {
             if let Some(path) = placement_file {
@@ -730,6 +739,36 @@ mod tests {
                 .await
                 .unwrap(),
             mac
+        );
+    }
+
+    /// Without a cluster answer, work that does not need macOS still keeps off a macOS node
+    /// while another node serves it, whatever the rendezvous order says, and takes the Mac only
+    /// when nothing else can (#308).
+    #[tokio::test]
+    async fn plain_work_keeps_off_a_macos_node_while_another_node_serves_it() {
+        let linux = node_on(&["go"], Some("linux x86_64")).await;
+        let mac = node_on(&["go", "swift (sourcekit-lsp)"], Some("macos aarch64")).await;
+        for i in 0..20 {
+            let name = format!("plain-{i}");
+            let picked = pick_node_with(&[mac, linux], &name, Some("go"), None, None)
+                .await
+                .unwrap();
+            assert_eq!(picked, linux, "{name} went to the Mac");
+        }
+        assert_eq!(
+            pick_node_with(&[mac, linux], "app", Some("swift"), None, None)
+                .await
+                .unwrap(),
+            mac,
+            "only the Mac serves Swift"
+        );
+        assert_eq!(
+            pick_node_with(&[mac], "plain", Some("go"), None, None)
+                .await
+                .unwrap(),
+            mac,
+            "alone, the Mac takes plain Go"
         );
     }
 
