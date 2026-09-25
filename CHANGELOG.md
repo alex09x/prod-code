@@ -7,6 +7,10 @@
   rust-analyzer's index in name order and stops at its limit, so hundreds of names that only
   hold the letters (`a_dry_run_…`) filled it and `prod-code def --symbol editor_proxy::run`
   offered ten dependency functions instead. Symbols with the very name now come first.
+- **An editor hears when a save did not reach the node** (#350). `prod-code lsp` pushes the
+  checkout before it passes a save on; when that push failed, it passed the save on silently
+  and the check on save ran on the node's previous copy. The editor is now shown a warning with
+  the reason; the save still reaches the server.
 
 ## v0.3.9 — 2026-09-25
 

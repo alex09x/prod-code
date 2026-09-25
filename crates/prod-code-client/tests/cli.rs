@@ -2323,6 +2323,19 @@ async fn recording_gateway<F>(answer: F, files: HashMap<String, String>) -> (Soc
 where
     F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
 {
+    recording_gateway_with(answer, files, true).await
+}
+
+/// [`recording_gateway`]; with `later_connections` false it closes every connection after the
+/// first as soon as it is accepted, so the editor's session stands and every push after it fails.
+async fn recording_gateway_with<F>(
+    answer: F,
+    files: HashMap<String, String>,
+    later_connections: bool,
+) -> (SocketAddr, Seen)
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
     let answer = Arc::new(answer);
     let seen: Seen = Arc::default();
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -2332,6 +2345,10 @@ where
         let mut connections = 0;
         while let Ok((socket, _)) = listener.accept().await {
             connections += 1;
+            if !later_connections && connections > 1 {
+                drop(socket);
+                continue;
+            }
             let (log, connection) = (Arc::clone(&log), connections);
             let (answer, files) = (Arc::clone(&answer), files.clone());
             tokio::spawn(async move {
@@ -2550,6 +2567,58 @@ async fn lsp_asks_for_its_language_pushes_a_save_first_and_mirrors_node_files() 
             .iter()
             .any(|(connection, event)| *connection > 1 && event.starts_with("sync")),
         "a sync lands between initialize and the save it precedes: {seen:?}"
+    );
+}
+
+/// A save whose push to the node fails still reaches the server, whose state follows the
+/// editor's, and the editor is told that the check it starts sees the node's previous copy
+/// (#350).
+#[tokio::test]
+async fn lsp_tells_the_editor_when_a_save_did_not_reach_the_node() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let (addr, seen) = recording_gateway_with(|_| None, HashMap::new(), false).await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string()])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+    let uri = format!("file://{}", ws.path("src/lib.rs").display());
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} } })).as_bytes())
+        .await
+        .expect("initialize");
+    read_lsp_message(&mut stdout).await;
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didSave", "params": { "textDocument": { "uri": uri } } })).as_bytes())
+        .await
+        .expect("didSave");
+    let warning = read_lsp_message(&mut stdout).await;
+    drop(stdin);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
+
+    assert_eq!(warning["method"], "window/showMessage", "{warning}");
+    assert_eq!(warning["params"]["type"], 2, "a warning: {warning}");
+    let text = warning["params"]["message"].as_str().unwrap_or_default();
+    assert!(text.contains("previous copy"), "{text}");
+    let seen = seen.lock().expect("log").clone();
+    assert!(
+        seen.iter()
+            .any(|(_, event)| event == "lsp textDocument/didSave"),
+        "the save still reaches the server: {seen:?}"
     );
 }
 

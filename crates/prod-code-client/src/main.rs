@@ -10,7 +10,7 @@ use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, Wire
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::io::BufReader;
 use tokio_util::codec::Framed;
 use url::Url;
 
@@ -3382,21 +3382,20 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     // Spawn background task to read responses from server and write LSP to stdout
     let stdout_files = std::sync::Arc::clone(&files);
     let stdout_trace = trace.clone();
+    // The server's messages and the bridge's own warnings share the editor's stdout.
+    let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+    let stdout_out = std::sync::Arc::clone(&editor_out);
     let stdout_task = tokio::spawn(async move {
-        let mut stdout = tokio::io::stdout();
         while let Some(msg_res) = socket_rx.next().await {
             match msg_res {
                 Ok(WireMessage::LspPayload(json)) => {
                     let json = stdout_files.to_editor(json).await;
                     trace_message(&stdout_trace, "<-", &json);
-                    let header = format!("Content-Length: {}\r\n\r\n", json.len());
-                    if stdout.write_all(header.as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if stdout.write_all(json.as_bytes()).await.is_err() {
-                        break;
-                    }
-                    if stdout.flush().await.is_err() {
+                    let mut stdout = stdout_out.lock().await;
+                    if prod_code_client::editor_files::write_frame(&mut *stdout, &json)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -3437,7 +3436,15 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
             match pushed {
                 Ok(()) => prod_code_mcp::watch::mark_synced(&cwd, generation),
                 Err(err) => {
-                    tracing::debug!(error = %format!("{err:#}"), "sync before a save failed")
+                    tracing::debug!(error = %format!("{err:#}"), "sync before a save failed");
+                    // The server still hears of the save, which keeps it in step with the
+                    // editor, but its check reads the node's previous copy: the editor is told
+                    // (#350).
+                    let warning = prod_code_client::editor_files::push_failed_warning(&err);
+                    trace_message(&trace, "<-", &warning);
+                    let mut stdout = editor_out.lock().await;
+                    let _ =
+                        prod_code_client::editor_files::write_frame(&mut *stdout, &warning).await;
                 }
             }
         }

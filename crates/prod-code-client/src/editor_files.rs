@@ -90,7 +90,6 @@ where
     R: tokio::io::AsyncBufRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
-    use tokio::io::AsyncWriteExt;
     while let Some(frame) = read_frame(reader).await? {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
             continue;
@@ -107,12 +106,39 @@ where
             "error": { "code": -32603, "message": message }
         })
         .to_string();
-        writer
-            .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
-            .await?;
-        writer.flush().await?;
+        write_frame(writer, &body).await?;
     }
     Ok(())
+}
+
+/// Writes one LSP message to the editor.
+pub async fn write_frame<W>(writer: &mut W, body: &str) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    writer
+        .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+        .await?;
+    writer.flush().await
+}
+
+/// The warning the editor is shown when the checkout could not be pushed before a save: the
+/// server still hears of the save, but the check it starts reads the node's previous copy
+/// (#350).
+pub fn push_failed_warning(err: &anyhow::Error) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "window/showMessage",
+        "params": {
+            "type": 2,
+            "message": format!(
+                "prod-code: the checkout could not be pushed to the node ({err:#}); the check \
+                 that follows sees the node's previous copy. Save again once the node is reachable."
+            ),
+        },
+    })
+    .to_string()
 }
 
 /// Node paths whose content never changes once there: a copy of one is never fetched again.
