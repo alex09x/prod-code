@@ -398,6 +398,10 @@ pub async fn pooled_query(
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    // A local file of another checkout, such as a clone next to this one, is asked about in
+    // that checkout's own session: this one's analyzer never loaded it, and a server of another
+    // language only fails on it (#353).
+    let root = crate::sync::other_checkout(&root, file).unwrap_or(root);
     let (subpath, _) = engine_project(&root, file);
     let key = format!(
         "{remote}|{}|{}",

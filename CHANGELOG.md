@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+- **A file of another checkout is asked about in that checkout's session** (#353). An agent
+  whose tools run in one checkout (a TypeScript site) and read a Rust file of a clone next to it
+  got "Language server process has exited": the query went to the site's TypeScript server,
+  which crashed on the Rust file. The MCP server now opens a session in the file's own
+  checkout, as the command line already did.
+
 ## v0.3.10 — 2026-09-25
 
 ### Fixed
