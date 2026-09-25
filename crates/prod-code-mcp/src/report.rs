@@ -18,6 +18,41 @@ pub const REPOSITORY: &str = "alex09x/prod-code";
 /// Open issues listed as possible duplicates before a new one is filed.
 const DUPLICATES_SHOWN: usize = 5;
 
+/// What kind of issue it is: every issue carries one of these (#321).
+pub const TYPE_LABELS: &[&str] = &["bug", "enhancement", "documentation", "perf"];
+
+/// Which part of prod-code it is about: an issue carries those it touches.
+pub const AREA_LABELS: &[&str] = &[
+    "gateway", "client", "mcp", "cluster", "worktree", "infra", "test",
+];
+
+/// The labels an issue is filed with: those asked for, lower-cased and once each, and `bug`
+/// first when none of them says what kind of issue it is. A label the repository does not
+/// have is refused here, before anything is searched or sent.
+pub fn issue_labels(asked: &[String]) -> Result<Vec<String>> {
+    let mut labels: Vec<String> = Vec::new();
+    for label in asked
+        .iter()
+        .map(|l| l.trim().to_ascii_lowercase())
+        .filter(|l| !l.is_empty())
+    {
+        anyhow::ensure!(
+            TYPE_LABELS.contains(&label.as_str()) || AREA_LABELS.contains(&label.as_str()),
+            "{REPOSITORY} has no label `{label}`: give one type ({}) and the areas the issue \
+             is about ({})",
+            TYPE_LABELS.join(", "),
+            AREA_LABELS.join(", ")
+        );
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    if !labels.iter().any(|l| TYPE_LABELS.contains(&l.as_str())) {
+        labels.insert(0, "bug".to_string());
+    }
+    Ok(labels)
+}
+
 /// `text` without the reporter's private details: IPv4 addresses become `<node>` (loopback,
 /// the unspecified address and the documentation ranges stay), the home directory and any
 /// `/Users/<name>` or `/home/<name>` become `~`, and `host` (with its first label alone) becomes
@@ -171,6 +206,8 @@ pub fn environment(node: Option<&prod_code_protocol::StatusResponse>) -> String 
 pub struct Draft {
     pub title: String,
     pub body: String,
+    /// See [`issue_labels`].
+    pub labels: Vec<String>,
 }
 
 /// The scrubbed title and the scrubbed body with the Environment section, or an error when the
@@ -201,6 +238,7 @@ pub fn draft(
             clean(body),
             clean(&environment(node))
         ),
+        labels: Vec::new(),
     })
 }
 
@@ -230,8 +268,10 @@ impl Outcome {
     pub fn render(&self) -> String {
         match self {
             Outcome::DryRun(draft) => format!(
-                "Dry run, nothing was filed. The issue would be:\n\n# {}\n\n{}",
-                draft.title, draft.body
+                "Dry run, nothing was filed. The issue would be:\n\n# {}\nLabels: {}\n\n{}",
+                draft.title,
+                draft.labels.join(", "),
+                draft.body
             ),
             Outcome::Similar(draft, similar) => {
                 let mut out = format!(
@@ -263,25 +303,36 @@ impl Outcome {
     }
 }
 
+/// A report as the reporter gives it.
+pub struct ReportRequest<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    /// File it even when issues with a similar title exist.
+    pub force: bool,
+    /// Draft it and send nothing.
+    pub dry_run: bool,
+    /// The id of a private record of the details the issue cannot carry, kept by the reporter
+    /// elsewhere; the issue names it so that the details can be looked up.
+    pub private_ref: Option<&'a str>,
+    /// The labels asked for; see [`issue_labels`].
+    pub labels: &'a [String],
+}
+
 /// Files the issue with the `gh` program `gh`, unless it is a dry run or issues look the same
 /// and `force` is not set. `remote` is the node asked for the Environment section.
-/// `private_ref` is the id of a private record of the details the issue cannot carry, kept by
-/// the reporter elsewhere; the issue names it so that the details can be looked up.
 pub async fn report(
     remote: Option<SocketAddr>,
-    title: &str,
-    body: &str,
-    force: bool,
-    dry_run: bool,
+    request: ReportRequest<'_>,
     gh: &Path,
-    private_ref: Option<&str>,
 ) -> Result<Outcome> {
+    let labels = issue_labels(request.labels)?;
     let node = match remote {
         Some(addr) => crate::cluster::node_status(addr).await.ok(),
         None => None,
     };
-    let mut draft = draft(title, body, node.as_ref())?;
-    if let Some(reference) = private_ref.map(str::trim).filter(|r| !r.is_empty()) {
+    let mut draft = draft(request.title, request.body, node.as_ref())?;
+    draft.labels = labels;
+    if let Some(reference) = request.private_ref.map(str::trim).filter(|r| !r.is_empty()) {
         draft.body = draft.body.replace(
             "_Filed with `prod-code report-issue`._",
             &format!(
@@ -290,10 +341,10 @@ pub async fn report(
             ),
         );
     }
-    if dry_run {
+    if request.dry_run {
         return Ok(Outcome::DryRun(draft));
     }
-    if !force {
+    if !request.force {
         let similar = search(gh, &draft.title)?;
         if !similar.is_empty() {
             return Ok(Outcome::Similar(draft, similar));
@@ -309,6 +360,12 @@ pub async fn report(
             "--title",
             &draft.title,
         ])
+        .args(
+            draft
+                .labels
+                .iter()
+                .flat_map(|label| ["--label", label.as_str()]),
+        )
         .args(["--body-file", "-"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -470,6 +527,24 @@ mod tests {
         script
     }
 
+    #[test]
+    fn labels_default_to_a_bug_and_a_label_the_repository_lacks_is_refused() {
+        let given = |labels: &[&str]| labels.iter().map(|l| l.to_string()).collect::<Vec<_>>();
+        assert_eq!(issue_labels(&[]).unwrap(), ["bug"]);
+        assert_eq!(issue_labels(&given(&["mcp"])).unwrap(), ["bug", "mcp"]);
+        assert_eq!(
+            issue_labels(&given(&[" Perf ", "gateway", "gateway", ""])).unwrap(),
+            ["perf", "gateway"]
+        );
+        let err = issue_labels(&given(&["mcp", "urgent"]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("`urgent`") && err.contains("enhancement") && err.contains("worktree"),
+            "the refusal names the label and the ones there are: {err}"
+        );
+    }
+
     const BODY: &str = "Ran `prod-code outline README.md` on /Users/alice/repo and it printed an \
                         empty outline instead of an error.";
 
@@ -477,14 +552,18 @@ mod tests {
     async fn a_report_is_filed_when_nothing_similar_is_open() {
         let dir = tempfile::tempdir().unwrap();
         let gh = fake_gh(dir.path(), "[]");
+        let labels = ["mcp".to_string()];
         let outcome = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            false,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: false,
+                private_ref: None,
+                labels: &labels,
+            },
             &gh,
-            None,
         )
         .await
         .unwrap();
@@ -494,7 +573,8 @@ mod tests {
         );
         let calls = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
         assert!(calls.contains("issue list --repo alex09x/prod-code --state all --search outline prints nothing for Markdown in:title --json number,title,url,state"), "{calls}");
-        assert!(calls.contains("issue create --repo alex09x/prod-code --title outline prints nothing for Markdown --body-file -"), "{calls}");
+        // The type defaults to a bug, and the area asked for goes with it.
+        assert!(calls.contains("issue create --repo alex09x/prod-code --title outline prints nothing for Markdown --label bug --label mcp --body-file -"), "{calls}");
         let sent = std::fs::read_to_string(dir.path().join("body.md")).unwrap();
         assert!(sent.contains("on ~/repo and it printed"), "{sent}");
         assert!(!sent.contains("alice"), "{sent}");
@@ -510,12 +590,15 @@ mod tests {
         );
         let outcome = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            false,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: false,
+                private_ref: None,
+                labels: &[],
+            },
             &gh,
-            None,
         )
         .await
         .unwrap();
@@ -535,12 +618,15 @@ mod tests {
 
         let forced = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            true,
-            false,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: true,
+                dry_run: false,
+                private_ref: None,
+                labels: &[],
+            },
             &gh,
-            None,
         )
         .await
         .unwrap();
@@ -554,12 +640,15 @@ mod tests {
         let gh = fake_gh(dir.path(), "[]");
         let outcome = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            false,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: false,
+                private_ref: Some("  inc-2026-09-24-outline  "),
+                labels: &[],
+            },
             &gh,
-            Some("  inc-2026-09-24-outline  "),
         )
         .await
         .unwrap();
@@ -571,12 +660,15 @@ mod tests {
         );
         let dry = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            true,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: true,
+                private_ref: Some(""),
+                labels: &[],
+            },
             &gh,
-            Some(""),
         )
         .await
         .unwrap();
@@ -593,12 +685,15 @@ mod tests {
         let gh = fake_gh(dir.path(), "[]");
         let outcome = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            true,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: true,
+                private_ref: None,
+                labels: &[],
+            },
             &gh,
-            None,
         )
         .await
         .unwrap();
@@ -606,19 +701,41 @@ mod tests {
         assert!(
             outcome
                 .render()
-                .contains("# outline prints nothing for Markdown")
+                .contains("# outline prints nothing for Markdown\nLabels: bug\n")
         );
+        assert!(!dir.path().join("calls.log").exists());
+
+        // A label the repository does not have is refused before anything is searched.
+        let unknown = ["urgent".to_string()];
+        let err = report(
+            None,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: false,
+                private_ref: None,
+                labels: &unknown,
+            },
+            &gh,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("`urgent`"), "{err:#}");
         assert!(!dir.path().join("calls.log").exists());
 
         let missing = dir.path().join("no-such-gh");
         let err = report(
             None,
-            "outline prints nothing for Markdown",
-            BODY,
-            false,
-            false,
+            ReportRequest {
+                title: "outline prints nothing for Markdown",
+                body: BODY,
+                force: false,
+                dry_run: false,
+                private_ref: None,
+                labels: &[],
+            },
             &missing,
-            None,
         )
         .await
         .unwrap_err();

@@ -9,6 +9,10 @@ full version; this is the part that is not optional.
   command that reproduces the problem and its current output. After: open a pull request
   from a branch, filled in with the template (Problem, Change, Reproduce and verify,
   Measurements, Checks, `Closes #N`). No direct commits or pushes to `main`.
+- Label every issue and PR when you open it: one type (`bug`, `enhancement`,
+  `documentation`, `perf`; `test` or `release` for PRs that are only that) and the areas it
+  touches (`gateway`, `client`, `mcp`, `cluster`, `worktree`, `infra`, `test`). A PR takes
+  the labels of the issue it closes. `report-issue --label X` / `code_report_issue {labels}`.
 - There is no hosted CI. Run `cargo fmt --all -- --check`, `cargo clippy --workspace
   --all-targets -- -D warnings` and the tests for the touched crates on a build node
   (`prod-code exec -- ...` or the MCP `code_check` / `code_lint` / `code_test`), never on

@@ -1,4 +1,5 @@
 use crate::protocol::{McpTool, McpToolCallResult};
+use crate::report::ReportRequest;
 use crate::sync::scan_workspace_files;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
@@ -972,7 +973,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_report_issue".to_string(),
-            description: "Report a bug in prod-code ITSELF (not in the code you are working on) as a GitHub issue in alex09x/prod-code: a wrong or empty answer from a code_* tool, a hang, a crash, an error that does not say what to do, or a missing capability you needed. Use it as soon as you are sure the tool is at fault, then carry on with your task. Give a searchable `title` (what went wrong, in which tool, for which language) and a `body` with the exact tool call or command and its arguments, what it returned (paste the output), what you expected, and how to reproduce it. LAN addresses, the host name and home-directory paths are removed before anything is sent, and the client and node versions are added. Issues with a similar title, open or closed, are listed first and nothing is filed unless `force: true`; comment on an open one that is the same problem, and check whether a closed one is fixed in a newer release. When reproducing needs private details (host names, addresses, internal paths or logs), keep them in your own private record first and pass its id as `private_ref`; never put them in the body. `dry_run: true` shows the issue without filing it."
+            description: "Report a bug in prod-code ITSELF (not in the code you are working on) as a GitHub issue in alex09x/prod-code: a wrong or empty answer from a code_* tool, a hang, a crash, an error that does not say what to do, or a missing capability you needed. Use it as soon as you are sure the tool is at fault, then carry on with your task. Give a searchable `title` (what went wrong, in which tool, for which language) and a `body` with the exact tool call or command and its arguments, what it returned (paste the output), what you expected, and how to reproduce it. LAN addresses, the host name and home-directory paths are removed before anything is sent, and the client and node versions are added. Issues with a similar title, open or closed, are listed first and nothing is filed unless `force: true`; comment on an open one that is the same problem, and check whether a closed one is fixed in a newer release. When reproducing needs private details (host names, addresses, internal paths or logs), keep them in your own private record first and pass its id as `private_ref`; never put them in the body. Pass `labels`: one type (bug, enhancement, documentation, perf; bug when none is given) and the areas the issue is about (gateway, client, mcp, cluster, worktree, infra, test). `dry_run: true` shows the issue without filing it."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -980,6 +981,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "title": { "type": "string", "description": "What went wrong, where: e.g. `code_references returns nothing for a Go struct field`" },
                     "body": { "type": "string", "description": "The call and its arguments, what came back (output), what was expected, how to reproduce" },
                     "private_ref": { "type": "string", "description": "Id of a private record of details that cannot be public (hosts, addresses, internal paths or logs), kept by you elsewhere; the issue names it instead of the details" },
+                    "labels": { "type": "array", "items": { "type": "string" }, "description": "One type (bug, enhancement, documentation, perf; bug when none is given) and the areas it is about (gateway: the server daemon and its engines, client: the CLI and sync, mcp: the MCP tools, cluster: placement across nodes, worktree: worktree copies, infra: node setup and deploys, test: tests and coverage)" },
                     "force": { "type": "boolean", "description": "File even when similar issues exist" },
                     "dry_run": { "type": "boolean", "description": "Show the scrubbed issue without filing it" }
                 },
@@ -1260,14 +1262,27 @@ pub async fn execute_tool(
         "code_report_issue" => {
             let text = |key: &str| args.get(key).and_then(|v| v.as_str()).unwrap_or("");
             let flag = |key: &str| args.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+            let labels: Vec<String> = args
+                .get("labels")
+                .and_then(|v| v.as_array())
+                .map(|labels| {
+                    labels
+                        .iter()
+                        .filter_map(|l| l.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
             match crate::report::report(
                 Some(remote),
-                text("title"),
-                text("body"),
-                flag("force"),
-                flag("dry_run"),
+                ReportRequest {
+                    title: text("title"),
+                    body: text("body"),
+                    force: flag("force"),
+                    dry_run: flag("dry_run"),
+                    private_ref: args.get("private_ref").and_then(|v| v.as_str()),
+                    labels: &labels,
+                },
                 &crate::report::gh_program(),
-                args.get("private_ref").and_then(|v| v.as_str()),
             )
             .await
             {

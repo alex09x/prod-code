@@ -304,6 +304,7 @@ mod tests {
             "code_report_issue",
             "private_ref",
             "never put private details",
+            "labels",
         ] {
             assert!(
                 instructions.contains(needed),

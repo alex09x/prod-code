@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Added
+- **An editor on `prod-code lsp` gets completion, diagnostics, code actions and formatting
+  for Rust** (#310, PR #320). The in-memory engine answers completion (with the `use` of an
+  item not yet imported added on resolve), signature help, inlay hints, document highlights,
+  code actions with their edits, and formatting by `rustfmt` on the node. An editor's session
+  gets the diagnostics of each document it opens or changes pushed to it, 300 ms after the
+  last edit. A request the Rust engine does not answer is refused instead of left without a
+  reply, which an editor waited on for good.
+- **`prod-code report-issue --label` and `code_report_issue {labels}`** (#321): the issue is
+  filed with one type (`bug` when none is given) and the areas it is about; a label the
+  repository does not have is refused before anything is sent. `CONTRIBUTING.md` says which
+  labels every issue and pull request carries.
+
+### Fixed
+- **`prod-code lsp` pushes the checkout before its session and keeps it current** (#316,
+  PR #319). A node that had never seen the project detected no language in an empty copy and
+  answered every request with nothing. The editor's `initialize` is answered with the
+  language server's own capabilities (whole-document sync) and `serverInfo` `prod-code` with
+  the real version.
+- **gopls sees a file a sync rewrote** (#317, PR #319): the gateway sends
+  `workspace/didChangeWatchedFiles` after every sync, where gopls went on answering from a
+  file's old content until it restarted.
+
 ## v0.3.8 — 2026-09-24
 
 ### Fixed
