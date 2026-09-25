@@ -36,7 +36,10 @@ fn stands_in_for(server: &LanguageServerId) -> &'static str {
 }
 
 /// The settings of this server, or else those of the server it stands in for.
-fn settings(server: &LanguageServerId, worktree: &zed::Worktree) -> (Option<LspSettings>, Option<LspSettings>) {
+fn settings(
+    server: &LanguageServerId,
+    worktree: &zed::Worktree,
+) -> (Option<LspSettings>, Option<LspSettings>) {
     (
         LspSettings::for_worktree(server.as_ref(), worktree).ok(),
         LspSettings::for_worktree(stands_in_for(server), worktree).ok(),
@@ -53,8 +56,9 @@ impl zed::Extension for ProdCode {
         server: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        let own = LspSettings::for_worktree(server.as_ref(), worktree).ok();
-        let binary = own.as_ref().and_then(|s| s.binary.clone());
+        let binary = LspSettings::for_worktree(server.as_ref(), worktree)
+            .ok()
+            .and_then(|s| s.binary);
         let command = binary
             .as_ref()
             .and_then(|b| b.path.clone())

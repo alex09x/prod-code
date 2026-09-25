@@ -83,7 +83,9 @@ pub struct RemoteFiles {
 
 /// Where the node's files are mirrored by default: the user's cache directory.
 pub fn default_cache() -> PathBuf {
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
     if cfg!(target_os = "macos") {
         home.join("Library/Caches/prod-code/remote")
     } else {
@@ -232,7 +234,9 @@ mod tests {
     use tokio_util::codec::Framed;
 
     /// A node that serves `ReadFileRequest` from `files` and counts the reads.
-    async fn node(files: HashMap<String, String>) -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    async fn node(
+        files: HashMap<String, String>,
+    ) -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -267,17 +271,26 @@ mod tests {
         let checkout = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
         std::fs::write(checkout.path().join("lib.rs"), "fn main() {}\n").unwrap();
-        let std_file = "/home/dev/.rustup/toolchains/stable/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs";
+        let std_file =
+            "/home/dev/.rustup/toolchains/stable/lib/rustlib/src/rust/library/alloc/src/vec/mod.rs";
         let generated = "/srv/workspaces/app/target/debug/build/app-1/out/gen.rs";
         let (remote, reads) = node(HashMap::from([
             (std_file.to_string(), "pub struct Vec;\n".to_string()),
             (generated.to_string(), "pub const X: u8 = 1;\n".to_string()),
         ]))
         .await;
-        let files = RemoteFiles::new(remote, checkout.path(), Path::new("/srv/workspaces/app"), cache.path());
+        let files = RemoteFiles::new(
+            remote,
+            checkout.path(),
+            Path::new("/srv/workspaces/app"),
+            cache.path(),
+        );
 
         let own = format!("file://{}/lib.rs", checkout.path().display());
-        let missing_in_checkout = format!("file://{}/target/debug/build/app-1/out/gen.rs", checkout.path().display());
+        let missing_in_checkout = format!(
+            "file://{}/target/debug/build/app-1/out/gen.rs",
+            checkout.path().display()
+        );
         let message = serde_json::json!({
             "jsonrpc": "2.0", "id": 7,
             "result": [
@@ -291,17 +304,29 @@ mod tests {
         let shown: serde_json::Value =
             serde_json::from_str(&files.to_editor(message.to_string()).await).unwrap();
         let std_copy = files.mirror_path(Path::new(std_file));
-        assert_eq!(shown["result"][0]["uri"], format!("file://{}", std_copy.display()));
-        assert_eq!(std::fs::read_to_string(&std_copy).unwrap(), "pub struct Vec;\n");
+        assert_eq!(
+            shown["result"][0]["uri"],
+            format!("file://{}", std_copy.display())
+        );
+        assert_eq!(
+            std::fs::read_to_string(&std_copy).unwrap(),
+            "pub struct Vec;\n"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&std_copy).unwrap().permissions().mode() & 0o777, 0o444);
+            assert_eq!(
+                std::fs::metadata(&std_copy).unwrap().permissions().mode() & 0o777,
+                0o444
+            );
         }
         // The checkout's own file stays; a file only the node's copy has is copied too.
         assert_eq!(shown["result"][1]["uri"], own);
         let gen_copy = files.mirror_path(Path::new(generated));
-        assert_eq!(shown["result"][2]["uri"], format!("file://{}", gen_copy.display()));
+        assert_eq!(
+            shown["result"][2]["uri"],
+            format!("file://{}", gen_copy.display())
+        );
         assert_eq!(shown["result"][3]["uri"], shown["result"][0]["uri"]);
         // A path the node cannot give stays as it was.
         assert_eq!(shown["result"][4]["uri"], "file:///nowhere/on/the/node.rs");
@@ -318,19 +343,32 @@ mod tests {
         );
         assert_eq!(
             files.to_node(&hover),
-            format!(r#"{{"method":"textDocument/hover","params":{{"textDocument":{{"uri":"file://{std_file}"}}}}}}"#)
+            format!(
+                r#"{{"method":"textDocument/hover","params":{{"textDocument":{{"uri":"file://{std_file}"}}}}}}"#
+            )
         );
         // A message without file URIs is passed through untouched.
-        assert_eq!(files.to_editor("{\"id\":1}".to_string()).await, "{\"id\":1}");
+        assert_eq!(
+            files.to_editor("{\"id\":1}".to_string()).await,
+            "{\"id\":1}"
+        );
         assert_eq!(files.to_node("{\"id\":1}"), "{\"id\":1}");
     }
 
     #[tokio::test]
     async fn frames_are_read_whatever_their_headers() {
-        let input = b"Content-Length: 2\r\n\r\n{}content-length: 8\r\nContent-Type: x\r\n\r\n{\"id\":1}" as &[u8];
+        let input =
+            b"Content-Length: 2\r\n\r\n{}content-length: 8\r\nContent-Type: x\r\n\r\n{\"id\":1}"
+                as &[u8];
         let mut reader = tokio::io::BufReader::new(input);
-        assert_eq!(read_frame(&mut reader).await.unwrap().as_deref(), Some("{}"));
-        assert_eq!(read_frame(&mut reader).await.unwrap().as_deref(), Some("{\"id\":1}"));
+        assert_eq!(
+            read_frame(&mut reader).await.unwrap().as_deref(),
+            Some("{}")
+        );
+        assert_eq!(
+            read_frame(&mut reader).await.unwrap().as_deref(),
+            Some("{\"id\":1}")
+        );
         assert_eq!(read_frame(&mut reader).await.unwrap(), None);
     }
 

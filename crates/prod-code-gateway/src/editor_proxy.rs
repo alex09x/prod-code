@@ -86,7 +86,9 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
 
 /// One LSP frame from `reader`: its body, or `None` at the end of the stream. Header names are
 /// matched without regard to case, and headers other than the length are skipped.
-pub async fn read_frame<R: AsyncBufRead + Unpin>(reader: &mut R) -> std::io::Result<Option<String>> {
+pub async fn read_frame<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
     let mut length = None;
     let mut line = String::new();
     loop {
@@ -262,7 +264,11 @@ pub async fn run(
         let mut stdout = BufReader::new(stdout);
         while let Ok(Some(body)) = read_frame(&mut stdout).await {
             let editor = reader_translator.translate_lsp_to_client(&body);
-            if reader_tx.send(WireMessage::LspPayload(editor)).await.is_err() {
+            if reader_tx
+                .send(WireMessage::LspPayload(editor))
+                .await
+                .is_err()
+            {
                 break;
             }
         }
@@ -305,7 +311,10 @@ mod tests {
     async fn frames_are_read_whatever_the_case_of_their_headers() {
         let input = b"Content-Length: 2\r\n\r\n{}content-length: 13\r\nContent-Type: x\r\n\r\n{\"id\":1}     " as &[u8];
         let mut reader = BufReader::new(input);
-        assert_eq!(read_frame(&mut reader).await.unwrap().as_deref(), Some("{}"));
+        assert_eq!(
+            read_frame(&mut reader).await.unwrap().as_deref(),
+            Some("{}")
+        );
         assert_eq!(
             read_frame(&mut reader).await.unwrap().as_deref(),
             Some("{\"id\":1}     ")
