@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.8 — 2026-09-24
+
 ### Fixed
 - **Tracked `vendor/` directories and the libraries a build links reach the node, and a large
   sync no longer exceeds the frame limit** (#313). The sync skipped every directory named
