@@ -3106,15 +3106,69 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
     Ok(())
 }
 
+/// How often the editor bridge looks for local changes to push to the node (#316).
+const BRIDGE_SYNC_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// How long the editor bridge waits after a failed push before it tries again.
+const BRIDGE_SYNC_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pushes the checkout's changes since the last sync on a connection of its own.
+async fn push_checkout(remote: SocketAddr, root: &Path) -> Result<()> {
+    let stream = prod_code_protocol::transport::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let identity = prod_code_mcp::sync::workspace_identity(root);
+    prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None).await?;
+    let _ = framed
+        .send(WireMessage::Disconnect {
+            reason: "sync finished".to_string(),
+        })
+        .await;
+    Ok(())
+}
+
+/// Keeps the node's copy of `root` current while an editor runs `prod-code lsp`: whenever the
+/// file watcher saw a change (a save, a checkout, a generated file), the delta is pushed on a
+/// connection of its own, so the language server session never waits for it (#316).
+async fn keep_checkout_synced(remote: SocketAddr, root: PathBuf) {
+    loop {
+        tokio::time::sleep(BRIDGE_SYNC_POLL).await;
+        let generation = prod_code_mcp::watch::current_generation(&root);
+        if !prod_code_mcp::watch::sync_due(&root, generation) {
+            continue;
+        }
+        match push_checkout(remote, &root).await {
+            Ok(()) => prod_code_mcp::watch::mark_synced(&root, generation),
+            Err(err) => {
+                tracing::debug!(error = %format!("{err:#}"), "background sync failed");
+                tokio::time::sleep(BRIDGE_SYNC_RETRY).await;
+            }
+        }
+    }
+}
+
 /// Run full-duplex stdio LSP bridge connecting local editor to remote daemon over TCP.
+///
+/// The checkout is pushed before the handshake, under the name the sync used, and kept
+/// current while the editor runs: a node that never saw the project would otherwise detect
+/// no language in an empty copy and answer every request with nothing (#316).
 async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
+    let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
     let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+    let generation = prod_code_mcp::watch::current_generation(&cwd);
+    prod_code_mcp::sync::push_workspace_sync(&mut framed, &cwd, &identity, None)
+        .await
+        .context("workspace sync before the language server session failed")?;
+    prod_code_mcp::watch::mark_synced(&cwd, generation);
 
     // Perform handshake
     framed
@@ -3125,7 +3179,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             auth_token: None,
             client_workspace_root: cwd_str,
             preferred_engine: None,
-            base_workspace_name: detect_workspace_name(&cwd),
+            base_workspace_name: Some(identity.name.clone()),
             engine_subpath: None,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
@@ -3154,6 +3208,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
     );
 
     let (mut socket_tx, mut socket_rx) = framed.split();
+    let keeper = tokio::spawn(keep_checkout_synced(remote, cwd.clone()));
 
     // Spawn background task to read responses from server and write LSP to stdout
     let stdout_task = tokio::spawn(async move {
@@ -3196,10 +3251,14 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             break;
         }
 
-        // Parse Content-Length header
-        if header_line.starts_with("Content-Length:") {
-            let len_str = header_line.trim_start_matches("Content-Length:").trim();
-            let content_len: usize = len_str.parse().context("Invalid Content-Length header")?;
+        // Parse Content-Length header (header names are case-insensitive)
+        if let Some((name, value)) = header_line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("Content-Length")
+        {
+            let content_len: usize = value
+                .trim()
+                .parse()
+                .context("Invalid Content-Length header")?;
 
             // Read the empty separating line \r\n
             header_line.clear();
@@ -3222,6 +3281,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
         }
     }
 
+    keeper.abort();
     let _ = stdout_task.await;
     Ok(())
 }

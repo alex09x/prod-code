@@ -209,6 +209,44 @@ impl SharedWorkspace {
     pub fn touch(&self) {
         self.last_used.store(unix_now(), Ordering::Relaxed);
     }
+
+    /// Tells this workspace's language servers (gopls, or the generic server and the C/C++
+    /// validation clangd once it runs) which files a sync created, rewrote or removed on disk,
+    /// as `workspace/didChangeWatchedFiles` (#317). Paths outside the workspace root are left
+    /// out.
+    pub async fn notify_watched_files(&self, changes: &[(PathBuf, WatchedChange)]) {
+        let events: Vec<serde_json::Value> = changes
+            .iter()
+            .filter(|(path, _)| path.starts_with(&self.root))
+            .map(|(path, kind)| {
+                serde_json::json!({ "uri": format!("file://{}", path.display()), "type": *kind as u8 })
+            })
+            .collect();
+        if events.is_empty() {
+            return;
+        }
+        let params = serde_json::json!({ "changes": events });
+        const METHOD: &str = "workspace/didChangeWatchedFiles";
+        if let Some(go) = &self.go_engine
+            && let Err(err) = go.send_notification(METHOD, params.clone()).await
+        {
+            tracing::warn!(error = %err, workspace = ?self.root, "gopls was not told about synced files");
+        }
+        let validation = self.cpp_validation.get().cloned().flatten();
+        for server in self.generic_engine.iter().chain(validation.iter()) {
+            if let Err(err) = server.send_notification(METHOD, params.clone()).await {
+                tracing::warn!(error = %err, workspace = ?self.root, "language server was not told about synced files");
+            }
+        }
+    }
+}
+
+/// How a sync changed a file on disk, numbered as LSP's `FileChangeType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchedChange {
+    Created = 1,
+    Changed = 2,
+    Deleted = 3,
 }
 
 pub fn unix_now() -> u64 {
@@ -296,6 +334,19 @@ impl WorkspaceManager {
             guard.remove(key);
         }
         keys.len()
+    }
+
+    /// The loaded workspaces rooted at or below `prefix`: the checkout's and those of its
+    /// nested projects.
+    pub async fn loaded_under(&self, prefix: &Path) -> Vec<Arc<SharedWorkspace>> {
+        let guard = self.workspaces.read().await;
+        guard
+            .iter()
+            .filter_map(|(key, state)| match state {
+                LoadState::Ready(ws) if key.0.starts_with(prefix) => Some(Arc::clone(ws)),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Whether a workspace is currently loaded (or loading) at `workspace_root`.

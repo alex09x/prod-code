@@ -2181,3 +2181,161 @@ async fn cli_new_refactoring_subcommands_parse_and_reach_their_tools() {
         stderr_of(&out)
     );
 }
+
+/// `prod-code lsp` in a project the node has never seen: the checkout is pushed before the
+/// handshake, under the name the handshake then uses, and a file written while the editor runs
+/// reaches the node on a connection of its own (#316). Before, the bridge pushed nothing, and
+/// the node detected no language in an empty copy and answered every request with nothing.
+#[tokio::test]
+async fn lsp_pushes_the_checkout_before_its_handshake_and_every_change_after_it() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let ws = make_workspace();
+    // The sync keeps its watermark under HOME: outside the checkout, or the watcher sees it.
+    let home = tempfile::tempdir().expect("home");
+    let seen: Arc<std::sync::Mutex<Vec<(usize, String)>>> = Arc::default();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        let mut connections = 0;
+        while let Ok((socket, _)) = listener.accept().await {
+            connections += 1;
+            let (log, connection) = (Arc::clone(&log), connections);
+            tokio::spawn(async move {
+                let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                while let Some(Ok(msg)) = framed.next().await {
+                    let (event, reply) = match msg {
+                        WireMessage::SyncProbeRequest(req) => (
+                            format!("probe {}", req.base_workspace_name.unwrap_or_default()),
+                            Some(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                seeded: false,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::SyncRequest(req) => (
+                            format!(
+                                "sync {}",
+                                req.files
+                                    .iter()
+                                    .map(|f| f.relative_path.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            Some(WireMessage::SyncResponse(SyncResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                files_updated: req.files.len(),
+                                files_deleted: 0,
+                                bytes_transferred: 0,
+                                duration_ms: 1,
+                                workspace_was_fresh: false,
+                                stale_paths: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::HandshakeRequest(req) => (
+                            format!("handshake {}", req.base_workspace_name.unwrap_or_default()),
+                            Some(WireMessage::HandshakeResponse(HandshakeResponse {
+                                protocol_version: PROTOCOL_VERSION,
+                                server_pid: std::process::id(),
+                                session_id: 1,
+                                server_workspace_root: req.client_workspace_root,
+                                detected_engine: "rust".to_string(),
+                                stale_paths: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::LspPayload(json) => {
+                            let val: serde_json::Value =
+                                serde_json::from_str(&json).unwrap_or_default();
+                            let method = val["method"].as_str().unwrap_or_default().to_string();
+                            let reply = (method == "initialize").then(|| {
+                                WireMessage::LspPayload(
+                                    serde_json::json!({ "jsonrpc": "2.0", "id": val["id"], "result": { "capabilities": {} } })
+                                        .to_string(),
+                                )
+                            });
+                            (format!("lsp {method}"), reply)
+                        }
+                        WireMessage::Disconnect { .. } => break,
+                        _ => ("other".to_string(), None),
+                    };
+                    log.lock().expect("log").push((connection, event));
+                    if let Some(reply) = reply
+                        && framed.send(reply).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .arg("lsp")
+        .arg("--remote")
+        .arg(addr.to_string())
+        .env("HOME", home.path())
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    // Header names are case-insensitive, and some editors send them in lower case.
+    stdin
+        .write_all(format!("content-length: {}\r\n\r\n{init}", init.len()).as_bytes())
+        .await
+        .expect("write initialize");
+    let mut header = String::new();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        stdout.read_line(&mut header),
+    )
+    .await
+    .expect("initialize is answered")
+    .expect("read the answer");
+    assert!(header.starts_with("Content-Length:"), "{header}");
+
+    ws.write("src/added.rs", "pub fn added() {}\n");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let pushed = |seen: &[(usize, String)]| {
+        seen.iter().any(|(connection, event)| {
+            *connection > 1 && event.starts_with("sync ") && event.contains("src/added.rs")
+        })
+    };
+    while std::time::Instant::now() < deadline && !pushed(&seen.lock().expect("log")) {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    drop(stdin);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
+
+    let seen = seen.lock().expect("log").clone();
+    let first: Vec<&String> = seen
+        .iter()
+        .filter(|(connection, _)| *connection == 1)
+        .map(|(_, event)| event)
+        .collect();
+    let probe = first.iter().position(|e| e.starts_with("probe "));
+    let handshake = first.iter().position(|e| e.starts_with("handshake "));
+    assert!(
+        matches!((probe, handshake), (Some(p), Some(h)) if p < h),
+        "the checkout is pushed before the handshake: {seen:?}"
+    );
+    let name = |event: &str| event.split_once(' ').map(|(_, n)| n.to_string());
+    assert_eq!(
+        name(first[probe.unwrap()]),
+        name(first[handshake.unwrap()]),
+        "the handshake names the workspace the sync filled: {seen:?}"
+    );
+    assert!(
+        first.iter().any(|e| *e == "lsp initialize"),
+        "the editor's messages go to the session: {seen:?}"
+    );
+    assert!(
+        pushed(&seen),
+        "a file written while the editor runs is pushed: {seen:?}"
+    );
+}
