@@ -13,6 +13,12 @@ use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
 const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB per source file limit
+/// The limit for a library a build links (`.a`, `.so`, `.dylib`, `.lib`, `.o`): a vendored C
+/// library the checkout links through cgo is part of the build, however large (#313).
+const MAX_LIBRARY_SIZE: u64 = 128 * 1024 * 1024;
+/// How much file content one sync message carries. The whole tree in one message could exceed
+/// the codec's frame limit (#313); a file larger than this goes in a message of its own.
+const SYNC_BATCH_BYTES: usize = 24 * 1024 * 1024;
 const MAX_JSON_CONFIG_SIZE: u64 = 256 * 1024; // 256 KiB for .json configs (reject datasets)
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,7 +56,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 5;
+pub const RELEVANCE_VERSION: u32 = 6;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -864,35 +870,44 @@ async fn push_sync_round(
     if !plan.files.is_empty() || !plan.initial {
         let files = std::mem::take(&mut plan.files);
         outcome.changed_paths = files.iter().map(|f| f.relative_path.clone()).collect();
-        framed
-            .send(WireMessage::SyncRequest(SyncRequest {
-                client_workspace_root: root_str,
-                files,
-                clean_others: false,
-                base_workspace_name: Some(identity.name.clone()),
-            }))
-            .await?;
-        let resp = wait_for_message(framed, "sync response", |m| match m {
-            WireMessage::SyncResponse(r) => Some(r),
-            _ => None,
-        })
-        .await
-        .context("workspace sync was not acknowledged")?;
-        if resp.workspace_was_fresh && !plan.initial {
-            // The server directory was reset behind our watermark: forget it and start over
-            // with a manifest probe on the same connection.
-            tracing::warn!(
-                workspace = %identity.name,
-                "gateway workspace was reset; resyncing the full tree"
-            );
-            clear_sync_cache_for(root, &node);
-            return Box::pin(push_workspace_sync(framed, root, identity, subpath)).await;
+        for (i, files) in sync_batches(files, SYNC_BATCH_BYTES)
+            .into_iter()
+            .enumerate()
+        {
+            framed
+                .send(WireMessage::SyncRequest(SyncRequest {
+                    client_workspace_root: root_str.clone(),
+                    files,
+                    clean_others: false,
+                    base_workspace_name: Some(identity.name.clone()),
+                }))
+                .await?;
+            let resp = wait_for_message(framed, "sync response", |m| match m {
+                WireMessage::SyncResponse(r) => Some(r),
+                _ => None,
+            })
+            .await
+            .context("workspace sync was not acknowledged")?;
+            if i == 0 && resp.workspace_was_fresh && !plan.initial {
+                // The server directory was reset behind our watermark: forget it and start
+                // over with a manifest probe on the same connection.
+                tracing::warn!(
+                    workspace = %identity.name,
+                    "gateway workspace was reset; resyncing the full tree"
+                );
+                clear_sync_cache_for(root, &node);
+                return Box::pin(push_workspace_sync(framed, root, identity, subpath)).await;
+            }
+            outcome.files_updated += resp.files_updated;
+            outcome.files_deleted += resp.files_deleted;
+            outcome.bytes_transferred += resp.bytes_transferred;
+            outcome.server_workspace_root = resp.server_workspace_root;
+            for stale in resp.stale_paths {
+                if !outcome.stale_paths.contains(&stale) {
+                    outcome.stale_paths.push(stale);
+                }
+            }
         }
-        outcome.files_updated = resp.files_updated;
-        outcome.files_deleted += resp.files_deleted;
-        outcome.bytes_transferred = resp.bytes_transferred;
-        outcome.server_workspace_root = resp.server_workspace_root;
-        outcome.stale_paths = resp.stale_paths;
     }
 
     commit_workspace_sync(root, &plan);
@@ -1123,8 +1138,41 @@ fn sync_file_entry(metadata: &std::fs::Metadata, content: &[u8]) -> SyncFileEntr
 /// Whether a file of this size is sent at all: large files are datasets, not sources.
 fn fits_sync(relative_path: &str, metadata: &std::fs::Metadata) -> bool {
     metadata.is_file()
-        && metadata.len() <= MAX_FILE_SIZE
+        && metadata.len() <= size_limit(relative_path)
         && !(relative_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
+}
+
+/// The largest file of this kind that is sent: a library a build links may be large, anything
+/// else over [`MAX_FILE_SIZE`] is data.
+fn size_limit(relative_path: &str) -> u64 {
+    let library = Path::new(relative_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| matches!(e, "a" | "so" | "dylib" | "lib" | "o"));
+    if library {
+        MAX_LIBRARY_SIZE
+    } else {
+        MAX_FILE_SIZE
+    }
+}
+
+/// `files` in the order given, cut into messages of at most `budget` bytes of content each; a
+/// file larger than the budget travels alone. Always at least one batch, possibly empty: an
+/// empty delta is still sent, and its answer tells whether the gateway's copy still exists.
+fn sync_batches(files: Vec<FileDelta>, budget: usize) -> Vec<Vec<FileDelta>> {
+    let mut batches = vec![Vec::new()];
+    let mut size = 0usize;
+    for file in files {
+        let len = file.content.as_ref().map_or(0, Vec::len);
+        let current = batches.last().expect("never empty");
+        if !current.is_empty() && size + len > budget {
+            batches.push(Vec::new());
+            size = 0;
+        }
+        size += len;
+        batches.last_mut().expect("never empty").push(file);
+    }
+    batches
 }
 
 fn is_executable(metadata: &std::fs::Metadata) -> bool {
@@ -1488,8 +1536,9 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
 /// `include_bytes!` data, `.github/` (#123). An extension allowlist made sense for a directory
 /// walk, which cannot tell a fixture from a dataset; git can, because an ignored file is not
 /// listed. What stays out is what [`is_relevant_code_or_manifest_file`] keeps out by directory —
-/// data trees, build output, vendored dependencies — and `.git` itself. The size limits are
-/// applied where the file is read.
+/// data trees and build output — and `.git` itself. A `vendor/` directory git lists is a build
+/// input (Go's `-mod=vendor`, a C library linked through cgo) and goes too (#313). The size
+/// limits are applied where the file is read.
 pub fn is_synced_git_path(rel_path: &str) -> bool {
     if is_relevant_code_or_manifest_file(rel_path) {
         return true;
@@ -1513,8 +1562,7 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         if !under_code_dir
             && matches!(
                 dir.as_ref(),
-                "vendor"
-                    | "dist"
+                "dist"
                     | "build"
                     | "results"
                     | "samples"
@@ -1628,10 +1676,7 @@ pub fn scan_workspace_files(root: &Path, subpath: Option<&Path>) -> Result<Vec<F
             let Ok(metadata) = full_path.metadata() else {
                 continue; // listed by git, deleted on disk
             };
-            if !metadata.is_file()
-                || metadata.len() > MAX_FILE_SIZE
-                || (rel_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE)
-            {
+            if !fits_sync(&rel_path, &metadata) {
                 continue;
             }
             let Ok(content) = std::fs::read(&full_path) else {
@@ -1922,6 +1967,73 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tracked `vendor/` directory is a build input and is synced; data trees stay out, and
+    /// a library a build links may be far larger than a source file (#313).
+    #[test]
+    fn a_vendored_library_is_synced_and_may_be_large() {
+        assert!(is_synced_git_path(
+            "internal/takovt/vendor/include/prod_vt_checkpoint.h"
+        ));
+        assert!(is_synced_git_path(
+            "internal/takovt/vendor/lib/darwin-arm64/libtako_core.a"
+        ));
+        assert!(is_synced_git_path("vendor/github.com/pkg/errors/errors.go"));
+        assert!(!is_synced_git_path("data/prices.csv"));
+        assert!(!is_synced_git_path("dist/app.js"));
+        assert_eq!(size_limit("vendor/lib/libtako_core.a"), MAX_LIBRARY_SIZE);
+        assert_eq!(size_limit("lib/libfoo.dylib"), MAX_LIBRARY_SIZE);
+        assert_eq!(size_limit("src/main.go"), MAX_FILE_SIZE);
+        assert_eq!(size_limit("assets/video.mp4"), MAX_FILE_SIZE);
+    }
+
+    /// A sync is cut into messages that stay under the frame limit: files are packed in order up
+    /// to the budget, one larger than the budget travels alone, and an empty delta is still one
+    /// (empty) message (#313).
+    #[test]
+    fn a_sync_is_cut_into_messages_under_the_budget() {
+        let file = |name: &str, len: usize| FileDelta {
+            relative_path: name.to_string(),
+            content: Some(vec![b'x'; len]),
+            is_executable: false,
+        };
+        let deleted = FileDelta {
+            relative_path: "gone.rs".to_string(),
+            content: None,
+            is_executable: false,
+        };
+        let names = |batches: &[Vec<FileDelta>]| -> Vec<Vec<String>> {
+            batches
+                .iter()
+                .map(|b| b.iter().map(|f| f.relative_path.clone()).collect())
+                .collect()
+        };
+        let batches = sync_batches(
+            vec![
+                file("a", 4),
+                file("b", 4),
+                deleted.clone(),
+                file("c", 3),
+                file("huge", 25),
+                file("d", 1),
+            ],
+            10,
+        );
+        assert_eq!(
+            names(&batches),
+            vec![
+                vec!["a", "b", "gone.rs"],
+                vec!["c"],
+                vec!["huge"],
+                vec!["d"],
+            ]
+        );
+        assert_eq!(sync_batches(Vec::new(), 10), vec![Vec::<FileDelta>::new()]);
+        assert_eq!(
+            names(&sync_batches(vec![deleted], 10)),
+            vec![vec!["gone.rs"]]
+        );
+    }
 
     /// A loose file of another language than the checkout's goes to its own language's engine,
     /// rooted at its directory; a file of the root's language, or one at the root, stays (#247).
@@ -2506,8 +2618,8 @@ mod tests {
         assert_eq!(engine_project(root, root), (None, Some("rust")));
     }
 
-    /// What git lists is mirrored whatever its extension; data trees, build output and `.git`
-    /// are not (#123).
+    /// What git lists is mirrored whatever its extension, `vendor/` included (#313); data
+    /// trees, build output and `.git` are not (#123).
     #[test]
     fn a_file_git_lists_is_synced_whatever_its_extension() {
         for synced in [
@@ -2518,6 +2630,7 @@ mod tests {
             "docs/notes.md",
             "src/main.rs",
             "crates/x/data/table.csv",
+            "vendor/lib/x.c",
         ] {
             assert!(is_synced_git_path(synced), "{synced} should be synced");
         }
@@ -2527,7 +2640,6 @@ mod tests {
             "web/node_modules/x/index.js",
             "data/prices.csv",
             "research/bench.jsonl",
-            "vendor/lib/x.c",
             "fixtures/.DS_Store",
         ] {
             assert!(!is_synced_git_path(kept_out), "{kept_out} should stay out");
