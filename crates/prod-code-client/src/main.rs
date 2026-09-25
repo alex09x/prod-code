@@ -173,7 +173,7 @@ enum Commands {
         json: bool,
     },
     /// Report a bug in prod-code itself as a GitHub issue (private details are removed first;
-    /// similar open issues are listed and nothing is filed unless --force)
+    /// similar issues, open or closed, are listed and nothing is filed unless --force)
     ReportIssue {
         /// A searchable title: what went wrong, in which tool or command
         #[arg(long)]

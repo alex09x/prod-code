@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- **`prod-code report-issue --help` says that similar issues, open or closed, are listed** (#299).
+  The duplicate search has covered closed issues since #296; the help still said "open".
+
 ## v0.3.5 — 2026-09-24
 
 ### Added
