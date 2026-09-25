@@ -4978,7 +4978,11 @@ fn representative_source_file(dir: &Path) -> Option<std::path::PathBuf> {
             let outside_src = usize::from(!(rel.starts_with("src/") || rel.starts_with("lib/")));
             let is_test = usize::from(rel.contains("test") || rel.contains("spec"));
             let key = (outside_src + is_test, rel.len());
-            if best.as_ref().is_none_or(|(a, b, _)| key < (*a, *b)) {
+            // A file of a nested project that is its own (another language, or a crate the
+            // root workspace leaves out) would open the session in that project (#335).
+            if best.as_ref().is_none_or(|(a, b, _)| key < (*a, *b))
+                && crate::sync::engine_project(dir, &path).0.is_none()
+            {
                 best = Some((key.0, key.1, path));
             }
         }
@@ -5089,6 +5093,38 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_workspace_query_is_anchored_in_the_root_project_not_a_crate_it_leaves_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/core\"]\nresolver = \"2\"\n",
+        );
+        write(
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write("crates/core/src/lib.rs", "pub fn core() {}\n");
+        // A crate with a workspace of its own and the shorter path: its own project (#335).
+        write(
+            "ext/zed/Cargo.toml",
+            "[package]\nname = \"zed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        );
+        write("ext/zed/src/lib.rs", "pub fn ext() {}\n");
+        let anchor = super::representative_source_file(root).unwrap();
+        assert!(
+            anchor.ends_with("crates/core/src/lib.rs"),
+            "the anchor is the root workspace's: {}",
+            anchor.display()
+        );
+    }
+
     use super::*;
 
     #[test]
