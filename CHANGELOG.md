@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Fixed
+- **Tracked `vendor/` directories and the libraries a build links reach the node, and a large
+  sync no longer exceeds the frame limit** (#313). The sync skipped every directory named
+  `vendor`, and every file over 5 MiB, even when git tracked them, so a Go package linking a
+  vendored C library through cgo failed on the node with a missing header. A tracked `vendor/`
+  is now synced, and a library a build links (`.a`, `.so`, `.dylib`, `.lib`, `.o`) may be up to
+  128 MiB; data trees and other large files stay out as before. A sync used to go in one
+  message, which a large tree could push past the 64 MiB frame limit: it is now cut into
+  messages of at most 24 MiB of content, a file larger than that travels alone, and the frame
+  limit is 256 MiB. Existing checkouts are probed once more to pick up what was skipped.
+
 ## v0.3.7 — 2026-09-24
 
 ### Fixed

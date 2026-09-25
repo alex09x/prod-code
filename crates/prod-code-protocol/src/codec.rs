@@ -5,8 +5,10 @@ use bytes::{Buf, BufMut, BytesMut};
 use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-/// Maximum allowed wire frame size (64 MiB) to accommodate large ASTs or symbol queries.
-pub const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum allowed wire frame size. A sync message carries at most 24 MiB of content, but a
+/// vendored library a build links (up to 128 MiB, base64 on the wire) travels in a message of
+/// its own (#313).
+pub const MAX_FRAME_SIZE: usize = 256 * 1024 * 1024;
 
 /// Length-delimited codec for `WireMessage`.
 ///
