@@ -509,7 +509,13 @@ pub async fn validate_texts(
     // analyzer itself reports such a call as "type annotations needed" or "cannot find".
     let mut missing: Vec<(String, String)> = Vec::new();
     let mut sources: HashMap<String, String> = HashMap::new();
-    for (file, text) in edits {
+    // clangd builds a source against the header text that is open when the source is built,
+    // and a source is built as soon as it is asked about below; one built before its header's
+    // proposed text is open keeps the old header's errors. So the headers of a C or C++ change
+    // are opened first (#292); the reports still come in the order of `edits`.
+    let mut order: Vec<usize> = (0..edits.len()).collect();
+    order.sort_by_key(|&i| !crate::lang::is_header(&edits[i].0));
+    for (file, text) in order.iter().map(|&i| &edits[i]) {
         let uri = session.uri_for(file)?;
         let symbols_params = serde_json::json!({ "textDocument": { "uri": uri } });
         let before = if root.join(file).is_file() || file.is_file() {
@@ -534,6 +540,10 @@ pub async fn validate_texts(
         sources.insert(shown, text.clone());
         uris.push((file.clone(), uri));
     }
+    let mut opened: Vec<(usize, (std::path::PathBuf, String))> =
+        order.into_iter().zip(uris).collect();
+    opened.sort_by_key(|(i, _)| *i);
+    let uris: Vec<_> = opened.into_iter().map(|(_, u)| u).collect();
     let mut reports = Vec::with_capacity(edits.len() + also_check.len());
     for (file, uri) in &uris {
         let result = session

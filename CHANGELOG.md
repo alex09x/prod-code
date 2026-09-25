@@ -14,6 +14,47 @@
   closed one is fixed in a newer release. Details that cannot be public stay in the reporter's
   own private record, and `private_ref` puts that record's id in the issue. `dry_run` shows the
   scrubbed issue without filing it.
+- **Extract parameter and introduce parameter object work on C, C++ and Swift** (epic #13,
+  refactorings beyond Rust). `code_extract_parameter` writes the new parameter as `T name` in C
+  and C++, with `*` and `&` bound to the name (`const char *label`), and as `name: T` in Swift,
+  or `_ name: T` when the function already takes a positional argument. A literal gives its own
+  type (`80` is `int` or `Int`, `0.5f` a `float`, `"x"` a `const char *` or a `String`);
+  otherwise clangd's `Type:` line or sourcekit-lsp's hover does, without clangd's `(aka …)`.
+  clangd leaves declarations out of its references, so the header's prototype and an in-class
+  method declaration are asked for separately and change together with the definition, and
+  `f(void)` becomes `f(T name)`. `code_introduce_parameter_object` writes a C or C++ `struct`
+  into the header above the prototype (above the class, for a method), rewrites every
+  declaration of the function with its definition, and makes each call pass
+  `(struct Opts){.a = x}` in C, `{.a = x}` in C++20 or later, and `{x, y}` before C++20, as the
+  build declares it: clang accepts designators in C++17 as an extension, so the analyzer's own
+  check cannot tell. Swift gets a `struct` of `let` properties, public when the function is,
+  and each call passes `Opts(a: x)` under the new parameter's label. A list that ends in C's
+  `...`, a C++ pack or an unlabeled Swift variadic is refused.
+
+### Fixed
+- **C and C++ checks judge the sources against the proposed header, not the one on disk**
+  (#292). clangd parses an included header from disk unless it runs with
+  `--use-dirty-headers`, and a source built before the header's new text is open keeps the old
+  header's errors. A correct change to a prototype and its callers came back from
+  `code_validate_edits`, and from every refactoring's check, as "Too many arguments to function
+  call" and "Conflicting types", and `apply` refused it. The gateway now starts clangd with the
+  flag, and a change's headers reach the analyzer before its sources.
+- **C, C++ and Swift checks answer for the text that was sent, not an older one** (#293). For
+  a server that does not advertise pull diagnostics, the gateway answered with the last
+  diagnostics published for the file, whatever text they were for, so the same correct change
+  came back with different errors from run to run. A server that answers a pull is now asked
+  for one: sourcekit-lsp answers without advertising it, and the first thing it publishes for
+  a file is an empty list, so every Swift check had said "0 errors", even for a type error.
+  clangd, which does not, is waited for until it has published for the version last sent. A C
+  or C++ workspace now validates on a second clangd without a background index: clangd kept a
+  closed file in its index as it was last built, so a check's proposed text went on answering
+  `references` for other sessions, and a later refactoring missed a caller.
+- **A caller the language server did not report is checked with the change** (#294). Before
+  the first `swift build`, sourcekit-lsp has no index and reports no references, so a Swift
+  refactoring rewrote the declaration alone and passed its check. Files of the same language
+  that call the function by name but got no reference are now checked together with the
+  rewritten files, so a caller left behind shows up as an error and `apply` refuses it. The
+  report lists those files and, for Swift, says to build first.
 
 ## v0.3.4 — 2026-09-24
 
