@@ -1763,6 +1763,24 @@ async fn cli_takes_a_file_to_tell_same_named_symbols_apart() {
     assert!(!text.contains("lib.rs:5"), "{text}");
 }
 
+/// The command line's outline of a file no language server serves says so and exits non-zero,
+/// where it printed the server's `null` (#362).
+#[tokio::test]
+async fn cli_outline_of_a_file_no_server_serves_is_an_error() {
+    let ws = make_workspace();
+    ws.write("scripts/build.sh", "#!/bin/sh\necho hi\n");
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    let out = run_cli(&ws, gw.addr, &["outline", "scripts/build.sh"]).await;
+    assert!(!out.status.success(), "{}", stdout_of(&out));
+    let stderr = stderr_of(&out);
+    assert!(
+        stderr.contains("no language server serves `.sh` files"),
+        "{stderr}"
+    );
+    assert!(!stdout_of(&out).contains("null"), "{}", stdout_of(&out));
+}
+
 #[tokio::test]
 async fn cli_outlines_a_directory_and_exits_zero() {
     let ws = make_workspace();

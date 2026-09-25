@@ -3105,31 +3105,21 @@ async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()
         return Ok(());
     }
 
-    let file_uri = Url::from_file_path(&abs_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
-        .to_string();
-
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri }
-    });
-
-    let result = execute_lsp_query(remote, file, "textDocument/documentSymbol", params).await?;
-
-    if result.is_array() {
-        println!(
-            "{}",
-            prod_code_mcp::tools::render_outline(
-                &result,
-                &file.display().to_string(),
-                usize::MAX,
-                locals,
-                "pass --locals",
-            )
-        );
-    } else {
-        println!("{:#}", result);
-    }
-
+    // The MCP tool's outline: Markdown headings, an error for a language no server serves,
+    // never a bare `null` (#362).
+    let cwd = env::current_dir().context("Failed to determine current working directory")?;
+    let ws_root = find_workspace_root(&abs_path).unwrap_or(cwd);
+    let text = prod_code_mcp::tools::outline_file(
+        remote,
+        &ws_root,
+        &abs_path,
+        &file.display().to_string(),
+        usize::MAX,
+        locals,
+        "pass --locals",
+    )
+    .await?;
+    println!("{text}");
     Ok(())
 }
 
