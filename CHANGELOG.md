@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.7 — 2026-09-24
+
 ### Fixed
 - **A Go module with macOS-only cgo can use prod-code: a macOS node serves Go for it, and only
   for it** (#308). #248 rightly places such a module on macOS, but the macOS nodes served Swift
