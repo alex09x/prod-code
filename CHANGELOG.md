@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+- **Agents can report prod-code bugs as GitHub issues** (#290). MCP `code_report_issue` and
+  `prod-code report-issue --title … --body …` file an issue in `alex09x/prod-code` through the
+  machine's `gh` CLI, so an agent that hits a wrong answer, a hang or a missing capability can
+  report it right away and carry on. Before anything is sent, LAN addresses become `<node>`,
+  the home directory and `/Users/<name>` or `/home/<name>` become `~`, and the host name becomes
+  `<host>`. An Environment section adds the client version and platform and the node's platform
+  and engines. Issues with a similar title, open or closed, are listed first, and nothing is
+  filed unless `force` is set: the agent comments on an open one instead, or checks whether a
+  closed one is fixed in a newer release. Details that cannot be public stay in the reporter's
+  own private record, and `private_ref` puts that record's id in the issue. `dry_run` shows the
+  scrubbed issue without filing it.
+
 ## v0.3.4 — 2026-09-24
 
 ### Fixed
