@@ -307,6 +307,9 @@ pub async fn pick_node_with(
         let mut candidates = Vec::new();
         let mut unsupported = Vec::new();
         let mut on_macos = Vec::new();
+        // Why the first node that did not answer did not (#340): a gateway that is down, or on
+        // macOS an app not let onto the local network, reads differently.
+        let mut first_failure = None;
         for candidate in rendezvous_order(nodes, workspace_name) {
             match node_status(candidate).await {
                 Ok(status) if status_fits(&status, engine, os) => {
@@ -316,11 +319,13 @@ pub async fn pick_node_with(
                     candidates.push((candidate, status.load_per_cpu()));
                 }
                 Ok(_) => unsupported.push(candidate),
-                Err(_) => {
+                Err(err) => {
                     // A node that accepts TCP but answers no status is only usable when
                     // nothing specific is required of it.
                     if engine.is_none() && os.is_none() && is_alive(candidate).await {
                         candidates.push((candidate, None));
+                    } else if first_failure.is_none() {
+                        first_failure = Some(format!("{candidate}: {}", err.root_cause()));
                     }
                 }
             }
@@ -354,7 +359,10 @@ pub async fn pick_node_with(
                 "no reachable gateway serves {engine} (reachable without it: {}); add a node with the {engine} language server installed",
                 listed(&unsupported)
             ),
-            _ => anyhow!("no gateway reachable among {}", listed(nodes)),
+            _ => match first_failure {
+                Some(why) => anyhow!("no gateway reachable among {} ({why})", listed(nodes)),
+                None => anyhow!("no gateway reachable among {}", listed(nodes)),
+            },
         });
     };
     // One node is used without asking, unless the checkout needs an OS it has to be shown to
@@ -868,5 +876,21 @@ mod tests {
         );
         assert!(pick_node_with(&[dead], "", None, None, None).await.is_ok());
         assert!(pick_node_with(&[], "ws", None, None, None).await.is_err());
+    }
+
+    /// When no node answers, the error says why the first did not (#340).
+    #[tokio::test]
+    async fn no_node_reachable_names_why_the_first_did_not_answer() {
+        let dead: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let also_dead: SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let err = pick_node_with(&[dead, also_dead], "ws", Some("rust"), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("no gateway reachable among"), "{err}");
+        assert!(
+            err.contains("127.0.0.1:") && err.to_lowercase().contains("refused"),
+            "the operating system's reason is named: {err}"
+        );
     }
 }
