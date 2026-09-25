@@ -132,6 +132,28 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     (None, root_engine)
 }
 
+/// The checkout a local file outside `root` belongs to: the nearest ancestor that is a git
+/// checkout, or else the nearest with a manifest the gateway keys on (as the command line picks
+/// a file's checkout). `None` for a file under `root`, one that does not exist here (a path only
+/// the node has), or one no checkout holds.
+pub fn other_checkout(root: &Path, file: &Path) -> Option<PathBuf> {
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let file = std::fs::canonicalize(file).ok()?;
+    if file.starts_with(&canonical_root) {
+        return None;
+    }
+    let mut manifest = None;
+    for dir in file.ancestors().skip(1) {
+        if dir.join(".git").exists() {
+            return Some(dir.to_path_buf());
+        }
+        if manifest.is_none() && expected_engine(dir).is_some() {
+            manifest = Some(dir.to_path_buf());
+        }
+    }
+    manifest
+}
+
 /// The engine a source file's extension names, when it names one.
 pub fn engine_for_file(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();

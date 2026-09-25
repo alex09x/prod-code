@@ -1118,3 +1118,48 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
         "the dead connection is replaced by a fresh one"
     );
 }
+
+/// A file of another checkout on this machine, such as a clone next to this one, is asked about
+/// in a session of that checkout, not of the one the tools run in: a TypeScript site's session
+/// answered a Rust file of a clone with "Language server process has exited" (#353).
+#[tokio::test]
+async fn a_file_of_another_checkout_is_asked_about_in_that_checkouts_session() {
+    let own = Workspace::new(&[("package.json", "{}\n"), ("src/index.ts", "export {};\n")]);
+    let other = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"other\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let file = other.path("src/lib.rs");
+    let gateway = RecordingGateway::start(hover_answer()).await;
+
+    let result = prod_code_mcp::session::pooled_query(
+        gateway.addr(),
+        &own.root(),
+        &file,
+        "textDocument/hover",
+        serde_json::json!({ "textDocument": { "uri": format!("file://{}", file.display()) } }),
+    )
+    .await
+    .expect("the query runs");
+    assert_eq!(result["contents"]["value"], "hover text");
+
+    let other_root = std::fs::canonicalize(other.root()).expect("the other checkout");
+    let roots: Vec<String> = gateway
+        .events_for("initialize")
+        .iter()
+        .map(|e| {
+            e["params"]["rootUri"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        roots,
+        vec![format!("file://{}", other_root.display())],
+        "one session, the other checkout's"
+    );
+}
