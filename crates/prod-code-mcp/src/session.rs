@@ -21,10 +21,20 @@ use url::Url;
 pub struct LspSession {
     framed: Framed<TcpStream, ProdCodeCodec>,
     root: PathBuf,
-    opened: HashSet<String>,
+    /// The documents open in the server, by URI: the file, and a hash of the disk text last
+    /// sent for it (`None` for a proposed text, which is not the file's).
+    opened: HashMap<String, (PathBuf, Option<u64>)>,
     next_id: i64,
     /// The engine the gateway chose for this session.
     pub engine: String,
+}
+
+/// A hash of a document's text, to tell whether the file still holds what was sent.
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// How long a request may take before the session gives up on it. A structural rewrite searches
@@ -112,7 +122,7 @@ impl LspSession {
         let mut session = Self {
             framed,
             root,
-            opened: HashSet::new(),
+            opened: HashMap::new(),
             next_id: 1,
             engine: handshake.detected_engine,
         };
@@ -224,7 +234,7 @@ impl LspSession {
         // dependency's source in the node's cargo registry: the node's analyzer already has
         // it, and reading it here would fail (#271).
         let only_on_the_node = !abs.starts_with(&self.root) && !abs.exists();
-        if !self.opened.contains(&uri) && !abs.is_dir() && !only_on_the_node {
+        if !self.opened.contains_key(&uri) && !abs.is_dir() && !only_on_the_node {
             let text = tokio::fs::read_to_string(&abs)
                 .await
                 .with_context(|| format!("failed to read {}", abs.display()))?;
@@ -238,7 +248,8 @@ impl LspSession {
                 }}),
             )
             .await?;
-            self.opened.insert(uri.clone());
+            self.opened
+                .insert(uri.clone(), (abs.clone(), Some(text_hash(&text))));
         }
         self.request(method, params).await
     }
@@ -269,7 +280,8 @@ impl LspSession {
         let uri = Url::from_file_path(&abs)
             .map_err(|_| anyhow!("invalid file path {}", abs.display()))?
             .to_string();
-        if self.opened.contains(&uri) {
+        if self.opened.contains_key(&uri) {
+            self.opened.insert(uri.clone(), (abs.clone(), None));
             self.notify(
                 "textDocument/didChange",
                 serde_json::json!({
@@ -289,7 +301,7 @@ impl LspSession {
                 }}),
             )
             .await?;
-            self.opened.insert(uri.clone());
+            self.opened.insert(uri.clone(), (abs.clone(), None));
         }
         Ok(uri)
     }
@@ -307,24 +319,39 @@ impl LspSession {
     }
 
     /// Pushes the checkout's changes since the last sync over this same connection and
-    /// brings the documents the session holds open in line with them (`didChange` for
-    /// rewritten files, `didClose` for deleted ones), so a long-lived session sees every
-    /// local edit exactly like a fresh one would.
+    /// brings the documents the session holds open in line with the files (`didChange` for a
+    /// rewritten file, `didClose` for a deleted one), so a long-lived session sees every local
+    /// edit exactly like a fresh one would. That is every file this sync pushed, and every file
+    /// opened from disk whose text is no longer what was sent: another client (the CLI, an
+    /// `exec` whose formatter's output came back, another agent) may have pushed it to the node
+    /// already, and this sync then pushes nothing for it (#360).
     pub async fn refresh(&mut self) -> Result<()> {
         let identity = workspace_identity(&self.root);
         let outcome = push_workspace_sync(&mut self.framed, &self.root, &identity, None)
             .await
             .context("workspace sync on the open session failed")?;
-        for rel in outcome.changed_paths {
-            let abs = self.root.join(&rel);
-            let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
-                continue;
-            };
-            if !self.opened.contains(&uri) {
+        let pushed: HashSet<String> = outcome
+            .changed_paths
+            .iter()
+            .filter_map(|rel| Url::from_file_path(self.root.join(rel)).ok())
+            .map(|uri| uri.to_string())
+            .collect();
+        let open: Vec<(String, PathBuf, Option<u64>)> = self
+            .opened
+            .iter()
+            .map(|(uri, (path, sent))| (uri.clone(), path.clone(), *sent))
+            .collect();
+        for (uri, path, sent) in open {
+            let was_pushed = pushed.contains(&uri);
+            if !was_pushed && sent.is_none() {
                 continue;
             }
-            match tokio::fs::read_to_string(&abs).await {
+            match tokio::fs::read_to_string(&path).await {
                 Ok(text) => {
+                    let hash = text_hash(&text);
+                    if !was_pushed && sent == Some(hash) {
+                        continue;
+                    }
                     let version = self.next_id;
                     self.next_id += 1;
                     self.notify(
@@ -335,6 +362,7 @@ impl LspSession {
                         }),
                     )
                     .await?;
+                    self.opened.insert(uri, (path, Some(hash)));
                 }
                 Err(_) => {
                     self.notify(
@@ -351,7 +379,7 @@ impl LspSession {
 
     /// Ends the session cleanly.
     pub async fn close(mut self) {
-        for uri in std::mem::take(&mut self.opened) {
+        for uri in std::mem::take(&mut self.opened).into_keys() {
             let _ = self
                 .notify(
                     "textDocument/didClose",

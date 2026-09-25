@@ -16,6 +16,10 @@
   - A Swift reference or caller search that finds nothing builds the package's index on its node
     once (`swift build --build-tests`) and asks again, and says so; when the build fails, the
     answer says why instead of a bare "No references found".
+- **An MCP session sees a file another client pushed** (#360). A long-lived session sent a
+  changed file to the server only when its own sync pushed it; after the CLI, an `exec` whose
+  formatter's output came back, or another agent had already pushed it, definitions and hovers
+  came from the text the session first opened. Every open file whose text changed is sent now.
 
 ## v0.3.11 — 2026-09-25
 
