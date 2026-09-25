@@ -139,6 +139,10 @@ pub const ANALYZER_PANIC_CODE: &str = "prod-code::analyzer-panic";
 /// [`HandshakeRequest::purpose`] of a session that only validates proposed texts.
 pub const PURPOSE_VALIDATION: &str = "validation";
 
+/// [`HandshakeRequest::purpose`] of an editor's session (`prod-code lsp`): the gateway pushes
+/// the diagnostics of the documents it opens and changes, as a language server does (#310).
+pub const PURPOSE_EDITOR: &str = "editor";
+
 /// Handshake acknowledgement sent by remote gateway.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeResponse {

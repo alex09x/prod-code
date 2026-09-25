@@ -2234,7 +2234,11 @@ async fn lsp_pushes_the_checkout_before_its_handshake_and_every_change_after_it(
                             })),
                         ),
                         WireMessage::HandshakeRequest(req) => (
-                            format!("handshake {}", req.base_workspace_name.unwrap_or_default()),
+                            format!(
+                                "handshake {} purpose={}",
+                                req.base_workspace_name.unwrap_or_default(),
+                                req.purpose.unwrap_or_default()
+                            ),
                             Some(WireMessage::HandshakeResponse(HandshakeResponse {
                                 protocol_version: PROTOCOL_VERSION,
                                 server_pid: std::process::id(),
@@ -2324,11 +2328,15 @@ async fn lsp_pushes_the_checkout_before_its_handshake_and_every_change_after_it(
         matches!((probe, handshake), (Some(p), Some(h)) if p < h),
         "the checkout is pushed before the handshake: {seen:?}"
     );
-    let name = |event: &str| event.split_once(' ').map(|(_, n)| n.to_string());
+    let name = |event: &str| event.split(' ').nth(1).map(str::to_string);
     assert_eq!(
         name(first[probe.unwrap()]),
         name(first[handshake.unwrap()]),
         "the handshake names the workspace the sync filled: {seen:?}"
+    );
+    assert!(
+        first[handshake.unwrap()].ends_with("purpose=editor"),
+        "the session says it is an editor's, so diagnostics are pushed to it: {seen:?}"
     );
     assert!(
         first.iter().any(|e| *e == "lsp initialize"),

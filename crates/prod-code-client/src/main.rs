@@ -3183,7 +3183,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             engine_subpath: None,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
-            purpose: None,
+            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
         }))
         .await?;
 

@@ -2017,3 +2017,376 @@ async fn the_remaining_branches_of_the_dispatch() {
         "a lone gateway is a cluster of one: {view:?}"
     );
 }
+
+/// An editor's session on the wire: synced, handshaken as an editor, initialised.
+struct EditorSession {
+    framed: tokio_util::codec::Framed<tokio::net::TcpStream, prod_code_protocol::ProdCodeCodec>,
+    next_id: u64,
+    notes: Vec<serde_json::Value>,
+}
+
+impl EditorSession {
+    async fn open(addr: SocketAddr, root: &Path) -> (Self, serde_json::Value) {
+        use futures_util::{SinkExt, StreamExt};
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        let mut framed =
+            tokio_util::codec::Framed::new(stream, prod_code_protocol::ProdCodeCodec::new());
+        let identity = prod_code_mcp::sync::workspace_identity(root);
+        prod_code_mcp::sync::push_workspace_sync(&mut framed, root, &identity, None)
+            .await
+            .expect("sync");
+        framed
+            .send(prod_code_protocol::WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: prod_code_protocol::PROTOCOL_VERSION,
+                    client_name: "editor-test".to_string(),
+                    client_pid: std::process::id(),
+                    auth_token: None,
+                    client_workspace_root: root.to_string_lossy().to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: Some(identity.name.clone()),
+                    engine_subpath: None,
+                    client_agent: None,
+                    client_host: None,
+                    purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+                },
+            ))
+            .await
+            .expect("handshake");
+        match framed.next().await {
+            Some(Ok(prod_code_protocol::WireMessage::HandshakeResponse(_))) => {}
+            other => panic!("no handshake response: {other:?}"),
+        }
+        let mut session = Self {
+            framed,
+            next_id: 1,
+            notes: Vec::new(),
+        };
+        let root_uri = format!("file://{}", root.display());
+        let init = session
+            .request(
+                "initialize",
+                serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
+            )
+            .await;
+        session.notify("initialized", serde_json::json!({})).await;
+        (session, init)
+    }
+
+    async fn notify(&mut self, method: &str, params: serde_json::Value) {
+        use futures_util::SinkExt;
+        let message = serde_json::json!({ "jsonrpc": "2.0", "method": method, "params": params });
+        self.framed
+            .send(prod_code_protocol::WireMessage::LspPayload(
+                message.to_string(),
+            ))
+            .await
+            .expect("send");
+    }
+
+    /// The whole response (`result` or `error`) to one request; notifications that arrive in
+    /// the meantime are kept.
+    async fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        use futures_util::{SinkExt, StreamExt};
+        let id = self.next_id;
+        self.next_id += 1;
+        let message =
+            serde_json::json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        self.framed
+            .send(prod_code_protocol::WireMessage::LspPayload(
+                message.to_string(),
+            ))
+            .await
+            .expect("send");
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(120), self.framed.next())
+                .await
+                .unwrap_or_else(|_| panic!("{method} was not answered"));
+            let Some(Ok(prod_code_protocol::WireMessage::LspPayload(raw))) = frame else {
+                panic!("the session ended waiting for {method}: {frame:?}");
+            };
+            let value: serde_json::Value = serde_json::from_str(&raw).expect("json");
+            if value.get("id") == Some(&serde_json::json!(id)) && value.get("method").is_none() {
+                return value;
+            }
+            self.notes.push(value);
+        }
+    }
+
+    /// The next `textDocument/publishDiagnostics` for `uri` after `after` of them were seen.
+    async fn diagnostics(&mut self, uri: &str, after: usize) -> serde_json::Value {
+        use futures_util::StreamExt;
+        let published = |notes: &[serde_json::Value]| -> Vec<serde_json::Value> {
+            notes
+                .iter()
+                .filter(|n| {
+                    n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == uri
+                })
+                .map(|n| n["params"]["diagnostics"].clone())
+                .collect()
+        };
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Some(found) = published(&self.notes).get(after) {
+                return found.clone();
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            let frame = tokio::time::timeout(left, self.framed.next())
+                .await
+                .expect("diagnostics were published");
+            let Some(Ok(prod_code_protocol::WireMessage::LspPayload(raw))) = frame else {
+                panic!("the session ended waiting for diagnostics: {frame:?}");
+            };
+            self.notes.push(serde_json::from_str(&raw).expect("json"));
+        }
+    }
+}
+
+const EDITOR_SUBJECT: &str = "pub struct Counter {
+    pub total: u32,
+}
+
+impl Counter {
+    pub fn add(&mut self, amount: u32) -> u32 {
+        self.total += amount;
+        self.total
+    }
+}
+
+pub fn run() -> u32 {
+    let mut counter = Counter { total: 0 };
+    counter.add(2)
+}
+";
+
+/// An editor on `prod-code lsp` in a Rust checkout gets what it needs beyond navigation from
+/// the in-memory engine (#310): completion with its imports, signature help, inlay hints,
+/// highlights, code actions with their edits, formatting, and diagnostics pushed after an
+/// edit. A request the engine has no answer for is refused instead of left waiting.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"subject\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/lib.rs"), EDITOR_SUBJECT).expect("lib.rs");
+    commit_in(&root);
+
+    let (mut editor, init) = EditorSession::open(gateway.addr, &root).await;
+    let caps = &init["result"]["capabilities"];
+    assert_eq!(
+        caps["completionProvider"]["resolveProvider"], true,
+        "{init}"
+    );
+    assert_eq!(caps["textDocumentSync"]["change"], 1, "{init}");
+    assert_eq!(init["result"]["serverInfo"]["name"], "prod-code", "{init}");
+
+    let uri = format!("file://{}", root.join("src/lib.rs").display());
+    editor
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": { "uri": uri, "languageId": "rust", "version": 1, "text": EDITOR_SUBJECT } }),
+        )
+        .await;
+    let doc = serde_json::json!({ "uri": uri });
+    let at = |line: u32, character: u32| serde_json::json!({ "textDocument": doc, "position": { "line": line, "character": character } });
+
+    // After `self.` on line 7, a field access: the field and the method.
+    let completion = editor.request("textDocument/completion", at(7, 13)).await;
+    let labels: Vec<&str> = completion["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a completion list: {completion}"))
+        .iter()
+        .filter_map(|item| item["label"].as_str())
+        .collect();
+    // rust-analyzer labels a method with its parentheses: `add(…)`.
+    assert!(
+        labels.iter().any(|l| l.starts_with("add(")) && labels.contains(&"total"),
+        "the method and the field are offered: {labels:?}"
+    );
+    let add = completion["result"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item["label"]
+                    .as_str()
+                    .is_some_and(|l| l.starts_with("add("))
+            })
+        })
+        .cloned()
+        .expect("add");
+    assert_eq!(add["kind"], 2, "a method: {add}");
+    let resolved = editor.request("completionItem/resolve", add.clone()).await;
+    assert_eq!(resolved["result"]["label"], add["label"], "{resolved}");
+
+    // A name the file has not imported: the item carries its import, and resolving it adds
+    // the `use`.
+    let importing = EDITOR_SUBJECT.replace(
+        "    counter.add(2)\n",
+        "    let _map = HashMa;\n    counter.add(2)\n",
+    );
+    editor
+        .notify(
+            "textDocument/didChange",
+            serde_json::json!({ "textDocument": { "uri": uri, "version": 2 }, "contentChanges": [{ "text": importing }] }),
+        )
+        .await;
+    let completion = editor.request("textDocument/completion", at(13, 21)).await;
+    let hash_map = completion["result"]["items"]
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item["label"]
+                    .as_str()
+                    .is_some_and(|l| l.starts_with("HashMap"))
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("HashMap is offered: {completion}"));
+    assert!(
+        hash_map["data"]["imports"]
+            .as_array()
+            .is_some_and(|imports| !imports.is_empty()),
+        "the item carries its import: {hash_map}"
+    );
+    let resolved = editor.request("completionItem/resolve", hash_map).await;
+    let added: String = resolved["result"]["additionalTextEdits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|edit| edit["newText"].as_str())
+        .collect();
+    assert!(
+        added.contains("use std::collections::HashMap;"),
+        "resolving adds the import: {resolved}"
+    );
+    editor
+        .notify(
+            "textDocument/didChange",
+            serde_json::json!({ "textDocument": { "uri": uri, "version": 3 }, "contentChanges": [{ "text": EDITOR_SUBJECT }] }),
+        )
+        .await;
+
+    // Inside `add(` on line 13: the signature, with `amount` as its parameter.
+    let help = editor
+        .request("textDocument/signatureHelp", at(13, 16))
+        .await;
+    let signature = &help["result"]["signatures"][0];
+    let label = signature["label"].as_str().unwrap_or_default();
+    assert!(label.contains("fn add"), "{help}");
+    let span = &signature["parameters"][0]["label"];
+    let (start, end) = (
+        span[0].as_u64().expect("start") as usize,
+        span[1].as_u64().expect("end") as usize,
+    );
+    assert!(
+        label[start..end].contains("amount"),
+        "the parameter's offsets point at it: {help}"
+    );
+
+    // The literal argument gets its parameter's name.
+    let hints = editor
+        .request(
+            "textDocument/inlayHint",
+            serde_json::json!({ "textDocument": doc, "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 15, "character": 0 } } }),
+        )
+        .await;
+    let hint_labels: Vec<String> = hints["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("hints: {hints}"))
+        .iter()
+        .map(|hint| hint["label"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(
+        hint_labels.iter().any(|l| l.contains("amount")),
+        "a parameter hint for `2`: {hint_labels:?}"
+    );
+
+    // Every use of `total` in the file, the writes told apart.
+    let highlights = editor
+        .request("textDocument/documentHighlight", at(1, 9))
+        .await;
+    let highlighted = highlights["result"].as_array().cloned().unwrap_or_default();
+    assert!(highlighted.len() >= 3, "{highlights}");
+    assert!(
+        highlighted.iter().any(|h| h["kind"] == 3),
+        "`self.total += amount` is a write: {highlights}"
+    );
+
+    // A code action at the `counter` binding, and the edit it resolves to.
+    let actions = editor
+        .request(
+            "textDocument/codeAction",
+            serde_json::json!({ "textDocument": doc, "range": { "start": { "line": 12, "character": 12 }, "end": { "line": 12, "character": 12 } }, "context": { "diagnostics": [] } }),
+        )
+        .await;
+    let action = actions["result"]
+        .as_array()
+        .and_then(|actions| actions.first())
+        .cloned()
+        .unwrap_or_else(|| panic!("an action is offered: {actions}"));
+    let resolved = editor.request("codeAction/resolve", action).await;
+    assert!(
+        resolved["result"]["edit"]["documentChanges"]
+            .as_array()
+            .is_some_and(|changes| !changes.is_empty()),
+        "the action resolves to an edit: {resolved}"
+    );
+
+    // rustfmt on the node, for the edition of the crate.
+    let messy = EDITOR_SUBJECT.replace("pub fn run() -> u32 {", "pub fn   run( ) -> u32{");
+    editor
+        .notify(
+            "textDocument/didChange",
+            serde_json::json!({ "textDocument": { "uri": uri, "version": 4 }, "contentChanges": [{ "text": messy }] }),
+        )
+        .await;
+    let formatted = editor
+        .request(
+            "textDocument/formatting",
+            serde_json::json!({ "textDocument": doc, "options": { "tabSize": 4, "insertSpaces": true } }),
+        )
+        .await;
+    assert_eq!(
+        formatted["result"][0]["newText"], EDITOR_SUBJECT,
+        "the formatted text: {formatted}"
+    );
+
+    // A type error typed in the editor is published without being asked for.
+    let before = editor
+        .notes
+        .iter()
+        .filter(|n| n["method"] == "textDocument/publishDiagnostics" && n["params"]["uri"] == uri)
+        .count();
+    let broken = EDITOR_SUBJECT.replace("counter.add(2)", "counter.add(\"two\")");
+    editor
+        .notify(
+            "textDocument/didChange",
+            serde_json::json!({ "textDocument": { "uri": uri, "version": 5 }, "contentChanges": [{ "text": broken }] }),
+        )
+        .await;
+    let mut diagnostics = editor.diagnostics(&uri, before).await;
+    // A pass for an earlier edit may still be on its way: wait for the one with the error.
+    let mut seen = before;
+    while !diagnostics.as_array().is_some_and(|d| {
+        d.iter()
+            .any(|d| d["severity"] == 1 && d["range"]["start"]["line"] == 13)
+    }) {
+        seen += 1;
+        diagnostics = editor.diagnostics(&uri, seen).await;
+    }
+
+    // Folding ranges are not advertised; asked anyway, they are refused, not left hanging.
+    let folding = editor
+        .request(
+            "textDocument/foldingRange",
+            serde_json::json!({ "textDocument": doc }),
+        )
+        .await;
+    assert_eq!(folding["error"]["code"], -32601, "{folding}");
+}

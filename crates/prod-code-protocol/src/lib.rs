@@ -10,11 +10,11 @@ pub use messages::{
     ANALYZER_PANIC_CODE, ClusterResponse, DenseStatus, ExecChanges, ExecChunk, ExecExit,
     ExecMetric, ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse,
     LoadedWorkspaceInfo, MetricsRequest, MetricsResponse, NodeGossip, PROTOCOL_VERSION,
-    PURPOSE_VALIDATION, PeerInfo, PlaceRequest, PlaceResponse, QueryMetric, ReadFileRequest,
-    ReadFileResponse, RunningCommand, SearchHit, SearchRequest, SearchResponse, ShadowHypothesis,
-    ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse, SyncProbeRequest,
-    SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host, content_hash,
-    detect_client_agent, platform,
+    PURPOSE_EDITOR, PURPOSE_VALIDATION, PeerInfo, PlaceRequest, PlaceResponse, QueryMetric,
+    ReadFileRequest, ReadFileResponse, RunningCommand, SearchHit, SearchRequest, SearchResponse,
+    ShadowHypothesis, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse,
+    SyncProbeRequest, SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host,
+    content_hash, detect_client_agent, platform,
 };
 pub use path::PathTranslator;
 
