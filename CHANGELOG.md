@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **The first Swift check after a workspace loads finds type errors** (#295). sourcekit-lsp
+  loads a package's build settings in the background after it starts, and until then it checks
+  with fallback settings that report syntax errors only, so the first checks after a load said
+  "0 errors" for code that did not compile. A SwiftPM workspace's load now opens one of its
+  files with a line only a type check faults, and waits (up to 45 s) until sourcekit-lsp reports
+  it; on a macOS node that took 0.8 to 1.0 s. A root without `Package.swift` does not wait.
 - **`prod-code report-issue --help` says that similar issues, open or closed, are listed** (#299).
   The duplicate search has covered closed issues since #296; the help still said "open".
 

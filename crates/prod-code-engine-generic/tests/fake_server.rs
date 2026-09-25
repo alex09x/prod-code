@@ -54,11 +54,16 @@ def read():
         return None
     return json.loads(sys.stdin.buffer.read(length))
 
+PULLS = {}
+LINES = {}
+
 while True:
     message = read()
     if message is None:
         break
     method = message.get("method", "")
+    if method == "textDocument/didOpen":
+        LINES[message["params"]["textDocument"]["uri"]] = len(message["params"]["textDocument"]["text"].splitlines())
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {
             "capabilities": {"hoverProvider": True, "diagnosticProvider": {"interFileDependencies": False}}
@@ -77,6 +82,17 @@ while True:
                 "message": "something the fake server disliked"
             }]
         }})
+    elif method == "textDocument/diagnostic" and os.environ.get("FAKE_SEMANTIC_AFTER"):
+        # As sourcekit-lsp before it has a package's build settings: syntax only, so nothing,
+        # until the Nth pull, then the type error on the last line of the opened text.
+        uri = message["params"]["textDocument"]["uri"]
+        PULLS[uri] = PULLS.get(uri, 0) + 1
+        items = []
+        if PULLS[uri] >= int(os.environ["FAKE_SEMANTIC_AFTER"]):
+            last = LINES.get(uri, 1) - 1
+            items = [{"range": {"start": {"line": last, "character": 0}, "end": {"line": last, "character": 1}},
+                      "severity": 1, "message": "cannot convert value of type 'String' to specified type 'Int'"}]
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": items}})
     elif method == "textDocument/diagnostic":
         # A pull, answered as sourcekit-lsp answers it, or refused as clangd refuses it.
         if os.environ.get("FAKE_NO_PULL"):
@@ -174,6 +190,50 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         Some("the fake server answered"),
         "the answer was matched to the request: {hover}"
     );
+}
+
+/// A server that checks with fallback settings reports nothing on the probe line until it
+/// has the project's build settings; the wait ends at the first error on that line, and gives
+/// up at the timeout when none comes (#295).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_wait_for_a_semantic_check_ends_at_the_first_error_on_the_probe_line() {
+    let (dir, script) = workspace();
+    let path = dir.path().join("Sources/Shop/main.swift");
+    let text = "print(1)\nlet __prodCodeProbe: Int = \"\"\n";
+
+    let mut settles = config(&script);
+    settles
+        .env
+        .insert("FAKE_SEMANTIC_AFTER".to_string(), "3".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), settles)
+        .await
+        .expect("the fake server starts");
+    let started = std::time::Instant::now();
+    assert!(
+        engine
+            .wait_for_semantic_check(&path, "swift", text, 1, Duration::from_secs(20))
+            .await
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(500),
+        "two empty answers came first: {:?}",
+        started.elapsed()
+    );
+
+    let mut never = config(&script);
+    never
+        .env
+        .insert("FAKE_SEMANTIC_AFTER".to_string(), "1000".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), never)
+        .await
+        .expect("the fake server starts");
+    let started = std::time::Instant::now();
+    assert!(
+        !engine
+            .wait_for_semantic_check(&path, "swift", text, 1, Duration::from_secs(1))
+            .await
+    );
+    assert!(started.elapsed() < Duration::from_secs(5));
 }
 
 /// A server that answers a diagnostic pull is asked, whether or not it advertised one

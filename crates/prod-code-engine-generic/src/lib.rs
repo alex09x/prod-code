@@ -736,6 +736,55 @@ impl GenericLspEngine {
         answer.pointer("/result/items")?.as_array().cloned()
     }
 
+    /// Opens `text` as the file at `path` until the server reports an error on its 0-based
+    /// `line`, closes it again, and says whether that happened within `timeout`. `text` is a
+    /// real file of the project with a line appended that only a type check can fault, so a
+    /// server that faults it checks files with the project's real build settings. sourcekit-lsp
+    /// loads a package's settings in the background after it starts; until then it checks with
+    /// fallback settings that report syntax errors only, and a check answered in that window
+    /// found no errors at all (#295).
+    pub async fn wait_for_semantic_check(
+        &self,
+        path: &Path,
+        language_id: &str,
+        text: &str,
+        line: u64,
+        timeout: Duration,
+    ) -> bool {
+        let Ok(uri) = url::Url::from_file_path(path) else {
+            return false;
+        };
+        let uri = uri.to_string();
+        let open = serde_json::json!({ "textDocument": {
+            "uri": uri, "languageId": language_id, "version": 1, "text": text
+        }});
+        if self
+            .send_notification("textDocument/didOpen", open)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        let started = Instant::now();
+        let mut faulted = false;
+        while !faulted && started.elapsed() < timeout {
+            let items = match self.pull_diagnostics(&uri).await {
+                Some(items) => items,
+                None => self.current_diagnostics_for(&uri, SEMANTIC_POLL).await,
+            };
+            faulted = items.iter().any(|d| {
+                d.get("severity").and_then(|s| s.as_u64()) == Some(1)
+                    && d.pointer("/range/start/line").and_then(|l| l.as_u64()) == Some(line)
+            });
+            if !faulted {
+                tokio::time::sleep(SEMANTIC_POLL).await;
+            }
+        }
+        let close = serde_json::json!({ "textDocument": { "uri": uri } });
+        let _ = self.send_notification("textDocument/didClose", close).await;
+        faulted
+    }
+
     /// Whether the server has published diagnostics for `uri` at least once.
     pub async fn diagnostics_published(&self, uri: &str) -> bool {
         self.diagnostics.read().await.contains_key(uri)
@@ -885,6 +934,9 @@ impl GenericLspEngine {
 
 /// JSON-RPC's code for a method the server does not know.
 const METHOD_NOT_FOUND: i64 = -32601;
+
+/// How often [`GenericLspEngine::wait_for_semantic_check`] asks again.
+const SEMANTIC_POLL: Duration = Duration::from_millis(300);
 
 /// How long [`GenericLspEngine::current_diagnostics_for`] waits for the first publication for a
 /// document no text was sent for: one the server opened by itself, or one it will never
