@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.6 — 2026-09-24
+
 ### Fixed
 - **Every agent is told to report prod-code bugs, without private details** (#302). The
   instructions the MCP server sends at `initialize`, which every agent reads whether or not it
