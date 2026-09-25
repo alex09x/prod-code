@@ -1718,6 +1718,51 @@ async fn cli_finds_by_name_outlines_a_file_and_takes_a_symbol_for_a_position() {
     );
 }
 
+/// `--symbol NAME FILE` picks, among same-named symbols, the one in FILE, as `path` does for
+/// the MCP tools (#330); clap used to refuse FILE next to `--symbol`.
+#[tokio::test]
+async fn cli_takes_a_file_to_tell_same_named_symbols_apart() {
+    let ws = make_workspace();
+    ws.write("src/other.rs", "pub fn calculate() -> i32 {\n    7\n}\n");
+    let lib = ws.path("src/lib.rs");
+    let other = ws.path("src/other.rs");
+    let (l, o) = (lib.clone(), other.clone());
+    let gw = MockGateway::start(move |method, params| match method {
+        "workspace/symbol" => serde_json::json!([
+            answers::symbol("calculate", 12, &l, 5, 8),
+            answers::symbol("calculate", 12, &o, 1, 8)
+        ]),
+        "textDocument/references" => {
+            let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+            if uri.ends_with("other.rs") {
+                answers::locations(&o, &[(1, 8)])
+            } else {
+                answers::locations(&l, &[(5, 8)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let ambiguous = run_cli(&ws, gw.addr, &["refs", "--symbol", "calculate"]).await;
+    assert!(
+        stderr_of(&ambiguous).contains("ambiguous") || stdout_of(&ambiguous).contains("ambiguous"),
+        "two candidates without a file: {}{}",
+        stdout_of(&ambiguous),
+        stderr_of(&ambiguous)
+    );
+    let picked = run_cli(
+        &ws,
+        gw.addr,
+        &["refs", "--symbol", "calculate", "src/other.rs"],
+    )
+    .await;
+    assert!(picked.status.success(), "{}", stderr_of(&picked));
+    let text = stdout_of(&picked);
+    assert!(text.contains("other.rs:1"), "{text}");
+    assert!(!text.contains("lib.rs:5"), "{text}");
+}
+
 #[tokio::test]
 async fn cli_outlines_a_directory_and_exits_zero() {
     let ws = make_workspace();
@@ -2337,6 +2382,26 @@ where
                                 stale_paths: Vec::new(),
                             })),
                         ),
+                        WireMessage::ExecRequest(req) => {
+                            let _ = framed
+                                .send(WireMessage::ExecChunk(ExecChunk {
+                                    stderr: false,
+                                    data: Some(b"test result: ok. 0 passed; 0 failed\n".to_vec()),
+                                }))
+                                .await;
+                            (
+                                format!("exec {}", req.command.join(" ")),
+                                Some(WireMessage::ExecExit(ExecExit {
+                                    exit_code: Some(0),
+                                    duration_ms: 1,
+                                    server_workspace_root: req.client_workspace_root,
+                                    timed_out: false,
+                                    error: None,
+                                    usage: None,
+                                    platform: None,
+                                })),
+                            )
+                        }
                         WireMessage::ReadFileRequest(req) => {
                             let content = files.get(&req.path).map(|t| t.as_bytes().to_vec());
                             let error = content.is_none().then(|| format!("no {}", req.path));
@@ -2534,4 +2599,93 @@ async fn lsp_tells_the_editor_why_it_could_not_start() {
             .expect("status");
         assert!(status.success(), "{remotes}: {status}");
     }
+}
+
+/// `prod-code test --path crates/b` runs the tests of that member only, as `code_test {path}`
+/// does; without it, the run is the current directory's (#323).
+#[tokio::test]
+async fn test_runs_in_the_crate_its_path_names() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\nresolver = \"2\"\n",
+        ),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"alpha\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("crates/a/src/lib.rs", "pub fn a() {}\n"),
+        (
+            "crates/b/Cargo.toml",
+            "[package]\nname = \"beta\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("crates/b/src/lib.rs", "pub fn b() {}\n"),
+    ]);
+    let (addr, seen) = recording_gateway(|_| None, HashMap::new()).await;
+    let run = |args: &'static [&'static str]| {
+        let home = tempfile::tempdir().expect("home");
+        let root = ws.root();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+                .args(args)
+                .args(["--remote", &addr.to_string()])
+                .env("HOME", home.path())
+                .current_dir(root)
+                .output()
+                .await
+                .expect("run prod-code")
+        }
+    };
+    let scoped = run(&["test", "--path", "crates/b"]).await;
+    assert!(scoped.status.success(), "{}", stderr_of(&scoped));
+    let whole = run(&["test"]).await;
+    assert!(whole.status.success(), "{}", stderr_of(&whole));
+    let missing = run(&["test", "--path", "crates/nowhere"]).await;
+    assert!(
+        stderr_of(&missing).contains("crates/nowhere does not exist"),
+        "{}",
+        stderr_of(&missing)
+    );
+
+    let execs: Vec<String> = seen
+        .lock()
+        .expect("log")
+        .iter()
+        .filter(|(_, event)| event.starts_with("exec "))
+        .map(|(_, event)| event.clone())
+        .collect();
+    assert_eq!(execs.len(), 2, "{execs:?}");
+    assert!(execs[0].contains("beta"), "the member's tests: {execs:?}");
+    assert!(
+        !execs[1].contains("beta"),
+        "the whole workspace's: {execs:?}"
+    );
+}
+
+/// `status` probes the node the checkout is placed on, not the first address configured,
+/// which is often a local default that runs nothing (#329).
+#[tokio::test]
+async fn status_probes_the_node_the_checkout_is_placed_on() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let home = tempfile::tempdir().expect("home");
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["--remote", &format!("127.0.0.1:1,{}", gw.addr), "status"])
+        .env_remove("PROD_CODE_REMOTE")
+        .env("HOME", home.path())
+        .current_dir(ws.root())
+        .output()
+        .await
+        .expect("run prod-code");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    assert!(
+        !stderr_of(&out).contains("127.0.0.1:1"),
+        "{}",
+        stderr_of(&out)
+    );
 }

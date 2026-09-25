@@ -50,6 +50,20 @@ fn diff_path(raw: &str) -> Option<String> {
     )
 }
 
+/// `@@ -12,5 +12,6 @@ …` → (5, 6): how many old and new lines the hunk says it has; a count
+/// left out is 1.
+fn hunk_counts(header: &str) -> Option<(usize, usize)> {
+    let rest = header.strip_prefix("@@ -")?;
+    let (old, rest) = rest.split_once(" +")?;
+    let new = rest.split_once(" @@").map_or(rest, |(new, _)| new);
+    let count = |range: &str| {
+        range
+            .split_once(',')
+            .map_or(Some(1), |(_, count)| count.trim().parse().ok())
+    };
+    Some((count(old)?, count(new)?))
+}
+
 /// `@@ -12,5 +12,6 @@ …` → 12.
 fn old_start(header: &str) -> Option<usize> {
     let rest = header.strip_prefix("@@ -")?;
@@ -85,6 +99,13 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
                 new_ends_without_newline: false,
             };
             while let Some(next) = lines.peek() {
+                if next.is_empty() {
+                    // An empty context line whose leading space an editor stripped, or a blank
+                    // line after the diff; the header's counts tell them apart below.
+                    hunk.lines.push((' ', String::new()));
+                    lines.next();
+                    continue;
+                }
                 let tag = next.chars().next().unwrap_or(' ');
                 match tag {
                     ' ' | '-' | '+' if !next.starts_with("--- ") && !next.starts_with("+++ ") => {
@@ -98,12 +119,23 @@ fn parse(diff: &str) -> Result<Vec<FilePatch>> {
                         }
                         lines.next();
                     }
-                    _ if next.is_empty() => {
-                        // An empty context line whose leading space an editor stripped.
-                        hunk.lines.push((' ', String::new()));
-                        lines.next();
-                    }
                     _ => break,
+                }
+            }
+            // Blank lines past what the header counts are not the hunk's (#322). Counts that
+            // are off otherwise, as a hand-written hunk's often are, are forgiven.
+            if let Some((old_count, new_count)) = hunk_counts(line) {
+                while hunk
+                    .lines
+                    .last()
+                    .is_some_and(|(tag, text)| *tag == ' ' && text.is_empty())
+                {
+                    let old = hunk.lines.iter().filter(|(tag, _)| *tag != '+').count();
+                    let new = hunk.lines.iter().filter(|(tag, _)| *tag != '-').count();
+                    if old <= old_count && new <= new_count {
+                        break;
+                    }
+                    hunk.lines.pop();
                 }
             }
             file.hunks.push(hunk);
@@ -221,6 +253,26 @@ mod tests {
         );
     }
 
+    /// A blank line after the diff, as a shell or an editor adds it, is not a context line of
+    /// the last hunk (#322): it made the parser panic, and would have made the hunk miss. An
+    /// empty context line inside a hunk stays one.
+    #[test]
+    fn blank_lines_after_the_diff_are_not_the_last_hunks() {
+        let text = "a\n\nb\nc\n";
+        let diff = "--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,3 @@\n a\n\n-b\n+B\n\n\n";
+        let files = parse(diff).unwrap();
+        assert_eq!(
+            files[0].hunks[0].lines.len(),
+            4,
+            "{:?}",
+            files[0].hunks[0].lines
+        );
+        assert_eq!(
+            apply_hunks(text, &files[0].hunks, "f.rs").unwrap(),
+            "a\n\nB\nc\n"
+        );
+    }
+
     #[test]
     fn several_hunks_follow_each_other_and_the_last_newline_is_kept_or_dropped() {
         let text = "1\n2\n3\n4\n5\n6\n";
@@ -255,5 +307,8 @@ mod tests {
         assert!(parse("--- a/x\nnot plus\n").is_err());
         assert_eq!(diff_path("/dev/null"), None);
         assert_eq!(old_start("@@ -12,5 +12,6 @@ fn x"), Some(12));
+        assert_eq!(hunk_counts("@@ -12,5 +12,6 @@ fn x"), Some((5, 6)));
+        assert_eq!(hunk_counts("@@ -1 +0,0 @@"), Some((1, 0)));
+        assert_eq!(hunk_counts("@@ -1 +1 @@"), Some((1, 1)));
     }
 }

@@ -35,6 +35,13 @@
   labels every issue and pull request carries.
 
 ### Fixed
+- **Command-line fixes** (#322, #323, #329, #330):
+  - `validate --diff` no longer panics on a blank line after the patch. A blank line past the
+    hunk's counted lines is not taken for a context line.
+  - `test`, `check`, `lint` and `benchmarks` take `--path <crate, package or directory>`, as
+    `code_test {path}` does.
+  - `status` probes the node the checkout is placed on, not the first configured address.
+  - `--symbol NAME FILE` on the position commands picks the NAME that FILE declares or uses.
 - **When `prod-code lsp` cannot start, the editor is told why** (#338): the answer to its
   `initialize` is the reason, where the bridge used to exit before the editor asked (Zed showed
   only "server shut down"). On macOS, a node the app that started it may not reach

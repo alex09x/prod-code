@@ -50,7 +50,7 @@ enum Commands {
     },
     /// Run as Model Context Protocol (MCP) server for AI coding agents.
     Mcp,
-    /// Probe remote gateway status and latency.
+    /// Probe the status and latency of the gateway this checkout is placed on.
     Status,
     /// Show every configured gateway node, its status, and where this checkout is placed.
     Cluster,
@@ -67,8 +67,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
     },
     /// Inspect symbol type & docs: prod-code hover <file> <line> <col>, or --symbol NAME
@@ -79,8 +80,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
     },
     /// Find all references to symbol: prod-code refs <file> <line> <col>, or --symbol NAME
@@ -91,8 +93,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
     },
     /// Who calls the function at a position: prod-code callers <file> <line> <col>, or --symbol NAME
@@ -103,8 +106,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
@@ -118,8 +122,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
         /// Levels to walk: 1 is the direct ones; more gives a tree (at most 6).
         #[arg(long, default_value_t = 1)]
@@ -133,8 +138,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type::method`, `module::function`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type::method`, `module::function`) instead of a position; with
+        /// FILE, the one declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
     },
     /// What the type at a position implements, or what the trait requires: prod-code supertypes
@@ -146,8 +152,9 @@ enum Commands {
         line: Option<u32>,
         #[arg(required_unless_present = "symbol")]
         col: Option<u32>,
-        /// The symbol by name (`Type`, `module::Trait`) instead of a position.
-        #[arg(long, conflicts_with_all = ["file", "line", "col"])]
+        /// The symbol by name (`Type`, `module::Trait`) instead of a position; with FILE, the one
+        /// declared or used there (#330).
+        #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
     },
     /// Declarations named like a query across the workspace: prod-code symbols <name>. Given an
@@ -322,6 +329,10 @@ enum Commands {
     },
     /// Compile-check the workspace remotely (cargo check / go build) with structured diagnostics.
     Check {
+        /// The crate, package or directory to run in (a nested project, or one member of a
+        /// workspace), as `path` for the MCP tools; the current directory by default (#323).
+        #[arg(long)]
+        path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
         /// Print the full report as JSON instead of text.
@@ -340,6 +351,10 @@ enum Commands {
     },
     /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
     Lint {
+        /// The crate, package or directory to run in (a nested project, or one member of a
+        /// workspace), as `path` for the MCP tools; the current directory by default (#323).
+        #[arg(long)]
+        path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
@@ -359,6 +374,10 @@ enum Commands {
     Benchmarks {
         /// Benchmark name filter.
         filter: Option<String>,
+        /// The crate, package or directory to run in (a nested project, or one member of a
+        /// workspace), as `path` for the MCP tools; the current directory by default (#323).
+        #[arg(long)]
+        path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
@@ -375,6 +394,10 @@ enum Commands {
     Test {
         /// Test name filter (cargo test TESTNAME / go test -run).
         filter: Option<String>,
+        /// The crate, package or directory to run in (a nested project, or one member of a
+        /// workspace), as `path` for the MCP tools; the current directory by default (#323).
+        #[arg(long)]
+        path: Option<PathBuf>,
         #[arg(long, default_value_t = 0)]
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
@@ -1193,7 +1216,8 @@ async fn main() -> Result<()> {
     match cli.command.unwrap_or(Commands::Lsp { language: None }) {
         Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
         // `status` is about the node you name, not about where this checkout is placed.
-        Commands::Status => run_status_probe(seeds[0]).await,
+        // The node this checkout is placed on, not the first address configured (#329).
+        Commands::Status => run_status_probe(remote).await,
         Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
@@ -1205,7 +1229,7 @@ async fn main() -> Result<()> {
             col,
             symbol,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_definition", &symbol).await,
+            Some(symbol) => run_by_symbol(remote, "code_definition", &symbol, file).await,
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_definition(remote, &file, line, col).await
@@ -1217,7 +1241,7 @@ async fn main() -> Result<()> {
             col,
             symbol,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_hover", &symbol).await,
+            Some(symbol) => run_by_symbol(remote, "code_hover", &symbol, file).await,
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_hover(remote, &file, line, col).await
@@ -1229,7 +1253,7 @@ async fn main() -> Result<()> {
             col,
             symbol,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_references", &symbol).await,
+            Some(symbol) => run_by_symbol(remote, "code_references", &symbol, file).await,
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_references(remote, &file, line, col).await
@@ -1255,7 +1279,7 @@ async fn main() -> Result<()> {
             col,
             symbol,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_implementations", &symbol).await,
+            Some(symbol) => run_by_symbol(remote, "code_implementations", &symbol, file).await,
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 run_implementations(remote, &file, line, col).await
@@ -1267,7 +1291,7 @@ async fn main() -> Result<()> {
             col,
             symbol,
         } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_supertypes", &symbol).await,
+            Some(symbol) => run_by_symbol(remote, "code_supertypes", &symbol, file).await,
             None => {
                 let (file, line, col) = position(file, line, col)?;
                 let file = std::fs::canonicalize(&file).unwrap_or(file);
@@ -1399,23 +1423,28 @@ async fn main() -> Result<()> {
             timeout_secs,
             json,
             fix: true,
+            path,
             ..
-        } => run_fix(remote, VerifyKind::Check, timeout_secs, json).await,
+        } => run_fix(remote, VerifyKind::Check, timeout_secs, json, path).await,
         Commands::Check {
             timeout_secs,
             json,
             env,
             events,
+            path,
             ..
         } => {
             run_verify(
                 remote,
                 VerifyKind::Check,
-                None,
-                timeout_secs,
-                json,
-                env,
-                events,
+                VerifyArgs {
+                    filter: None,
+                    timeout_secs,
+                    json,
+                    env,
+                    events,
+                    path,
+                },
             )
             .await
         }
@@ -1423,23 +1452,28 @@ async fn main() -> Result<()> {
             timeout_secs,
             json,
             fix: true,
+            path,
             ..
-        } => run_fix(remote, VerifyKind::Lint, timeout_secs, json).await,
+        } => run_fix(remote, VerifyKind::Lint, timeout_secs, json, path).await,
         Commands::Lint {
             timeout_secs,
             json,
             env,
             events,
+            path,
             ..
         } => {
             run_verify(
                 remote,
                 VerifyKind::Lint,
-                None,
-                timeout_secs,
-                json,
-                env,
-                events,
+                VerifyArgs {
+                    filter: None,
+                    timeout_secs,
+                    json,
+                    env,
+                    events,
+                    path,
+                },
             )
             .await
         }
@@ -1449,15 +1483,19 @@ async fn main() -> Result<()> {
             json,
             env,
             events,
+            path,
         } => {
             run_verify(
                 remote,
                 VerifyKind::Test,
-                filter,
-                timeout_secs,
-                json,
-                env,
-                events,
+                VerifyArgs {
+                    filter,
+                    timeout_secs,
+                    json,
+                    env,
+                    events,
+                    path,
+                },
             )
             .await
         }
@@ -1467,15 +1505,19 @@ async fn main() -> Result<()> {
             json,
             env,
             events,
+            path,
         } => {
             run_verify(
                 remote,
                 VerifyKind::Bench,
-                filter,
-                timeout_secs,
-                json,
-                env,
-                events,
+                VerifyArgs {
+                    filter,
+                    timeout_secs,
+                    json,
+                    env,
+                    events,
+                    path,
+                },
             )
             .await
         }
@@ -2773,7 +2815,11 @@ async fn run_call_tree(
     depth: usize,
 ) -> Result<()> {
     let args = match symbol {
-        Some(symbol) => serde_json::json!({ "symbol": symbol, "depth": depth }),
+        Some(symbol) => {
+            let mut args = symbol_args(&symbol, file);
+            args["depth"] = serde_json::json!(depth);
+            args
+        }
         None => {
             let (file, line, col) = position(file, line, col)?;
             let file = std::fs::canonicalize(&file).unwrap_or(file);
@@ -2788,9 +2834,25 @@ async fn run_call_tree(
     run_tool(remote, tool, args).await
 }
 
-/// A position command given `--symbol`: the MCP tool resolves the name, exactly as for an agent.
-async fn run_by_symbol(remote: SocketAddr, tool: &str, symbol: &str) -> Result<()> {
-    run_tool(remote, tool, serde_json::json!({ "symbol": symbol })).await
+/// A position command given `--symbol`: the MCP tool resolves the name, exactly as for an agent,
+/// among the candidates in `file` when one is given.
+async fn run_by_symbol(
+    remote: SocketAddr,
+    tool: &str,
+    symbol: &str,
+    file: Option<PathBuf>,
+) -> Result<()> {
+    run_tool(remote, tool, symbol_args(symbol, file)).await
+}
+
+/// The MCP arguments of `--symbol NAME [FILE]`.
+fn symbol_args(symbol: &str, file: Option<PathBuf>) -> serde_json::Value {
+    let mut args = serde_json::json!({ "symbol": symbol });
+    if let Some(file) = file {
+        let file = std::fs::canonicalize(&file).unwrap_or(file);
+        args["path"] = serde_json::json!(file.to_string_lossy());
+    }
+    args
 }
 
 /// Several proposed files checked together in one overlay, so a change to one is judged against
@@ -3726,23 +3788,38 @@ async fn run_cluster(
     Ok(())
 }
 
-/// Typed remote verification: check / lint / test with parsed diagnostics. `env` holds
-/// `KEY=VALUE` pairs for the command; `events` prints each [`RunEvent`] as a JSON line as it
-/// arrives and the report as the last one.
-///
-/// [`RunEvent`]: prod_code_mcp::verify::RunEvent
-async fn run_verify(
-    remote: SocketAddr,
-    kind: VerifyKind,
+/// Where a check, lint, test or benchmark run is scoped: `--path`, relative to `cwd`, or `cwd`.
+fn verify_scope(cwd: &Path, path: Option<&Path>) -> Result<PathBuf> {
+    let Some(path) = path else {
+        return Ok(cwd.to_path_buf());
+    };
+    let path = cwd.join(path);
+    anyhow::ensure!(path.exists(), "--path {} does not exist", path.display());
+    Ok(std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+/// The arguments of `check`, `lint`, `test` and `benchmarks`, as given.
+struct VerifyArgs {
     filter: Option<String>,
     timeout_secs: u64,
     json: bool,
     env: Vec<String>,
     events: bool,
-) -> Result<()> {
+    /// The project to run in; the current directory when absent.
+    path: Option<PathBuf>,
+}
+
+/// Typed remote verification: check / lint / test with parsed diagnostics. `env` holds
+/// `KEY=VALUE` pairs for the command; `events` prints each [`RunEvent`] as a JSON line as it
+/// arrives and the report as the last one.
+///
+/// [`RunEvent`]: prod_code_mcp::verify::RunEvent
+async fn run_verify(remote: SocketAddr, kind: VerifyKind, args: VerifyArgs) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let env = env
+    let scope = verify_scope(&cwd, args.path.as_deref())?;
+    let env = args
+        .env
         .iter()
         .map(|pair| {
             pair.split_once('=')
@@ -3753,24 +3830,26 @@ async fn run_verify(
     let report = prod_code_mcp::verify::run_verify_with(
         remote,
         &root,
-        Some(&cwd),
+        Some(&scope),
         kind,
-        filter.as_deref(),
-        timeout_secs,
+        args.filter.as_deref(),
+        args.timeout_secs,
         &env,
         |event| {
-            if events && let Ok(line) = serde_json::to_string(&event) {
+            if args.events
+                && let Ok(line) = serde_json::to_string(&event)
+            {
                 println!("{line}");
             }
         },
     )
     .await?;
-    if events {
+    if args.events {
         println!(
             "{}",
             serde_json::json!({ "event": "report", "report": report })
         );
-    } else if json {
+    } else if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", report.render(200));
@@ -3784,11 +3863,14 @@ async fn run_fix(
     kind: VerifyKind,
     timeout_secs: u64,
     json: bool,
+    path: Option<PathBuf>,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+    let scope = verify_scope(&cwd, path.as_deref())?;
     let fixed =
-        prod_code_mcp::fixit::check_and_fix(remote, &root, Some(&cwd), kind, timeout_secs).await?;
+        prod_code_mcp::fixit::check_and_fix(remote, &root, Some(&scope), kind, timeout_secs)
+            .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&fixed)?);
     } else {
