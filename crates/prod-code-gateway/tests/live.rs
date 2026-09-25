@@ -391,17 +391,14 @@ async fn the_gateway_answers_a_real_checkout() {
         );
     }
 
-    // A file the analyzer refuses is an error with the reason, not an empty outline (#270).
-    std::fs::write(
-        root.join("README.md"),
-        "A table row about a trait or interface.\n",
-    )
-    .unwrap();
+    // A file no language server outlines is an error with the reason, not an empty outline
+    // (#270); Markdown is outlined by its headings (#362).
+    std::fs::write(root.join("notes.txt"), "A table row about a trait.\n").unwrap();
     let refused = match prod_code_mcp::tools::execute_tool(
         addr,
         &root,
         "code_outline",
-        serde_json::json!({ "path": "README.md" }),
+        serde_json::json!({ "path": "notes.txt" }),
     )
     .await
     {
@@ -411,7 +408,24 @@ async fn the_gateway_answers_a_real_checkout() {
         }
         Err(err) => format!("{err:#}"),
     };
-    assert!(refused.contains("is not a Rust file"), "{refused}");
+    assert!(
+        refused.contains("no language server serves `.txt` files"),
+        "{refused}"
+    );
+    std::fs::write(root.join("README.md"), "# Store\n\nA table row.\n").unwrap();
+    let headings = text_of(
+        &tool(
+            addr,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "README.md" }),
+        )
+        .await,
+    );
+    assert!(
+        headings.contains("[Heading 1] Store (line 1)"),
+        "{headings}"
+    );
 
     // The symbol index answers by name.
     let symbols = text_of(
