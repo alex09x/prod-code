@@ -883,6 +883,64 @@ async fn the_gateway_forwards_to_a_child_language_server() {
     );
 }
 
+/// A file no session has open changes locally and is synced: gopls, which does not watch the
+/// tree itself, sees the new content only because the gateway tells it which files the sync
+/// rewrote (#317). Before that, the hover below kept answering `func Foo() int`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gopls_sees_a_file_the_sync_rewrote_that_no_session_has_open() {
+    if which("gopls").is_none() || which("go").is_none() {
+        eprintln!("skipping: gopls or go is not on PATH (build nodes have both)");
+        return;
+    }
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("go.mod"),
+        "module example.com/watchprobe\n\ngo 1.22\n",
+    )
+    .expect("go.mod");
+    std::fs::write(
+        root.join("a.go"),
+        "package watchprobe\n\nfunc Foo() int { return 1 }\n",
+    )
+    .expect("a.go");
+    std::fs::write(
+        root.join("b.go"),
+        "package watchprobe\n\nfunc Bar() { _ = Foo() }\n",
+    )
+    .expect("b.go");
+    commit_in(&root);
+
+    // `Foo` at its call in b.go: only b.go is opened, a.go is read from disk.
+    let at_call = serde_json::json!({ "path": "b.go", "line": 3, "character": 18 });
+    let before = text_of(&tool(gateway.addr, &root, "code_hover", at_call.clone()).await);
+    assert!(
+        before.contains("func Foo() int"),
+        "gopls answers from a.go as first synced: {before}"
+    );
+
+    std::fs::write(
+        root.join("a.go"),
+        "package watchprobe\n\nfunc Foo() string { return \"x\" }\n",
+    )
+    .expect("a.go rewritten");
+    // The next query pushes the change once the file watcher has seen it.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut after = String::new();
+    while Instant::now() < deadline {
+        after = text_of(&tool(gateway.addr, &root, "code_hover", at_call.clone()).await);
+        if after.contains("func Foo() string") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        after.contains("func Foo() string"),
+        "the rewritten a.go reached gopls: {after}"
+    );
+}
+
 /// A TypeScript checkout: the generic LSP adapter, which supervises a language server that
 /// neither the Rust engine nor the Go engine knows anything about.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

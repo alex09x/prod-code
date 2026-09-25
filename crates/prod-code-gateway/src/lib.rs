@@ -2151,6 +2151,7 @@ pub async fn apply_sync_with_metrics(
         })
         .collect();
     let mut project_config_changed = false;
+    let mut watched = Vec::new();
     for delta in req.files {
         let target_path = server_workspace.join(&delta.relative_path);
         project_config_changed |= is_project_config_file(&delta.relative_path);
@@ -2160,8 +2161,14 @@ pub async fn apply_sync_with_metrics(
                     let _ = tokio::fs::create_dir_all(parent).await;
                 }
                 bytes_transferred += content_bytes.len();
+                let kind = if target_path.exists() {
+                    workspace::WatchedChange::Changed
+                } else {
+                    workspace::WatchedChange::Created
+                };
                 if tokio::fs::write(&target_path, &content_bytes).await.is_ok() {
                     files_updated += 1;
+                    watched.push((target_path.clone(), kind));
                     #[cfg(unix)]
                     if delta.is_executable {
                         use std::os::unix::fs::PermissionsExt;
@@ -2184,6 +2191,7 @@ pub async fn apply_sync_with_metrics(
             None => {
                 if target_path.exists() && tokio::fs::remove_file(&target_path).await.is_ok() {
                     files_deleted += 1;
+                    watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                     prune_empty_parents(&server_workspace, target_path.parent());
                 }
                 for engine_lock in &loaded_rust {
@@ -2198,6 +2206,11 @@ pub async fn apply_sync_with_metrics(
     workspace::record_synced(&server_workspace, &synced);
     let stale_paths =
         workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
+    // gopls does not watch the tree itself: without this it went on answering from the content
+    // a file no session had open had when it first read it (#317).
+    for loaded in workspace_manager.loaded_under(&server_workspace).await {
+        loaded.notify_watched_files(&watched).await;
+    }
 
     // A changed project manifest (tsconfig, package.json, pyproject, CMakeLists, Package.swift,
     // go.mod, Cargo.toml ...) changes what the language server should see: drop the loaded
@@ -2601,6 +2614,35 @@ async fn run_session_loop(
     Ok(())
 }
 
+/// The capabilities an editor's `initialize` is answered with (#310).
+///
+/// A language server on the node advertises its own, except for document sync: the gateway
+/// hands every change on as the document's full text, so the editor is asked for exactly that
+/// whatever the server would take. The in-memory Rust engine advertises what it answers; a
+/// workspace with neither only takes documents.
+fn editor_capabilities(server: Option<serde_json::Value>, rust: bool) -> serde_json::Value {
+    let mut caps = match server {
+        Some(caps) if caps.is_object() => caps,
+        _ if rust => serde_json::json!({
+            "hoverProvider": true,
+            "definitionProvider": true,
+            "referencesProvider": true,
+            "implementationProvider": true,
+            "documentSymbolProvider": true,
+            "workspaceSymbolProvider": true,
+            "renameProvider": true,
+            "callHierarchyProvider": true
+        }),
+        _ => serde_json::json!({}),
+    };
+    let save = caps.pointer("/textDocumentSync/save").cloned();
+    caps["textDocumentSync"] = serde_json::json!({ "openClose": true, "change": 1 });
+    if let Some(save) = save {
+        caps["textDocumentSync"]["save"] = save;
+    }
+    caps
+}
+
 /// What the session loop does once a client message has been handled.
 enum Flow {
     /// Wait for the next message.
@@ -2692,21 +2734,15 @@ async fn on_client_message(
                     } else {
                         None
                     };
+                    let caps = editor_capabilities(caps, view.workspace.rust_engine.is_some());
                     let init_resp = serde_json::json!({
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "result": {
-                            "capabilities": caps.unwrap_or_else(|| serde_json::json!({
-                                "textDocumentSync": 1,
-                                "hoverProvider": true,
-                                "definitionProvider": true,
-                                "referencesProvider": true,
-                                "documentSymbolProvider": true,
-                                "workspaceSymbolProvider": true
-                            })),
+                            "capabilities": caps,
                             "serverInfo": {
-                                "name": "prod-code-rci",
-                                "version": "0.1.0"
+                                "name": "prod-code",
+                                "version": env!("CARGO_PKG_VERSION")
                             }
                         }
                     });
@@ -3343,6 +3379,7 @@ async fn on_client_message(
             let mut files_updated = 0;
             let mut files_deleted = 0;
             let mut bytes_transferred = 0;
+            let mut watched = Vec::new();
 
             for delta in &req.files {
                 let target_path = view.workspace.root.join(&delta.relative_path);
@@ -3352,8 +3389,14 @@ async fn on_client_message(
                             let _ = tokio::fs::create_dir_all(parent).await;
                         }
                         bytes_transferred += content_bytes.len();
+                        let kind = if target_path.exists() {
+                            workspace::WatchedChange::Changed
+                        } else {
+                            workspace::WatchedChange::Created
+                        };
                         if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
                             files_updated += 1;
+                            watched.push((target_path.clone(), kind));
                             #[cfg(unix)]
                             if delta.is_executable {
                                 use std::os::unix::fs::PermissionsExt;
@@ -3383,6 +3426,7 @@ async fn on_client_message(
                             && tokio::fs::remove_file(&target_path).await.is_ok()
                         {
                             files_deleted += 1;
+                            watched.push((target_path.clone(), workspace::WatchedChange::Deleted));
                             prune_empty_parents(&view.workspace.root, target_path.parent());
                         }
                         for engine_lock in view.workspace.mirrored_rust_engines() {
@@ -3423,6 +3467,7 @@ async fn on_client_message(
                 &view.workspace.root,
                 req.files.iter().map(|delta| delta.relative_path.as_str()),
             );
+            view.workspace.notify_watched_files(&watched).await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let _ = out_tx
                 .send(WireMessage::SyncResponse(SyncResponse {
@@ -4840,6 +4885,45 @@ mod tests {
             last_seen_secs: 0,
             alive: true,
         }
+    }
+
+    /// An editor is offered what the language server on the node offers, but always asked for
+    /// whole documents, which is what the gateway hands on; the Rust engine offers what it
+    /// answers (#310).
+    #[test]
+    fn an_editor_gets_the_servers_capabilities_and_sends_whole_documents() {
+        let gopls = serde_json::json!({
+            "textDocumentSync": { "openClose": true, "change": 2, "save": {} },
+            "completionProvider": { "triggerCharacters": ["."] },
+            "hoverProvider": true
+        });
+        let caps = editor_capabilities(Some(gopls), false);
+        assert_eq!(
+            caps["textDocumentSync"],
+            serde_json::json!({ "openClose": true, "change": 1, "save": {} })
+        );
+        assert_eq!(
+            caps["completionProvider"]["triggerCharacters"],
+            serde_json::json!(["."])
+        );
+        assert_eq!(caps["hoverProvider"], true);
+
+        let numeric =
+            editor_capabilities(Some(serde_json::json!({ "textDocumentSync": 2 })), false);
+        assert_eq!(
+            numeric["textDocumentSync"],
+            serde_json::json!({ "openClose": true, "change": 1 })
+        );
+
+        let rust = editor_capabilities(None, true);
+        assert_eq!(rust["renameProvider"], true);
+        assert_eq!(rust["callHierarchyProvider"], true);
+        assert_eq!(rust["textDocumentSync"]["change"], 1);
+
+        assert_eq!(
+            editor_capabilities(None, false),
+            serde_json::json!({ "textDocumentSync": { "openClose": true, "change": 1 } })
+        );
     }
 
     /// A macOS node is a developer's Mac: it takes work that needs macOS, or that no other live
