@@ -801,7 +801,7 @@ enum Commands {
         force: bool,
     },
     /// Bundle several of a function's parameters into a new type, with body and call sites
-    /// (Rust, TypeScript, Python, Go).
+    /// (Rust, TypeScript, Python, Go, C, C++, Swift).
     ParameterObject {
         /// The function, by name (`move_item`, `Session::open_text`, `Canvas.draw`).
         symbol: String,
@@ -812,7 +812,7 @@ enum Commands {
         #[arg(long)]
         name: String,
         /// What the new parameter is called in the body (default: the name in snake_case, or in
-        /// lowerCamelCase in TypeScript and Go).
+        /// lowerCamelCase in TypeScript, Go and Swift).
         #[arg(long)]
         binding: Option<String>,
         /// The file that declares it, when the name is ambiguous.

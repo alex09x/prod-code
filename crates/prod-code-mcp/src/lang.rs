@@ -28,9 +28,26 @@ pub fn language_id_for_path(path: &Path) -> &'static str {
     }
 }
 
+/// Whether a file is a C or C++ header: what callers include to learn a declaration, and so
+/// where a type they need has to be declared.
+pub fn is_header(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).unwrap_or(""),
+        "h" | "hh" | "hpp" | "hxx" | "inl"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn headers_are_told_from_sources() {
+        assert!(is_header(Path::new("src/home.h")));
+        assert!(is_header(Path::new("include/shapes/home.hpp")));
+        assert!(!is_header(Path::new("src/home.c")));
+        assert!(!is_header(Path::new("src/home.cpp")));
+    }
 
     #[test]
     fn maps_common_extensions() {

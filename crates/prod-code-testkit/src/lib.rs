@@ -386,6 +386,31 @@ pub mod answers {
         })
     }
 
+    /// A `textDocument/documentSymbol` node with the ones nested in it, the way clangd and
+    /// sourcekit-lsp answer: a namespace holding a class holding its methods.
+    pub fn nested(
+        symbol: serde_json::Value,
+        children: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut symbol = symbol;
+        symbol["children"] = serde_json::Value::Array(children);
+        symbol
+    }
+
+    /// Locations of zero width, as sourcekit-lsp answers `textDocument/references`: a range
+    /// that starts and ends where the name starts. Each spot is (line, column), 1-based.
+    pub fn points(path: &Path, spots: &[(u32, u32)]) -> serde_json::Value {
+        serde_json::Value::Array(
+            spots
+                .iter()
+                .map(|(line, col)| {
+                    let at = serde_json::json!({ "line": line - 1, "character": col - 1 });
+                    serde_json::json!({ "uri": uri(path), "range": { "start": at, "end": at } })
+                })
+                .collect(),
+        )
+    }
+
     /// Markdown hover contents, the shape every engine answers with.
     pub fn hover(markdown: &str) -> serde_json::Value {
         serde_json::json!({ "contents": { "kind": "markdown", "value": markdown } })
