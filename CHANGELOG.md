@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.11 — 2026-09-25
+
 ### Fixed
 - **A file of another checkout is asked about in that checkout's session** (#353). An agent
   whose tools run in one checkout (a TypeScript site) and read a Rust file of a clone next to it
