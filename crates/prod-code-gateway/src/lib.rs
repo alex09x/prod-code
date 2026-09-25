@@ -895,42 +895,29 @@ impl ManagedLsp<'_> {
             .unwrap_or(serde_json::Value::Null))
     }
 
-    /// The diagnostics published for `uri`, waiting briefly for the first publication after a
-    /// didOpen so quick fixes can be offered in a one-shot session.
+    /// The diagnostics for the text last sent for `uri`. A server that answers a pull is asked
+    /// for them (the native TypeScript server, and sourcekit-lsp, which does not advertise it);
+    /// one that only publishes is waited for until it has published for that text, so a check
+    /// of a proposed text is not answered with the errors of the text before it (#293), and a
+    /// one-shot session still gets the first publication after its didOpen for quick fixes.
     async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
         match self {
             ManagedLsp::Go(_) => Vec::new(),
             ManagedLsp::Generic(engine) => {
-                if engine.has_pull_diagnostics().await {
-                    // Pull model (the native TypeScript server): ask for the document's
-                    // diagnostics instead of waiting for a publication.
-                    let pulled = engine
-                        .send_request(
-                            "textDocument/diagnostic",
-                            serde_json::json!({ "textDocument": { "uri": uri } }),
-                        )
-                        .await
-                        .ok()
-                        .and_then(|r| r.get("result").cloned());
-                    if let Some(items) = pulled
-                        .as_ref()
-                        .and_then(|r| r.get("items"))
-                        .and_then(|i| i.as_array())
-                    {
-                        return items.clone();
-                    }
+                if let Some(items) = engine.pull_diagnostics(uri).await {
+                    return items;
                 }
-                for _ in 0..30 {
-                    if engine.diagnostics_published(uri).await {
-                        break;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-                engine.diagnostics_for(uri).await
+                engine
+                    .current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT)
+                    .await
             }
         }
     }
 }
+
+/// How long an answer about a document's diagnostics waits for a publishing server to build the
+/// text last sent. A C++ translation unit with heavy headers takes seconds on a cold server.
+const CURRENT_DIAGNOSTICS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn range_line(value: &serde_json::Value, end: bool) -> u64 {
     value
@@ -3198,27 +3185,14 @@ async fn on_client_message(
                         let r_id = req_id.clone();
                         TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
                         tokio::task::spawn(async move {
-                            let resp = if engine.has_pull_diagnostics().await {
-                                match engine.send_request("textDocument/diagnostic", params).await {
-                                    Ok(mut resp) => {
-                                        resp["id"] = r_id;
-                                        resp
-                                    }
-                                    Err(err) => {
-                                        serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
-                                    }
-                                }
-                            } else {
-                                let uri = params
-                                    .get("textDocument")
-                                    .and_then(|t| t.get("uri"))
-                                    .and_then(|u| u.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let items =
-                                    ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
-                                serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
-                            };
+                            let uri = params
+                                .get("textDocument")
+                                .and_then(|t| t.get("uri"))
+                                .and_then(|u| u.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let items = ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
+                            let resp = serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } });
                             let client_resp =
                                 translator_task.translate_lsp_to_client(&resp.to_string());
                             let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;

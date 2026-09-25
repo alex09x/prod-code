@@ -36,6 +36,9 @@ pub struct SharedWorkspace {
     /// The second engine validation sessions run on, loaded by the first of them (#73).
     /// `None` inside once a load failed: validation then falls back to the main engine.
     validation: tokio::sync::OnceCell<Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>>,
+    /// The second clangd validation sessions of a C or C++ workspace run on, started by the
+    /// first of them (#293). `None` inside once it failed to start.
+    cpp_validation: tokio::sync::OnceCell<Option<Arc<prod_code_engine_generic::GenericLspEngine>>>,
 }
 
 impl SharedWorkspace {
@@ -61,6 +64,7 @@ impl SharedWorkspace {
             backend,
             rust_engines,
             validation: tokio::sync::OnceCell::new(),
+            cpp_validation: tokio::sync::OnceCell::new(),
         }
     }
 
@@ -84,6 +88,9 @@ impl SharedWorkspace {
     /// of one more database, and is dropped with this workspace. If it cannot be loaded,
     /// validation runs on the main engine as before.
     pub async fn validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+        if self.engine == "cpp" && self.generic_engine.is_some() {
+            return self.cpp_validation_view().await;
+        }
         if self.rust_engine.is_none() {
             return Arc::clone(self);
         }
@@ -141,11 +148,64 @@ impl SharedWorkspace {
             backend: None,
             rust_engines: Arc::clone(&self.rust_engines),
             validation: tokio::sync::OnceCell::new(),
+            cpp_validation: tokio::sync::OnceCell::new(),
         })
     }
 }
 
 impl SharedWorkspace {
+    /// The validation view of a C or C++ workspace: this workspace, answered by a second
+    /// clangd that nothing but validation touches (#293).
+    ///
+    /// clangd keeps a closed document in its index as it was last built, and builds a source
+    /// against the preamble it already has before it notices that a header changed back. So a
+    /// validation session's proposed texts went on answering `references` and diagnostics in
+    /// the server every other session asks, after the session had closed them. On a second
+    /// server they stay there. It indexes nothing in the background, costs one more clangd
+    /// while the workspace is loaded, and is dropped with it. If it cannot start, validation
+    /// runs on the main server as before.
+    async fn cpp_validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+        let root = self.root.clone();
+        let validation = self
+            .cpp_validation
+            .get_or_init(|| async move {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    &root,
+                    prod_code_engine_generic::GenericLspConfig::for_cpp_validation(),
+                )
+                .await
+                {
+                    Ok(engine) => {
+                        tracing::info!(workspace = ?root, "C/C++ validation server started");
+                        Some(Arc::new(engine))
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?root, "C/C++ validation server failed to start; validating on the main server");
+                        None
+                    }
+                }
+            })
+            .await;
+        let Some(engine) = validation.clone() else {
+            return Arc::clone(self);
+        };
+        Arc::new(SharedWorkspace {
+            key: self.key.clone(),
+            root: self.root.clone(),
+            engine: self.engine.clone(),
+            active_sessions: AtomicUsize::new(0),
+            last_used: AtomicU64::new(unix_now()),
+            direct_edit_eligible: AtomicBool::new(false),
+            rust_engine: None,
+            go_engine: None,
+            generic_engine: Some(engine),
+            backend: None,
+            rust_engines: Arc::clone(&self.rust_engines),
+            validation: tokio::sync::OnceCell::new(),
+            cpp_validation: tokio::sync::OnceCell::new(),
+        })
+    }
+
     pub fn touch(&self) {
         self.last_used.store(unix_now(), Ordering::Relaxed);
     }

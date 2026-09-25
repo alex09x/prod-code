@@ -170,6 +170,17 @@ impl GenericLspConfig {
         }
     }
 
+    /// The clangd that only validation sessions reach: [`Self::for_cpp`] without the
+    /// background index, since a validation session asks only for the diagnostics of the texts
+    /// it opens. The proposed texts stay out of the main server, where clangd kept a closed
+    /// document in its index as last built and went on answering `references` from it (#293).
+    pub fn for_cpp_validation() -> Self {
+        let mut config = Self::for_cpp();
+        config.args.retain(|a| !a.starts_with("--background-index"));
+        config.args.push("--background-index=false".to_string());
+        config
+    }
+
     /// Create a configuration for Swift (sourcekit-lsp). On macOS the toolchain's server is
     /// reached through `xcrun` when it is not on PATH.
     pub fn for_swift() -> Self {
@@ -300,7 +311,15 @@ pub struct GenericLspEngine {
     last_activity: Arc<RwLock<Instant>>,
     /// Latest `textDocument/publishDiagnostics` per document URI, the context quick fixes
     /// (`textDocument/codeAction`) are computed from.
-    diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>>,
+    diagnostics: Arc<RwLock<HashMap<String, Published>>>,
+    /// The text last sent per document URI (`didOpen`, `didChange`), which a publication has
+    /// to cover before it answers for the document (#293).
+    sent: RwLock<HashMap<String, Sent>>,
+    /// Whether the server has published with a document version, as clangd does: then a
+    /// publication without one (clangd's, for a document just closed) describes no text sent.
+    versioned: Arc<AtomicBool>,
+    /// Whether the server answered a diagnostic pull with "method not found" (clangd does).
+    pull_unsupported: AtomicBool,
     /// Receives the `workspace/applyEdit` a server sends while a command runs.
     apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>>,
     is_alive: Arc<AtomicBool>,
@@ -352,9 +371,11 @@ impl GenericLspEngine {
 
         let (bcast_tx, _) = broadcast::channel(1024);
         let bcast_tx_clone = bcast_tx.clone();
-        let diagnostics: Arc<RwLock<HashMap<String, Vec<serde_json::Value>>>> =
+        let diagnostics: Arc<RwLock<HashMap<String, Published>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let diagnostics_writer = diagnostics.clone();
+        let versioned = Arc::new(AtomicBool::new(false));
+        let versioned_writer = Arc::clone(&versioned);
         let apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(None));
         let apply_edit_slot = apply_edit_waiter.clone();
@@ -532,10 +553,19 @@ impl GenericLspEngine {
                                             .and_then(|d| d.as_array())
                                             .cloned()
                                             .unwrap_or_default();
-                                        diagnostics_writer
-                                            .write()
-                                            .await
-                                            .insert(uri.to_string(), items);
+                                        let version =
+                                            val.pointer("/params/version").and_then(|v| v.as_i64());
+                                        if version.is_some() {
+                                            versioned_writer.store(true, Ordering::Relaxed);
+                                        }
+                                        diagnostics_writer.write().await.insert(
+                                            uri.to_string(),
+                                            Published {
+                                                version,
+                                                at: Instant::now(),
+                                                items,
+                                            },
+                                        );
                                     }
                                     let _ = bcast_tx_clone.send(json_str);
                                 }
@@ -559,6 +589,9 @@ impl GenericLspEngine {
             broadcast_tx: bcast_tx,
             last_activity,
             diagnostics,
+            sent: RwLock::new(HashMap::new()),
+            versioned,
+            pull_unsupported: AtomicBool::new(false),
             apply_edit_waiter,
             is_alive,
             _child: Arc::new(Mutex::new(child)),
@@ -679,19 +712,86 @@ impl GenericLspEngine {
             .is_some_and(|d| !d.is_null())
     }
 
+    /// The document's diagnostics as the server computes them now, asked with a pull
+    /// (`textDocument/diagnostic`), or `None` when the server does not answer one. It is asked
+    /// whether or not it advertised the method: sourcekit-lsp answers a pull without
+    /// advertising it, and what it publishes first for a document is an empty list, ahead of
+    /// the check that finds the errors (#293). A server that does not know the method (clangd)
+    /// is not asked again.
+    pub async fn pull_diagnostics(&self, uri: &str) -> Option<Vec<serde_json::Value>> {
+        if self.pull_unsupported.load(Ordering::Relaxed) {
+            return None;
+        }
+        let answer = self
+            .send_request(
+                "textDocument/diagnostic",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+            .ok()?;
+        if answer.pointer("/error/code").and_then(|c| c.as_i64()) == Some(METHOD_NOT_FOUND) {
+            self.pull_unsupported.store(true, Ordering::Relaxed);
+            return None;
+        }
+        answer.pointer("/result/items")?.as_array().cloned()
+    }
+
     /// Whether the server has published diagnostics for `uri` at least once.
     pub async fn diagnostics_published(&self, uri: &str) -> bool {
         self.diagnostics.read().await.contains_key(uri)
     }
 
-    /// The diagnostics the server last published for `uri` (empty when none).
+    /// The diagnostics the server last published for `uri` (empty when none), whichever text
+    /// they were for.
     pub async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
         self.diagnostics
             .read()
             .await
             .get(uri)
-            .cloned()
+            .map(|p| p.items.clone())
             .unwrap_or_default()
+    }
+
+    /// The diagnostics for the text last sent for `uri`. A server that pushes diagnostics
+    /// publishes for each text it builds, and a publication for the text before the last
+    /// change may still arrive after that change was sent; answering with it reports the old
+    /// text's errors as the new one's (#293). This waits up to `wait` for a publication that
+    /// covers the last text sent, and up to [`FIRST_PUBLICATION_WAIT`] for a first one when
+    /// nothing was sent for the document; past that it answers with what was last published.
+    pub async fn current_diagnostics_for(
+        &self,
+        uri: &str,
+        wait: Duration,
+    ) -> Vec<serde_json::Value> {
+        let started = Instant::now();
+        loop {
+            let known = {
+                let sent = self.sent.read().await;
+                let published = self.diagnostics.read().await;
+                if let Some(p) = published.get(uri)
+                    && covers(p, sent.get(uri), self.versioned.load(Ordering::Relaxed))
+                {
+                    return p.items.clone();
+                }
+                sent.contains_key(uri)
+            };
+            let limit = if known {
+                wait
+            } else {
+                wait.min(FIRST_PUBLICATION_WAIT)
+            };
+            if started.elapsed() >= limit {
+                if known {
+                    tracing::warn!(
+                        uri,
+                        waited_ms = started.elapsed().as_millis() as u64,
+                        "no diagnostics published for the text last sent; answering with the last ones"
+                    );
+                }
+                return self.diagnostics_for(uri).await;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     pub async fn send_request(
@@ -733,6 +833,32 @@ impl GenericLspEngine {
 
     /// Send a notification to the language server.
     pub async fn send_notification(&self, method: &str, params: serde_json::Value) -> Result<()> {
+        // Recorded before the text is on its way, so no publication for it can come first.
+        if let Some(uri) = params.pointer("/textDocument/uri").and_then(|u| u.as_str()) {
+            // A publication from before an open or a close describes a text that is gone:
+            // another session's, which numbered its versions from 1 as this one does.
+            if matches!(method, "textDocument/didOpen" | "textDocument/didClose") {
+                self.diagnostics.write().await.remove(uri);
+            }
+            match method {
+                "textDocument/didOpen" | "textDocument/didChange" => {
+                    let version = params
+                        .pointer("/textDocument/version")
+                        .and_then(|v| v.as_i64());
+                    self.sent.write().await.insert(
+                        uri.to_string(),
+                        Sent {
+                            version,
+                            at: Instant::now(),
+                        },
+                    );
+                }
+                "textDocument/didClose" => {
+                    self.sent.write().await.remove(uri);
+                }
+                _ => {}
+            }
+        }
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -757,9 +883,109 @@ impl GenericLspEngine {
     }
 }
 
+/// JSON-RPC's code for a method the server does not know.
+const METHOD_NOT_FOUND: i64 = -32601;
+
+/// How long [`GenericLspEngine::current_diagnostics_for`] waits for the first publication for a
+/// document no text was sent for: one the server opened by itself, or one it will never
+/// publish for.
+pub const FIRST_PUBLICATION_WAIT: Duration = Duration::from_secs(3);
+
+/// What a server last published for one document.
+#[derive(Debug, Clone)]
+struct Published {
+    /// The document version the publication was for, when the server says (clangd does).
+    version: Option<i64>,
+    /// When it arrived.
+    at: Instant,
+    items: Vec<serde_json::Value>,
+}
+
+/// The text last sent for one document.
+#[derive(Debug, Clone)]
+struct Sent {
+    version: Option<i64>,
+    at: Instant,
+}
+
+/// Whether a publication covers the text last sent for its document: one for that version or
+/// a later one, or, when either side has no version, one that arrived after the text was sent.
+/// From a server that numbers its publications (`versioned`), one without a number never
+/// covers a numbered text. With nothing sent, any publication does.
+fn covers(published: &Published, sent: Option<&Sent>, versioned: bool) -> bool {
+    match sent {
+        None => true,
+        Some(sent) => match (published.version, sent.version) {
+            (Some(p), Some(s)) => p >= s,
+            (None, Some(_)) if versioned => false,
+            _ => published.at >= sent.at,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_publication_answers_for_the_last_text_only_when_it_covers_it() {
+        let now = Instant::now();
+        let later = now + Duration::from_millis(5);
+        let published = |version, at| Published {
+            version,
+            at,
+            items: Vec::new(),
+        };
+        let sent = |version, at| Sent { version, at };
+        for versioned in [false, true] {
+            assert!(
+                covers(&published(Some(1), now), None, versioned),
+                "nothing sent"
+            );
+            assert!(
+                !covers(
+                    &published(Some(1), later),
+                    Some(&sent(Some(2), now)),
+                    versioned
+                ),
+                "the text before the change, even when it arrives after it"
+            );
+            assert!(covers(
+                &published(Some(2), later),
+                Some(&sent(Some(2), now)),
+                versioned
+            ));
+            assert!(
+                covers(
+                    &published(Some(3), later),
+                    Some(&sent(Some(2), now)),
+                    versioned
+                ),
+                "a later version covers an earlier one"
+            );
+            assert!(
+                !covers(
+                    &published(None, now),
+                    Some(&sent(Some(2), later)),
+                    versioned
+                ),
+                "without a version, one from before the text was sent does not"
+            );
+            assert!(covers(
+                &published(Some(1), later),
+                Some(&sent(None, now)),
+                versioned
+            ));
+        }
+        assert!(
+            covers(&published(None, later), Some(&sent(Some(2), now)), false),
+            "from a server without versions, one that arrived after the text covers it"
+        );
+        assert!(
+            !covers(&published(None, later), Some(&sent(Some(2), now)), true),
+            "from clangd, a publication without a version is a closed document's"
+        );
+    }
 
     #[test]
     fn test_generic_config_defaults() {

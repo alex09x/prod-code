@@ -18,13 +18,26 @@ use std::time::Duration;
 
 /// A language server that does only what these tests need.
 const SERVER: &str = r#"
-import json, sys, threading
+import json, os, sys, threading
+
+LOCK = threading.Lock()
 
 def send(message):
     body = json.dumps(message).encode()
-    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
-    sys.stdout.buffer.write(body)
-    sys.stdout.buffer.flush()
+    with LOCK:
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
+
+def publish(uri, version, text):
+    send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
+        "uri": uri, "version": version,
+        "diagnostics": [{
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+            "severity": 1,
+            "message": text
+        }]
+    }})
 
 def read():
     length = 0
@@ -64,6 +77,23 @@ while True:
                 "message": "something the fake server disliked"
             }]
         }})
+    elif method == "textDocument/diagnostic":
+        # A pull, answered as sourcekit-lsp answers it, or refused as clangd refuses it.
+        if os.environ.get("FAKE_NO_PULL"):
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "method not found"}})
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": [{
+                "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+                "severity": 1,
+                "message": "pulled"
+            }]}})
+    elif method == "textDocument/didChange":
+        # What clangd does: the build of the text before the change is published after the
+        # change has arrived, and the changed text's build a moment later.
+        uri = message["params"]["textDocument"]["uri"]
+        version = message["params"]["textDocument"]["version"]
+        publish(uri, version - 1, "from the text before the change")
+        threading.Timer(0.3, publish, (uri, version, "from the text as changed")).start()
     elif method == "workspace/executeCommand":
         command = message["params"].get("command", "")
         if command == "prodCode/edit":
@@ -144,6 +174,112 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         Some("the fake server answered"),
         "the answer was matched to the request: {hover}"
     );
+}
+
+/// A server that answers a diagnostic pull is asked, whether or not it advertised one
+/// (sourcekit-lsp does not, and publishes an empty list ahead of the real one); one that does not
+/// know the method gives `None`, and its publications answer instead (#293).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn diagnostics_are_pulled_from_a_server_that_answers_a_pull() {
+    let (dir, script) = workspace();
+    let uri = format!("file://{}/a.swift", dir.path().display());
+    let pulls = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let pulled = pulls
+        .pull_diagnostics(&uri)
+        .await
+        .expect("a pull is answered");
+    assert_eq!(pulled[0]["message"].as_str(), Some("pulled"));
+
+    let mut refusing = config(&script);
+    refusing
+        .env
+        .insert("FAKE_NO_PULL".to_string(), "1".to_string());
+    let pushes = GenericLspEngine::spawn(dir.path(), refusing)
+        .await
+        .expect("the fake server starts");
+    assert!(pushes.pull_diagnostics(&uri).await.is_none());
+    assert!(
+        pushes.pull_diagnostics(&uri).await.is_none(),
+        "and it is not asked again"
+    );
+}
+
+/// A publication for the text before the last change can arrive after the change; the answer
+/// for the document waits for the one that covers the text last sent (#293).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_diagnostics_answered_are_for_the_text_last_sent() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/a.c", dir.path().display());
+    engine
+        .send_notification(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": {
+                "uri": uri, "languageId": "c", "version": 1, "text": "int a;\n"
+            }}),
+        )
+        .await
+        .expect("didOpen is sent");
+    let opened = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await;
+    assert!(
+        opened[0]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("disliked"),
+        "a publication without a version, after the didOpen, answers for it: {opened:?}"
+    );
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "text": "int b;\n" } ]
+            }),
+        )
+        .await
+        .expect("didChange is sent");
+    let changed = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await;
+    assert_eq!(
+        changed[0]["message"].as_str(),
+        Some("from the text as changed"),
+        "{changed:?}"
+    );
+    assert_eq!(
+        engine.diagnostics_for(&uri).await[0]["message"].as_str(),
+        Some("from the text as changed")
+    );
+
+    // A document nothing was sent for is answered after a short wait for a first publication.
+    let started = std::time::Instant::now();
+    let none = engine
+        .current_diagnostics_for("file:///never/opened.c", Duration::from_secs(60))
+        .await;
+    assert!(none.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "waited {:?}",
+        started.elapsed()
+    );
+
+    // What was published for a document is dropped when it is closed: the next session to
+    // open it numbers its versions from 1 again, and a publication for this one's version 2
+    // would pass for its own.
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .expect("didClose is sent");
+    assert!(engine.diagnostics_for(&uri).await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -334,6 +470,18 @@ fn each_language_gets_a_configuration_that_names_its_server() {
         cpp.args.iter().any(|a| a == "--use-dirty-headers"),
         "clangd must parse an open header's proposed text, not the file on disk (#292): {:?}",
         cpp.args
+    );
+    let validation = GenericLspConfig::for_cpp_validation();
+    assert_eq!(validation.command, cpp.command);
+    assert!(
+        validation
+            .args
+            .iter()
+            .any(|a| a == "--background-index=false")
+            && !validation.args.iter().any(|a| a == "--background-index")
+            && validation.args.iter().any(|a| a == "--use-dirty-headers"),
+        "the validation server indexes nothing in the background: {:?}",
+        validation.args
     );
     let swift = GenericLspConfig::for_swift();
     assert!(
