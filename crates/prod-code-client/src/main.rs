@@ -172,6 +172,28 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Report a bug in prod-code itself as a GitHub issue (private details are removed first;
+    /// similar open issues are listed and nothing is filed unless --force)
+    ReportIssue {
+        /// A searchable title: what went wrong, in which tool or command
+        #[arg(long)]
+        title: String,
+        /// What was run, what came back, what was expected
+        #[arg(long, conflicts_with = "body_file")]
+        body: Option<String>,
+        /// Read the body from this file (`-` for stdin)
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// Id of a private record of the details the issue cannot carry; the issue names it
+        #[arg(long)]
+        private_ref: Option<String>,
+        /// File it even when similar issues exist
+        #[arg(long)]
+        force: bool,
+        /// Show the scrubbed issue without filing it
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Usage metrics of every node: who queried what, how often, how fast; exec runs; syncs
     Metrics {
         /// Window in seconds (default 24h; 0 = everything the nodes hold in memory)
@@ -1107,6 +1129,38 @@ async fn main() -> Result<()> {
         Commands::Status => run_status_probe(seeds[0]).await,
         Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
+        Commands::ReportIssue {
+            title,
+            body,
+            body_file,
+            private_ref,
+            force,
+            dry_run,
+        } => {
+            let body = match (body, body_file) {
+                (Some(body), _) => body,
+                (None, Some(path)) if path.as_os_str() == "-" => {
+                    let mut text = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+                    text
+                }
+                (None, Some(path)) => std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?,
+                (None, None) => anyhow::bail!("give the report a --body or a --body-file"),
+            };
+            let outcome = prod_code_mcp::report::report(
+                Some(remote),
+                &title,
+                &body,
+                force,
+                dry_run,
+                &prod_code_mcp::report::gh_program(),
+                private_ref.as_deref(),
+            )
+            .await?;
+            println!("{}", outcome.render());
+            Ok(())
+        }
         Commands::Mcp => run_mcp_server(remote).await,
         Commands::Sync { path } => run_sync(remote, path).await,
         Commands::Def {

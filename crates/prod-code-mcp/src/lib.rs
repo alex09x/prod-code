@@ -36,6 +36,7 @@ pub mod refactor;
 pub mod remote_fs;
 pub mod rename_accessors;
 pub mod rename_mentions;
+pub mod report;
 pub mod schema;
 pub mod search;
 pub mod session;
