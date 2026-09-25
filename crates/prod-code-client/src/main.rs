@@ -10,7 +10,7 @@ use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, Wire
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio_util::codec::Framed;
 use url::Url;
 
@@ -40,8 +40,14 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Run as drop-in Language Server (stdio LSP bridged over 10G TCP).
-    Lsp,
+    /// Run as an editor's language server (stdio LSP): the language's own server (rust-analyzer,
+    /// gopls, clangd, basedpyright, the TypeScript server, sourcekit-lsp) runs on the node
+    Lsp {
+        /// The language the server is for (rust, go, c, cpp, python, typescript, javascript,
+        /// swift); by default the checkout root's
+        #[arg(long)]
+        language: Option<String>,
+    },
     /// Run as Model Context Protocol (MCP) server for AI coding agents.
     Mcp,
     /// Probe remote gateway status and latency.
@@ -1094,6 +1100,26 @@ async fn main() -> Result<()> {
         (Some(_), Some(engine)) => format!("{cwd_workspace}#{engine}"),
         _ => cwd_workspace.clone(),
     };
+    // An editor's server names its language, which may not be the root's: a Swift package's
+    // server in a Rust checkout goes to a macOS node, under a key of its own (#331).
+    let lsp_engine = match &cli.command {
+        Some(Commands::Lsp {
+            language: Some(language),
+        }) => Some(
+            prod_code_client::editor_files::engine_for_language(language).with_context(|| {
+                format!(
+                    "prod-code lsp has no server for `{language}`: use rust, go, c, cpp, \
+                     python, typescript, javascript or swift"
+                )
+            })?,
+        ),
+        _ => None,
+    };
+    let placement_key = match lsp_engine {
+        Some(engine) if Some(engine) != cwd_engine => format!("{cwd_workspace}#{engine}"),
+        _ => placement_key,
+    };
+    let cwd_engine = lsp_engine.or(cwd_engine);
     startup.mark("engine_project");
 
     if matches!(cli.command, Some(Commands::Cluster)) {
@@ -1159,8 +1185,8 @@ async fn main() -> Result<()> {
     startup.mark("pick_node");
     startup.report();
 
-    match cli.command.unwrap_or(Commands::Lsp) {
-        Commands::Lsp => run_lsp_bridge(remote).await,
+    match cli.command.unwrap_or(Commands::Lsp { language: None }) {
+        Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
         // `status` is about the node you name, not about where this checkout is placed.
         Commands::Status => run_status_probe(seeds[0]).await,
         Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
@@ -3142,15 +3168,24 @@ async fn push_checkout(remote: SocketAddr, root: &Path) -> Result<()> {
 
 /// Keeps the node's copy of `root` current while an editor runs `prod-code lsp`: whenever the
 /// file watcher saw a change (a save, a checkout, a generated file), the delta is pushed on a
-/// connection of its own, so the language server session never waits for it (#316).
-async fn keep_checkout_synced(remote: SocketAddr, root: PathBuf) {
+/// connection of its own, so the language server session never waits for it (#316). `pushing`
+/// is held for each push, which a save also takes.
+async fn keep_checkout_synced(
+    remote: SocketAddr,
+    root: PathBuf,
+    pushing: std::sync::Arc<tokio::sync::Mutex<()>>,
+) {
     loop {
         tokio::time::sleep(BRIDGE_SYNC_POLL).await;
         let generation = prod_code_mcp::watch::current_generation(&root);
         if !prod_code_mcp::watch::sync_due(&root, generation) {
             continue;
         }
-        match push_checkout(remote, &root).await {
+        let pushed = {
+            let _one_at_a_time = pushing.lock().await;
+            push_checkout(remote, &root).await
+        };
+        match pushed {
             Ok(()) => prod_code_mcp::watch::mark_synced(&root, generation),
             Err(err) => {
                 tracing::debug!(error = %format!("{err:#}"), "background sync failed");
@@ -3160,12 +3195,49 @@ async fn keep_checkout_synced(remote: SocketAddr, root: PathBuf) {
     }
 }
 
+/// The file `PROD_CODE_LSP_TRACE` names, where the bridge logs every message it carries: the
+/// time, the direction, the method or id, and the size.
+type LspTrace = Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>>;
+
+fn lsp_trace() -> LspTrace {
+    let path = env::var_os("PROD_CODE_LSP_TRACE")?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()?;
+    Some(std::sync::Arc::new(std::sync::Mutex::new(file)))
+}
+
+fn trace_message(trace: &LspTrace, direction: &str, raw: &str) {
+    let Some(file) = trace else {
+        return;
+    };
+    let id = serde_json::from_str::<serde_json::Value>(raw)
+        .ok()
+        .and_then(|v| v.get("id").cloned())
+        .map(|id| id.to_string())
+        .unwrap_or_default();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or_default();
+    let method = prod_code_client::editor_files::method_of(raw).unwrap_or("");
+    if let Ok(mut file) = file.lock() {
+        let line = format!("{millis} {direction} {method} id={id} {}B\n", raw.len());
+        let _ = std::io::Write::write_all(&mut *file, line.as_bytes());
+    }
+}
+
 /// Run full-duplex stdio LSP bridge connecting local editor to remote daemon over TCP.
 ///
 /// The checkout is pushed before the handshake, under the name the sync used, and kept
 /// current while the editor runs: a node that never saw the project would otherwise detect
-/// no language in an empty copy and answer every request with nothing (#316).
-async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
+/// no language in an empty copy and answer every request with nothing (#316). The session is
+/// an editor's, so the node runs the language's own server for it (#331); `engine` names the
+/// language when it is not the checkout root's. Files the server points at that exist only on
+/// the node are mirrored locally (#332).
+async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
@@ -3190,7 +3262,7 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
             client_pid: std::process::id(),
             auth_token: None,
             client_workspace_root: cwd_str,
-            preferred_engine: None,
+            preferred_engine: engine.map(str::to_string),
             base_workspace_name: Some(identity.name.clone()),
             engine_subpath: None,
             client_agent: Some(prod_code_protocol::detect_client_agent()),
@@ -3201,6 +3273,9 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
 
     let handshake_resp = match framed.next().await {
         Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+        Some(Ok(WireMessage::Disconnect { reason })) => {
+            anyhow::bail!("the gateway refused the session: {reason}")
+        }
         Some(Ok(other)) => anyhow::bail!("Expected HandshakeResponse, got {:?}", other),
         Some(Err(err)) => return Err(err.into()),
         None => anyhow::bail!("Server closed connection during handshake"),
@@ -3219,15 +3294,31 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
         &handshake_resp.stale_paths,
     );
 
+    let files = std::sync::Arc::new(prod_code_client::editor_files::RemoteFiles::new(
+        remote,
+        &cwd,
+        Path::new(&handshake_resp.server_workspace_root),
+        &prod_code_client::editor_files::default_cache(),
+    ));
+    let trace = lsp_trace();
+    let pushing = std::sync::Arc::new(tokio::sync::Mutex::new(()));
     let (mut socket_tx, mut socket_rx) = framed.split();
-    let keeper = tokio::spawn(keep_checkout_synced(remote, cwd.clone()));
+    let keeper = tokio::spawn(keep_checkout_synced(
+        remote,
+        cwd.clone(),
+        std::sync::Arc::clone(&pushing),
+    ));
 
     // Spawn background task to read responses from server and write LSP to stdout
+    let stdout_files = std::sync::Arc::clone(&files);
+    let stdout_trace = trace.clone();
     let stdout_task = tokio::spawn(async move {
         let mut stdout = tokio::io::stdout();
         while let Some(msg_res) = socket_rx.next().await {
             match msg_res {
                 Ok(WireMessage::LspPayload(json)) => {
+                    let json = stdout_files.to_editor(json).await;
+                    trace_message(&stdout_trace, "<-", &json);
                     let header = format!("Content-Length: {}\r\n\r\n", json.len());
                     if stdout.write_all(header.as_bytes()).await.is_err() {
                         break;
@@ -3248,12 +3339,11 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
 
     // Main loop: read standard LSP from stdin and forward as WireMessage::LspPayload over TCP
     let mut stdin_reader = BufReader::new(tokio::io::stdin());
-    let mut header_line = String::new();
-
     loop {
-        header_line.clear();
-        let bytes_read = stdin_reader.read_line(&mut header_line).await?;
-        if bytes_read == 0 {
+        let Some(json_payload) = prod_code_client::editor_files::read_frame(&mut stdin_reader)
+            .await
+            .context("reading the editor's message")?
+        else {
             // Stdin EOF (editor exited)
             let _ = socket_tx
                 .send(WireMessage::Disconnect {
@@ -3261,35 +3351,32 @@ async fn run_lsp_bridge(remote: SocketAddr) -> Result<()> {
                 })
                 .await;
             break;
-        }
-
-        // Parse Content-Length header (header names are case-insensitive)
-        if let Some((name, value)) = header_line.split_once(':')
-            && name.trim().eq_ignore_ascii_case("Content-Length")
-        {
-            let content_len: usize = value
-                .trim()
-                .parse()
-                .context("Invalid Content-Length header")?;
-
-            // Read the empty separating line \r\n
-            header_line.clear();
-            stdin_reader.read_line(&mut header_line).await?;
-
-            // Read exact body
-            let mut body_buf = vec![0u8; content_len];
-            stdin_reader.read_exact(&mut body_buf).await?;
-
-            let json_payload =
-                String::from_utf8(body_buf).context("LSP payload was not valid UTF-8 string")?;
-
-            if socket_tx
-                .send(WireMessage::LspPayload(json_payload))
-                .await
-                .is_err()
-            {
-                break;
+        };
+        trace_message(&trace, "->", &json_payload);
+        // What the editor saved, or saw change, reaches the node before the server hears of it:
+        // rust-analyzer checks the crate on save, and must check what was saved (#331).
+        if matches!(
+            prod_code_client::editor_files::method_of(&json_payload),
+            Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
+        ) {
+            let generation = prod_code_mcp::watch::current_generation(&cwd);
+            let pushed = {
+                let _one_at_a_time = pushing.lock().await;
+                push_checkout(remote, &cwd).await
+            };
+            match pushed {
+                Ok(()) => prod_code_mcp::watch::mark_synced(&cwd, generation),
+                Err(err) => {
+                    tracing::debug!(error = %format!("{err:#}"), "sync before a save failed")
+                }
             }
+        }
+        if socket_tx
+            .send(WireMessage::LspPayload(files.to_node(&json_payload)))
+            .await
+            .is_err()
+        {
+            break;
         }
     }
 

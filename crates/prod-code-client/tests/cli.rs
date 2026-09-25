@@ -12,6 +12,7 @@ use prod_code_protocol::{
     SyncResponse, WireMessage,
 };
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::{Output, Stdio};
 use std::sync::Arc;
@@ -2192,87 +2193,7 @@ async fn lsp_pushes_the_checkout_before_its_handshake_and_every_change_after_it(
     let ws = make_workspace();
     // The sync keeps its watermark under HOME: outside the checkout, or the watcher sees it.
     let home = tempfile::tempdir().expect("home");
-    let seen: Arc<std::sync::Mutex<Vec<(usize, String)>>> = Arc::default();
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-    let addr = listener.local_addr().expect("addr");
-    let log = Arc::clone(&seen);
-    tokio::spawn(async move {
-        let mut connections = 0;
-        while let Ok((socket, _)) = listener.accept().await {
-            connections += 1;
-            let (log, connection) = (Arc::clone(&log), connections);
-            tokio::spawn(async move {
-                let mut framed = Framed::new(socket, ProdCodeCodec::new());
-                while let Some(Ok(msg)) = framed.next().await {
-                    let (event, reply) = match msg {
-                        WireMessage::SyncProbeRequest(req) => (
-                            format!("probe {}", req.base_workspace_name.unwrap_or_default()),
-                            Some(WireMessage::SyncProbeResponse(SyncProbeResponse {
-                                server_workspace_root: req.client_workspace_root,
-                                seeded: false,
-                                files_deleted: 0,
-                                missing: Vec::new(),
-                            })),
-                        ),
-                        WireMessage::SyncRequest(req) => (
-                            format!(
-                                "sync {}",
-                                req.files
-                                    .iter()
-                                    .map(|f| f.relative_path.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(",")
-                            ),
-                            Some(WireMessage::SyncResponse(SyncResponse {
-                                server_workspace_root: req.client_workspace_root,
-                                files_updated: req.files.len(),
-                                files_deleted: 0,
-                                bytes_transferred: 0,
-                                duration_ms: 1,
-                                workspace_was_fresh: false,
-                                stale_paths: Vec::new(),
-                            })),
-                        ),
-                        WireMessage::HandshakeRequest(req) => (
-                            format!(
-                                "handshake {} purpose={}",
-                                req.base_workspace_name.unwrap_or_default(),
-                                req.purpose.unwrap_or_default()
-                            ),
-                            Some(WireMessage::HandshakeResponse(HandshakeResponse {
-                                protocol_version: PROTOCOL_VERSION,
-                                server_pid: std::process::id(),
-                                session_id: 1,
-                                server_workspace_root: req.client_workspace_root,
-                                detected_engine: "rust".to_string(),
-                                stale_paths: Vec::new(),
-                            })),
-                        ),
-                        WireMessage::LspPayload(json) => {
-                            let val: serde_json::Value =
-                                serde_json::from_str(&json).unwrap_or_default();
-                            let method = val["method"].as_str().unwrap_or_default().to_string();
-                            let reply = (method == "initialize").then(|| {
-                                WireMessage::LspPayload(
-                                    serde_json::json!({ "jsonrpc": "2.0", "id": val["id"], "result": { "capabilities": {} } })
-                                        .to_string(),
-                                )
-                            });
-                            (format!("lsp {method}"), reply)
-                        }
-                        WireMessage::Disconnect { .. } => break,
-                        _ => ("other".to_string(), None),
-                    };
-                    log.lock().expect("log").push((connection, event));
-                    if let Some(reply) = reply
-                        && framed.send(reply).await.is_err()
-                    {
-                        break;
-                    }
-                }
-            });
-        }
-    });
+    let (addr, seen) = recording_gateway(|_| None, HashMap::new()).await;
 
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
         .arg("lsp")
@@ -2345,5 +2266,224 @@ async fn lsp_pushes_the_checkout_before_its_handshake_and_every_change_after_it(
     assert!(
         pushed(&seen),
         "a file written while the editor runs is pushed: {seen:?}"
+    );
+}
+
+/// What a recording gateway saw, in order of arrival: the connection and the event.
+type Seen = Arc<std::sync::Mutex<Vec<(usize, String)>>>;
+
+/// A gateway that answers the sync, the handshake, `initialize`, the LSP requests `answer` has a
+/// result for, and reads of the node's `files`, and records every message with its connection.
+async fn recording_gateway<F>(answer: F, files: HashMap<String, String>) -> (SocketAddr, Seen)
+where
+    F: Fn(&serde_json::Value) -> Option<serde_json::Value> + Send + Sync + 'static,
+{
+    let answer = Arc::new(answer);
+    let seen: Seen = Arc::default();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        let mut connections = 0;
+        while let Ok((socket, _)) = listener.accept().await {
+            connections += 1;
+            let (log, connection) = (Arc::clone(&log), connections);
+            let (answer, files) = (Arc::clone(&answer), files.clone());
+            tokio::spawn(async move {
+                let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                while let Some(Ok(msg)) = framed.next().await {
+                    let (event, reply) = match msg {
+                        WireMessage::SyncProbeRequest(req) => (
+                            format!("probe {}", req.base_workspace_name.unwrap_or_default()),
+                            Some(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                seeded: false,
+                                files_deleted: 0,
+                                missing: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::SyncRequest(req) => (
+                            format!(
+                                "sync {}",
+                                req.files
+                                    .iter()
+                                    .map(|f| f.relative_path.as_str())
+                                    .collect::<Vec<_>>()
+                                    .join(",")
+                            ),
+                            Some(WireMessage::SyncResponse(SyncResponse {
+                                server_workspace_root: req.client_workspace_root,
+                                files_updated: req.files.len(),
+                                files_deleted: 0,
+                                bytes_transferred: 0,
+                                duration_ms: 1,
+                                workspace_was_fresh: false,
+                                stale_paths: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::HandshakeRequest(req) => (
+                            format!(
+                                "handshake {} engine={} purpose={}",
+                                req.base_workspace_name.unwrap_or_default(),
+                                req.preferred_engine.unwrap_or_default(),
+                                req.purpose.unwrap_or_default()
+                            ),
+                            Some(WireMessage::HandshakeResponse(HandshakeResponse {
+                                protocol_version: PROTOCOL_VERSION,
+                                server_pid: std::process::id(),
+                                session_id: 1,
+                                server_workspace_root: req.client_workspace_root,
+                                detected_engine: "rust".to_string(),
+                                stale_paths: Vec::new(),
+                            })),
+                        ),
+                        WireMessage::ReadFileRequest(req) => {
+                            let content = files.get(&req.path).map(|t| t.as_bytes().to_vec());
+                            let error = content.is_none().then(|| format!("no {}", req.path));
+                            (
+                                format!("read {}", req.path),
+                                Some(WireMessage::ReadFileResponse(ReadFileResponse {
+                                    path: req.path,
+                                    content,
+                                    truncated: false,
+                                    error,
+                                })),
+                            )
+                        }
+                        WireMessage::LspPayload(json) => {
+                            let val: serde_json::Value =
+                                serde_json::from_str(&json).unwrap_or_default();
+                            let method = val["method"].as_str().unwrap_or_default().to_string();
+                            let result = if method == "initialize" {
+                                Some(serde_json::json!({ "capabilities": {} }))
+                            } else {
+                                answer(&val)
+                            };
+                            let reply = result.map(|result| {
+                                WireMessage::LspPayload(
+                                    serde_json::json!({ "jsonrpc": "2.0", "id": val["id"], "result": result })
+                                        .to_string(),
+                                )
+                            });
+                            (format!("lsp {method}"), reply)
+                        }
+                        WireMessage::Disconnect { .. } => break,
+                        _ => ("other".to_string(), None),
+                    };
+                    log.lock().expect("log").push((connection, event));
+                    if let Some(reply) = reply
+                        && framed.send(reply).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// One LSP message the editor side reads from `prod-code lsp`.
+async fn read_lsp_message<R: tokio::io::AsyncBufRead + Unpin>(stdout: &mut R) -> serde_json::Value {
+    let frame = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        prod_code_client::editor_files::read_frame(stdout),
+    )
+    .await
+    .expect("an answer in time")
+    .expect("read")
+    .expect("a message");
+    serde_json::from_str(&frame).expect("json")
+}
+
+/// `prod-code lsp --language go` asks for Go's server; a save reaches the node before the
+/// server hears of it, since rust-analyzer checks on save (#332); and a definition the server
+/// finds in a file only the node has is shown as a local read-only copy of it (#333).
+#[tokio::test]
+async fn lsp_asks_for_its_language_pushes_a_save_first_and_mirrors_node_files() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let node_file = "/srv/toolchains/std/vec.rs";
+    let (addr, seen) = recording_gateway(
+        move |message| {
+            (message["method"] == "textDocument/definition").then(|| {
+                serde_json::json!([{
+                    "uri": format!("file://{node_file}"),
+                    "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 14 } }
+                }])
+            })
+        },
+        HashMap::from([(node_file.to_string(), "pub struct Vec;\n".to_string())]),
+    )
+    .await;
+
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--language", "go", "--remote", &addr.to_string()])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+    let uri = format!("file://{}", ws.path("src/lib.rs").display());
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} } })).as_bytes())
+        .await
+        .expect("initialize");
+    read_lsp_message(&mut stdout).await;
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didSave", "params": { "textDocument": { "uri": uri } } })).as_bytes())
+        .await
+        .expect("didSave");
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "textDocument/definition", "params": { "textDocument": { "uri": uri }, "position": { "line": 0, "character": 12 } } })).as_bytes())
+        .await
+        .expect("definition");
+    let definition = read_lsp_message(&mut stdout).await;
+    drop(stdin);
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait()).await;
+
+    let shown = definition["result"][0]["uri"].as_str().unwrap_or_default();
+    assert!(
+        shown.contains("/prod-code/remote/") && shown.ends_with(node_file),
+        "the node's file is named by its local copy: {definition}"
+    );
+    let copy = url::Url::parse(shown)
+        .expect("uri")
+        .to_file_path()
+        .expect("path");
+    assert_eq!(
+        std::fs::read_to_string(&copy).expect("the copy"),
+        "pub struct Vec;\n"
+    );
+
+    let seen = seen.lock().expect("log").clone();
+    assert!(
+        seen.iter()
+            .any(|(connection, event)| *connection == 1 && event.contains("engine=go")),
+        "the handshake asks for Go's server: {seen:?}"
+    );
+    let saved = seen
+        .iter()
+        .position(|(_, event)| event == "lsp textDocument/didSave")
+        .expect("the save reaches the gateway");
+    let initialized = seen
+        .iter()
+        .position(|(_, event)| event == "lsp initialize")
+        .expect("initialize");
+    assert!(
+        seen[initialized..saved]
+            .iter()
+            .any(|(connection, event)| *connection > 1 && event.starts_with("sync")),
+        "a sync lands between initialize and the save it precedes: {seen:?}"
     );
 }

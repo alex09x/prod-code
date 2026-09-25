@@ -66,6 +66,24 @@ prod-code-server --bind 0.0.0.0:9400 --storage /srv/prod-code/workspaces \
 The MCP server tells the agent how to work at `initialize`, and reloads itself when the
 binary is replaced, so a running session picks up new tools without a restart.
 
+## In an editor
+
+`prod-code lsp` is an editor's language server. The language's own server (rust-analyzer,
+gopls, clangd, basedpyright, the TypeScript server, sourcekit-lsp) runs on the node, started
+for the editor's session in the node's copy of the checkout, and the bridge carries the
+protocol both ways:
+
+- The editor's settings, rust-analyzer's check on save and the server's protocol extensions
+  work as they do with a local server.
+- A save reaches the node before the server hears of it.
+- Files the server points at that exist only on the node (the standard library, dependency
+  caches, generated files) are mirrored read-only under the user's cache directory.
+- `--language` picks the server for one language of a mixed checkout.
+
+For Zed there is an extension in [`editors/zed`](editors/zed/README.md). Or point Zed's own
+rust-analyzer at `prod-code lsp --language rust`, which keeps everything Zed wires to
+rust-analyzer.
+
 ## What it gives an agent
 
 Thirty-three tools, all of them answered by the node that holds the workspace.

@@ -3,6 +3,25 @@
 ## Unreleased
 
 ### Added
+- **An editor gets the language's own server on the node** (#332).
+  - `prod-code lsp` starts, for the editor's session, rust-analyzer, gopls, clangd,
+    basedpyright, the TypeScript server or sourcekit-lsp in the node's copy of the checkout.
+    The gateway only carries the protocol and translates paths. The editor's `initialize` and
+    settings reach the server, and the server's requests and protocol extensions reach the
+    editor.
+  - rust-analyzer's check on save runs `cargo check` on the node, and a save is pushed before
+    the server hears of it.
+  - The editor's process id is kept from the server: basedpyright exited within 4 s when it
+    named no process on the node.
+  - `prod-code lsp --language <lang>` picks the server for one language of a mixed checkout.
+  - `PROD_CODE_EDITOR_SERVERS=off` on a gateway serves editors from the shared engines again.
+  - `PROD_CODE_LSP_TRACE=<file>` logs every message the bridge carries.
+- **Files only the node has open in the editor** (#333): a definition in the standard library,
+  a dependency or a generated file is copied into a read-only mirror under the user's cache
+  directory and named by the copy.
+- **A Zed extension** in `editors/zed` (#334): one server per language (`prod-code-rust`,
+  `-go`, `-cpp`, `-python`, `-typescript`, `-swift`). It takes the user's settings for the local
+  server it stands in for.
 - **An editor on `prod-code lsp` gets completion, diagnostics, code actions and formatting
   for Rust** (#310, PR #320). The in-memory engine answers completion (with the `use` of an
   item not yet imported added on resolve), signature help, inlay hints, document highlights,
@@ -16,6 +35,9 @@
   labels every issue and pull request carries.
 
 ### Fixed
+- **A workspace-wide symbol search answers from the checkout, not from a nested crate of its
+  own** (#335, PR #336). The file opened to load the project could be one of a crate the root
+  workspace leaves out, and every search then answered from that crate.
 - **`prod-code lsp` pushes the checkout before its session and keeps it current** (#316,
   PR #319). A node that had never seen the project detected no language in an empty copy and
   answered every request with nothing. The editor's `initialize` is answered with the

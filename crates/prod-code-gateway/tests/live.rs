@@ -2027,6 +2027,20 @@ struct EditorSession {
 
 impl EditorSession {
     async fn open(addr: SocketAddr, root: &Path) -> (Self, serde_json::Value) {
+        let root_uri = format!("file://{}", root.display());
+        Self::open_with(
+            addr,
+            root,
+            serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
+        )
+        .await
+    }
+
+    async fn open_with(
+        addr: SocketAddr,
+        root: &Path,
+        init: serde_json::Value,
+    ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
         let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
         let mut framed =
@@ -2062,13 +2076,7 @@ impl EditorSession {
             next_id: 1,
             notes: Vec::new(),
         };
-        let root_uri = format!("file://{}", root.display());
-        let init = session
-            .request(
-                "initialize",
-                serde_json::json!({ "rootUri": root_uri, "capabilities": {} }),
-            )
-            .await;
+        let init = session.request("initialize", init).await;
         session.notify("initialized", serde_json::json!({})).await;
         (session, init)
     }
@@ -2165,7 +2173,9 @@ pub fn run() -> u32 {
 /// edit. A request the engine has no answer for is refused instead of left waiting.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
-    let gateway = Gateway::start();
+    // The in-memory engine answers an editor only where the node has no rust-analyzer for it;
+    // here it is asked to, whatever the node has.
+    let gateway = Gateway::start_with(&[("PROD_CODE_EDITOR_SERVERS", "off")]);
     let checkout = tempfile::tempdir().expect("checkout");
     let root = std::fs::canonicalize(checkout.path()).expect("canonical");
     std::fs::write(
@@ -2389,4 +2399,149 @@ async fn an_editor_session_gets_what_an_editor_needs_for_rust() {
         )
         .await;
     assert_eq!(folding["error"]["code"], -32601, "{folding}");
+}
+
+/// A crate that moves a value twice (rustc's E0382, which only a build finds) and calls a
+/// macro.
+const MOVED_TWICE: &str = "pub fn first(v: Vec<String>) -> String {
+    let s = v;
+    let t = v;
+    format!(\"{s:?}{t:?}\")
+}
+";
+
+/// An editor gets the language's own server on the node (#332): rust-analyzer itself, with
+/// its protocol extensions, its check on save and the editor's own `initialize`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editor_gets_rust_analyzer_itself_on_the_node() {
+    let has_rust_analyzer = std::process::Command::new("rust-analyzer")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if !has_rust_analyzer {
+        eprintln!("skipping: rust-analyzer is not installed (build nodes have it)");
+        return;
+    }
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"moved\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/lib.rs"), MOVED_TWICE).expect("lib.rs");
+    commit_in(&root);
+
+    let (mut editor, init) = EditorSession::open(gateway.addr, &root).await;
+    assert_eq!(
+        init["result"]["serverInfo"]["name"], "rust-analyzer",
+        "{init}"
+    );
+    let uri = format!("file://{}", root.join("src/lib.rs").display());
+    editor
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": { "uri": uri, "languageId": "rust", "version": 1, "text": MOVED_TWICE } }),
+        )
+        .await;
+
+    // rust-analyzer's own extension of the protocol, on `format!`.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let expansion = loop {
+        let expanded = editor
+            .request(
+                "rust-analyzer/expandMacro",
+                serde_json::json!({ "textDocument": { "uri": uri }, "position": { "line": 3, "character": 5 } }),
+            )
+            .await;
+        if expanded["result"]["expansion"].is_string() || Instant::now() > deadline {
+            break expanded;
+        }
+        // The workspace is still loading.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert!(
+        expansion["result"]["expansion"]
+            .as_str()
+            .is_some_and(|text| text.contains("format")),
+        "the macro is expanded by rust-analyzer: {expansion}"
+    );
+
+    // A save runs `cargo check` on the node, and rustc's error comes back to the editor.
+    editor
+        .notify(
+            "textDocument/didSave",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+    let mut seen = 0;
+    loop {
+        let diagnostics = editor.diagnostics(&uri, seen).await;
+        if diagnostics
+            .as_array()
+            .is_some_and(|d| d.iter().any(|d| d["code"] == "E0382"))
+        {
+            break;
+        }
+        seen += 1;
+    }
+}
+
+/// The editor's process id names a process of the editor's machine. basedpyright, like every
+/// server built on vscode-languageserver, exits within seconds when that process is not
+/// running where it runs; the gateway drops the id from `initialize`, so the server outlives it
+/// (#332).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_editors_python_server_does_not_watch_the_editors_process() {
+    if which("basedpyright-langserver").is_none() {
+        eprintln!("skipping: basedpyright-langserver is not installed (build nodes have it)");
+        return;
+    }
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname = \"subject\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("pyproject.toml");
+    let text = "def add(a: int, b: int) -> int:\n    return a + b\n\ntotal = add(1, 2)\n";
+    std::fs::write(root.join("main.py"), text).expect("main.py");
+    commit_in(&root);
+
+    // A process id that names nothing on the node.
+    let root_uri = format!("file://{}", root.display());
+    let (mut editor, init) = EditorSession::open_with(
+        gateway.addr,
+        &root,
+        serde_json::json!({ "processId": 2147483000u32, "rootUri": root_uri, "capabilities": {} }),
+    )
+    .await;
+    assert!(
+        init["result"]["serverInfo"]["name"]
+            .as_str()
+            .is_some_and(|name| name.to_lowercase().contains("pyright")),
+        "the editor talks to basedpyright itself: {init}"
+    );
+    // basedpyright looks for the process every few seconds.
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    let uri = format!("file://{}", root.join("main.py").display());
+    editor
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": { "uri": uri, "languageId": "python", "version": 1, "text": text } }),
+        )
+        .await;
+    let hover = editor
+        .request(
+            "textDocument/hover",
+            serde_json::json!({ "textDocument": { "uri": uri }, "position": { "line": 3, "character": 9 } }),
+        )
+        .await;
+    assert!(
+        hover.to_string().contains("def add"),
+        "the server is still there to answer: {hover}"
+    );
 }
