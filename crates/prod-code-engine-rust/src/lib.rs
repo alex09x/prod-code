@@ -1377,13 +1377,35 @@ impl RustEngineSnapshot {
     /// dependency it came from.
     pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
         let limit = limit.max(1);
+        // The name itself first. The fuzzy search walks the index in name order and stops at
+        // the limit, so in a large workspace the names that only hold the query's letters and
+        // sort before it (`a_dry_run_…` before `run`) fill the limit and leave the symbol that
+        // has the very name out (#348).
+        let mut exact_local = ra_ap_ide::Query::new(query.to_string());
+        exact_local.exact();
+        let mut out: Vec<WorkspaceSymbol> = self
+            .analysis
+            .symbol_search(exact_local, limit)?
+            .into_iter()
+            .filter_map(|target| self.workspace_symbol(target, None))
+            .collect();
         let local = ra_ap_ide::Query::new(query.to_string());
-        let out: Vec<WorkspaceSymbol> = self
+        for symbol in self
             .analysis
             .symbol_search(local, limit)?
             .into_iter()
             .filter_map(|target| self.workspace_symbol(target, None))
-            .collect();
+        {
+            if out.len() >= limit {
+                break;
+            }
+            let listed = out
+                .iter()
+                .any(|s| s.path == symbol.path && (s.line, s.col) == (symbol.line, symbol.col));
+            if !listed {
+                out.push(symbol);
+            }
+        }
         if out.iter().any(|s| s.name.eq_ignore_ascii_case(query)) {
             return Ok(out);
         }
@@ -2348,6 +2370,37 @@ impl PathTranslator {
             "Must resolve definition for PathTranslator"
         );
         assert!(defs.iter().any(|d| d.name == "PathTranslator"));
+    }
+
+    /// The symbol with the very name is found however many names that only hold its letters
+    /// sort before it (#348): `a_run_0` to `a_run_29` fill a limit of 10 on their own.
+    #[test]
+    fn an_exact_name_is_found_past_the_fuzzy_matches_that_fill_the_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let ws = temp.path();
+        std::fs::create_dir_all(ws.join("src")).unwrap();
+        std::fs::write(
+            ws.join("Cargo.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let mut lib = String::from("pub mod proxy;\n");
+        for i in 0..30 {
+            lib.push_str(&format!("pub fn a_run_{i}() {{}}\n"));
+        }
+        std::fs::write(ws.join("src/lib.rs"), lib).unwrap();
+        std::fs::write(ws.join("src/proxy.rs"), "pub fn run() {}\n").unwrap();
+        let engine = RustEngine::load(ws).expect("Must load fixture");
+
+        let found = engine.workspace_symbols("run", 10).unwrap();
+        let first = found.first().unwrap_or_else(|| panic!("no hits"));
+        assert_eq!(first.name, "run", "{found:?}");
+        assert!(first.path.ends_with("src/proxy.rs"), "{first:?}");
+        assert_eq!(
+            found.len(),
+            10,
+            "the fuzzy matches fill the rest: {found:?}"
+        );
     }
 
     /// A name the workspace's own crates lack is looked up in the dependency crates, and the
