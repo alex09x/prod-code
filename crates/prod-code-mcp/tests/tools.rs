@@ -3489,3 +3489,86 @@ async fn lint_fix_runs_the_linters_own_fix_mode_for_python() {
         "def price(q: int) -> int:\n    return q\n"
     );
 }
+
+/// `code_definition {body: true}` returns the definition's code with the doc comment above
+/// it, numbered, so an agent does not read the file or grep for it (#306): from the item's
+/// outline range, and from its brackets where the server gives no outline.
+#[tokio::test]
+async fn a_definition_comes_with_its_code_when_asked() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "/// Sums.\npub fn total(v: &[u8]) -> u8 {\n    v.iter().sum()\n}\n\npub fn caller() -> u8 {\n    total(&[1])\n}\n",
+    );
+    commit(&ws);
+    for outline in [true, false] {
+        let p = lib.clone();
+        let remote = scripted_gateway(Arc::new(move |method, _| match method {
+            "textDocument/definition" => answers::locations(&p, &[(2, 8)]),
+            "textDocument/documentSymbol" if outline => serde_json::json!([{
+                "name": "total",
+                "kind": 12,
+                "range": { "start": { "line": 1, "character": 0 }, "end": { "line": 3, "character": 1 } },
+                "selectionRange": { "start": { "line": 1, "character": 7 }, "end": { "line": 1, "character": 12 } }
+            }]),
+            _ => serde_json::Value::Null,
+        }))
+        .await;
+        let text = text_of(
+            &execute_tool(
+                remote,
+                &ws.root(),
+                "code_definition",
+                serde_json::json!({ "path": "src/lib.rs", "line": 7, "character": 5, "body": true }),
+            )
+            .await
+            .expect("definition"),
+        );
+        assert!(text.contains("src/lib.rs:2:8"), "{text}");
+        assert!(
+            text.contains("1 | /// Sums.")
+                && text.contains("3 |     v.iter().sum()")
+                && text.contains("4 | }"),
+            "outline {outline}: {text}"
+        );
+        assert!(!text.contains("caller"), "outline {outline}: {text}");
+    }
+}
+
+/// A name the checkout declares once resolves to it, though the standard library has the
+/// same name: gopls lists both, and the checkout's comes first on a tie (#345).
+#[tokio::test]
+async fn the_checkouts_own_symbol_wins_a_tie_with_the_standard_librarys() {
+    let ws = workspace();
+    let config = write(
+        &ws,
+        "config.go",
+        "package config\n\nfunc Load() int { return 1 }\n",
+    );
+    commit(&ws);
+    let stdlib_dir = tempfile::tempdir().expect("stdlib");
+    let atomic = stdlib_dir.path().join("atomic.go");
+    std::fs::write(&atomic, "package atomic\n\nfunc Load() int { return 2 }\n").expect("atomic.go");
+    let (c, a) = (config.clone(), atomic.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" => serde_json::Value::Array(vec![
+            answers::symbol("Load", 12, &a, 3, 6),
+            answers::symbol("Load", 12, &c, 3, 6),
+        ]),
+        "textDocument/hover" => hover_naming_its_file(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_hover",
+            serde_json::json!({ "symbol": "Load" }),
+        )
+        .await
+        .expect("the checkout's Load resolves"),
+    );
+    assert!(text.contains("config.go"), "{text}");
+}

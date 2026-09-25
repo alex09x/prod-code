@@ -41,6 +41,11 @@ pub struct DiagnosticsReport {
     /// Not counted, even in a new file that has no text on disk to compare with (#159).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub in_derive: Vec<DocDiagnostic>,
+    /// E0277 that a type is not `Send`, `Sync` or `Unpin`, in a Rust file: rust-analyzer does
+    /// not always prove an auto trait rustc proves (through a recursive `async fn`, #327). Shown,
+    /// not counted; `cargo check` (`verify: "compile"`) decides.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub auto_trait: Vec<DocDiagnostic>,
 }
 
 impl DiagnosticsReport {
@@ -66,6 +71,22 @@ impl DiagnosticsReport {
                  analyzer's own expansion of the derive, which rustc does not report)\n",
                 self.in_derive.len()
             ));
+        }
+        if !self.auto_trait.is_empty() {
+            out.push_str(&format!(
+                "  ({} unproven Send/Sync/Unpin bound(s) are not counted: rust-analyzer does not \
+                 always prove what rustc does; `cargo check` or `verify: \"compile\"` decides)\n",
+                self.auto_trait.len()
+            ));
+            for d in &self.auto_trait {
+                out.push_str(&format!(
+                    "    unconfirmed: {} ({}:{}:{})\n",
+                    d.message.lines().next().unwrap_or(""),
+                    self.file,
+                    d.line,
+                    d.col
+                ));
+            }
         }
         for d in &self.items {
             out.push_str(&format!(
@@ -169,8 +190,10 @@ fn set_aside_preexisting(
 
 /// Moves to `report.in_derive` every E0282 on a line of `text` that is a `#[derive(...)]`
 /// attribute: an inference failure inside the analyzer's expansion of the derive, not in code
-/// anyone wrote.
+/// anyone wrote. Moves to `report.auto_trait` every E0277 of a Rust file that a type is not
+/// `Send`, `Sync` or `Unpin` (#327).
 fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
+    let rust = report.file.ends_with(".rs");
     let items = std::mem::take(&mut report.items);
     for d in items {
         let line = text
@@ -179,6 +202,8 @@ fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
             .unwrap_or("");
         if d.code.as_deref() == Some("E0282") && line.trim_start().starts_with("#[derive(") {
             report.in_derive.push(d);
+        } else if rust && d.code.as_deref() == Some("E0277") && is_auto_trait_bound(&d.message) {
+            report.auto_trait.push(d);
         } else {
             report.items.push(d);
         }
@@ -193,6 +218,18 @@ fn set_aside_derive_expansions(report: &mut DiagnosticsReport, text: &str) {
         .iter()
         .filter(|d| d.severity == "warning")
         .count();
+}
+
+/// Whether an E0277 message is about an auto trait: "the trait bound `NonNull<()>: Send` is
+/// not satisfied", "`Rc<u8>` cannot be sent between threads safely", "... cannot be shared
+/// between threads safely".
+fn is_auto_trait_bound(message: &str) -> bool {
+    let first = message.lines().next().unwrap_or("");
+    [": Send`", ": Sync`", ": Unpin`"]
+        .iter()
+        .any(|bound| first.contains(bound))
+        || first.contains("cannot be sent between threads safely")
+        || first.contains("cannot be shared between threads safely")
 }
 
 /// LSP `SymbolKind::Variable`: rust-analyzer lists a function's `let` bindings under it.
@@ -387,6 +424,7 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
         items,
         preexisting: Vec::new(),
         in_derive: Vec::new(),
+        auto_trait: Vec::new(),
     }
 }
 
@@ -406,7 +444,17 @@ pub async fn diagnostics(
         )
         .await?;
     session.close().await;
-    Ok(parse_items(&display(root, file), &result))
+    let mut report = parse_items(&display(root, file), &result);
+    let abs = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    // What validation sets aside, a file on disk sets aside too (#327).
+    if let Ok(text) = std::fs::read_to_string(&abs) {
+        set_aside_derive_expansions(&mut report, &text);
+    }
+    Ok(report)
 }
 
 /// Diagnostics of `file` as if its content were `new_text`; nothing is written.
@@ -699,6 +747,7 @@ mod tests {
             items,
             preexisting: vec![],
             in_derive: vec![],
+            auto_trait: vec![],
         }
     }
 
@@ -776,6 +825,60 @@ mod tests {
         );
     }
 
+    /// An unproven `Send` bound in a Rust file is shown and not counted (#327): rust-analyzer
+    /// does not prove it through a recursive `async fn`, where rustc does. Other E0277, and the
+    /// same message in a file of another language, still count.
+    #[test]
+    fn an_unproven_auto_trait_bound_is_shown_and_not_counted() {
+        let text = "fn a() {}\nfn b() {}\nfn c() {}\n";
+        let mut report = report_of(vec![
+            DocDiagnostic {
+                code: Some("E0277".into()),
+                ..diagnostic(
+                    "error",
+                    "the trait bound `NonNull<()>: Send` is not satisfied",
+                    1,
+                )
+            },
+            DocDiagnostic {
+                code: Some("E0277".into()),
+                ..diagnostic(
+                    "error",
+                    "`Rc<u8>` cannot be shared between threads safely",
+                    2,
+                )
+            },
+            DocDiagnostic {
+                code: Some("E0277".into()),
+                ..diagnostic("error", "the trait bound `u8: Display` is not satisfied", 3)
+            },
+        ]);
+        report.file = "src/main.rs".into();
+        set_aside_derive_expansions(&mut report, text);
+        assert_eq!(report.auto_trait.len(), 2);
+        assert_eq!(report.errors, 1);
+        let rendered = report.render();
+        assert!(
+            rendered.contains("2 unproven Send/Sync/Unpin bound(s) are not counted")
+                && rendered.contains("unconfirmed: the trait bound `NonNull<()>: Send` is not satisfied (src/main.rs:1:"),
+            "{rendered}"
+        );
+        assert!(is_auto_trait_bound(
+            "`Rc<u8>` cannot be sent between threads safely"
+        ));
+        let mut other = report_of(vec![DocDiagnostic {
+            code: Some("E0277".into()),
+            ..diagnostic(
+                "error",
+                "the trait bound `NonNull<()>: Send` is not satisfied",
+                1,
+            )
+        }]);
+        other.file = "main.swift".into();
+        set_aside_derive_expansions(&mut other, text);
+        assert_eq!(other.errors, 1, "only a Rust file's");
+    }
+
     #[test]
     fn a_file_the_analyzer_could_not_check_is_never_set_aside() {
         let text = "fn a() {}\n";
@@ -827,6 +930,7 @@ mod tests {
             ],
             preexisting: vec![],
             in_derive: vec![],
+            auto_trait: vec![],
         }];
         let mut sources = HashMap::new();
         sources.insert(
@@ -867,6 +971,7 @@ mod tests {
                 items: vec![],
                 preexisting: vec![],
                 in_derive: vec![],
+                auto_trait: vec![],
             },
             DiagnosticsReport {
                 file: "crates/gateway/src/workspace.rs".to_string(),
@@ -875,6 +980,7 @@ mod tests {
                 items: vec![],
                 preexisting: vec![],
                 in_derive: vec![],
+                auto_trait: vec![],
             },
         ];
         let mut sources = HashMap::new();

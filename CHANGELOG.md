@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- **`code_definition {body: true}` / `prod-code def --body`** (#306): the definition's code,
+  numbered, with its doc comments: the item's outline range, or where there is none its brackets
+  or indentation, at most 300 lines. An agent no longer greps `func X -A45` to read it.
 - **An editor gets the language's own server on the node** (#332).
   - `prod-code lsp` starts, for the editor's session, rust-analyzer, gopls, clangd,
     basedpyright, the TypeScript server or sourcekit-lsp in the node's copy of the checkout.
@@ -35,6 +38,13 @@
   labels every issue and pull request carries.
 
 ### Fixed
+- **`prod-code metrics` after a restart** (#305): a window longer than what memory holds is
+  summed from the nodes' daily event files, without counting an event twice.
+- **validate and diagnostics no longer refuse code over an unproven `Send`/`Sync`/`Unpin`**
+  (#327): rust-analyzer does not prove what rustc proves through a recursive `async fn`. Such an
+  E0277 is shown as unconfirmed and not counted; `cargo check` decides.
+- **The checkout's own symbol wins a tie with the standard library's** (#345): `Load` in a Go
+  module no longer lists `internal/runtime/atomic::Load` and 20 more.
 - **Symbol lookup** (#318, #324, #325, #326, #328, #342):
   - A module path qualifies a free function (`prod_code_mcp::report::report`).
   - A bare name is the type's, not a same-named enum variant's.
