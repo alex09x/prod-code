@@ -1,12 +1,16 @@
-//! `extract_parameter` on TypeScript, JavaScript, Python and Go, against a scripted gateway.
+//! `extract_parameter` on TypeScript, JavaScript, Python, Go, C, C++ and Swift, against a
+//! scripted gateway.
 //!
 //! Every answer here is what the real server said about the same file: the TypeScript server
-//! (`tsc --lsp`), basedpyright and gopls were asked for `documentSymbol`, `hover`, `references`
-//! and `diagnostic` on these fixtures, and the answers were copied, positions included. They
-//! differ in exactly the places the extraction has to care about: gopls names a method
-//! `(*Store).Limit` while its callers write `Limit`, basedpyright ends a function's range on its
-//! last statement rather than on a closing brace and lists an import among the references, and
-//! every server answers a hover on a literal with nothing.
+//! (`tsc --lsp`), basedpyright, gopls, clangd and sourcekit-lsp were asked for `documentSymbol`,
+//! `hover`, `references` (and clangd for `declaration`) on these fixtures, and the answers were
+//! copied, positions included. They differ in exactly the places the extraction has to care
+//! about: gopls names a method `(*Store).Limit` while its callers write `Limit`, clangd names an
+//! out-of-line method `Store::limit` and leaves the header's declaration out of the references,
+//! sourcekit-lsp names a function `render(text:)` and answers a hover without a range,
+//! basedpyright ends a function's range on its last statement rather than on a closing brace
+//! and lists an import among the references, and every server answers a hover on a number with
+//! nothing.
 
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use serde_json::{Value, json};
@@ -1004,4 +1008,796 @@ async fn go_a_method_with_a_receiver_takes_the_parameter() {
     assert!(home_text.contains("\tlimit := capacity\n"), "{home_text}");
     let other_text = rewritten(&done, "shop/other.go");
     assert!(other_text.contains("s.Limit(64 * 1024)"), "{other_text}");
+}
+
+/// A `documentSymbol` node whose `selectionRange` is given whole, 0-based. clangd selects only
+/// `limit` in `Store::limit`, and sourcekit-lsp selects `render(text: String)` for the symbol it
+/// names `render(text:)`, so the name's length says nothing about either.
+fn span_node(
+    name: &str,
+    kind: u32,
+    range: [u32; 4],
+    selection: [u32; 4],
+    children: Vec<Value>,
+) -> Value {
+    let span = |r: [u32; 4]| {
+        json!({
+            "start": { "line": r[0], "character": r[1] },
+            "end": { "line": r[2], "character": r[3] }
+        })
+    };
+    json!({
+        "name": name,
+        "kind": kind,
+        "range": span(range),
+        "selectionRange": span(selection),
+        "children": children
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// C
+
+const C_HOME_H: &str = "#ifndef HOME_H\n#define HOME_H\n\nint render(const char *text);\ndouble scale(int n);\nint caller(void);\n\n#endif\n";
+const C_HOME: &str = "#include \"home.h\"\n\n#include <string.h>\n\nstatic const int WIDTH = 80;\n\nint render(const char *text) {\n    int width = 80;\n    int n = (int)strlen(text);\n    return width + n + WIDTH;\n}\n\ndouble scale(int n) {\n    const char *label = \"x\";\n    return n * 0.5 + (double)strlen(label);\n}\n\nint caller(void) {\n    return render(\"x\");\n}\n";
+const C_OTHER: &str = "#include \"home.h\"\n\nint use(void) {\n    return render(\"y\") + (int)scale(2) + caller();\n}\n";
+
+/// clangd's outline of `C_HOME`: flat, with no locals.
+fn c_home_symbols() -> Value {
+    json!([
+        span_node("WIDTH", 13, [4, 0, 4, 27], [4, 17, 4, 22], Vec::new()),
+        span_node("render", 12, [6, 0, 10, 1], [6, 4, 6, 10], Vec::new()),
+        span_node("scale", 12, [12, 0, 15, 1], [12, 7, 12, 12], Vec::new()),
+        span_node("caller", 12, [17, 0, 19, 1], [17, 4, 17, 10], Vec::new()),
+    ])
+}
+
+fn c_workspace() -> (Workspace, PathBuf, PathBuf, PathBuf) {
+    let ws = Workspace::new(&[
+        (
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.16)\nproject(xp C)\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\nadd_library(shop src/home.c src/other.c)\ntarget_include_directories(shop PUBLIC src)\n",
+        ),
+        ("src/home.h", C_HOME_H),
+        ("src/home.c", C_HOME),
+        ("src/other.c", C_OTHER),
+    ]);
+    let (header, home, other) = (
+        ws.path("src/home.h"),
+        ws.path("src/home.c"),
+        ws.path("src/other.c"),
+    );
+    (ws, header, home, other)
+}
+
+/// A literal in a C function becomes an `int` parameter, the callers in both files pass it,
+/// and the declaration in the header takes the parameter too. clangd leaves that declaration
+/// out of `references`; `declaration` is what finds it.
+#[tokio::test]
+async fn c_a_literal_becomes_an_int_parameter_and_the_header_declares_it() {
+    let (ws, header, home, other) = c_workspace();
+    let (hd, h, o) = (header.clone(), home.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => c_home_symbols(),
+        "textDocument/references" => locations_in(&[(&h, &[(19, 12)]), (&o, &[(4, 12)])]),
+        "textDocument/declaration" => answers::locations(&hd, &[(4, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (8, 17),
+        (8, 19),
+        "pad",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.symbol, "render");
+    assert_eq!(done.ty, "int");
+    assert_eq!(done.call_sites, 2);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    let home_text = rewritten(&done, "src/home.c");
+    assert!(
+        home_text.contains("int render(const char *text, int pad) {"),
+        "{home_text}"
+    );
+    assert!(home_text.contains("    int width = pad;"), "{home_text}");
+    assert!(
+        home_text.contains("return render(\"x\", 80);"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("static const int WIDTH = 80;"),
+        "{home_text}"
+    );
+    let header_text = rewritten(&done, "src/home.h");
+    assert!(
+        header_text.contains("int render(const char *text, int pad);"),
+        "{header_text}"
+    );
+    assert!(
+        header_text.contains("double scale(int n);"),
+        "{header_text}"
+    );
+    let other_text = rewritten(&done, "src/other.c");
+    assert!(
+        other_text.contains("return render(\"y\", 80) + (int)scale(2) + caller();"),
+        "{other_text}"
+    );
+    assert!(
+        done.render(4000).contains("new parameter: `int pad`"),
+        "{}",
+        done.render(4000)
+    );
+    assert_eq!(
+        ws.read("src/home.c"),
+        C_HOME,
+        "nothing written without apply"
+    );
+}
+
+/// A string literal is a `const char *`, and the pointer is written against the name. The
+/// header's declaration changes with the definition, and `apply` writes all three files.
+#[tokio::test]
+async fn c_a_string_literal_becomes_a_const_char_pointer_everywhere() {
+    let (ws, header, home, other) = c_workspace();
+    let (hd, o) = (header.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => c_home_symbols(),
+        "textDocument/references" => answers::locations(&o, &[(4, 31)]),
+        "textDocument/declaration" => answers::locations(&hd, &[(5, 8)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (14, 25),
+        (14, 28),
+        "fallback",
+        None,
+        false,
+        true,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.ty, "const char *");
+    assert!(done.applied);
+    let home_text = ws.read("src/home.c");
+    assert!(
+        home_text.contains("double scale(int n, const char *fallback) {"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("    const char *label = fallback;"),
+        "{home_text}"
+    );
+    assert!(
+        ws.read("src/home.h")
+            .contains("double scale(int n, const char *fallback);"),
+        "{}",
+        ws.read("src/home.h")
+    );
+    assert!(
+        ws.read("src/other.c").contains("(int)scale(2, \"x\")"),
+        "{}",
+        ws.read("src/other.c")
+    );
+}
+
+/// `int caller(void)` is C's way of saying it takes nothing: the new parameter replaces the
+/// `void`, in the definition and in the header, rather than following it.
+#[tokio::test]
+async fn c_a_void_parameter_list_gives_way_to_the_new_parameter() {
+    let (ws, header, home, other) = c_workspace();
+    let (hd, o) = (header.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => c_home_symbols(),
+        "textDocument/references" => answers::locations(&o, &[(4, 42)]),
+        "textDocument/declaration" => answers::locations(&hd, &[(6, 5)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (19, 19),
+        (19, 22),
+        "text",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.call_sites, 1);
+    let home_text = rewritten(&done, "src/home.c");
+    assert!(
+        home_text.contains("int caller(const char *text) {"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("    return render(text);"),
+        "{home_text}"
+    );
+    let header_text = rewritten(&done, "src/home.h");
+    assert!(
+        header_text.contains("int caller(const char *text);"),
+        "{header_text}"
+    );
+    let other_text = rewritten(&done, "src/other.c");
+    assert!(other_text.contains("+ caller(\"x\");"), "{other_text}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// C++
+
+const CPP_STORE_H: &str = "#pragma once\n\n#include <string>\n#include <vector>\n\nstd::string render(const std::string &text);\n\nclass Store {\npublic:\n    int limit() const;\n    int size() const {\n        int cap = 64 * 1024;\n        return cap < static_cast<int>(entries.size()) ? cap : static_cast<int>(entries.size());\n    }\n\nprivate:\n    std::vector<int> entries;\n};\n";
+const CPP_STORE: &str = "#include \"store.h\"\n\nstatic const std::string PREFIX = \"> \";\n\nstd::string render(const std::string &text) {\n    std::size_t width = 80;\n    std::string label = PREFIX;\n    return label + text + std::string(width, ' ');\n}\n\nint Store::limit() const {\n    int cap = 64 * 1024;\n    return cap + static_cast<int>(entries.size());\n}\n\nstd::string caller() {\n    return render(\"x\");\n}\n";
+const CPP_OTHER: &str = "#include \"store.h\"\n\nint use() {\n    Store s;\n    return static_cast<int>(render(\"y\").size()) + s.limit() + s.size();\n}\n";
+
+/// clangd's outline of `CPP_STORE`: the out-of-line method is named `Store::limit` and only
+/// `limit` is selected.
+fn cpp_store_symbols() -> Value {
+    json!([
+        span_node("PREFIX", 13, [2, 0, 2, 38], [2, 25, 2, 31], Vec::new()),
+        span_node("render", 12, [4, 0, 8, 1], [4, 12, 4, 18], Vec::new()),
+        span_node(
+            "Store::limit",
+            6,
+            [10, 0, 13, 1],
+            [10, 11, 10, 16],
+            Vec::new()
+        ),
+        span_node("caller", 12, [15, 0, 17, 1], [15, 12, 15, 18], Vec::new()),
+    ])
+}
+
+/// clangd's outline of `CPP_STORE_H`: the methods are children of the class.
+fn cpp_header_symbols() -> Value {
+    json!([
+        span_node("render", 12, [5, 0, 5, 43], [5, 12, 5, 18], Vec::new()),
+        span_node(
+            "Store",
+            5,
+            [7, 0, 17, 1],
+            [7, 6, 7, 11],
+            vec![
+                span_node("limit", 6, [9, 4, 9, 21], [9, 8, 9, 13], Vec::new()),
+                span_node("size", 6, [10, 4, 13, 5], [10, 8, 10, 12], Vec::new()),
+                span_node("entries", 8, [16, 4, 16, 28], [16, 21, 16, 28], Vec::new()),
+            ]
+        ),
+    ])
+}
+
+fn cpp_workspace() -> (Workspace, PathBuf, PathBuf, PathBuf) {
+    let ws = Workspace::new(&[
+        (
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.16)\nproject(xp CXX)\nset(CMAKE_CXX_STANDARD 17)\nset(CMAKE_EXPORT_COMPILE_COMMANDS ON)\nadd_library(shop src/store.cpp src/other.cpp)\ntarget_include_directories(shop PUBLIC src)\n",
+        ),
+        ("src/store.h", CPP_STORE_H),
+        ("src/store.cpp", CPP_STORE),
+        ("src/other.cpp", CPP_OTHER),
+    ]);
+    let (header, store, other) = (
+        ws.path("src/store.h"),
+        ws.path("src/store.cpp"),
+        ws.path("src/other.cpp"),
+    );
+    (ws, header, store, other)
+}
+
+/// A C++ function declared in a header and defined in a `.cpp`: both take the parameter, and
+/// the callers in both source files pass the literal.
+#[tokio::test]
+async fn cpp_a_function_declared_in_a_header_takes_the_parameter_in_both_places() {
+    let (ws, header, store, other) = cpp_workspace();
+    let (hd, s, o) = (header.clone(), store.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => cpp_store_symbols(),
+        "textDocument/references" => locations_in(&[(&s, &[(17, 12)]), (&o, &[(5, 29)])]),
+        "textDocument/declaration" => answers::locations(&hd, &[(6, 13)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &store,
+        (6, 25),
+        (6, 27),
+        "pad",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.ty, "int");
+    assert_eq!(done.call_sites, 2);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    let store_text = rewritten(&done, "src/store.cpp");
+    assert!(
+        store_text.contains("std::string render(const std::string &text, int pad) {"),
+        "{store_text}"
+    );
+    assert!(
+        store_text.contains("    std::size_t width = pad;"),
+        "{store_text}"
+    );
+    assert!(
+        store_text.contains("return render(\"x\", 80);"),
+        "{store_text}"
+    );
+    let header_text = rewritten(&done, "src/store.h");
+    assert!(
+        header_text.contains("std::string render(const std::string &text, int pad);"),
+        "{header_text}"
+    );
+    let other_text = rewritten(&done, "src/other.cpp");
+    assert!(
+        other_text.contains("render(\"y\", 80).size()"),
+        "{other_text}"
+    );
+}
+
+/// A method declared in its class and defined outside it as `Store::limit`: the declaration in
+/// the class takes the parameter as well, and `s.limit()` is matched by the bare name. clangd
+/// answers nothing on the literal, so a product of two needs its type from the caller.
+#[tokio::test]
+async fn cpp_a_method_defined_outside_its_class_changes_its_declaration_too() {
+    let (ws, header, store, other) = cpp_workspace();
+    let (hd, o) = (header.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => cpp_store_symbols(),
+        "textDocument/references" => answers::locations(&o, &[(5, 53)]),
+        "textDocument/declaration" => answers::locations(&hd, &[(10, 9)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let root = ws.root();
+    let run = |ty| {
+        prod_code_mcp::extract_parameter::extract(
+            gateway.addr(),
+            &root,
+            &store,
+            (12, 15),
+            (12, 24),
+            "cap_bytes",
+            ty,
+            false,
+            false,
+            false,
+        )
+    };
+    let err = run(None).await.expect_err("no type, and none to be had");
+    assert!(
+        format!("{err:#}").contains("pass the type explicitly"),
+        "{err:#}"
+    );
+
+    let done = run(Some("int")).await.expect("the extraction runs");
+    assert_eq!(done.symbol, "Store::limit");
+    assert_eq!(done.call_sites, 1);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    let store_text = rewritten(&done, "src/store.cpp");
+    assert!(
+        store_text.contains("int Store::limit(int cap_bytes) const {"),
+        "{store_text}"
+    );
+    assert!(
+        store_text.contains("    int cap = cap_bytes;"),
+        "{store_text}"
+    );
+    let header_text = rewritten(&done, "src/store.h");
+    assert!(
+        header_text.contains("    int limit(int cap_bytes) const;"),
+        "{header_text}"
+    );
+    assert!(
+        header_text.contains("    int size() const {"),
+        "{header_text}"
+    );
+    let other_text = rewritten(&done, "src/other.cpp");
+    assert!(
+        other_text.contains("s.limit(64 * 1024) + s.size()"),
+        "{other_text}"
+    );
+}
+
+/// A method defined inside its class is its own declaration: clangd's `declaration` points
+/// back at the definition, and the parameter is added once, not twice.
+#[tokio::test]
+async fn cpp_a_method_defined_in_its_class_is_changed_once() {
+    let (ws, header, _store, other) = cpp_workspace();
+    let (hd, o) = (header.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => cpp_header_symbols(),
+        "textDocument/references" => answers::locations(&o, &[(5, 65)]),
+        "textDocument/declaration" => answers::locations(&hd, &[(11, 9)]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &header,
+        (12, 19),
+        (12, 28),
+        "cap_bytes",
+        Some("int"),
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.symbol, "size");
+    assert_eq!(done.call_sites, 1);
+    let header_text = rewritten(&done, "src/store.h");
+    assert!(
+        header_text.contains("    int size(int cap_bytes) const {"),
+        "{header_text}"
+    );
+    assert!(
+        !header_text.contains("cap_bytes, int cap_bytes"),
+        "{header_text}"
+    );
+    assert!(
+        header_text.contains("        int cap = cap_bytes;"),
+        "{header_text}"
+    );
+    assert!(
+        header_text.contains("    int limit() const;"),
+        "{header_text}"
+    );
+    let other_text = rewritten(&done, "src/other.cpp");
+    assert!(other_text.contains("s.size(64 * 1024);"), "{other_text}");
+    assert_eq!(done.rewritten.len(), 2, "{:?}", done.rewritten);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Swift
+
+const SWIFT_HOME: &str = "let prefix = \"> \"\n\npublic func render(text: String) -> String {\n    let width = 80\n    let n = text.count\n    return prefix + text + String(repeating: \" \", count: width + n)\n}\n\npublic func pad(_ text: String, _ count: Int) -> String {\n    return text + String(repeating: \" \", count: count + 4)\n}\n\npublic struct Store {\n    var entries: [Int] = []\n\n    public func limit() -> Int {\n        let cap = 64 * 1024\n        return min(cap, entries.count)\n    }\n}\n\nfunc caller() -> String {\n    return render(text: \"x\") + pad(\"x\", 2)\n}\n";
+const SWIFT_OTHER: &str = "func use() -> Int {\n    let s = Store()\n    return render(text: \"y\").count + s.limit() + pad(\"y\", 1).count\n}\n";
+
+/// sourcekit-lsp's outline of `SWIFT_HOME`: functions are named with their labels, a range
+/// starts after `public`, and the selection covers the name and its parameters.
+fn swift_home_symbols() -> Value {
+    json!([
+        span_node("prefix", 13, [0, 0, 0, 17], [0, 4, 0, 10], Vec::new()),
+        span_node(
+            "render(text:)",
+            12,
+            [2, 7, 6, 1],
+            [2, 12, 2, 32],
+            vec![
+                span_node("width", 13, [3, 4, 3, 18], [3, 8, 3, 13], Vec::new()),
+                span_node("n", 13, [4, 4, 4, 22], [4, 8, 4, 9], Vec::new()),
+            ]
+        ),
+        span_node("pad(_:_:)", 12, [8, 7, 10, 1], [8, 12, 8, 45], Vec::new()),
+        span_node(
+            "Store",
+            23,
+            [12, 7, 19, 1],
+            [12, 14, 12, 19],
+            vec![
+                span_node("entries", 7, [13, 4, 13, 27], [13, 8, 13, 15], Vec::new()),
+                span_node(
+                    "limit()",
+                    6,
+                    [15, 11, 18, 5],
+                    [15, 16, 15, 23],
+                    vec![span_node(
+                        "cap",
+                        13,
+                        [16, 8, 16, 27],
+                        [16, 12, 16, 15],
+                        Vec::new()
+                    )]
+                ),
+            ]
+        ),
+        span_node("caller()", 12, [21, 0, 23, 1], [21, 5, 21, 13], Vec::new()),
+    ])
+}
+
+/// sourcekit-lsp's references, 1-based: an empty range where the name starts.
+fn points_in(files: &[(&PathBuf, &[(u32, u32)])]) -> Value {
+    Value::Array(
+        files
+            .iter()
+            .flat_map(|(path, spots)| {
+                spots.iter().map(move |(line, col)| {
+                    let at = json!({ "line": line - 1, "character": col - 1 });
+                    json!({
+                        "uri": format!("file://{}", path.display()),
+                        "range": { "start": at, "end": at }
+                    })
+                })
+            })
+            .collect(),
+    )
+}
+
+fn swift_workspace() -> (Workspace, PathBuf, PathBuf) {
+    let ws = Workspace::new(&[
+        (
+            "Package.swift",
+            "// swift-tools-version:5.9\nimport PackageDescription\n\nlet package = Package(\n    name: \"Shop\",\n    targets: [.target(name: \"Shop\")]\n)\n",
+        ),
+        ("Sources/Shop/Home.swift", SWIFT_HOME),
+        ("Sources/Shop/Other.swift", SWIFT_OTHER),
+    ]);
+    let (home, other) = (
+        ws.path("Sources/Shop/Home.swift"),
+        ws.path("Sources/Shop/Other.swift"),
+    );
+    (ws, home, other)
+}
+
+/// Every parameter of `render(text:)` is labeled, so the new one is too: the declaration gains
+/// `margin: Int` and the callers in both files pass `margin: 80`.
+#[tokio::test]
+async fn swift_a_literal_becomes_a_labeled_parameter_every_caller_names() {
+    let (ws, home, other) = swift_workspace();
+    let (h, o) = (home.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => swift_home_symbols(),
+        "textDocument/references" => points_in(&[(&h, &[(23, 12)]), (&o, &[(3, 12)])]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (4, 17),
+        (4, 19),
+        "margin",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.symbol, "render(text:)");
+    assert_eq!(done.ty, "Int");
+    assert_eq!(done.call_sites, 2);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    let home_text = rewritten(&done, "Sources/Shop/Home.swift");
+    assert!(
+        home_text.contains("public func render(text: String, margin: Int) -> String {"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("    let width = margin\n"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("return render(text: \"x\", margin: 80) + pad(\"x\", 2)"),
+        "{home_text}"
+    );
+    let other_text = rewritten(&done, "Sources/Shop/Other.swift");
+    assert!(
+        other_text.contains("render(text: \"y\", margin: 80).count"),
+        "{other_text}"
+    );
+    assert!(
+        done.render(4000).contains("new parameter: `margin: Int`"),
+        "{}",
+        done.render(4000)
+    );
+}
+
+/// `pad(_:_:)` takes positional arguments, so the new parameter is `_ extra: Int` and the
+/// callers append the expression without a label.
+#[tokio::test]
+async fn swift_positional_parameters_get_a_positional_one() {
+    let (ws, home, other) = swift_workspace();
+    let (h, o) = (home.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => swift_home_symbols(),
+        "textDocument/references" => points_in(&[(&h, &[(23, 32)]), (&o, &[(3, 50)])]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (10, 57),
+        (10, 58),
+        "extra",
+        None,
+        false,
+        true,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.parameter, "_ extra: Int");
+    assert_eq!(done.call_sites, 2);
+    assert!(done.applied);
+    let home_text = ws.read("Sources/Shop/Home.swift");
+    assert!(
+        home_text
+            .contains("public func pad(_ text: String, _ count: Int, _ extra: Int) -> String {"),
+        "{home_text}"
+    );
+    assert!(home_text.contains("count: count + extra)"), "{home_text}");
+    assert!(home_text.contains("pad(\"x\", 2, 4)"), "{home_text}");
+    let other_text = ws.read("Sources/Shop/Other.swift");
+    assert!(
+        other_text.contains("pad(\"y\", 1, 4).count"),
+        "{other_text}"
+    );
+}
+
+/// A method of a struct with no parameters: none is positional, so the new one is labeled and
+/// `s.limit()` becomes `s.limit(capBytes: 64 * 1024)`. sourcekit-lsp answers a hover without a
+/// range, and on a number it describes `Int` the type, not the product; only a selection that
+/// is a single name is typed from a hover, so here the type has to be given.
+#[tokio::test]
+async fn swift_a_method_takes_a_labeled_parameter_and_its_caller_names_it() {
+    let (ws, home, other) = swift_workspace();
+    let o = other.clone();
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => swift_home_symbols(),
+        "textDocument/hover" => answers::hover(
+            "Int\n```swift\n@frozen struct Int : FixedWidthInteger, SignedInteger, _ExpressibleByBuiltinIntegerLiteral\n```\n\n---\nA signed integer value type.",
+        ),
+        "textDocument/references" => points_in(&[(&o, &[(3, 40)])]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let root = ws.root();
+    let run = |ty| {
+        prod_code_mcp::extract_parameter::extract(
+            gateway.addr(),
+            &root,
+            &home,
+            (17, 19),
+            (17, 28),
+            "capBytes",
+            ty,
+            false,
+            false,
+            false,
+        )
+    };
+    let err = run(None).await.expect_err("no type, and none to be had");
+    assert!(
+        format!("{err:#}").contains("pass the type explicitly"),
+        "{err:#}"
+    );
+
+    let done = run(Some("Int")).await.expect("the extraction runs");
+    assert_eq!(done.symbol, "limit()");
+    assert_eq!(done.call_sites, 1);
+    let home_text = rewritten(&done, "Sources/Shop/Home.swift");
+    assert!(
+        home_text.contains("    public func limit(capBytes: Int) -> Int {"),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("        let cap = capBytes\n"),
+        "{home_text}"
+    );
+    let other_text = rewritten(&done, "Sources/Shop/Other.swift");
+    assert!(
+        other_text.contains("s.limit(capBytes: 64 * 1024)"),
+        "{other_text}"
+    );
+}
+
+/// The hover on a single name gives its type even without a range; on `width + n` the same
+/// answer about `width` is not the sum's type and is not used.
+#[tokio::test]
+async fn swift_a_hover_without_a_range_types_only_a_single_name() {
+    let (ws, home, other) = swift_workspace();
+    let (h, o) = (home.clone(), other.clone());
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "textDocument/documentSymbol" => swift_home_symbols(),
+        "textDocument/hover" => {
+            match params
+                .pointer("/position/character")
+                .and_then(Value::as_u64)
+            {
+                Some(11) => answers::hover("prefix\n```swift\nlet prefix: String\n```\n\n---\n"),
+                Some(57) => answers::hover("width\n```swift\nlet width: Int\n```\n\n---\n"),
+                _ => Value::Null,
+            }
+        }
+        "textDocument/references" => points_in(&[(&h, &[(23, 12)]), (&o, &[(3, 12)])]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let root = ws.root();
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &root,
+        &home,
+        (6, 12),
+        (6, 18),
+        "lead",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+    assert_eq!(done.parameter, "lead: String");
+    let home_text = rewritten(&done, "Sources/Shop/Home.swift");
+    assert!(
+        home_text.contains("    return lead + text + String("),
+        "{home_text}"
+    );
+    assert!(
+        home_text.contains("render(text: \"x\", lead: prefix)"),
+        "{home_text}"
+    );
+
+    let err = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &root,
+        &home,
+        (6, 58),
+        (6, 67),
+        "total",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .expect_err("the hover on `width` does not type `width + n`");
+    assert!(
+        format!("{err:#}").contains("pass the type explicitly"),
+        "{err:#}"
+    );
 }

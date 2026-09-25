@@ -768,7 +768,7 @@ enum Commands {
         force: bool,
     },
     /// Promote an expression in a function body into a parameter, passed at every call site
-    /// (Rust, TypeScript, JavaScript, Python, Go).
+    /// (Rust, TypeScript, JavaScript, Python, Go, C, C++, Swift).
     ExtractParameter {
         /// The file the selection is in.
         file: PathBuf,

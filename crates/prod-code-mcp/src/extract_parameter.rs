@@ -22,7 +22,8 @@ pub struct ExtractedParameter {
     pub name: String,
     /// Empty when the parameter is written without one (JavaScript, or Python with no type).
     pub ty: String,
-    /// The new parameter as the declaration now spells it: `name: T`, `name T` or `name`.
+    /// The new parameter as the declaration now spells it: `name: T`, `name T`, `T name`,
+    /// `_ name: T` or `name`.
     #[serde(skip)]
     pub parameter: String,
     /// The expression that left the body, as it was written.
@@ -144,6 +145,9 @@ pub enum Syntax {
     JavaScript,
     Python,
     Go,
+    C,
+    Cpp,
+    Swift,
 }
 
 impl Syntax {
@@ -156,17 +160,31 @@ impl Syntax {
             "javascript" | "javascriptreact" => Some(Self::JavaScript),
             "python" => Some(Self::Python),
             "go" => Some(Self::Go),
+            "c" => Some(Self::C),
+            "cpp" => Some(Self::Cpp),
+            "swift" => Some(Self::Swift),
             _ => None,
         }
     }
 
+    /// Whether this is C or C++. clangd serves both alike, and a `.h` header is opened as C
+    /// even in a C++ project, so nothing here may depend on telling them apart.
+    fn is_c_family(self) -> bool {
+        matches!(self, Self::C | Self::Cpp)
+    }
+
     /// The new parameter as the declaration spells it, or `None` when this language needs a
     /// type and there is none. JavaScript has no annotations, and a Python parameter without
-    /// one is still a parameter, so those two never need one.
+    /// one is still a parameter, so those two never need one. A C declarator binds `*` and `&`
+    /// to the name, so `const char *` gives `const char *label`, as the language is written.
     pub fn parameter(self, name: &str, ty: Option<&str>) -> Option<String> {
         match (self, ty) {
             (Self::JavaScript, _) | (Self::Python, None) => Some(name.to_string()),
             (Self::Go, Some(ty)) => Some(format!("{name} {ty}")),
+            (Self::C | Self::Cpp, Some(ty)) if ty.ends_with(['*', '&']) => {
+                Some(format!("{ty}{name}"))
+            }
+            (Self::C | Self::Cpp, Some(ty)) => Some(format!("{ty} {name}")),
             (_, Some(ty)) => Some(format!("{name}: {ty}")),
             (_, None) => None,
         }
@@ -180,7 +198,31 @@ impl Syntax {
             Self::TypeScript => typescript_type(hover),
             Self::Python => python_type(hover),
             Self::Go => go_type(hover),
+            Self::C | Self::Cpp => clangd_type(hover),
+            Self::Swift => swift_type(hover),
         }
+    }
+
+    /// The name a call site spells for the function the outline calls `callee`. gopls names a
+    /// method `(*Store).Limit`, clangd an out-of-line one `Store::limit`, and sourcekit-lsp
+    /// every function with its argument labels, `render(text:)`; a caller writes only `Limit`,
+    /// `limit` and `render`.
+    fn bare_name(self, callee: &str) -> &str {
+        match self {
+            Self::C | Self::Cpp => callee.rsplit("::").next().unwrap_or(callee),
+            Self::Swift => callee.split('(').next().unwrap_or(callee),
+            _ => callee.rsplit('.').next().unwrap_or(callee),
+        }
+    }
+
+    /// The parameter list with `param` added at the end. In C, `f(void)` is how a function
+    /// that takes nothing is declared, and the `void` gives way to the new parameter rather
+    /// than preceding it.
+    fn with_parameter(self, list: &str, param: &str) -> String {
+        if self.is_c_family() && list.trim() == "void" {
+            return param.to_string();
+        }
+        with_parameter(list, param)
     }
 
     /// The type of a literal expression. No language server answers a hover on `80` or `"x"`,
@@ -195,12 +237,30 @@ impl Syntax {
             && e.chars().any(|c| c.is_ascii_digit());
         let float = !integer && e.contains('.') && e.replace('_', "").parse::<f64>().is_ok();
         let quoted = |q: char| e.len() >= 2 && e.starts_with(q) && e.ends_with(q);
-        let string = quoted('"') || (self != Self::Go && quoted('\'')) || quoted('`');
+        let string = match self {
+            // In C a single quote is a character, and Swift has no other string quote.
+            Self::C | Self::Cpp | Self::Swift => quoted('"'),
+            _ => quoted('"') || (self != Self::Go && quoted('\'')) || quoted('`'),
+        };
         let boolean = match self {
             Self::Python => e == "True" || e == "False",
             _ => e == "true" || e == "false",
         };
+        // `0.5f` is a C float; without the suffix the same digits are a double.
+        let suffixed_float = e
+            .strip_suffix(['f', 'F'])
+            .is_some_and(|m| m.contains('.') && m.parse::<f64>().is_ok());
         match self {
+            Self::C | Self::Cpp if integer => Some("int"),
+            Self::C | Self::Cpp if float => Some("double"),
+            Self::C | Self::Cpp if suffixed_float => Some("float"),
+            Self::C | Self::Cpp if string => Some("const char *"),
+            Self::C | Self::Cpp if quoted('\'') => Some("char"),
+            Self::C | Self::Cpp if boolean => Some("bool"),
+            Self::Swift if integer => Some("Int"),
+            Self::Swift if float => Some("Double"),
+            Self::Swift if string => Some("String"),
+            Self::Swift if boolean => Some("Bool"),
             Self::Rust | Self::JavaScript => None,
             Self::TypeScript if integer || float => Some("number"),
             Self::TypeScript if string => Some("string"),
@@ -219,10 +279,11 @@ impl Syntax {
     }
 
     /// Whether the parameter list ends in one that takes whatever arguments are left: `...rest`
-    /// in TypeScript and JavaScript, `...T` in Go, `*args`, a bare `*` or `**kwargs` in Python.
-    /// A parameter added after it would not receive the argument every call site passes, so
+    /// in TypeScript and JavaScript, `...T` in Go, `*args`, a bare `*` or `**kwargs` in Python,
+    /// `...` in C, a pack `Ts... xs` in C++, and an unlabeled `_ xs: Int...` in Swift. A
+    /// parameter added after it would not receive the argument every call site passes, so
     /// the callers would change behaviour, which is exactly what this refactoring promises not
-    /// to do.
+    /// to do. A labeled Swift variadic ends where the next label starts, so it is no obstacle.
     fn catch_all(self, list: &str) -> Option<String> {
         let params = crate::signature::split_params(list);
         match self {
@@ -230,8 +291,12 @@ impl Syntax {
             Self::TypeScript | Self::JavaScript => {
                 params.last().filter(|p| p.starts_with("...")).cloned()
             }
-            Self::Go => params.last().filter(|p| p.contains("...")).cloned(),
+            Self::Go | Self::C | Self::Cpp => params.last().filter(|p| p.contains("...")).cloned(),
             Self::Python => params.into_iter().find(|p| p.starts_with('*')),
+            Self::Swift => params
+                .last()
+                .filter(|p| p.ends_with("...") && !swift_labeled(p))
+                .cloned(),
         }
     }
 
@@ -247,9 +312,81 @@ impl Syntax {
                     || line.starts_with("export{")
             }
             Self::Python => line.starts_with("import ") || line.starts_with("from "),
-            Self::Rust | Self::Go => false,
+            Self::Rust | Self::Go | Self::C | Self::Cpp | Self::Swift => false,
         }
     }
+}
+
+/// Whether a Swift parameter has an argument label, that is, whether its callers write
+/// `name: value`. Only `_` as the first of its names makes the argument positional.
+fn swift_labeled(param: &str) -> bool {
+    param
+        .split_once(':')
+        .is_none_or(|(names, _)| names.split_whitespace().next() != Some("_"))
+}
+
+/// The type in a clangd hover for a binding: the `Type:` line under a `### variable`,
+/// `### param` or `### field` heading. clangd follows a typedef with what it stands for,
+/// `std::size_t (aka unsigned long)`, and the name the code wrote is the one kept. A `const`
+/// on the whole type is dropped: on a parameter passed by value it binds nothing the caller
+/// can see. A type with a parenthesis or a bracket in it (a lambda, an array, a function
+/// pointer) cannot be written before a name, so it gives none.
+fn clangd_type(hover: &str) -> Option<String> {
+    const BINDINGS: [&str; 5] = [
+        "### variable ",
+        "### param ",
+        "### field ",
+        "### static-property ",
+        "### instance-property ",
+    ];
+    let mut lines = hover.lines().map(str::trim);
+    let heading = lines.next()?;
+    if !BINDINGS.iter().any(|b| heading.starts_with(b)) {
+        return None;
+    }
+    let ty = lines.find_map(|l| l.strip_prefix("Type: `")?.strip_suffix('`'))?;
+    let ty = ty.split(" (aka ").next().unwrap_or(ty).trim();
+    let ty = match ty.strip_prefix("const ") {
+        Some(inner) if !inner.contains(['*', '&']) => inner,
+        _ => ty,
+    };
+    if ty.is_empty() || ty.contains(['(', '[']) {
+        return None;
+    }
+    Some(ty.to_string())
+}
+
+/// The type in a sourcekit-lsp hover for a binding: `let width: Int`, `var entries: [Int]`,
+/// perhaps after modifiers (`public`, `static`, `private(set)`, `@MainActor`) and before an
+/// accessor block (`{ get }`) or an initial value.
+fn swift_type(hover: &str) -> Option<String> {
+    for line in hover.lines() {
+        let line = line.trim();
+        let rest = ["let ", "var "].iter().find_map(|keyword| {
+            let at = if line.starts_with(keyword) {
+                0
+            } else {
+                line.find(&format!(" {keyword}"))? + 1
+            };
+            line[..at]
+                .split_whitespace()
+                .all(|w| {
+                    w.starts_with('@')
+                        || w.chars()
+                            .all(|c| c.is_ascii_lowercase() || c == '(' || c == ')')
+                })
+                .then(|| &line[at + keyword.len()..])
+        });
+        let Some((_, ty)) = rest.and_then(|r| r.split_once(':')) else {
+            continue;
+        };
+        let ty = ty.split(" {").next().unwrap_or(ty);
+        let ty = ty.split(" = ").next().unwrap_or(ty).trim();
+        if !ty.is_empty() {
+            return Some(ty.to_string());
+        }
+    }
+    None
 }
 
 /// The type in a TypeScript hover for a binding: `const width: 80`, `let n: number`,
@@ -580,8 +717,64 @@ async fn hover_type(
         {
             return None;
         }
+    } else if !text[start..end]
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_')
+    {
+        // sourcekit-lsp answers without a range, so nothing says how much of the selection
+        // the hover describes. Only a selection that is a single name is certainly the token
+        // it was asked about.
+        return None;
     }
     syntax.type_from_hover(hover.pointer("/contents/value")?.as_str()?)
+}
+
+/// Where the function named at `file:line:col` is declared, as (file, line, column), 1-based.
+/// clangd answers with the definition itself when there is no separate declaration, and with a
+/// `LocationLink` or a single `Location` as readily as with a list; a failed request means no
+/// declaration is known, which leaves the definition's own edit standing.
+async fn declarations(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+) -> Vec<(PathBuf, u32, u32)> {
+    let Ok(uri) = url::Url::from_file_path(file) else {
+        return Vec::new();
+    };
+    let answer = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/declaration",
+        serde_json::json!({
+            "textDocument": { "uri": uri.to_string() },
+            "position": { "line": line - 1, "character": col - 1 },
+        }),
+    )
+    .await
+    .unwrap_or_default();
+    let locations = match answer {
+        serde_json::Value::Array(all) => all,
+        serde_json::Value::Null => Vec::new(),
+        one => vec![one],
+    };
+    locations
+        .iter()
+        .filter_map(|loc| {
+            let uri = loc.get("uri").or_else(|| loc.get("targetUri"))?.as_str()?;
+            let range = loc
+                .get("range")
+                .or_else(|| loc.get("targetSelectionRange"))?;
+            let at = |pointer: &str| range.pointer(pointer)?.as_u64().map(|v| v as u32 + 1);
+            Some((
+                PathBuf::from(crate::remote_fs::uri_to_path(uri)),
+                at("/start/line")?,
+                at("/start/character")?,
+            ))
+        })
+        .collect()
 }
 
 /// Promotes the expression selected in `file` into a parameter of the function that contains it.
@@ -614,7 +807,7 @@ pub async fn extract(
     let syntax = Syntax::of(file).with_context(|| {
         format!(
             "{} is not in a language this can extract a parameter in (Rust, TypeScript, \
-             JavaScript, Python, Go)",
+             JavaScript, Python, Go, C, C++, Swift)",
             display(root, file)
         )
     })?;
@@ -633,7 +826,7 @@ pub async fn extract(
         .context("the selection is not inside a function")?;
     let (callee, fn_start, fn_end) = (declaration.name, declaration.start, declaration.end);
     // What a call site spells: gopls names a method `(*Store).Limit`, its callers write `Limit`.
-    let bare = callee.rsplit('.').next().unwrap_or(&callee).to_string();
+    let bare = syntax.bare_name(&callee).to_string();
     let (fn_offset, open, close) = if syntax == Syntax::Rust {
         let fn_offset = {
             let lines: Vec<&str> = text.lines().collect();
@@ -712,6 +905,26 @@ pub async fn extract(
             "the analyzer does not give a type for this selection in a shape this can read; \
              pass the type explicitly",
         )?;
+    // A Swift caller writes each argument's label. When every parameter the function already
+    // has is labeled (or it has none), the new one is too, as the API guidelines would spell
+    // it, and callers append `name: expression`. Once one of them is positional (`_ text:`),
+    // the function has chosen positional arguments, and the new parameter is `_ name: T` with
+    // the expression appended bare, which is also the only spelling that cannot collide with a
+    // label the callers already write.
+    let labeled = syntax == Syntax::Swift
+        && crate::signature::split_params(&text[open..close])
+            .iter()
+            .all(|p| swift_labeled(p));
+    let parameter = if syntax == Syntax::Swift && !labeled {
+        format!("_ {parameter}")
+    } else {
+        parameter
+    };
+    let argument = if labeled {
+        format!("{name}: {expression}")
+    } else {
+        expression.clone()
+    };
 
     // Every edit against the file as it is, applied from the last offset backwards.
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
@@ -747,12 +960,54 @@ pub async fn extract(
     edits.entry(file.to_path_buf()).or_default().push((
         open,
         close - open,
-        with_parameter(&text[open..close], &parameter),
+        syntax.with_parameter(&text[open..close], &parameter),
     ));
 
-    // Every call site passes what the body used to say.
     let (fn_line, fn_col) = crate::signature::line_col_at(&text, fn_offset);
     let mut unmatched = Vec::new();
+    // A C or C++ function is usually declared in a header and defined in a source file, a
+    // method in its class and defined outside it. The declaration must take the parameter too
+    // or the definition no longer matches it, and clangd leaves declarations out of
+    // `references`, so it is asked for them.
+    let declarations = if syntax.is_c_family() {
+        declarations(remote, root, file, fn_line, fn_col).await
+    } else {
+        Vec::new()
+    };
+    let mut declared: Vec<(PathBuf, usize)> = Vec::new();
+    for (path, dl, dc) in declarations {
+        let body = if path == *file {
+            text.clone()
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_default()
+        };
+        let Some(at) = crate::signature::offset_of(&body, dl, dc) else {
+            continue;
+        };
+        // An inline definition is its own declaration, and it already has the parameter.
+        if path == *file && at == fn_offset {
+            continue;
+        }
+        let list = body[at..]
+            .starts_with(bare.as_str())
+            .then(|| parameter_list(&body, at + bare.len()))
+            .flatten();
+        let Some((d_open, d_close)) = list else {
+            unmatched.push(format!(
+                "{}:{dl}:{dc} (a declaration of `{callee}` whose parameter list is not there)",
+                display(root, &path)
+            ));
+            continue;
+        };
+        edits.entry(path.clone()).or_default().push((
+            d_open,
+            d_close - d_open,
+            syntax.with_parameter(&body[d_open..d_close], &parameter),
+        ));
+        declared.push((path, at));
+    }
+
+    // Every call site passes what the body used to say.
     let mut call_sites = 0usize;
     for (path, rl, rc) in crate::signature::references(remote, root, file, fn_line, fn_col)
         .await
@@ -770,7 +1025,10 @@ pub async fn extract(
         // names the function without calling it.
         let line_start = body[..at].rfind('\n').map_or(0, |i| i + 1);
         let line_end = body[at..].find('\n').map_or(body.len(), |i| at + i);
-        if (path == *file && at == fn_offset) || syntax.is_import(&body[line_start..line_end]) {
+        if (path == *file && at == fn_offset)
+            || syntax.is_import(&body[line_start..line_end])
+            || declared.iter().any(|(p, d)| *p == path && *d == at)
+        {
             continue;
         }
         // The analyzer's position is trusted only when the name is actually there. If the file
@@ -792,7 +1050,7 @@ pub async fn extract(
         edits.entry(path).or_default().push((
             args_start,
             args_end - args_start,
-            with_argument(&body[args_start..args_end], &expression),
+            with_argument(&body[args_start..args_end], &argument),
         ));
         call_sites += 1;
     }
@@ -1101,7 +1359,134 @@ mod tests {
         assert_eq!(Syntax::Go.parameter("n", None), None);
         assert_eq!(Syntax::of(Path::new("a/b.tsx")), Some(Syntax::TypeScript));
         assert_eq!(Syntax::of(Path::new("a/b.mjs")), Some(Syntax::JavaScript));
-        assert_eq!(Syntax::of(Path::new("a/b.swift")), None);
+        assert_eq!(Syntax::of(Path::new("a/b.swift")), Some(Syntax::Swift));
+        assert_eq!(Syntax::of(Path::new("a/b.hpp")), Some(Syntax::Cpp));
+        assert_eq!(Syntax::of(Path::new("a/b.h")), Some(Syntax::C));
+        assert_eq!(Syntax::of(Path::new("a/b.proto")), None);
+        assert_eq!(
+            Syntax::C.parameter("pad", Some("int")).as_deref(),
+            Some("int pad")
+        );
+        assert_eq!(
+            Syntax::Cpp
+                .parameter("label", Some("const char *"))
+                .as_deref(),
+            Some("const char *label"),
+            "the pointer binds to the name"
+        );
+        assert_eq!(
+            Syntax::Cpp
+                .parameter("text", Some("const std::string &"))
+                .as_deref(),
+            Some("const std::string &text")
+        );
+        assert_eq!(Syntax::C.parameter("pad", None), None);
+        assert_eq!(
+            Syntax::Swift.parameter("pad", Some("Int")).as_deref(),
+            Some("pad: Int")
+        );
+        assert_eq!(Syntax::Swift.parameter("pad", None), None);
+    }
+
+    #[test]
+    fn clangd_and_sourcekit_hovers_for_a_binding_give_a_type_that_can_be_written() {
+        // What clangd and sourcekit-lsp answer, verbatim.
+        let c = Syntax::Cpp;
+        assert_eq!(
+            c.type_from_hover(
+                "### variable `width`\n\n---\nType: `int`\n\nValue = `80 (0x50)`\n\n---\n```cpp\n// In render\nint width = 80\n```"
+            )
+            .as_deref(),
+            Some("int")
+        );
+        assert_eq!(
+            c.type_from_hover(
+                "### variable `width`\n\n---\nType: `std::size_t (aka unsigned long)`\n\nValue = `80 (0x50)`\n\nPassed as \\_\\_n\n\n---\n```cpp\n// In render\nstd::size_t width = 80\n```"
+            )
+            .as_deref(),
+            Some("std::size_t"),
+            "the name the code wrote, not what it stands for"
+        );
+        assert_eq!(
+            c.type_from_hover(
+                "### variable `PREFIX`\n\n---\nType: `const std::string (aka const basic_string<char>)`\n\n---\n```cpp\nstatic const std::string PREFIX = \"> \"\n```"
+            )
+            .as_deref(),
+            Some("std::string"),
+            "a const on a value binds nothing the caller sees"
+        );
+        assert_eq!(
+            c.type_from_hover(
+                "### param `text`\n\n---\nType: `const std::string & (aka const basic_string<char> &)`\n\n---\n```cpp\n// In render\nconst std::string &text\n```"
+            )
+            .as_deref(),
+            Some("const std::string &"),
+            "a const behind a reference stays"
+        );
+        assert_eq!(
+            c.type_from_hover(
+                "### function `strlen`\n\nprovided by `<string.h>`\n\n---\n\u{2192} `__size_t (aka unsigned long)`\n\nParameters:\n\n- `const char * __s`\n\nReturn the length of S.\n\n---\n```cpp\nextern __size_t strlen(const char *__s)\n```"
+            ),
+            None,
+            "a function's hover names what it returns, not what it is"
+        );
+
+        let swift = Syntax::Swift;
+        assert_eq!(
+            swift
+                .type_from_hover("width\n```swift\nlet width: Int\n```\n\n---\n")
+                .as_deref(),
+            Some("Int")
+        );
+        assert_eq!(
+            swift
+                .type_from_hover("entries\n```swift\nvar entries: [Int]\n```\n\n---\n")
+                .as_deref(),
+            Some("[Int]")
+        );
+        assert_eq!(
+            swift
+                .type_from_hover("count\n```swift\npublic static var count: Int { get }\n```\n")
+                .as_deref(),
+            Some("Int")
+        );
+        assert_eq!(
+            swift.type_from_hover(
+                "render(text:)\n```swift\npublic func render(text: String) -> String\n```\n\n---\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn c_and_swift_literals_have_the_type_the_language_gives_them() {
+        assert_eq!(Syntax::C.literal_type("80"), Some("int"));
+        assert_eq!(Syntax::Cpp.literal_type("0.5"), Some("double"));
+        assert_eq!(Syntax::C.literal_type("0.5f"), Some("float"));
+        assert_eq!(Syntax::Cpp.literal_type("\"x\""), Some("const char *"));
+        assert_eq!(Syntax::C.literal_type("'x'"), Some("char"));
+        assert_eq!(Syntax::Cpp.literal_type("true"), Some("bool"));
+        assert_eq!(Syntax::C.literal_type("80u"), None);
+        assert_eq!(Syntax::Swift.literal_type("80"), Some("Int"));
+        assert_eq!(Syntax::Swift.literal_type("0.5"), Some("Double"));
+        assert_eq!(Syntax::Swift.literal_type("\"x\""), Some("String"));
+        assert_eq!(Syntax::Swift.literal_type("false"), Some("Bool"));
+    }
+
+    #[test]
+    fn each_server_names_a_function_its_own_way_and_a_caller_writes_the_last_name() {
+        assert_eq!(Syntax::Cpp.bare_name("Store::limit"), "limit");
+        assert_eq!(Syntax::Swift.bare_name("render(text:)"), "render");
+        assert_eq!(Syntax::Swift.bare_name("limit()"), "limit");
+        assert_eq!(Syntax::Go.bare_name("(*Store).Limit"), "Limit");
+        assert_eq!(Syntax::C.with_parameter("void", "int pad"), "int pad");
+        assert_eq!(
+            Syntax::C.with_parameter("const char *text", "int pad"),
+            "const char *text, int pad"
+        );
+        assert!(swift_labeled("text: String"));
+        assert!(swift_labeled("with text: String"));
+        assert!(!swift_labeled("_ text: String"));
     }
 
     #[test]
@@ -1140,6 +1525,23 @@ mod tests {
         );
         assert_eq!(Syntax::Python.catch_all("self, a: int = 3"), None);
         assert_eq!(Syntax::Rust.catch_all("a: u8"), None);
+        assert_eq!(
+            Syntax::C.catch_all("const char *fmt, ...").as_deref(),
+            Some("...")
+        );
+        assert_eq!(
+            Syntax::Cpp.catch_all("int n, Ts... rest").as_deref(),
+            Some("Ts... rest")
+        );
+        assert_eq!(
+            Syntax::Swift.catch_all("_ xs: Int...").as_deref(),
+            Some("_ xs: Int...")
+        );
+        assert_eq!(
+            Syntax::Swift.catch_all("xs: Int..."),
+            None,
+            "a labeled variadic ends at the next label"
+        );
     }
 
     #[test]
