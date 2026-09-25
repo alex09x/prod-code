@@ -78,6 +78,13 @@ extension.
 
 ## When something is off
 
+- **macOS: the server fails to start with "No route to host (os error 65)".** A process an
+  app starts reaches the local network only when that app is allowed to, and Zed has not
+  needed it before. Turn Zed on under System Settings > Privacy & Security > Local Network,
+  then restart the language server (`editor: restart language server`). The same message
+  shows in Zed's notification, since `prod-code lsp` answers `initialize` with the reason when
+  it cannot start.
+
 - `PROD_CODE_LSP_TRACE=/tmp/lsp.log`, in `lsp.<server>.binary.env`, logs every message the
   bridge carries, with its method, id, size and time.
 - `zed: open language server logs` shows the server's own log.

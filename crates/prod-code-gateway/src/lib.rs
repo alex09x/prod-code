@@ -2421,7 +2421,7 @@ pub async fn handle_client(
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
 
                 // An editor gets the language server it would run locally, a process of its own
-                // on this node (#331); without one here, the shared engines answer it.
+                // on this node (#332); without one here, the shared engines answer it.
                 if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
                     && editor_proxy::enabled()
                     && let Some(command) = editor_proxy::server_command(engine)

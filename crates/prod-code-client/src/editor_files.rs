@@ -1,4 +1,4 @@
-//! Files an editor is pointed at that exist only on the node (#332).
+//! Files an editor is pointed at that exist only on the node (#333).
 //!
 //! A language server on the node resolves definitions into the standard library, the dependency
 //! caches and the files a build generates in the node's copy of the checkout. Those are paths
@@ -61,6 +61,58 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "swift" => "swift",
         _ => return None,
     })
+}
+
+/// What the editor is told when `prod-code lsp` cannot start a session: the reason and, on
+/// macOS, for a node this process was not let through to, where to allow it. A process an app
+/// starts reaches the local network only when that app may; connect() fails with
+/// `EHOSTUNREACH` otherwise, while the same binary works from a terminal (#338).
+pub fn startup_error_message(err: &anyhow::Error) -> String {
+    let reason = format!("{err:#}");
+    let blocked = reason.contains("os error 65") || reason.contains("No route to host");
+    let hint = if cfg!(target_os = "macos") && blocked {
+        ". macOS keeps the app that started prod-code off the local network: allow it under \
+         System Settings > Privacy & Security > Local Network, then restart the language server"
+    } else {
+        ""
+    };
+    format!("prod-code lsp could not start: {reason}{hint}")
+}
+
+/// Answers every request the editor sends with `message` as an error, starting with its
+/// `initialize`, until it closes the stream or sends `exit`.
+pub async fn refuse_session<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    message: &str,
+) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    while let Some(frame) = read_frame(reader).await? {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&frame) else {
+            continue;
+        };
+        if value.get("method").and_then(|m| m.as_str()) == Some("exit") {
+            break;
+        }
+        let Some(id) = value.get("id").filter(|_| value.get("method").is_some()) else {
+            continue;
+        };
+        let body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32603, "message": message }
+        })
+        .to_string();
+        writer
+            .write_all(format!("Content-Length: {}\r\n\r\n{body}", body.len()).as_bytes())
+            .await?;
+        writer.flush().await?;
+    }
+    Ok(())
 }
 
 /// Node paths whose content never changes once there: a copy of one is never fetched again.
@@ -384,6 +436,48 @@ mod tests {
         assert_eq!(engine_for_language("TSX"), Some("typescript"));
         assert_eq!(engine_for_language("swift"), Some("swift"));
         assert_eq!(engine_for_language("cobol"), None);
+    }
+
+    #[tokio::test]
+    async fn a_session_that_cannot_start_answers_the_editor_with_why() {
+        let err = anyhow::anyhow!("No route to host (os error 65)")
+            .context("Failed to connect to prod-code gateway at 192.0.2.7:9400");
+        let message = startup_error_message(&err);
+        assert!(
+            message.starts_with("prod-code lsp could not start: Failed to connect"),
+            "{message}"
+        );
+        assert_eq!(
+            message.contains("Local Network"),
+            cfg!(target_os = "macos"),
+            "the hint is macOS's: {message}"
+        );
+        let frame = |body: &str| format!("Content-Length: {}\r\n\r\n{body}", body.len());
+        let input = [
+            frame(r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{}}"#),
+            frame(r#"{"jsonrpc":"2.0","method":"initialized","params":{}}"#),
+            frame(r#"{"jsonrpc":"2.0","id":1,"method":"shutdown"}"#),
+            frame(r#"{"jsonrpc":"2.0","method":"exit"}"#),
+            frame(r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{}}"#),
+        ]
+        .concat();
+        let mut reader = tokio::io::BufReader::new(input.as_bytes());
+        let mut written = Vec::new();
+        refuse_session(&mut reader, &mut written, &message)
+            .await
+            .unwrap();
+        let mut replies = tokio::io::BufReader::new(written.as_slice());
+        let first: serde_json::Value =
+            serde_json::from_str(&read_frame(&mut replies).await.unwrap().unwrap()).unwrap();
+        assert_eq!(first["id"], 0);
+        assert_eq!(first["error"]["message"], message);
+        let second: serde_json::Value =
+            serde_json::from_str(&read_frame(&mut replies).await.unwrap().unwrap()).unwrap();
+        assert_eq!(second["id"], 1, "notifications get no answer");
+        assert!(
+            read_frame(&mut replies).await.unwrap().is_none(),
+            "nothing after exit"
+        );
     }
 
     #[test]

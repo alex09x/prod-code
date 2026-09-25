@@ -2487,3 +2487,51 @@ async fn lsp_asks_for_its_language_pushes_a_save_first_and_mirrors_node_files() 
         "a sync lands between initialize and the save it precedes: {seen:?}"
     );
 }
+
+/// With no node to reach, `prod-code lsp` answers the editor's `initialize` with the reason
+/// instead of exiting before the editor asks, which an editor reports only as "server shut
+/// down" (#338). One address fails at the connection; several fail at placement, which found no
+/// node alive, as a cluster does when the editor's app may not reach the network.
+#[tokio::test]
+async fn lsp_tells_the_editor_why_it_could_not_start() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    // Nothing listens on ports 1 and 2.
+    for remotes in ["127.0.0.1:1", "127.0.0.1:1,127.0.0.1:2"] {
+        let home = tempfile::tempdir().expect("home");
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+            .args(["lsp", "--remote", remotes])
+            .env("HOME", home.path())
+            .current_dir(ws.root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn lsp");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+        let init = r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"capabilities":{}}}"#;
+        stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n{init}", init.len()).as_bytes())
+            .await
+            .expect("initialize");
+        let answer = read_lsp_message(&mut stdout).await;
+        assert_eq!(answer["id"], 0, "{remotes}: {answer}");
+        let message = answer["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.starts_with("prod-code lsp could not start:")
+                && message.contains("127.0.0.1:1"),
+            "{remotes}: the reason reaches the editor: {answer}"
+        );
+        let exit = r#"{"jsonrpc":"2.0","method":"exit"}"#;
+        stdin
+            .write_all(format!("Content-Length: {}\r\n\r\n{exit}", exit.len()).as_bytes())
+            .await
+            .expect("exit");
+        let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+            .await
+            .expect("it exits on exit")
+            .expect("status");
+        assert!(status.success(), "{remotes}: {status}");
+    }
+}

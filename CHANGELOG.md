@@ -35,6 +35,10 @@
   labels every issue and pull request carries.
 
 ### Fixed
+- **When `prod-code lsp` cannot start, the editor is told why** (#338): the answer to its
+  `initialize` is the reason, where the bridge used to exit before the editor asked (Zed showed
+  only "server shut down"). On macOS, a node the app that started it may not reach
+  (`No route to host`) comes with where to allow local network access.
 - **A workspace-wide symbol search answers from the checkout, not from a nested crate of its
   own** (#335, PR #336). The file opened to load the project could be one of a crate the root
   workspace leaves out, and every search then answered from that crate.
