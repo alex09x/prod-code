@@ -537,6 +537,7 @@ impl WorkspaceManager {
                 {
                     Ok(generic_eng) => {
                         tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Swift sourcekit-lsp) active");
+                        wait_for_swift_build_settings(&generic_eng, workspace_root).await;
                         generic_engine = Some(Arc::new(generic_eng));
                     }
                     Err(err) => {
@@ -966,9 +967,120 @@ async fn warm_cmake_compile_commands(workspace_root: &std::path::Path) {
     }
 }
 
+/// How long a SwiftPM workspace's load waits for sourcekit-lsp to have the package's build
+/// settings. Resolving a package's dependencies the first time can take a while.
+const SWIFT_SETTINGS_WAIT: Duration = Duration::from_secs(45);
+
+/// The line a probe appends to a file of the package: a declaration only a type check faults.
+const SWIFT_PROBE: &str = "let __prodCodeProbe: Int = \"\"";
+
+/// Holds a SwiftPM workspace's load until sourcekit-lsp checks its files with the package's
+/// build settings (#295). Until it has loaded them it checks with fallback settings that report
+/// syntax errors only, and the first checks after a load said "0 errors" for code that does not
+/// compile. A file of the package, with [`SWIFT_PROBE`] appended, is kept open until the error on
+/// that line appears. No session can reach the workspace before its load ends, so nothing else
+/// sees the probe. A root without `Package.swift` (an Xcode project) has no settings to wait for.
+async fn wait_for_swift_build_settings(
+    engine: &prod_code_engine_generic::GenericLspEngine,
+    root: &Path,
+) {
+    let Some((path, text)) = swift_probe_file(root) else {
+        return;
+    };
+    let (probe, line) = with_probe_line(&text);
+    let started = std::time::Instant::now();
+    let checked = engine
+        .wait_for_semantic_check(&path, "swift", &probe, line, SWIFT_SETTINGS_WAIT)
+        .await;
+    let waited_ms = started.elapsed().as_millis() as u64;
+    if checked {
+        tracing::info!(workspace = ?root, waited_ms, "sourcekit-lsp has the package's build settings");
+    } else {
+        tracing::warn!(workspace = ?root, waited_ms, "sourcekit-lsp found no type error in the probe; its checks may report syntax errors only");
+    }
+}
+
+/// A Swift source of the SwiftPM package at `root`, and its text: the first under `Sources/` by
+/// path, hidden directories (`.build`) aside.
+fn swift_probe_file(root: &Path) -> Option<(PathBuf, String)> {
+    if !root.join("Package.swift").is_file() {
+        return None;
+    }
+    let mut pending = vec![root.join("Sources")];
+    let mut found = Vec::new();
+    while let Some(dir) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "swift") {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(&p).ok().map(|t| (p, t)))
+}
+
+/// `text` with [`SWIFT_PROBE`] appended on a line of its own, and that line's 0-based number.
+fn with_probe_line(text: &str) -> (String, u64) {
+    let mut probe = text.to_string();
+    if !probe.is_empty() && !probe.ends_with('\n') {
+        probe.push('\n');
+    }
+    let line = probe.matches('\n').count() as u64;
+    probe.push_str(SWIFT_PROBE);
+    probe.push('\n');
+    (probe, line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_swift_probe_is_a_package_source_with_a_type_error_on_its_own_last_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(
+            swift_probe_file(root).is_none(),
+            "no Package.swift, nothing to wait for"
+        );
+        std::fs::write(root.join("Package.swift"), "// swift-tools-version:5.9\n").unwrap();
+        assert!(swift_probe_file(root).is_none(), "no sources");
+        for (path, text) in [
+            (
+                ".build/checkouts/Dep/Sources/Dep/a.swift",
+                "// a dependency\n",
+            ),
+            ("Sources/Shop/main.swift", "print(1)\n"),
+            ("Sources/Shop/Pricing.swift", "func price() -> Int { 1 }"),
+            ("Sources/Shop/notes.txt", "not swift\n"),
+        ] {
+            let path = root.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        let (path, text) = swift_probe_file(root).expect("a source");
+        assert!(path.ends_with("Sources/Shop/Pricing.swift"), "{path:?}");
+        let (probe, line) = with_probe_line(&text);
+        assert_eq!(
+            probe,
+            "func price() -> Int { 1 }\nlet __prodCodeProbe: Int = \"\"\n"
+        );
+        assert_eq!(line, 1);
+        let (probe, line) = with_probe_line("a\nb\n");
+        assert_eq!(probe.lines().nth(line as usize), Some(SWIFT_PROBE));
+        assert_eq!(with_probe_line("").1, 0);
+    }
 
     #[tokio::test]
     async fn test_leader_follower_coalescing() {
