@@ -155,6 +155,108 @@ impl ExecGateway {
     }
 }
 
+/// The text of a tool's answer.
+fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
+    result
+        .content
+        .iter()
+        .map(|item| match item {
+            prod_code_mcp::protocol::McpContentItem::Text { text } => text.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A Swift reference search that finds nothing in a package never built on its node builds the
+/// package's index once and asks again: sourcekit-lsp finds uses in other files only through a
+/// build's index (#358). A second search does not build again.
+#[tokio::test]
+async fn a_swift_reference_search_builds_the_packages_index_once() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "Sources/App/Session.swift",
+            "public final class Session {}\n",
+        ),
+        ("Sources/App/Use.swift", "let session = Session()\n"),
+    ]);
+    let use_file = ws.path("Sources/App/Use.swift");
+    let builds = Arc::new(AtomicUsize::new(0));
+    let built = Arc::clone(&builds);
+    let counted = Arc::clone(&builds);
+    let lsp: Answer = Arc::new(move |method, _| match method {
+        "textDocument/references" if built.load(Ordering::SeqCst) > 0 => {
+            answers::locations(&use_file, &[(1, 15)])
+        }
+        "textDocument/references" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    });
+    let exec: ExecAnswer = Arc::new(move |req| {
+        if req.command == ["swift", "build", "--build-tests"] {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }
+        (b"Build complete!\n".to_vec(), Vec::new(), Some(0))
+    });
+    let gateway = ExecGateway::start(lsp, exec).await;
+    let root = ws.root();
+    let ask = || {
+        prod_code_mcp::tools::execute_tool(
+            gateway.addr(),
+            &root,
+            "code_references",
+            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20 }),
+        )
+    };
+
+    let first = text_of(&ask().await.expect("the search runs"));
+    assert!(first.contains("built the package first"), "{first}");
+    assert!(first.contains("Sources/App/Use.swift"), "{first}");
+    let _ = ask().await.expect("the search runs again");
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "one build per process");
+}
+
+/// A package whose build fails says why, instead of an empty answer that reads like "nothing
+/// uses this" (#358): its error line, not the tail of a message spread over several lines.
+#[tokio::test]
+async fn a_swift_reference_search_says_why_the_index_could_not_be_built() {
+    let ws = Workspace::new(&[
+        ("Package.swift", "// swift-tools-version:5.9\n"),
+        (
+            "Sources/App/Session.swift",
+            "public final class Session {}\n",
+        ),
+    ]);
+    let lsp: Answer = Arc::new(|method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    });
+    let exec: ExecAnswer = Arc::new(|_| {
+        (
+            Vec::new(),
+            b"error: GitShellError(result: <ProcessResult: exit: terminated(code: 128), output:\n \n>)\n"
+                .to_vec(),
+            Some(1),
+        )
+    });
+    let gateway = ExecGateway::start(lsp, exec).await;
+    let text = text_of(
+        &prod_code_mcp::tools::execute_tool(
+            gateway.addr(),
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": "Sources/App/Session.swift", "line": 1, "character": 20 }),
+        )
+        .await
+        .expect("the search runs"),
+    );
+    assert!(
+        text.contains("failed (exit 1: error: GitShellError"),
+        "the build's error line: {text}"
+    );
+    assert!(text.contains("No references found."), "{text}");
+}
+
 fn no_lsp() -> Answer {
     Arc::new(|_method, _params| serde_json::Value::Null)
 }

@@ -1611,30 +1611,27 @@ pub fn render_outline(
     let mut out = String::new();
     if let Some(arr) = res.as_array() {
         out.push_str(&format!("Outline for {path}:\n"));
-        let bodies: Vec<(u64, u64)> = arr
+        let mut entries = Vec::new();
+        outline_entries(arr, 1, false, &mut entries);
+        let bodies: Vec<(u64, u64)> = entries
             .iter()
+            .map(|(_, sym, _)| *sym)
             .filter(|s| matches!(s.get("kind").and_then(|k| k.as_u64()), Some(6 | 12)))
             .map(symbol_lines)
             .collect();
         let mut skipped_locals = 0usize;
-        for sym in arr {
+        for (depth, sym, in_body) in entries {
             let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
             let kind = sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0);
             // Locals (LSP kind 13, Variable, inside a body) are noise for a structural
             // outline: a 2000-line file lists hundreds of them.
             let (line, _) = symbol_lines(sym);
-            let local = kind == 13 && bodies.iter().any(|(s, e)| *s < line && line <= *e);
+            let local =
+                kind == 13 && (in_body || bodies.iter().any(|(s, e)| *s < line && line <= *e));
             if local && !include_locals {
                 skipped_locals += 1;
                 continue;
             }
-            // Depth from the container chain the gateway reports ("a > b > c").
-            let depth = sym
-                .get("containerName")
-                .and_then(|c| c.as_str())
-                .filter(|c| c.contains(" > "))
-                .map(|c| c.split(" > ").count() + 1)
-                .unwrap_or(1);
             if depth > max_depth {
                 continue;
             }
@@ -1642,6 +1639,7 @@ pub fn render_outline(
                 2 => "Module",
                 5 => "Class",
                 6 => "Method",
+                7 => "Property",
                 8 => "Field",
                 9 => "Constructor",
                 10 => "Enum",
@@ -1664,6 +1662,35 @@ pub fn render_outline(
         out.push_str("No outline symbols available.");
     }
     out.trim_end().to_string()
+}
+
+/// The symbols of a `textDocument/documentSymbol` answer in document order, each with its depth
+/// and whether it sits in a function's body. A flat answer (the gateway's, for Rust) gives the
+/// depth as a container chain ("a > b"); a nested one (`children`, as sourcekit-lsp, clangd,
+/// pyright and the TypeScript server answer) by its nesting, whose members an outline used to
+/// leave out (#358).
+fn outline_entries<'a>(
+    symbols: &'a [serde_json::Value],
+    depth: usize,
+    in_body: bool,
+    out: &mut Vec<(usize, &'a serde_json::Value, bool)>,
+) {
+    for symbol in symbols {
+        let chained = symbol
+            .get("containerName")
+            .and_then(|c| c.as_str())
+            .filter(|c| c.contains(" > "))
+            .map(|c| c.split(" > ").count() + 1);
+        out.push((chained.unwrap_or(depth), symbol, in_body));
+        if let Some(children) = symbol.get("children").and_then(|c| c.as_array()) {
+            let body = in_body
+                || matches!(
+                    symbol.get("kind").and_then(|k| k.as_u64()),
+                    Some(6 | 9 | 12)
+                );
+            outline_entries(children, depth + 1, body, out);
+        }
+    }
 }
 
 async fn handle_references(
@@ -1696,15 +1723,31 @@ async fn handle_references(
         "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
         "context": { "includeDeclaration": include_decl }
     });
-    let res = execute_lsp_query(
+    let mut res = execute_lsp_query(
         remote,
         workspace_root,
         &file_path,
         "textDocument/references",
-        params,
+        params.clone(),
     )
     .await?;
     let mut out = String::new();
+    if res.as_array().is_none_or(|a| a.is_empty())
+        && let Some((built, note)) = build_swift_index(remote, workspace_root, &file_path).await
+    {
+        out.push_str(&note);
+        out.push('\n');
+        if built {
+            res = execute_lsp_query(
+                remote,
+                workspace_root,
+                &file_path,
+                "textDocument/references",
+                params,
+            )
+            .await?;
+        }
+    }
     if let Some(arr) = res.as_array() {
         if arr.is_empty() {
             out.push_str("No references found.");
@@ -3434,20 +3477,145 @@ async fn handle_callers(
     let incoming = tool_name == "code_callers";
     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
     let file_path = resolve_file_path(workspace_root, path_str);
-    let tree = crate::call_tree::call_tree(
-        remote,
-        workspace_root,
-        &file_path,
-        line,
-        character,
-        incoming,
-        depth,
-    )
-    .await?;
-    Ok(McpToolCallResult::text(match tree {
+    let tree = || {
+        crate::call_tree::call_tree(
+            remote,
+            workspace_root,
+            &file_path,
+            line,
+            character,
+            incoming,
+            depth,
+        )
+    };
+    let mut found = tree().await?;
+    let mut note = None;
+    if incoming
+        && found.as_ref().is_some_and(|t| t.nodes.is_empty())
+        && let Some((built, text)) = build_swift_index(remote, workspace_root, &file_path).await
+    {
+        note = Some(text);
+        if built {
+            found = tree().await?;
+        }
+    }
+    let body = match found {
         Some(tree) => tree.render(),
         None => format!("No function at {path_str}:{line}:{character}."),
+    };
+    Ok(McpToolCallResult::text(match note {
+        Some(note) => format!("{note}\n{body}"),
+        None => body,
     }))
+}
+
+/// The SwiftPM packages whose index this process built, so a search asks for a build once.
+fn swift_indexes_built() -> &'static std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>
+{
+    static BUILT: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    > = std::sync::OnceLock::new();
+    BUILT.get_or_init(Default::default)
+}
+
+/// The SwiftPM package a Swift file belongs to: the nearest directory above it, inside `root`,
+/// with a `Package.swift`.
+fn swift_package_of(root: &Path, file: &Path) -> Option<std::path::PathBuf> {
+    if file.extension().and_then(|e| e.to_str()) != Some("swift") {
+        return None;
+    }
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let file = std::fs::canonicalize(file).ok()?;
+    file.ancestors()
+        .skip(1)
+        .take_while(|dir| dir.starts_with(&root))
+        .find(|dir| dir.join("Package.swift").is_file())
+        .map(Path::to_path_buf)
+}
+
+/// Builds the index of the SwiftPM package `file` is in, on that package's node, once per
+/// process, for a search in it that found nothing. sourcekit-lsp finds a use in another file
+/// only through the index store a build leaves (#166); in a package never built on the node it
+/// answers with nothing, which reads like "nothing uses this" (#358). The running server picks
+/// the new store up. Returns whether the build succeeded and a line saying what was done;
+/// `None` for a file in no package, or in one this process built already.
+async fn build_swift_index(remote: SocketAddr, root: &Path, file: &Path) -> Option<(bool, String)> {
+    let package = swift_package_of(root, file)?;
+    if !swift_indexes_built()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(package.clone())
+    {
+        return None;
+    }
+    let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let subdir = package
+        .strip_prefix(&canonical_root)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty());
+    let package_named = subdir.as_deref().map_or_else(
+        || "the package".to_string(),
+        |dir| format!("the package in {dir}"),
+    );
+    let node = crate::cluster::route_for_path(remote, root, package.to_str())
+        .await
+        .unwrap_or(remote);
+    let mut output = Vec::new();
+    let outcome = crate::exec::run_remote(
+        node,
+        root,
+        subdir.as_deref(),
+        vec![
+            "swift".to_string(),
+            "build".to_string(),
+            "--build-tests".to_string(),
+        ],
+        Vec::new(),
+        900,
+        false,
+        |_, bytes| {
+            output.extend_from_slice(bytes);
+            let excess = output.len().saturating_sub(4096);
+            output.drain(..excess);
+        },
+    )
+    .await;
+    let why = |outcome: String| {
+        format!(
+            "sourcekit-lsp finds uses in other files only through a build's index, and \
+             `swift build --build-tests` for {package_named} {outcome}: uses outside this file \
+             may be missing."
+        )
+    };
+    // What the build said went wrong: its last line naming an error, else its last line.
+    let text = String::from_utf8_lossy(&output);
+    let last_line = text
+        .lines()
+        .rev()
+        .find(|l| l.to_ascii_lowercase().contains("error"))
+        .or_else(|| text.lines().rev().find(|l| !l.trim().is_empty()))
+        .map(|l| l.trim().chars().take(200).collect::<String>())
+        .unwrap_or_default();
+    Some(match outcome {
+        Ok(o) if o.exit.exit_code == Some(0) && !o.exit.timed_out => (
+            true,
+            format!(
+                "sourcekit-lsp finds uses in other files through a build's index: built \
+                 {package_named} first (`swift build --build-tests`, {:.1} s).",
+                o.exit.duration_ms as f64 / 1000.0
+            ),
+        ),
+        Ok(o) if o.exit.timed_out => (false, why("timed out".to_string())),
+        Ok(o) => (
+            false,
+            why(format!(
+                "failed (exit {}: {last_line})",
+                o.exit.exit_code.map_or("?".to_string(), |c| c.to_string())
+            )),
+        ),
+        Err(err) => (false, why(format!("could not run ({err:#})"))),
+    })
 }
 
 async fn handle_definition(
@@ -4913,6 +5081,18 @@ pub async fn resolve_symbol(
     } else {
         definitions
     };
+    // So is a Swift `extension` of a type, listed under the type's name: the type's own
+    // declaration is the answer (#358).
+    let declarations: Vec<&SymbolHit> = ties
+        .iter()
+        .copied()
+        .filter(|h| !is_extension_declaration(&h.path, &remote_texts, h.line))
+        .collect();
+    let ties = if declarations.is_empty() {
+        ties
+    } else {
+        declarations
+    };
     single_candidate(root, symbol, &ties)
 }
 
@@ -5286,14 +5466,47 @@ async fn symbol_search_across_projects(
 ) -> Result<Vec<SymbolHit>> {
     let mut hits = workspace_symbol_search(remote, root, query, hint, limit).await?;
     let name = bare_symbol_name(query);
-    if hint.is_some()
-        || hits
-            .iter()
+    let named = |hits: &[SymbolHit]| {
+        hits.iter()
             .any(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name))
-    {
+    };
+    if named(&hits) {
         return Ok(hits);
     }
-    for (anchor, subpath, engine) in nested_project_anchors(root) {
+    if let Some(hint) = hint {
+        // The project a path names may keep no index (sourcekit-lsp before a build): the
+        // outlines of its files that name the symbol still find it (#358).
+        if let (_, Some(engine)) = crate::sync::engine_project(root, hint) {
+            let node = crate::cluster::route_for_path(remote, root, hint.to_str())
+                .await
+                .unwrap_or(remote);
+            let files = if hint.is_file() {
+                std::fs::read_to_string(hint)
+                    .is_ok_and(|text| names_word(&text, name))
+                    .then(|| hint.to_path_buf())
+                    .into_iter()
+                    .collect()
+            } else {
+                files_naming(hint, engine, name)
+            };
+            hits.extend(declarations_in(node, root, &files, name).await);
+        }
+        return Ok(hits);
+    }
+    // The projects whose sources name the symbol first, then the others a walk meets (#358).
+    let mut anchors = projects_naming(root, name);
+    for anchor in nested_project_anchors(root) {
+        if anchors.len() >= MAX_NESTED_PROJECTS {
+            break;
+        }
+        if !anchors
+            .iter()
+            .any(|(_, subpath, engine)| *subpath == anchor.1 && *engine == anchor.2)
+        {
+            anchors.push(anchor);
+        }
+    }
+    for (anchor, subpath, engine) in anchors {
         // Its own node: the checkout's may not serve its language (a Swift file needs a macOS
         // node, a Go module is placed on Linux).
         let node = crate::cluster::route_for_path(remote, root, anchor.to_str())
@@ -5329,44 +5542,71 @@ const MAX_OUTLINED_FILES: usize = 8;
 
 /// Files of `engine`'s language under `dir` whose text has `name` as a word.
 fn files_naming(dir: &Path, engine: &str, name: &str) -> Vec<std::path::PathBuf> {
+    source_files(dir)
+        .filter(|path| crate::sync::engine_for_file(path) == Some(engine))
+        .filter(|path| std::fs::read_to_string(path).is_ok_and(|text| names_word(&text, name)))
+        .take(MAX_OUTLINED_FILES)
+        .collect()
+}
+
+/// Whether `text` has `name` as a whole word.
+fn names_word(text: &str, name: &str) -> bool {
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
-    let names = |text: &str| {
-        text.match_indices(name).any(|(at, _)| {
-            !text[..at].chars().next_back().is_some_and(is_word)
-                && !text[at + name.len()..].chars().next().is_some_and(is_word)
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(is_word)
+            && !text[at + name.len()..].chars().next().is_some_and(is_word)
+    })
+}
+
+/// How far below a directory a search of its sources looks.
+const MAX_SEARCH_DEPTH: usize = 6;
+
+/// The files under `dir` a search of the checkout looks at, in path order: what git does not
+/// ignore, hidden directories and [`SKIPPED_DIRS`] left out, at most [`MAX_SEARCH_DEPTH`] levels
+/// down. A dependency's build tree next to its sources is an ignored part of the checkout and
+/// stays out, where a plain walk spent the search on it (#358).
+fn source_files(dir: &Path) -> impl Iterator<Item = std::path::PathBuf> {
+    ignore::WalkBuilder::new(dir)
+        .max_depth(Some(MAX_SEARCH_DEPTH))
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .filter_entry(|entry| {
+            entry.depth() == 0
+                || !entry.file_type().is_some_and(|t| t.is_dir())
+                || !SKIPPED_DIRS.contains(&entry.file_name().to_string_lossy().as_ref())
         })
-    };
-    let mut files = Vec::new();
-    let mut stack = vec![(dir.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+        .build()
+        .flatten()
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .map(ignore::DirEntry::into_path)
+}
+
+/// The most source files a name search reads to find the nested projects that mention it.
+const MAX_SCANNED_FILES: usize = 5000;
+
+/// One file of each nested project whose sources name `name`, in path order: the projects to
+/// ask first (#358). A walk that takes the first projects it meets spent every slot on a C++
+/// dependency and loose scripts while the declaration sat in a Swift package after them.
+fn projects_naming(root: &Path, name: &str) -> Vec<(std::path::PathBuf, String, &'static str)> {
+    let root_engine = crate::sync::expected_engine(root);
+    let mut projects = std::collections::HashSet::new();
+    let mut anchors = Vec::new();
+    for path in source_files(root)
+        .filter(|path| crate::sync::engine_for_file(path).is_some_and(|e| Some(e) != root_engine))
+        .take(MAX_SCANNED_FILES)
+    {
+        if !std::fs::read_to_string(&path).is_ok_and(|text| names_word(&text, name)) {
             continue;
-        };
-        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-        entries.sort();
-        for path in entries {
-            let file_name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if depth < 5
-                    && !SKIPPED_DIRS.contains(&file_name.as_str())
-                    && !file_name.starts_with('.')
-                {
-                    stack.push((path, depth + 1));
-                }
-            } else if crate::sync::engine_for_file(&path) == Some(engine)
-                && std::fs::read_to_string(&path).is_ok_and(|text| names(&text))
-            {
-                files.push(path);
-                if files.len() >= MAX_OUTLINED_FILES {
-                    return files;
-                }
+        }
+        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
+            && projects.insert((subpath.clone(), engine))
+        {
+            anchors.push((path, subpath, engine));
+            if anchors.len() >= MAX_NESTED_PROJECTS {
+                break;
             }
         }
     }
-    files
+    anchors
 }
 
 /// The declarations called `name` in the outlines of `files`.
@@ -5439,38 +5679,21 @@ fn nested_project_anchors(root: &Path) -> Vec<(std::path::PathBuf, String, &'sta
     let mut seen_dirs = std::collections::HashSet::new();
     let mut projects = std::collections::HashSet::new();
     let mut anchors = Vec::new();
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
+    for path in source_files(root) {
+        let Some(engine) = crate::sync::engine_for_file(&path) else {
             continue;
         };
-        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
-        entries.sort();
-        for path in entries {
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if path.is_dir() {
-                if depth < 5 && !SKIPPED_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
-                    stack.push((path, depth + 1));
-                }
-                continue;
-            }
-            let Some(engine) = crate::sync::engine_for_file(&path) else {
-                continue;
-            };
-            // One look per directory and language: its files belong to the same project.
-            if !seen_dirs.insert((dir.clone(), engine)) {
-                continue;
-            }
-            if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
-                && projects.insert((subpath.clone(), engine))
-            {
-                anchors.push((path, subpath, engine));
-                if anchors.len() >= MAX_NESTED_PROJECTS {
-                    return anchors;
-                }
+        // One look per directory and language: its files belong to the same project.
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !seen_dirs.insert((dir, engine)) {
+            continue;
+        }
+        if let (Some(subpath), Some(engine)) = crate::sync::engine_project(root, &path)
+            && projects.insert((subpath.clone(), engine))
+        {
+            anchors.push((path, subpath, engine));
+            if anchors.len() >= MAX_NESTED_PROJECTS {
+                return anchors;
             }
         }
     }
@@ -5570,6 +5793,26 @@ fn source_text<'a>(path: &Path, remote: &'a RemoteSources) -> Option<std::borrow
             .ok()
             .map(std::borrow::Cow::Owned),
     }
+}
+
+/// Whether the symbol on 1-based `line` of `path` is an `extension` of a type (Swift), which an
+/// index lists under the type's name next to the type's declaration (#358).
+fn is_extension_declaration(path: &Path, remote: &RemoteSources, line: u32) -> bool {
+    let Some(text) = source_text(path, remote) else {
+        return false;
+    };
+    let Some(target) = (line as usize).checked_sub(1) else {
+        return false;
+    };
+    text.lines().nth(target).is_some_and(|l| {
+        l.split_whitespace().find(|w| {
+            !w.starts_with('@')
+                && !matches!(
+                    *w,
+                    "public" | "private" | "fileprivate" | "internal" | "open" | "package"
+                )
+        }) == Some("extension")
+    })
 }
 
 fn is_use_declaration(path: &Path, remote: &RemoteSources, line: u32) -> bool {
