@@ -6,6 +6,7 @@
 
 pub mod backend;
 pub mod detect;
+pub mod editor_proxy;
 pub mod embed;
 pub mod exec_shim;
 pub mod memory;
@@ -2217,6 +2218,7 @@ pub async fn apply_sync_with_metrics(
     for loaded in workspace_manager.loaded_under(&server_workspace).await {
         loaded.notify_watched_files(&watched).await;
     }
+    workspace_manager.editor_servers.notify(&watched).await;
 
     // A changed project manifest (tsconfig, package.json, pyproject, CMakeLists, Package.swift,
     // go.mod, Cargo.toml ...) changes what the language server should see: drop the loaded
@@ -2417,6 +2419,35 @@ pub async fn handle_client(
                 }
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
+
+                // An editor gets the language server it would run locally, a process of its own
+                // on this node (#331); without one here, the shared engines answer it.
+                if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_EDITOR)
+                    && editor_proxy::enabled()
+                    && let Some(command) = editor_proxy::server_command(engine)
+                {
+                    framed
+                        .send(WireMessage::HandshakeResponse(HandshakeResponse {
+                            protocol_version: PROTOCOL_VERSION,
+                            server_pid: state.server_pid,
+                            session_id,
+                            server_workspace_root: server_workspace_str.clone(),
+                            detected_engine: engine.to_string(),
+                            stale_paths: workspace::stale_paths(&server_workspace),
+                        }))
+                        .await?;
+                    let outcome = editor_proxy::run(
+                        framed,
+                        translator,
+                        command,
+                        &engine_root,
+                        &state.workspace_manager.editor_servers,
+                        session_id,
+                    )
+                    .await;
+                    state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                    return outcome;
+                }
 
                 // Attach to shared workspace using leader-follower coalescing
                 let shared_ws = state

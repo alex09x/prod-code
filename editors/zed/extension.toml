@@ -1,0 +1,40 @@
+id = "prod-code"
+name = "prod-code"
+version = "0.1.0"
+schema_version = 1
+authors = ["Alexander Panasenko <alex@prod.codes>"]
+description = "Remote code intelligence: rust-analyzer, gopls, clangd, basedpyright, the TypeScript server and sourcekit-lsp run on your build nodes, and prod-code lsp brings them to Zed."
+repository = "https://github.com/alex09x/prod-code"
+
+[language_servers.prod-code-rust]
+name = "prod-code (rust-analyzer)"
+languages = ["Rust"]
+
+[language_servers.prod-code-go]
+name = "prod-code (gopls)"
+languages = ["Go"]
+
+[language_servers.prod-code-cpp]
+name = "prod-code (clangd)"
+languages = ["C", "C++"]
+
+[language_servers.prod-code-cpp.language_ids]
+"C" = "c"
+"C++" = "cpp"
+
+[language_servers.prod-code-python]
+name = "prod-code (basedpyright)"
+languages = ["Python"]
+
+[language_servers.prod-code-typescript]
+name = "prod-code (TypeScript)"
+languages = ["TypeScript", "TSX", "JavaScript"]
+
+[language_servers.prod-code-typescript.language_ids]
+"TypeScript" = "typescript"
+"TSX" = "typescriptreact"
+"JavaScript" = "javascript"
+
+[language_servers.prod-code-swift]
+name = "prod-code (sourcekit-lsp)"
+languages = ["Swift"]

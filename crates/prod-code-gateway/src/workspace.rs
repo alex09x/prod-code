@@ -215,13 +215,7 @@ impl SharedWorkspace {
     /// as `workspace/didChangeWatchedFiles` (#317). Paths outside the workspace root are left
     /// out.
     pub async fn notify_watched_files(&self, changes: &[(PathBuf, WatchedChange)]) {
-        let events: Vec<serde_json::Value> = changes
-            .iter()
-            .filter(|(path, _)| path.starts_with(&self.root))
-            .map(|(path, kind)| {
-                serde_json::json!({ "uri": format!("file://{}", path.display()), "type": *kind as u8 })
-            })
-            .collect();
+        let events = watched_events(&self.root, changes);
         if events.is_empty() {
             return;
         }
@@ -239,6 +233,17 @@ impl SharedWorkspace {
             }
         }
     }
+}
+
+/// The `FileEvent`s of `workspace/didChangeWatchedFiles` for the `changes` under `root`.
+pub fn watched_events(root: &Path, changes: &[(PathBuf, WatchedChange)]) -> Vec<serde_json::Value> {
+    changes
+        .iter()
+        .filter(|(path, _)| path.starts_with(root))
+        .map(|(path, kind)| {
+            serde_json::json!({ "uri": format!("file://{}", path.display()), "type": *kind as u8 })
+        })
+        .collect()
 }
 
 /// How a sync changed a file on disk, numbered as LSP's `FileChangeType`.
@@ -278,6 +283,8 @@ enum LoadState {
 pub struct WorkspaceManager {
     workspaces: RwLock<HashMap<WorkspaceKey, LoadState>>,
     worktree_owners: Mutex<HashMap<PathBuf, usize>>,
+    /// The language servers of editors' sessions, which run outside the shared workspaces.
+    pub editor_servers: crate::editor_proxy::EditorServers,
 }
 
 impl Default for WorkspaceManager {
@@ -291,6 +298,7 @@ impl WorkspaceManager {
         Self {
             workspaces: RwLock::new(HashMap::new()),
             worktree_owners: Mutex::new(HashMap::new()),
+            editor_servers: crate::editor_proxy::EditorServers::default(),
         }
     }
 

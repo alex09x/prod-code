@@ -1,0 +1,16 @@
+[package]
+name = "prod-code-zed"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Built by Zed for wasm32-wasip2 on its own, apart from the prod-code workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+zed_extension_api = "0.7.0"

@@ -5,6 +5,7 @@
 //! own inline single-workspace pipelined benchmark untouched.
 
 pub mod divergent_bench;
+pub mod editor_files;
 
 /// Latency percentile summary (in milliseconds) computed from a set of microsecond samples.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
