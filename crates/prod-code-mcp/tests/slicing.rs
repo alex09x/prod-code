@@ -611,6 +611,78 @@ async fn shadow_gateway_send(messages: Vec<WireMessage>) -> SocketAddr {
     addr
 }
 
+/// `compile: true` runs the check command on the proposed text in a shadow copy and reports
+/// the compiler's errors: a borrow error the analyzer does not see comes back as an error of the
+/// proposed file (#364).
+#[tokio::test]
+async fn compile_check_reports_the_compilers_errors_on_the_proposed_text() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let root = ws.root();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let error = serde_json::json!({
+        "reason": "compiler-message",
+        "message": {
+            "level": "error",
+            "code": { "code": "E0515" },
+            "message": "cannot return reference to local variable `s`",
+            "spans": [{ "file_name": "src/lib.rs", "line_start": 3, "column_start": 5, "is_primary": true }],
+            "rendered": "error[E0515]: cannot return reference to local variable `s`"
+        }
+    });
+    // Twice, as `--all-targets` reports it for the library and for its tests.
+    let output = format!("{error}\n{error}\n");
+    let addr = shadow_gateway(move |req| {
+        record.lock().unwrap().push((
+            req.command.clone(),
+            req.hypotheses[0].files[0].relative_path.clone(),
+        ));
+        WireMessage::ShadowRunResponse(ShadowRunResponse {
+            server_workspace_root: "/srv/ws/x".to_string(),
+            mode: "overlay".to_string(),
+            error: None,
+            results: vec![ShadowHypothesisResult {
+                name: "proposed".to_string(),
+                exit_code: Some(101),
+                duration_ms: 900,
+                timed_out: false,
+                error: None,
+                output_tail: Some(output.clone().into_bytes()),
+                output_len: output.len() as u64,
+            }],
+        })
+    })
+    .await;
+
+    let proposed = "pub fn name() -> &'static str {\n    let s = String::new();\n    &s\n}\n";
+    let (errors, report) = prod_code_mcp::tools::compile_check(
+        addr,
+        &root,
+        &[(ws.path("src/lib.rs"), proposed.to_string())],
+    )
+    .await
+    .expect("the check runs");
+
+    assert_eq!(errors, 1, "{report}");
+    assert!(
+        report.contains("[E0515]") && report.contains("src/lib.rs:3"),
+        "{report}"
+    );
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0[..2], ["cargo".to_string(), "check".to_string()]);
+    assert_eq!(
+        seen[0].1, "src/lib.rs",
+        "the proposed file, relative to the checkout"
+    );
+}
+
 fn hypothesis(name: &str, path: &str, text: &str) -> shadow::HypothesisSpec {
     shadow::HypothesisSpec {
         name: name.to_string(),
