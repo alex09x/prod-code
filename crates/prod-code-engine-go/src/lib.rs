@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
@@ -75,6 +75,8 @@ pub struct GoEngine {
     pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     broadcast_tx: broadcast::Sender<String>,
+    /// False once gopls's output has ended: it exited or crashed (#355).
+    is_alive: Arc<AtomicBool>,
     _child: Arc<Mutex<Child>>,
 }
 
@@ -143,6 +145,8 @@ impl GoEngine {
 
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_writer = stdin_arc.clone();
+        let is_alive = Arc::new(AtomicBool::new(true));
+        let is_alive_reader = Arc::clone(&is_alive);
 
         // Background reader loop: decodes LSP frames and routes responses to oneshot channels
         tokio::spawn(async move {
@@ -225,6 +229,10 @@ impl GoEngine {
                     Err(_) => break,
                 }
             }
+            is_alive_reader.store(false, Ordering::Relaxed);
+            // No answer is coming for a request still waiting: dropping its sender ends the
+            // wait now, not at the timeout (#355).
+            pending_clone.lock().await.clear();
             tracing::info!("gopls background reader loop stopped");
         });
 
@@ -235,6 +243,7 @@ impl GoEngine {
             pending_requests,
             capabilities: Arc::new(RwLock::new(None)),
             broadcast_tx: bcast_tx,
+            is_alive,
             _child: Arc::new(Mutex::new(child)),
         };
 
@@ -335,13 +344,18 @@ impl GoEngine {
         // Await response with timeout
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
             Ok(Ok(val)) => Ok(val),
-            Ok(Err(_)) => anyhow::bail!("gopls request channel closed unexpectedly"),
+            Ok(Err(_)) => anyhow::bail!("gopls has exited while answering '{method}'"),
             Err(_) => {
                 let mut pending = self.pending_requests.lock().await;
                 pending.remove(&req_id);
                 anyhow::bail!("Timeout waiting for gopls response to method '{method}'");
             }
         }
+    }
+
+    /// Whether gopls is still running: false once its output has ended (#355).
+    pub fn is_alive(&self) -> bool {
+        self.is_alive.load(Ordering::Relaxed)
     }
 
     /// Send an asynchronous JSON-RPC notification to `gopls`.

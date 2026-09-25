@@ -1022,12 +1022,18 @@ async fn pooled_query_reuses_the_same_connection_for_a_second_query() {
     );
 }
 
-#[tokio::test]
-async fn pooled_query_reopens_after_the_pooled_connection_dies() {
-    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
-    let root = ws.root();
-    let file = ws.path("src/lib.rs");
+/// What the first connection of [`reconnecting_gateway`] does with the first hover it is asked.
+#[derive(Clone, Copy)]
+enum FirstHover {
+    /// Dies mid-request.
+    Drop,
+    /// Answers with this error.
+    Error(&'static str),
+}
 
+/// A gateway whose first connection fails the first hover as `first` says, and whose every
+/// other answer is a hover of "ok". Returns its address and how many connections it accepted.
+async fn reconnecting_gateway(first: FirstHover) -> (SocketAddr, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let attempts = Arc::new(AtomicUsize::new(0));
@@ -1086,9 +1092,23 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
                             };
                             let method = value.get("method").and_then(|m| m.as_str()).unwrap_or("");
                             if method == "textDocument/hover" && attempt == 0 {
-                                // The first connection dies mid-request, as if the gateway had
-                                // restarted: no response, socket closed.
-                                return;
+                                match first {
+                                    // As if the gateway had restarted: no response, socket
+                                    // closed.
+                                    FirstHover::Drop => return,
+                                    // As a gateway whose language server crashed answers.
+                                    FirstHover::Error(message) => {
+                                        let response = serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": id,
+                                            "error": { "code": -32603, "message": message }
+                                        });
+                                        let _ = framed
+                                            .send(WireMessage::LspPayload(response.to_string()))
+                                            .await;
+                                        continue;
+                                    }
+                                }
                             }
                             let result = serde_json::json!({ "contents": { "kind": "markdown", "value": "ok" } });
                             let response =
@@ -1105,17 +1125,50 @@ async fn pooled_query_reopens_after_the_pooled_connection_dies() {
         }
     });
 
+    (addr, attempts)
+}
+
+/// Asks for a hover in `ws` through the pool, against `addr`.
+async fn pooled_hover(addr: SocketAddr, ws: &Workspace) -> anyhow::Result<serde_json::Value> {
+    let file = ws.path("src/lib.rs");
     let params =
         serde_json::json!({ "textDocument": { "uri": format!("file://{}", file.display()) } });
-    let result =
-        prod_code_mcp::session::pooled_query(addr, &root, &file, "textDocument/hover", params)
-            .await
-            .expect("the retry after a dead connection succeeds");
+    prod_code_mcp::session::pooled_query(addr, &ws.root(), &file, "textDocument/hover", params)
+        .await
+}
+
+#[tokio::test]
+async fn pooled_query_reopens_after_the_pooled_connection_dies() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let (addr, attempts) = reconnecting_gateway(FirstHover::Drop).await;
+
+    let result = pooled_hover(addr, &ws)
+        .await
+        .expect("the retry after a dead connection succeeds");
     assert_eq!(result["contents"]["value"], "ok");
     assert_eq!(
         attempts.load(Ordering::SeqCst),
         2,
         "the dead connection is replaced by a fresh one"
+    );
+}
+
+/// A session whose gateway answers that its language server exited is replaced once, and the
+/// new session gets a new server (#355).
+#[tokio::test]
+async fn pooled_query_reopens_when_the_language_server_exited() {
+    let ws = Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+    let (addr, attempts) =
+        reconnecting_gateway(FirstHover::Error("Language server process has exited")).await;
+
+    let result = pooled_hover(addr, &ws)
+        .await
+        .expect("the retry on a new session succeeds");
+    assert_eq!(result["contents"]["value"], "ok");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "the session on the dead server is replaced by a fresh one"
     );
 }
 
