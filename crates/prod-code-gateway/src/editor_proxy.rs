@@ -1,4 +1,4 @@
-//! The editor's own language server on the node (#331).
+//! The editor's own language server on the node (#332).
 //!
 //! An editor that runs `prod-code lsp` wants the language server it would run locally
 //! (rust-analyzer, gopls, clangd) with everything that comes with it: the server's own

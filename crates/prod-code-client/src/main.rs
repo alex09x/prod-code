@@ -1101,7 +1101,7 @@ async fn main() -> Result<()> {
         _ => cwd_workspace.clone(),
     };
     // An editor's server names its language, which may not be the root's: a Swift package's
-    // server in a Rust checkout goes to a macOS node, under a key of its own (#331).
+    // server in a Rust checkout goes to a macOS node, under a key of its own (#332).
     let lsp_engine = match &cli.command {
         Some(Commands::Lsp {
             language: Some(language),
@@ -1179,6 +1179,11 @@ async fn main() -> Result<()> {
             },
         )
         .await;
+    }
+    // An editor learns why its server could not start from the answer to its `initialize`,
+    // not from a process that is gone before it asks (#338).
+    if let (Some(Commands::Lsp { .. }), Err(err)) = (&cli.command, &picked) {
+        return refuse_lsp(err).await;
     }
     let remote = picked?;
     prod_code_mcp::cluster::set_routing(remotes.clone(), cwd_workspace.clone());
@@ -3229,57 +3234,37 @@ fn trace_message(trace: &LspTrace, direction: &str, raw: &str) {
     }
 }
 
+/// Tells the editor why its language server could not start: the answer to its `initialize` is
+/// the error (with, on macOS, where to allow local network access), and so is the answer to
+/// every request after it, until the editor lets go (#338).
+async fn refuse_lsp(err: &anyhow::Error) -> Result<()> {
+    let message = prod_code_client::editor_files::startup_error_message(err);
+    eprintln!("{message}");
+    let mut stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+    prod_code_client::editor_files::refuse_session(&mut stdin, &mut stdout, &message).await?;
+    Ok(())
+}
+
 /// Run full-duplex stdio LSP bridge connecting local editor to remote daemon over TCP.
 ///
 /// The checkout is pushed before the handshake, under the name the sync used, and kept
 /// current while the editor runs: a node that never saw the project would otherwise detect
 /// no language in an empty copy and answer every request with nothing (#316). The session is
-/// an editor's, so the node runs the language's own server for it (#331); `engine` names the
+/// an editor's, so the node runs the language's own server for it (#332); `engine` names the
 /// language when it is not the checkout root's. Files the server points at that exist only on
-/// the node are mirrored locally (#332).
+/// the node are mirrored locally (#333).
 async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Result<()> {
     let cwd = env::current_dir().context("Failed to determine current working directory")?;
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
     let cwd_str = cwd.to_string_lossy().to_string();
     let identity = prod_code_mcp::sync::workspace_identity(&cwd);
 
-    let stream = prod_code_protocol::transport::connect(remote)
-        .await
-        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
-    let mut framed = Framed::new(stream, ProdCodeCodec::new());
-
-    let generation = prod_code_mcp::watch::current_generation(&cwd);
-    prod_code_mcp::sync::push_workspace_sync(&mut framed, &cwd, &identity, None)
-        .await
-        .context("workspace sync before the language server session failed")?;
-    prod_code_mcp::watch::mark_synced(&cwd, generation);
-
-    // Perform handshake
-    framed
-        .send(WireMessage::HandshakeRequest(HandshakeRequest {
-            protocol_version: PROTOCOL_VERSION,
-            client_name: "prod-code-client".to_string(),
-            client_pid: std::process::id(),
-            auth_token: None,
-            client_workspace_root: cwd_str,
-            preferred_engine: engine.map(str::to_string),
-            base_workspace_name: Some(identity.name.clone()),
-            engine_subpath: None,
-            client_agent: Some(prod_code_protocol::detect_client_agent()),
-            client_host: Some(prod_code_protocol::client_host()),
-            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
-        }))
-        .await?;
-
-    let handshake_resp = match framed.next().await {
-        Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-        Some(Ok(WireMessage::Disconnect { reason })) => {
-            anyhow::bail!("the gateway refused the session: {reason}")
-        }
-        Some(Ok(other)) => anyhow::bail!("Expected HandshakeResponse, got {:?}", other),
-        Some(Err(err)) => return Err(err.into()),
-        None => anyhow::bail!("Server closed connection during handshake"),
-    };
+    let (framed, handshake_resp) =
+        match open_editor_session(remote, engine, &cwd, cwd_str, identity).await {
+            Ok(session) => session,
+            Err(err) => return refuse_lsp(&err).await,
+        };
 
     tracing::debug!(
         session_id = handshake_resp.session_id,
@@ -3354,7 +3339,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
         };
         trace_message(&trace, "->", &json_payload);
         // What the editor saved, or saw change, reaches the node before the server hears of it:
-        // rust-analyzer checks the crate on save, and must check what was saved (#331).
+        // rust-analyzer checks the crate on save, and must check what was saved (#332).
         if matches!(
             prod_code_client::editor_files::method_of(&json_payload),
             Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
@@ -3383,6 +3368,53 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     keeper.abort();
     let _ = stdout_task.await;
     Ok(())
+}
+
+/// Connects to the node, pushes the checkout and asks for an editor's session.
+async fn open_editor_session(
+    remote: SocketAddr,
+    engine: Option<&str>,
+    cwd: &Path,
+    cwd_str: String,
+    identity: prod_code_mcp::sync::WorkspaceIdentity,
+) -> Result<(
+    Framed<tokio::net::TcpStream, ProdCodeCodec>,
+    prod_code_protocol::HandshakeResponse,
+)> {
+    let stream = prod_code_protocol::transport::connect(remote)
+        .await
+        .with_context(|| format!("Failed to connect to remote gateway at {remote}"))?;
+    let mut framed = Framed::new(stream, ProdCodeCodec::new());
+    let generation = prod_code_mcp::watch::current_generation(cwd);
+    prod_code_mcp::sync::push_workspace_sync(&mut framed, cwd, &identity, None)
+        .await
+        .context("workspace sync before the language server session failed")?;
+    prod_code_mcp::watch::mark_synced(cwd, generation);
+    framed
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            client_name: "prod-code-client".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: cwd_str,
+            preferred_engine: engine.map(str::to_string),
+            base_workspace_name: Some(identity.name.clone()),
+            engine_subpath: None,
+            client_agent: Some(prod_code_protocol::detect_client_agent()),
+            client_host: Some(prod_code_protocol::client_host()),
+            purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        }))
+        .await?;
+    let handshake_resp = match framed.next().await {
+        Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+        Some(Ok(WireMessage::Disconnect { reason })) => {
+            anyhow::bail!("the gateway refused the session: {reason}")
+        }
+        Some(Ok(other)) => anyhow::bail!("Expected HandshakeResponse, got {:?}", other),
+        Some(Err(err)) => return Err(err.into()),
+        None => anyhow::bail!("Server closed connection during handshake"),
+    };
+    Ok((framed, handshake_resp))
 }
 
 async fn run_mcp_server(remote: SocketAddr) -> Result<()> {
