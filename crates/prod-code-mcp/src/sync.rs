@@ -85,12 +85,22 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
         dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
     }
     let file_dir = dir.clone();
+    let own_language = file.as_deref().and_then(engine_for_file);
     while dir.starts_with(&canonical_root) && dir != canonical_root {
         if let Some(engine) = expected_engine(&dir) {
             // Same language is not the same project. A Cargo workspace answers for its
             // members; a crate it excludes belongs to no project the root analyzer loaded, so
             // it needs one of its own or every query in it comes back null.
             if Some(engine) == root_engine && !excluded_from_root_workspace(&canonical_root, &dir) {
+                break;
+            }
+            // A file of another language inside the project (a Python script in a Swift
+            // package) is none of its server's sources: it is a loose file, below (#362).
+            // sourcekit-lsp does answer for the C family of a package's C targets.
+            if let Some(own) = own_language
+                && own != engine
+                && !(engine == "swift" && own == "cpp")
+            {
                 break;
             }
             let rel = dir
@@ -162,7 +172,7 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "go" => "go",
         "py" | "pyi" => "python",
         "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
-        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" => "cpp",
+        "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "m" | "mm" => "cpp",
         "swift" => "swift",
         _ => return None,
     })
@@ -2092,7 +2102,46 @@ mod tests {
         );
         assert_eq!(engine_for_file(Path::new("a.TSX")), Some("typescript"));
         assert_eq!(engine_for_file(Path::new("a.hpp")), Some("cpp"));
+        assert_eq!(engine_for_file(Path::new("bridge.mm")), Some("cpp"));
         assert_eq!(engine_for_file(Path::new("Makefile")), None);
+    }
+
+    /// A file of another language inside a nested project is a loose file of its own language,
+    /// not a source of that project's server (#362): a Python script in a Swift package went to
+    /// sourcekit-lsp. The C family of a Swift package's C targets stays with the package, and a
+    /// file of the root's language with the root.
+    #[test]
+    fn a_file_of_another_language_inside_a_nested_project_is_served_by_its_own_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (rel, text) in [
+            ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+            ("pkg/Package.swift", "// swift-tools-version:5.9\n"),
+            ("pkg/Sources/App/main.swift", ""),
+            ("pkg/Sources/CShim/shim.h", ""),
+            ("pkg/scripts/e2e/pack.py", "def f(): pass\n"),
+            ("pkg/tools/gen.go", "package tools\n"),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        assert_eq!(
+            engine_project(root, &root.join("pkg/scripts/e2e/pack.py")),
+            (Some("pkg/scripts/e2e".to_string()), Some("python"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("pkg/Sources/App/main.swift")),
+            (Some("pkg".to_string()), Some("swift"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("pkg/Sources/CShim/shim.h")),
+            (Some("pkg".to_string()), Some("swift"))
+        );
+        assert_eq!(
+            engine_project(root, &root.join("pkg/tools/gen.go")),
+            (None, Some("go"))
+        );
     }
 
     /// A Go module with one file, `name`, holding `source`.

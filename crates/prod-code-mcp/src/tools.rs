@@ -1484,7 +1484,54 @@ async fn handle_outline(
         return Ok(McpToolCallResult::text(text));
     }
 
-    let file_uri = Url::from_file_path(&file_path)
+    Ok(McpToolCallResult::text(
+        outline_file(
+            remote,
+            workspace_root,
+            &file_path,
+            path_str,
+            max_depth,
+            include_locals,
+            "pass include_locals: true",
+        )
+        .await?,
+    ))
+}
+
+/// A file's outline, for the MCP tool and the CLI alike (#362): a Markdown file's headings,
+/// read here since no language server serves Markdown; an error for a file no language server
+/// serves, rather than the empty answer the checkout's server gives for it; otherwise the file's
+/// server's `textDocument/documentSymbol` answer. `hint` says how to list the locals.
+pub async fn outline_file(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file_path: &Path,
+    path_str: &str,
+    max_depth: usize,
+    include_locals: bool,
+    hint: &str,
+) -> Result<String> {
+    let extension = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if matches!(extension.as_deref(), Some("md" | "markdown")) {
+        let text = std::fs::read_to_string(file_path)
+            .with_context(|| format!("reading {}", file_path.display()))?;
+        return Ok(markdown_outline(&text, path_str, max_depth));
+    }
+    if crate::sync::engine_for_file(file_path).is_none() {
+        let kind = extension.map_or_else(
+            || "files without an extension".to_string(),
+            |e| format!("`.{e}` files"),
+        );
+        anyhow::bail!(
+            "no outline for {path_str}: no language server serves {kind}. prod-code serves Rust, \
+             Go, C, C++ and Objective-C, TypeScript and JavaScript, Python and Swift, and outlines \
+             Markdown by its headings"
+        );
+    }
+    let file_uri = Url::from_file_path(file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
     let params = serde_json::json!({
@@ -1493,18 +1540,60 @@ async fn handle_outline(
     let res = execute_lsp_query(
         remote,
         workspace_root,
-        &file_path,
+        file_path,
         "textDocument/documentSymbol",
         params,
     )
     .await?;
-    Ok(McpToolCallResult::text(render_outline(
+    Ok(render_outline(
         &res,
         path_str,
         max_depth,
         include_locals,
-        "pass include_locals: true",
-    )))
+        hint,
+    ))
+}
+
+/// A Markdown file's headings as an outline: `#` to `######`, the level giving the depth, with
+/// front matter and fenced code left out.
+fn markdown_outline(text: &str, path: &str, max_depth: usize) -> String {
+    let mut out = format!("Outline for {path}:\n");
+    let mut fence: Option<&str> = None;
+    let mut front_matter = text.starts_with("---\n");
+    let mut headings = 0usize;
+    for (i, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if front_matter {
+            if i > 0 && line.trim_end() == "---" {
+                front_matter = false;
+            }
+            continue;
+        }
+        if let Some(marker) = fence {
+            if trimmed.starts_with(marker) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(marker) = ["```", "~~~"].into_iter().find(|m| trimmed.starts_with(m)) {
+            fence = Some(marker);
+            continue;
+        }
+        let level = trimmed.chars().take_while(|c| *c == '#').count();
+        if !(1..=6).contains(&level) || !trimmed[level..].starts_with([' ', '\t']) {
+            continue;
+        }
+        let title = trimmed[level..].trim().trim_end_matches('#').trim_end();
+        if level > max_depth || title.is_empty() {
+            continue;
+        }
+        headings += 1;
+        out.push_str(&format!("  [Heading {level}] {title} (line {})\n", i + 1));
+    }
+    if headings == 0 {
+        out.push_str("  (no headings)");
+    }
+    out.trim_end().to_string()
 }
 
 /// Outlines every source file directly in `dir_path` using a single [`crate::session::LspSession`],

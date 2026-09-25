@@ -20,6 +20,14 @@
   changed file to the server only when its own sync pushed it; after the CLI, an `exec` whose
   formatter's output came back, or another agent had already pushed it, definitions and hovers
   came from the text the session first opened. Every open file whose text changed is sent now.
+- **Outlines of scripts, Markdown and files no server serves** (#362).
+  - A file of another language inside a nested project (a Python script in a Swift package) is
+    served by its own language's engine; it went to the project's server, which waited 45 s
+    and answered nothing. The C family inside a Swift package stays with sourcekit-lsp.
+  - A Markdown file's outline lists its headings.
+  - A file no language server serves (shell, protobuf, TOML, ...) gets an error that says so,
+    from the MCP tool and the CLI; the CLI printed `null`.
+  - `.m` and `.mm` count as C-family sources.
 
 ## v0.3.11 — 2026-09-25
 

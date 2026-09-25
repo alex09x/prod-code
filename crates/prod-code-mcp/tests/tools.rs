@@ -1557,6 +1557,68 @@ async fn the_nested_project_that_names_the_symbol_is_asked_before_the_others() {
     assert!(text.contains("apkg/Sources/Pkg/Thing.swift"), "{text}");
 }
 
+/// A Markdown file's outline is its headings, read without a server (#362): front matter and
+/// fenced code are not headings.
+#[tokio::test]
+async fn a_markdown_outline_lists_its_headings() {
+    let ws = Workspace::new(&[(
+        "docs/guide.md",
+        "---\ntitle: x\n# not a heading\n---\n# Guide\n\n## Install ##\n\n```sh\n# not a heading either\n```\n\n### Linux\n#hashtag\n",
+    )]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let root = ws.root();
+    let outline = |depth: u64| {
+        execute_tool(
+            remote,
+            &root,
+            "code_outline",
+            serde_json::json!({ "path": "docs/guide.md", "max_depth": depth }),
+        )
+    };
+    let text = text_of(&outline(3).await.expect("the outline"));
+    assert!(text.contains("[Heading 1] Guide (line 5)"), "{text}");
+    assert!(text.contains("[Heading 2] Install (line 7)"), "{text}");
+    assert!(text.contains("[Heading 3] Linux (line 13)"), "{text}");
+    assert!(
+        !text.contains("not a heading") && !text.contains("hashtag"),
+        "{text}"
+    );
+    let shallow = text_of(&outline(1).await.expect("the outline"));
+    assert!(
+        shallow.contains("Guide") && !shallow.contains("Install"),
+        "{shallow}"
+    );
+}
+
+/// A file no language server serves gets an error that says so, not the empty answer the
+/// checkout's server gives for it (#362).
+#[tokio::test]
+async fn an_outline_of_a_file_no_server_serves_says_so() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("scripts/build.sh", "#!/bin/sh\necho hi\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let text = match execute_tool(
+        remote,
+        &ws.root(),
+        "code_outline",
+        serde_json::json!({ "path": "scripts/build.sh" }),
+    )
+    .await
+    {
+        Ok(result) => text_of(&result),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        text.contains("no language server serves `.sh` files"),
+        "{text}"
+    );
+}
+
 /// A Swift `extension` of a type is listed by the index under the type's name; the type's own
 /// declaration is the answer, not an ambiguity between the two (#358).
 #[tokio::test]
