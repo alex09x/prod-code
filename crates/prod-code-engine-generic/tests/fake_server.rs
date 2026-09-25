@@ -413,6 +413,39 @@ async fn a_request_the_server_never_answers_comes_back_as_a_timeout() {
     );
 }
 
+/// A request in flight when the server exits fails at once, saying so, instead of at the
+/// request timeout (#355): a TypeScript server that crashed on a file kept its caller 30 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_in_flight_fails_as_soon_as_the_server_exits() {
+    let (dir, script) = workspace();
+    let engine = std::sync::Arc::new(
+        GenericLspEngine::spawn(dir.path(), config(&script))
+            .await
+            .expect("the fake server starts"),
+    );
+    engine.initialize().await.expect("initialize");
+
+    let waiting = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("prodCode/silence", serde_json::json!({}))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let _ = engine
+        .send_notification("prodCode/die", serde_json::json!({}))
+        .await;
+
+    let answer = tokio::time::timeout(Duration::from_secs(10), waiting)
+        .await
+        .expect("the request ends well before its 30 s timeout")
+        .expect("the request's task");
+    let err = answer.expect_err("a server that exited answers nothing");
+    assert!(format!("{err:#}").contains("has exited"), "{err:#}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_that_exits_is_noticed() {
     let (dir, script) = workspace();

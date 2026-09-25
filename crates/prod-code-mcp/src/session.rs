@@ -385,6 +385,8 @@ fn is_connection_error(err: &anyhow::Error) -> bool {
         || text.contains("reset")
         || text.contains("decode")
         || text.contains("connection")
+        // The gateway's language server crashed: a new session gets a new one (#355).
+        || text.contains("has exited")
 }
 
 /// Runs one query on the pooled session for `root` (opening it on first use): local

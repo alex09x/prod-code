@@ -8,6 +8,12 @@
   got "Language server process has exited": the query went to the site's TypeScript server,
   which crashed on the Rust file. The MCP server now opens a session in the file's own
   checkout, as the command line already did.
+- **A language server that crashed is started again** (#355). When the TypeScript server,
+  pyright, clangd, sourcekit-lsp or gopls exited, the request in flight waited out its 30 s
+  timeout and every later query in that workspace failed with "Language server process has
+  exited" until the gateway restarted. A request in flight now fails at once, the gateway loads
+  a workspace whose server exited afresh for the next session, and the MCP server reopens its
+  session once when told the server exited.
 
 ## v0.3.10 — 2026-09-25
 

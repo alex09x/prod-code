@@ -576,6 +576,9 @@ impl GenericLspEngine {
                 }
             }
             is_alive_clone.store(false, Ordering::Relaxed);
+            // No answer is coming for a request still waiting: dropping its sender ends the
+            // wait now, not at the request timeout (#355).
+            pending_clone.lock().await.clear();
             tracing::info!("Generic LSP reader loop finished");
         });
 
@@ -871,7 +874,9 @@ impl GenericLspEngine {
 
         match tokio::time::timeout(self.config.request_timeout, rx).await {
             Ok(Ok(val)) => Ok(val),
-            Ok(Err(_)) => anyhow::bail!("LSP request channel dropped unexpectedly"),
+            Ok(Err(_)) => {
+                anyhow::bail!("Language server process has exited while answering '{method}'")
+            }
             Err(_) => {
                 let mut pending = self.pending_requests.lock().await;
                 pending.remove(&req_id);
@@ -917,6 +922,9 @@ impl GenericLspEngine {
     }
 
     /// Check if the process is currently running and healthy.
+    /// Whether the server process is still running: false once its output has ended, as it
+    /// does when the server exits or crashes. The gateway loads a workspace afresh when its
+    /// server has exited (#355).
     pub fn is_alive(&self) -> bool {
         self.is_alive.load(Ordering::Relaxed)
     }

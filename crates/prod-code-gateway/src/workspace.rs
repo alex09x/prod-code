@@ -210,6 +210,20 @@ impl SharedWorkspace {
         self.last_used.store(unix_now(), Ordering::Relaxed);
     }
 
+    /// Whether a language server this workspace answers from has exited. One that crashed (the
+    /// TypeScript server on a file of another language) would otherwise answer every later
+    /// query with its exit, until the gateway restarted (#355).
+    pub fn has_dead_server(&self) -> bool {
+        self.generic_engine.as_ref().is_some_and(|e| !e.is_alive())
+            || self.go_engine.as_ref().is_some_and(|e| !e.is_alive())
+    }
+
+    /// Whether the next session asking for `engine` may be handed this workspace: it was loaded
+    /// for that engine and its language server is still running.
+    fn reusable_for(&self, engine: &str) -> bool {
+        self.engine == engine && !self.has_dead_server()
+    }
+
     /// Tells this workspace's language servers (gopls, or the generic server and the C/C++
     /// validation clangd once it runs) which files a sync created, rewrote or removed on disk,
     /// as `workspace/didChangeWatchedFiles` (#317). Paths outside the workspace root are left
@@ -424,15 +438,17 @@ impl WorkspaceManager {
             let guard = self.workspaces.read().await;
             if let Some(state) = guard.get(&key) {
                 match state {
-                    LoadState::Ready(ws) if ws.engine != engine => {
+                    LoadState::Ready(ws) if !ws.reusable_for(engine) => {
                         // The directory was (re)populated since this workspace was loaded,
                         // e.g. an empty worktree workspace detected as generic before its
-                        // first sync landed. Fall through and load it with the right engine.
+                        // first sync landed, or its language server exited (#355). Fall
+                        // through and load it afresh.
                         tracing::info!(
                             workspace = ?workspace_root,
                             previous = %ws.engine,
                             engine,
-                            "Workspace engine kind changed; reloading"
+                            server_exited = ws.has_dead_server(),
+                            "Workspace engine changed or its server exited; reloading"
                         );
                     }
                     LoadState::Ready(ws) => {
@@ -460,7 +476,7 @@ impl WorkspaceManager {
         {
             let mut guard = self.workspaces.write().await;
             let stale =
-                matches!(guard.get(&key), Some(LoadState::Ready(ws)) if ws.engine != engine);
+                matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for(engine));
             if stale {
                 guard.remove(&key);
             }
@@ -1104,6 +1120,65 @@ fn with_probe_line(text: &str) -> (String, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A workspace whose language server has exited is not handed to the next session, which
+    /// loads it afresh; one whose server runs is (#355). `cat` answers `initialize` with its
+    /// echo and runs until its input closes; the other does that for a second, then exits.
+    #[tokio::test]
+    async fn a_workspace_whose_server_exited_is_loaded_afresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let workspace = |engine: prod_code_engine_generic::GenericLspEngine| {
+            SharedWorkspace::new(
+                dir.path().to_path_buf(),
+                "typescript".to_string(),
+                None,
+                None,
+                Some(Arc::new(engine)),
+                None,
+            )
+        };
+        let config = |command: &str, args: &[&str]| prod_code_engine_generic::GenericLspConfig {
+            command: command.to_string(),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        };
+        let running = workspace(
+            prod_code_engine_generic::GenericLspEngine::spawn(dir.path(), config("cat", &[]))
+                .await
+                .expect("cat runs"),
+        );
+        let exited = workspace(
+            prod_code_engine_generic::GenericLspEngine::spawn(
+                dir.path(),
+                // A job in the background reads /dev/null unless stdin is kept aside first.
+                config(
+                    "sh",
+                    &["-c", "exec 3<&0; cat <&3 & sleep 1; kill $! 2>/dev/null"],
+                ),
+            )
+            .await
+            .expect("the short-lived server starts"),
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !exited.has_dead_server() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert!(exited.has_dead_server(), "a server that exited is noticed");
+        assert!(
+            !exited.reusable_for("typescript"),
+            "and its workspace is loaded afresh"
+        );
+        assert!(!running.has_dead_server(), "a running server is not dead");
+        assert!(
+            running.reusable_for("typescript"),
+            "and its workspace is reused"
+        );
+        assert!(
+            !running.reusable_for("rust"),
+            "unless another engine is asked for"
+        );
+    }
 
     #[test]
     fn a_swift_probe_is_a_package_source_with_a_type_error_on_its_own_last_line() {
