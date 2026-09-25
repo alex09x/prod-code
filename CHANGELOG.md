@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.10 — 2026-09-25
+
 ### Fixed
 - **A Rust symbol lookup finds a common name such as `run`** (#348). The workspace search walks
   rust-analyzer's index in name order and stops at its limit, so hundreds of names that only
