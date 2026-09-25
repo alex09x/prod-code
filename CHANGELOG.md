@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+- **`prod-code report-issue` works in a checkout the cluster cannot place** (#307). It used to
+  fail with the placement error before drafting anything, for example in a Go module with
+  macOS-only cgo when no macOS node serves Go, so that very limitation could not be reported.
+  The node is now looked up best-effort: without one the issue is still drafted and filed, and
+  it says why the checkout could not be placed (node addresses scrubbed like the rest).
+
 ## v0.3.6 — 2026-09-24
 
 ### Fixed
