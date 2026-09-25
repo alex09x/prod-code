@@ -47,6 +47,9 @@ pub struct ParameterObject {
     pub rewritten: Vec<(String, String)>,
     /// References the rule did not match, named rather than guessed at.
     pub unmatched: Vec<String>,
+    /// Files that call the function by name where the analyzer reported no reference: checked
+    /// with the rewritten files, not rewritten (#294).
+    pub unreported: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
     /// The language the declaration is written in, as the report's code block names it.
@@ -122,6 +125,10 @@ impl ParameterObject {
                 out.push_str(&format!("  {r}\n"));
             }
         }
+        out.push_str(&crate::extract_parameter::unreported_note(
+            &self.unreported,
+            &self.file,
+        ));
         if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
@@ -641,7 +648,8 @@ pub async fn introduce(
         rewritten.insert(path, with_import);
     }
 
-    let (diagnostics, applied) = check_and_apply(remote, root, &rewritten, apply, force).await?;
+    let (diagnostics, applied) =
+        check_and_apply(remote, root, &rewritten, &[], apply, force).await?;
 
     Ok(ParameterObject {
         symbol: callee,
@@ -658,6 +666,7 @@ pub async fn introduce(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         unmatched,
+        unreported: Vec::new(),
         diagnostics,
         applied,
         language: language.fence(),
@@ -671,6 +680,7 @@ async fn check_and_apply(
     remote: SocketAddr,
     root: &Path,
     rewritten: &BTreeMap<PathBuf, String>,
+    also_check: &[PathBuf],
     apply: bool,
     force: bool,
 ) -> Result<(Vec<String>, bool)> {
@@ -678,7 +688,7 @@ async fn check_and_apply(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &[]).await?;
+    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, also_check).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -2351,7 +2361,12 @@ async fn introduce_in(
         rewritten.insert(path, source);
     }
 
-    let (diagnostics, applied) = check_and_apply(remote, root, &rewritten, apply, force).await?;
+    // A caller the analyzer did not report was not rewritten; checked with the rest, it shows
+    // up as an error instead of breaking unseen (#294).
+    let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
+    let unreported = crate::signature::unreported_callers(root, file, &callee, &checked);
+    let (diagnostics, applied) =
+        check_and_apply(remote, root, &rewritten, &unreported, apply, force).await?;
 
     Ok(ParameterObject {
         symbol: callee,
@@ -2368,6 +2383,7 @@ async fn introduce_in(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         unmatched,
+        unreported: unreported.iter().map(|p| display(root, p)).collect(),
         diagnostics,
         applied,
         language: language.fence(),
@@ -2904,7 +2920,12 @@ async fn introduce_c(
         rewritten.insert(path, source);
     }
 
-    let (diagnostics, applied) = check_and_apply(remote, root, &rewritten, apply, force).await?;
+    // A caller the analyzer did not report was not rewritten; checked with the rest, it shows
+    // up as an error instead of breaking unseen (#294).
+    let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
+    let unreported = crate::signature::unreported_callers(root, file, &callee, &checked);
+    let (diagnostics, applied) =
+        check_and_apply(remote, root, &rewritten, &unreported, apply, force).await?;
     let was = &decls[main].text[decls[main].open..decls[main].close];
     Ok(ParameterObject {
         symbol: callee,
@@ -2921,6 +2942,7 @@ async fn introduce_c(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         unmatched,
+        unreported: unreported.iter().map(|p| display(root, p)).collect(),
         diagnostics,
         applied,
         language: language.fence(),

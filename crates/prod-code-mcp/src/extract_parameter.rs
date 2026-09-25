@@ -33,6 +33,9 @@ pub struct ExtractedParameter {
     pub call_sites: usize,
     pub rewritten: Vec<(String, String)>,
     pub unmatched: Vec<String>,
+    /// Files that call the function by name where the analyzer reported no reference: checked
+    /// with the rewritten files, not rewritten (#294).
+    pub unreported: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
 }
@@ -85,6 +88,7 @@ impl ExtractedParameter {
                 out.push_str(&format!("  {r}\n"));
             }
         }
+        out.push_str(&unreported_note(&self.unreported, &self.file));
         if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
@@ -777,6 +781,30 @@ async fn declarations(
         .collect()
 }
 
+/// The report's note on files that call the function by name but were not reported by the
+/// analyzer (#294), or nothing when there are none. sourcekit-lsp finds references in the index
+/// a build writes, so for Swift the note says to build first.
+pub(crate) fn unreported_note(unreported: &[String], file: &str) -> String {
+    if unreported.is_empty() {
+        return String::new();
+    }
+    let hint = if file.ends_with(".swift") {
+        "; sourcekit-lsp finds references in the index a build writes: run code_check \
+         (swift build) and ask again"
+    } else {
+        ""
+    };
+    let mut out = format!(
+        "\nchecked, not rewritten ({} file(s) that call it by name where the analyzer reported \
+         no reference{hint}):\n",
+        unreported.len()
+    );
+    for f in unreported {
+        out.push_str(&format!("  {f}\n"));
+    }
+    out
+}
+
 /// Promotes the expression selected in `file` into a parameter of the function that contains it.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract(
@@ -1073,7 +1101,15 @@ pub async fn extract(
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
         .collect();
-    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &[]).await?;
+    // A caller the analyzer did not report was not rewritten; checked with the rest, it shows up
+    // as an error instead of breaking unseen (#294).
+    let unreported = if syntax == Syntax::Rust {
+        Vec::new()
+    } else {
+        let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
+        crate::signature::unreported_callers(root, file, &bare, &checked)
+    };
+    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &unreported).await?;
     let diagnostics: Vec<String> = reports
         .iter()
         .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
@@ -1121,6 +1157,7 @@ pub async fn extract(
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
             .collect(),
         unmatched,
+        unreported: unreported.iter().map(|p| display(root, p)).collect(),
         diagnostics,
         applied,
     })
@@ -1194,6 +1231,7 @@ mod tests {
             call_sites: 2,
             rewritten: vec![("/root/src/lib.rs".into(), "pub fn render() {}\n".into())],
             unmatched,
+            unreported: Vec::new(),
             diagnostics,
             applied,
         }

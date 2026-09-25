@@ -1212,6 +1212,78 @@ pub(crate) async fn references(
     Ok(out)
 }
 
+/// How many files [`unreported_callers`] names at most: each one is opened and checked with the
+/// rewritten ones.
+const UNREPORTED_LIMIT: usize = 20;
+
+/// The files of `file`'s language under `root`, other than `file` and `checked`, that write
+/// `name(`: where a caller can be that the analyzer did not report. A language server may answer
+/// `references` from an index that is not there yet (sourcekit-lsp reads the one a build writes,
+/// and finds nothing in a package never built, #294), and a caller a refactoring did not rewrite
+/// then breaks unseen unless its file is checked together with the rewritten ones. A file that
+/// only has another function of the same name costs a check and changes nothing. Rust is not
+/// searched: rust-analyzer answers from the crate graph it has loaded.
+pub(crate) fn unreported_callers(
+    root: &Path,
+    file: &Path,
+    name: &str,
+    checked: &[PathBuf],
+) -> Vec<PathBuf> {
+    let family = |p: &Path| match crate::lang::language_id_for_path(p) {
+        "c" | "cpp" | "objective-c" | "objective-cpp" => "c",
+        "typescript" | "typescriptreact" | "javascript" | "javascriptreact" => "javascript",
+        other => other,
+    };
+    let wanted = family(file);
+    if name.is_empty() || matches!(wanted, "rust" | "plaintext") {
+        return Vec::new();
+    }
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let base = canonical(root);
+    let known: Vec<PathBuf> = checked
+        .iter()
+        .map(|p| canonical(p))
+        .chain([canonical(file)])
+        .collect();
+    let mut found = Vec::new();
+    for entry in ignore::WalkBuilder::new(root)
+        .max_filesize(Some(1 << 20))
+        .build()
+        .flatten()
+    {
+        let path = entry.path();
+        if !entry.file_type().is_some_and(|t| t.is_file()) || family(path) != wanted {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let path = canonical(path);
+        if !writes_call(&text, name) || known.contains(&path) {
+            continue;
+        }
+        // Spelled under `root` as the caller gave it, so that it is translated like the others.
+        found.push(match path.strip_prefix(&base) {
+            Ok(rel) => root.join(rel),
+            Err(_) => path,
+        });
+        if found.len() == UNREPORTED_LIMIT {
+            break;
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Whether `text` writes `name(` with `name` as a whole word, a call or a declaration.
+fn writes_call(text: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(name).any(|(at, _)| {
+        !text[..at].chars().next_back().is_some_and(ident)
+            && text[at + name.len()..].trim_start().starts_with('(')
+    })
+}
+
 pub(crate) fn line_col_at(text: &str, offset: usize) -> (u32, u32) {
     let before = &text[..offset.min(text.len())];
     let line = before.matches('\n').count() as u32 + 1;
@@ -1239,6 +1311,49 @@ fn normalize(list: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file that calls the function is found though no analyzer reported it; the declaring
+    /// file, a file already checked, another language, and a longer name that starts the same
+    /// are not (#294). C and C++ are one family: a C function is called from C++ too.
+    #[test]
+    fn files_that_call_the_function_but_were_not_reported_are_found() {
+        let ws = prod_code_testkit::Workspace::new(&[
+            (
+                "Sources/Shop/Pricing.swift",
+                "func price(qty: Int) -> Int { qty }\n",
+            ),
+            ("Sources/Shop/main.swift", "print(price (qty: 3))\n"),
+            ("Sources/Shop/Checked.swift", "print(price(qty: 4))\n"),
+            (
+                "Sources/Shop/Other.swift",
+                "let a = prices(1) + unit_price(2)\n",
+            ),
+            ("tools/notes.py", "price(3)\n"),
+            ("src/pricing.c", "int price(int qty) { return qty; }\n"),
+            ("src/app.cpp", "int main() { return price(3); }\n"),
+            ("src/lib.rs", "fn f() { price(3); }\n"),
+        ]);
+        let root = ws.root();
+        assert_eq!(
+            unreported_callers(
+                &root,
+                &root.join("Sources/Shop/Pricing.swift"),
+                "price",
+                &[root.join("Sources/Shop/Checked.swift")],
+            ),
+            vec![root.join("Sources/Shop/main.swift")]
+        );
+        assert_eq!(
+            unreported_callers(&root, &root.join("src/pricing.c"), "price", &[]),
+            vec![root.join("src/app.cpp")]
+        );
+        assert!(
+            unreported_callers(&root, &root.join("src/lib.rs"), "price", &[]).is_empty(),
+            "Rust is not searched"
+        );
+        assert!(writes_call("x = price(1)", "price"));
+        assert!(!writes_call("x = price", "price"));
+    }
 
     /// A language server that answers "no references" while it reads the project is asked
     /// again before the answer is believed; rust-analyzer is believed at once (#284).

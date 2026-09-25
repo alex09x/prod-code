@@ -1626,6 +1626,93 @@ async fn swift_a_literal_becomes_a_labeled_parameter_every_caller_names() {
     );
 }
 
+/// sourcekit-lsp finds references in the index a build writes, and before the first build it
+/// finds none. The caller in `Other.swift` then goes unreported and unrewritten: it is checked
+/// with the rewritten file, its missing argument refuses the change, and the report says to
+/// build first (#294).
+#[tokio::test]
+async fn swift_a_caller_the_server_did_not_report_is_checked_and_its_error_refuses_the_change() {
+    let (ws, home, _other) = swift_workspace();
+    let h = home.clone();
+    let proposed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seen = std::sync::Arc::clone(&proposed);
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "textDocument/didOpen" | "textDocument/didChange" => {
+            let text = params
+                .pointer("/textDocument/text")
+                .or_else(|| params.pointer("/contentChanges/0/text"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if text.contains("margin: Int") {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Value::Null
+        }
+        "textDocument/documentSymbol" => swift_home_symbols(),
+        // Only the call in the declaring file: nothing indexed the rest of the package.
+        "textDocument/references" => points_in(&[(&h, &[(23, 12)])]),
+        "textDocument/diagnostic"
+            if uri_ends_with(params, "Other.swift")
+                && seen.load(std::sync::atomic::Ordering::SeqCst) =>
+        {
+            errors(
+                &[(
+                    3,
+                    29,
+                    "Missing argument for parameter 'margin' in call".to_string(),
+                )],
+                Value::Null,
+                "SourceKit",
+            )
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+
+    let done = prod_code_mcp::extract_parameter::extract(
+        gateway.addr(),
+        &ws.root(),
+        &home,
+        (4, 17),
+        (4, 19),
+        "margin",
+        None,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the extraction runs: {e:#}"));
+
+    assert_eq!(done.call_sites, 1);
+    assert_eq!(
+        done.unreported,
+        vec!["Sources/Shop/Other.swift".to_string()]
+    );
+    assert!(
+        !done
+            .rewritten
+            .iter()
+            .any(|(p, _)| p.ends_with("Other.swift")),
+        "an unreported caller is checked, not rewritten"
+    );
+    assert!(
+        done.diagnostics
+            .iter()
+            .any(|d| d.contains("Missing argument for parameter 'margin'")),
+        "{:?}",
+        done.diagnostics
+    );
+    let report = done.render(4000);
+    assert!(
+        report.contains("checked, not rewritten (1 file(s)")
+            && report.contains("swift build")
+            && report.contains("the analyzer rejects the result"),
+        "{report}"
+    );
+}
+
 /// `pad(_:_:)` takes positional arguments, so the new parameter is `_ extra: Int` and the
 /// callers append the expression without a label.
 #[tokio::test]
