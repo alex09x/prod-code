@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **Every agent is told to report prod-code bugs, without private details** (#302). The
+  instructions the MCP server sends at `initialize`, which every agent reads whether or not it
+  has a skill installed, now say to file a prod-code bug with `code_report_issue` once the tool
+  is clearly at fault and then carry on. They say what goes in the body, that the issue is
+  public so private details never go in it, and that details it needs go into the reporter's
+  own private record, named by `private_ref`.
 - **The first Swift check after a workspace loads finds type errors** (#295). sourcekit-lsp
   loads a package's build settings in the background after it starts, and until then it checks
   with fallback settings that report syntax errors only, so the first checks after a load said

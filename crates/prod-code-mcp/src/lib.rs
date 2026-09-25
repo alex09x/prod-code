@@ -298,6 +298,18 @@ mod tests {
         assert_eq!(resp["id"], 1);
         assert_eq!(resp["result"]["serverInfo"]["name"], "prod-code-mcp");
         assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
+        // Every agent reads these, skill or not: they carry the bug-report rule too (#302).
+        let instructions = resp["result"]["instructions"].as_str().unwrap_or_default();
+        for needed in [
+            "code_report_issue",
+            "private_ref",
+            "never put private details",
+        ] {
+            assert!(
+                instructions.contains(needed),
+                "{needed} missing: {instructions}"
+            );
+        }
     }
 
     #[tokio::test]
