@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- **A Rust symbol lookup finds a common name such as `run`** (#348). The workspace search walks
+  rust-analyzer's index in name order and stops at its limit, so hundreds of names that only
+  hold the letters (`a_dry_run_…`) filled it and `prod-code def --symbol editor_proxy::run`
+  offered ten dependency functions instead. Symbols with the very name now come first.
+
 ## v0.3.9 — 2026-09-25
 
 ### Added
