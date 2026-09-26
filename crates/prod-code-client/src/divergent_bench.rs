@@ -933,7 +933,9 @@ pub async fn initial_sync(
     prod_code_mcp::sync::clear_sync_cache(root);
     let identity = prod_code_mcp::sync::WorkspaceIdentity {
         name: workspace_name.to_string(),
-        base: None,
+        base: workspace_name
+            .split_once("--wt-")
+            .map(|(base, _)| base.to_string()),
     };
     let start = Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)
@@ -1250,6 +1252,25 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
                 .push(initial_sync(config.remote, &master.root, &master.workspace_name).await?);
         }
         WorkspaceMode::Isolated => {
+            // Production worktrees inherit the origin's files and warm dependencies.
+            // Load it before seeding the copies, outside the measured query wave (#408).
+            initial_syncs
+                .push(initial_sync(config.remote, &setup.origin, &setup.workspace_name).await?);
+            let origin = DivergentWorktree {
+                kind: WorktreeKind::Master,
+                root: setup.origin.clone(),
+                query_file: setup.origin.join(&setup.target.file_rel),
+                symbol: setup.target.symbol.clone(),
+                workspace_name: setup.workspace_name.clone(),
+            };
+            query_once(
+                config.remote,
+                &origin,
+                language,
+                "divergent-bench-seed".into(),
+            )
+            .await
+            .context("warm benchmark origin before seeding worktrees")?;
             for wt in &worktrees {
                 initial_syncs
                     .push(initial_sync(config.remote, &wt.root, &wt.workspace_name).await?);
