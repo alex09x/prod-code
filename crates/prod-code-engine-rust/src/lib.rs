@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub mod editor;
+mod load_budget;
 
 /// Per-repository analysis settings, read from `prod-code.toml` at the workspace root:
 ///
@@ -1804,11 +1805,17 @@ impl RustEngine {
     pub fn load(workspace_root: &Path) -> Result<Self> {
         let config = ProdCodeConfig::load(workspace_root);
         tracing::info!(?workspace_root, rust = ?config.rust, "analysis options");
-        let cargo_config = config.cargo_config();
+        let budget = load_budget::shared();
+        let waiting = std::time::Instant::now();
+        let _permit = budget.acquire();
+        let num_threads = budget.workers;
+        let mut cargo_config = config.cargo_config();
+        // Apply to this invocation only; changing the daemon's environment races other
+        // loads and user commands. The CLI argument also bounds a project's jobs setting.
+        cargo_config
+            .extra_args
+            .push(format!("--jobs={num_threads}"));
         let build_scripts = config.rust.build_scripts;
-        let num_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(8);
         let load_config = LoadCargoConfig {
             load_out_dirs_from_check: build_scripts,
             with_proc_macro_server: if build_scripts {
@@ -1824,7 +1831,8 @@ impl RustEngine {
         tracing::info!(
             ?workspace_root,
             threads = num_threads,
-            "Loading Cargo workspace into Salsa database using all available CPU cores"
+            queue_ms = waiting.elapsed().as_millis() as u64,
+            "Loading Cargo workspace with a bounded CPU budget"
         );
         let (db, vfs, _proc_macro) =
             load_workspace_at(workspace_root, &cargo_config, &load_config, &|_| {})
@@ -2338,6 +2346,34 @@ impl PathTranslator {
         let lib_path = src_dir.join("lib.rs");
         std::fs::write(&lib_path, code).unwrap();
         (temp, lib_path)
+    }
+
+    #[test]
+    fn a_cold_load_limits_cargo_jobs_even_when_the_project_requests_more() {
+        let (temp, _) = create_test_fixture();
+        std::fs::create_dir(temp.path().join(".cargo")).unwrap();
+        std::fs::write(
+            temp.path().join(".cargo/config.toml"),
+            "[build]\njobs = 64\n",
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join("build.rs"),
+            r#"
+fn main() {
+    let root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let jobs = std::env::var("NUM_JOBS").unwrap();
+    std::fs::write(std::path::Path::new(&root).join("jobs.txt"), jobs).unwrap();
+}
+"#,
+        )
+        .unwrap();
+        let _engine = RustEngine::load(temp.path()).unwrap();
+        let jobs: usize = std::fs::read_to_string(temp.path().join("jobs.txt"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(jobs, load_budget::shared().workers);
     }
 
     #[test]

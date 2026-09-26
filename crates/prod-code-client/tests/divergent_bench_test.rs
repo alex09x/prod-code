@@ -60,6 +60,17 @@ async fn handle_connection(stream: TcpStream) {
                 }
             }
             WireMessage::SyncProbeRequest(req) => {
+                if let Some((base, _)) = req
+                    .base_workspace_name
+                    .as_deref()
+                    .and_then(|name| name.split_once("--wt-"))
+                {
+                    assert_eq!(
+                        req.seed_from.as_deref(),
+                        Some(base),
+                        "isolated copies must seed from the origin sent first"
+                    );
+                }
                 // The mock holds nothing: every manifest entry is missing, nothing is seeded.
                 let resp = WireMessage::SyncProbeResponse(SyncProbeResponse {
                     server_workspace_root: req.client_workspace_root.clone(),
@@ -211,9 +222,19 @@ async fn run_end_to_end(mode: WorkspaceMode) {
     assert!(report.all_passed, "overall report should report PASS");
     let expected_syncs = match mode {
         WorkspaceMode::Shared => 1,
-        WorkspaceMode::Isolated => 4,
+        WorkspaceMode::Isolated => 5,
     };
     assert_eq!(report.initial_syncs.len(), expected_syncs);
+    if mode == WorkspaceMode::Isolated {
+        assert_eq!(
+            report.initial_syncs[0].workspace_name,
+            report.workspace_name
+        );
+        assert!(report.initial_syncs[1..].iter().all(|s| {
+            s.workspace_name
+                .starts_with(&format!("{}--wt-", report.workspace_name))
+        }));
+    }
     assert!(
         report
             .initial_syncs
