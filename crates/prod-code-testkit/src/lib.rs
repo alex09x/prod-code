@@ -36,6 +36,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+pub mod gopls;
+
 /// The key of an answer that is an error response rather than a result: its value is the
 /// JSON-RPC `error` object.
 pub const LSP_ERROR: &str = "prod-code/lsp-error";
@@ -224,7 +226,10 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                let response = match result.get(answers::FAILURE).or_else(|| result.get(LSP_ERROR)) {
+                let response = match result
+                    .get(answers::FAILURE)
+                    .or_else(|| result.get(LSP_ERROR))
+                {
                     Some(error) => {
                         serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error })
                     }

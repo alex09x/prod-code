@@ -1,5 +1,7 @@
 //! Go parameter reordering through gopls (#448), with the same arguments and report as
-//! [`crate::signature::change_with`].
+//! [`crate::signature::change_with`], which hands every `.go` file here; so do the MCP tool
+//! and the CLI through it. Nothing here calls back into `change_with`: only its helpers
+//! (references, unreported callers, the whole-file edit), so the dispatch cannot recurse.
 //!
 //! gopls changes a signature when a rename is asked at the `func` keyword of a declaration and
 //! the new name is the new signature: `func(b, a int) error`. Its v0.23.0 implementation accepts
@@ -73,9 +75,12 @@ struct Call {
 /// What evaluating an argument can do, as far as its text shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArgKind {
-    /// A constant or a function literal: nothing to evaluate that another argument can change.
+    /// A number, string or rune literal, or a function literal: nothing to evaluate that another
+    /// argument can change.
     Literal,
-    /// A read of a variable or a field (`x`, `a.b`, `&x`).
+    /// A read of a variable or a field (`x`, `a.b`, `&x`). `true`, `false` and `nil` are here
+    /// too: they are predeclared identifiers, not keywords, and a program may declare a variable
+    /// of that name (`true := 1`), so their spelling proves nothing.
     Place,
     /// Anything else: a call, a conversion, a receive, an index, an operator.
     Effectful,
@@ -295,7 +300,10 @@ pub async fn change_with(
             None => Some(call.args.clone()),
         };
         let same = got.as_ref().is_some_and(|g| {
-            g.len() == expected.len() && g.iter().zip(&expected).all(|(a, b)| canonical(a) == canonical(b))
+            g.len() == expected.len()
+                && g.iter()
+                    .zip(&expected)
+                    .all(|(a, b)| canonical(a) == canonical(b))
         });
         if !same {
             unmatched.push(format!(
@@ -449,7 +457,9 @@ fn refuse_modifiers(modifiers: &Modifiers) -> Result<()> {
         ));
     }
     if modifiers.asyncness.is_some() {
-        return Err(refusal("Go functions are neither async nor not".to_string()));
+        return Err(refusal(
+            "Go functions are neither async nor not".to_string(),
+        ));
     }
     Ok(())
 }
@@ -541,7 +551,10 @@ fn effect_hazards(
     let arity = declared.len();
     let mut out = Vec::new();
     for call in calls {
-        let spread = call.args.last().is_some_and(|a| a.trim_end().ends_with("..."));
+        let spread = call
+            .args
+            .last()
+            .is_some_and(|a| a.trim_end().ends_with("..."));
         let fits = if variadic {
             call.args.len() + 1 >= arity && (!spread || call.args.len() == arity)
         } else {
@@ -589,10 +602,8 @@ fn classify(arg: &str) -> ArgKind {
     }
 }
 
+/// A literal by its syntax alone. Not `true`, `false` or `nil`, which a scope can redeclare.
 fn is_literal(e: &str) -> bool {
-    if matches!(e, "true" | "false" | "nil") {
-        return true;
-    }
     let s = e.as_bytes();
     if matches!(s.first(), Some(b'"' | b'`' | b'\'')) {
         return skip_opaque(s, 0) == Some(s.len());
@@ -609,7 +620,9 @@ fn is_literal(e: &str) -> bool {
             b.is_ascii_alphanumeric()
                 || b == b'_'
                 || b == b'.'
-                || (matches!(b, b'+' | b'-') && i > 0 && matches!(nb[i - 1], b'e' | b'E' | b'p' | b'P'))
+                || (matches!(b, b'+' | b'-')
+                    && i > 0
+                    && matches!(nb[i - 1], b'e' | b'E' | b'p' | b'P'))
         });
     }
     is_func_literal(e)
@@ -645,14 +658,20 @@ fn is_ident(s: &str) -> bool {
 type TextEdit = (usize, usize, String);
 
 /// The text edits of gopls's answer, per file, as byte ranges of the file as it is. A file
-/// outside the checkout, a file operation or overlapping edits stop the change.
+/// outside the checkout, a file operation, overlapping edits, or an answer that is not
+/// well-formed (a file's edits that are not a list, a position that does not fit the protocol's
+/// unsigned 32-bit integers or the file) stop the change: a malformed part is never read as
+/// "no edits" or as another position.
 fn edits_by_file(
     canonical_root: &Path,
     edit: &serde_json::Value,
     originals: &mut BTreeMap<PathBuf, String>,
 ) -> Result<BTreeMap<PathBuf, Vec<TextEdit>>> {
     let mut raw: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
-    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
+    if let Some(changes) = edit.get("documentChanges").filter(|c| !c.is_null()) {
+        let changes = changes.as_array().with_context(|| {
+            format!("gopls's `documentChanges` is not a list: {changes}; nothing was written")
+        })?;
         for change in changes {
             anyhow::ensure!(
                 change.get("kind").is_none(),
@@ -667,12 +686,20 @@ fn edits_by_file(
                 .get("edits")
                 .and_then(|e| e.as_array())
                 .cloned()
-                .unwrap_or_default();
+                .with_context(|| {
+                    format!(
+                        "gopls's change to {uri} has no list of edits: {change}; nothing was \
+                         written"
+                    )
+                })?;
             raw.push((uri.to_string(), list));
         }
     } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
         for (uri, list) in changes {
-            raw.push((uri.clone(), list.as_array().cloned().unwrap_or_default()));
+            let list = list.as_array().cloned().with_context(|| {
+                format!("gopls's edits for {uri} are not a list: {list}; nothing was written")
+            })?;
+            raw.push((uri.clone(), list));
         }
     } else {
         anyhow::bail!("gopls's answer is not a workspace edit: {edit}; nothing was written");
@@ -695,13 +722,17 @@ fn edits_by_file(
         let text = &originals[&key];
         let entry = out.entry(key.clone()).or_default();
         for e in list {
+            // A position past `u32::MAX` is not a protocol position; truncating it would read
+            // as a small one and splice another place in the file.
             let at = |p: &str| {
-                let l = e.pointer(&format!("/range/{p}/line")).and_then(|v| v.as_u64());
-                let c = e
-                    .pointer(&format!("/range/{p}/character"))
-                    .and_then(|v| v.as_u64());
-                l.zip(c)
-                    .and_then(|(l, c)| offset_at(text, l as u32, c as u32))
+                let number = |field: &str| {
+                    e.pointer(&format!("/range/{p}/{field}"))
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| u32::try_from(v).ok())
+                };
+                number("line")
+                    .zip(number("character"))
+                    .and_then(|(l, c)| offset_at(text, l, c))
             };
             let new_text = e.get("newText").and_then(|t| t.as_str());
             let (Some(s), Some(end), Some(new_text)) = (at("start"), at("end"), new_text) else {
@@ -940,9 +971,7 @@ fn canonical(text: &str) -> String {
             continue;
         }
         let ch = text[i..].chars().next().unwrap_or(' ');
-        if space
-            && is_ident_byte(s[i])
-            && out.as_bytes().last().is_some_and(|b| is_ident_byte(*b))
+        if space && is_ident_byte(s[i]) && out.as_bytes().last().is_some_and(|b| is_ident_byte(*b))
         {
             out.push(' ');
         }
@@ -1202,7 +1231,9 @@ mod tests {
     #[test]
     fn grouped_parameters_are_flattened_with_their_types() {
         assert_eq!(
-            params("a, b int, label string, fn func(x, y int) (int, error), xs ...[]map[string]int"),
+            params(
+                "a, b int, label string, fn func(x, y int) (int, error), xs ...[]map[string]int"
+            ),
             vec![
                 ("a".into(), "int".into()),
                 ("b".into(), "int".into()),
@@ -1257,8 +1288,16 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "a", "g(b, c)", "\"s,)\"", "`r,`", "'('", "t.u", "&v", "-1.5e-3",
-                "func(a int) {}", "h()"
+                "a",
+                "g(b, c)",
+                "\"s,)\"",
+                "`r,`",
+                "'('",
+                "t.u",
+                "&v",
+                "-1.5e-3",
+                "func(a int) {}",
+                "h()"
             ]
         );
         let kinds: Vec<ArgKind> = args.iter().map(|a| classify(a)).collect();
@@ -1274,7 +1313,6 @@ mod tests {
         assert_eq!(classify("<-ch"), Effectful);
         assert_eq!(classify("a[i]"), Effectful);
         assert_eq!(classify("func() {}()"), Effectful);
-        assert_eq!(classify("nil"), Literal);
         assert!(call_parens("f := Sub\n", 5).is_none());
         assert!(call_parens("Pair[int, string](1, \"s\")", 0).is_some());
     }
@@ -1321,6 +1359,37 @@ mod tests {
         assert!(!effect_hazards("f", &v, &order, true, &[call(&["1", "ys..."])]).is_empty());
     }
 
+    /// `true`, `false` and `nil` are predeclared identifiers that a scope can redeclare
+    /// (`true := 1; f(true, bump(&true))`), so they are variables as far as their spelling goes,
+    /// and a reorder against a call is a hazard. Literals that cannot be redeclared still are.
+    #[test]
+    fn predeclared_names_are_not_trusted_as_literals() {
+        use ArgKind::*;
+        for name in ["true", "false", "nil", "(true)", "&nil"] {
+            assert_eq!(classify(name), Place, "{name}");
+        }
+        for literal in ["1", "0x1F", "1_000", "2.5e+3", "'x'", "\"true\"", "`nil`"] {
+            assert_eq!(classify(literal), Literal, "{literal}");
+        }
+        let d = declared(&["a", "b"]);
+        for name in ["true", "false", "nil"] {
+            let bump = format!("bump(&{name})");
+            let found = effect_hazards("f", &d, &[1, 0], false, &[call(&[name, &bump])]);
+            assert_eq!(found.len(), 1, "{name}: {found:?}");
+            assert!(
+                found[0].contains(&format!("`{name}` and `{bump}`")),
+                "{found:?}"
+            );
+        }
+        // Two reads, or a read beside a real literal, stay independent.
+        assert!(effect_hazards("f", &d, &[1, 0], false, &[call(&["true", "nil"])]).is_empty());
+        assert_eq!(
+            effect_hazards("f", &d, &[1, 0], false, &[call(&["false", "g()"])]).len(),
+            1
+        );
+        assert!(effect_hazards("f", &d, &[1, 0], false, &[call(&["1", "g()"])]).is_empty());
+    }
+
     #[test]
     fn permutations_keep_variadic_tails_in_place() {
         let args: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
@@ -1334,9 +1403,15 @@ mod tests {
     fn requests_that_are_not_permutations_are_refused_with_the_open_requirement() {
         let d = declared(&["a", "b"]);
         let keep = |n: &str| Param::Keep(n.to_string());
-        assert_eq!(permutation(&d, &[keep("b"), keep("a")]).unwrap(), vec![1, 0]);
+        assert_eq!(
+            permutation(&d, &[keep("b"), keep("a")]).unwrap(),
+            vec![1, 0]
+        );
         let dropped = permutation(&d, &[keep("b")]).unwrap_err().to_string();
-        assert!(dropped.contains("removing `a`") && dropped.contains(STILL_OPEN), "{dropped}");
+        assert!(
+            dropped.contains("removing `a`") && dropped.contains(STILL_OPEN),
+            "{dropped}"
+        );
         let added = permutation(
             &d,
             &[
@@ -1384,7 +1459,10 @@ mod tests {
         assert_eq!(offset_at(text, 0, 8), None, "inside a surrogate pair");
         assert_eq!(offset_at(text, 3, 0), None);
         let open = at + 1;
-        let edits = vec![(open + 1, open + 2, "yy".to_string()), (0, 1, "bb".to_string())];
+        let edits = vec![
+            (open + 1, open + 2, "yy".to_string()),
+            (0, 1, "bb".to_string()),
+        ];
         let mut sorted = edits.clone();
         sorted.sort_by_key(|(s, e, _)| (*s, *e));
         assert_eq!(map_offset(&sorted, open), Some(open + 1));
@@ -1408,9 +1486,13 @@ mod tests {
             } ] })
         };
         let mut originals = BTreeMap::new();
-        let err = edits_by_file(&root, &edit(format!("file://{}", other.display())), &mut originals)
-            .unwrap_err()
-            .to_string();
+        let err = edits_by_file(
+            &root,
+            &edit(format!("file://{}", other.display())),
+            &mut originals,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("outside the checkout"), "{err}");
         let inside = edits_by_file(
             &root,
@@ -1418,7 +1500,10 @@ mod tests {
             &mut originals,
         )
         .unwrap();
-        assert_eq!(inside[&root.join("a.go")], vec![(0, 7, "package".to_string())]);
+        assert_eq!(
+            inside[&root.join("a.go")],
+            vec![(0, 7, "package".to_string())]
+        );
         let moves = serde_json::json!({ "documentChanges": [ { "kind": "create", "uri": "file:///x.go" } ] });
         assert!(edits_by_file(&root, &moves, &mut originals).is_err());
         let overlapping = serde_json::json!({ "changes": {
@@ -1433,5 +1518,76 @@ mod tests {
                 .contains("overlapping")
         );
         assert!(edits_by_file(&root, &serde_json::json!([]), &mut originals).is_err());
+    }
+
+    /// A malformed answer is an error, never "no edits" for a file and never another position:
+    /// a missing or non-list `edits`, a non-list `documentChanges` or `changes` entry, and a
+    /// line or column past `u32::MAX`, which a cast would have wrapped to a small number.
+    #[test]
+    fn malformed_or_oversized_edits_are_refused_not_defaulted() {
+        let ws = tempfile::Builder::new().prefix("gosig").tempdir().unwrap();
+        let root = std::fs::canonicalize(ws.path()).unwrap();
+        let file = root.join("a.go");
+        std::fs::write(&file, "package a\n\nfunc F(x, y int) {}\n").unwrap();
+        let uri = format!("file://{}", file.display());
+        let mut originals = BTreeMap::new();
+        let refused = |edit: serde_json::Value, originals: &mut BTreeMap<PathBuf, String>| {
+            edits_by_file(&root, &edit, originals)
+                .map(|ok| format!("accepted as {ok:?}"))
+                .unwrap_err()
+                .to_string()
+        };
+        let shapes = [
+            serde_json::json!({ "documentChanges": [ { "textDocument": { "uri": uri } } ] }),
+            serde_json::json!({ "documentChanges": [ { "textDocument": { "uri": uri }, "edits": null } ] }),
+            serde_json::json!({ "documentChanges": [ { "textDocument": { "uri": uri }, "edits": { "range": {} } } ] }),
+            serde_json::json!({ "changes": { uri.clone(): "func F(y, x int) {}" } }),
+            serde_json::json!({ "changes": { uri.clone(): null } }),
+        ];
+        for shape in shapes {
+            let err = refused(shape.clone(), &mut originals);
+            assert!(
+                err.contains("list") && err.contains("nothing was written"),
+                "{shape}: {err}"
+            );
+        }
+        let not_a_list = refused(
+            serde_json::json!({ "documentChanges": { "textDocument": { "uri": uri } } }),
+            &mut originals,
+        );
+        assert!(
+            not_a_list.contains("`documentChanges` is not a list"),
+            "{not_a_list}"
+        );
+        // `u32::MAX + 1 + n` truncates to `n`: line 2, column 7 is `F`'s parameter list.
+        let wrap = 1u64 << 32;
+        let oversized = |line: u64, character: u64| {
+            serde_json::json!({ "changes": { uri.clone(): [ {
+                "range": { "start": { "line": line, "character": character },
+                           "end": { "line": 2, "character": 11 } },
+                "newText": "y, x"
+            } ] } })
+        };
+        assert!(edits_by_file(&root, &oversized(2, 7), &mut originals).is_ok());
+        for (line, character) in [(wrap + 2, 7), (2, wrap + 7), (u64::MAX, 7)] {
+            let err = refused(oversized(line, character), &mut originals);
+            assert!(
+                err.contains("out of range or malformed"),
+                "{line}:{character}: {err}"
+            );
+        }
+        let negative = serde_json::json!({ "changes": { uri.clone(): [ {
+            "range": { "start": { "line": -1, "character": 7 }, "end": { "line": 2, "character": 11 } },
+            "newText": "y, x"
+        } ] } });
+        assert!(refused(negative, &mut originals).contains("out of range or malformed"));
+        // An explicitly empty list is an answer, and stays one.
+        let empty = edits_by_file(
+            &root,
+            &serde_json::json!({ "documentChanges": [ { "textDocument": { "uri": uri }, "edits": [] } ] }),
+            &mut originals,
+        )
+        .unwrap();
+        assert_eq!(empty[&file], Vec::<TextEdit>::new());
     }
 }

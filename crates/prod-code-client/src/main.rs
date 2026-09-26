@@ -960,35 +960,52 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Change a Rust function's parameters with its call sites, refusing changes to argument
-    /// evaluation or destruction order (including possible Deref coercions).
+    /// Change what a function takes, with its call sites: Rust reorders, adds and removes
+    /// parameters; Go only reorders named ones.
+    ///
+    /// Rust: refuses changes to argument evaluation or destruction order (including possible
+    /// Deref coercions).
+    ///
+    /// Go (a `.go` file, through gopls v0.23.0): exactly one change, a permutation of the named
+    /// parameters of a declared function or method, with every declared parameter given once by
+    /// `--param name` in the new order. Grouped parameters (`a, b int`) move one by one, a method
+    /// keeps its receiver, results stay as declared, and a variadic parameter stays last. gopls's
+    /// edit is refused unless every call and the declaration are exactly that permutation, and it
+    /// is type-checked before it is written. Refused for Go without writing, whatever `--force`
+    /// says: adding or removing a parameter, `--returns`, `--visibility`, `--async`, `--verify`,
+    /// unnamed or `_` parameters, a generic function that has calls, a function used as a value,
+    /// a call gopls leaves in the old order (through an interface), and a reorder of arguments
+    /// whose evaluation order could matter (`true`, `false` and `nil` count as variables).
     ChangeSignature {
-        /// The function, by name (`validate_texts`, `Session::open_text`).
+        /// The function, by name (`validate_texts`, `Session::open_text`, `Price`, `Cart.Add`).
         symbol: String,
         /// One entry of the new parameter list, in order: `name` keeps it, `name: Type = expr`
-        /// adds it; a declared parameter that is not listed is removed. Repeat the flag.
+        /// adds it (Rust); a declared parameter that is not listed is removed (Rust). Go: every
+        /// declared parameter's name, reordered. Repeat the flag.
         #[arg(long = "param", required = true)]
         params: Vec<String>,
-        /// The return type it should have; `()` removes it.
+        /// Rust only: the return type it should have; `()` removes it.
         #[arg(long)]
         returns: Option<String>,
-        /// Its visibility: `pub`, `pub(crate)`, `pub(super)`, or `private`.
+        /// Rust only: its visibility, `pub`, `pub(crate)`, `pub(super)`, or `private`.
         #[arg(long)]
         visibility: Option<String>,
-        /// `true` makes it `async` and awaits every call; `false` takes both away.
+        /// Rust only: `true` makes it `async` and awaits every call; `false` takes both away.
         #[arg(long = "async")]
         asyncness: Option<bool>,
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
-        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        /// Rust only: `compile` also runs `cargo check` on the result in a shadow of the
+        /// workspace, and writes only if the compiler accepts it too. Seconds rather than
+        /// milliseconds. Refused for Go before anything is written.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
-        /// Override body-use/compiler errors; never incomplete references or effect-order checks.
+        /// Rust: override body-use/compiler errors; never incomplete references or effect-order
+        /// checks. Overrides no Go refusal.
         #[arg(long, default_value_t = false)]
         force: bool,
     },
