@@ -22,9 +22,10 @@ records what was run and what it showed.
    references the phase.
 2. **Branch from `main`**: `feat/<topic>`, `fix/<topic>`, `perf/<topic>`, `docs/<topic>`.
    Nothing is committed to `main` directly.
-3. **Run the checks on a build node before opening the PR**: `cargo fmt --all -- --check`,
-   `cargo clippy --workspace --all-targets -- -D warnings`, the tests of the crates you
-   touched, and the scenario from the issue against a running gateway.
+3. **Run the checks on a build node before opening the PR**: for Rust changes,
+   `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+   and the tests of the crates you touched. For scripts, run their own checks and tests.
+   Exercise the scenario from the issue, against a running gateway when it involves one.
 4. **Open the pull request** with the template. The PR must let a reader repeat what you
    did: the commands you ran, their output before and after, on which kind of node
    (described generically: "32-core Linux node", "developer workstation"). Before/after
@@ -34,6 +35,44 @@ records what was run and what it showed.
    branch. The squash commit message is the PR title plus its Problem/Change summary.
 6. **Ship the knowledge with the code**: update `ROADMAP.md` when a phase item lands,
    `CHANGELOG.md` for user-visible changes, and the CLI/MCP help texts.
+
+## What counts as finished
+
+Before implementation, state the observable acceptance criteria in the issue: the supported
+languages and input shapes, the expected output, and the command that decides whether it works.
+Keep the original requirement visible when only part of it ships. A roadmap parent stays `[~]`
+while any required child or language remains unimplemented or unverified; a Rust implementation
+does not complete the corresponding Go, JavaScript, Python, C++, or Swift work.
+
+Each completed item needs a source location, a regression or integration test, and recorded
+results for its acceptance scenario. Distinguish these states in the issue or PR:
+
+- **Implemented**: the code and its public entry points exist.
+- **Verified**: the stated checks passed on the exact proposed revision, with the results recorded.
+- **Released**: a published version contains the change.
+- **Deployed**: the running service or installed client was checked after installation.
+
+A merged PR proves neither release nor deployment. An unavailable engine, skipped test,
+timeout, empty report, or missing measurement is a verification gap, not a passing result.
+Record the blocker and leave the affected acceptance criterion open.
+
+For bug fixes, demonstrate that a focused regression fails on the base revision for the
+reported reason and passes with the fix. A compilation or environment failure before the
+assertion does not reproduce the bug. For language-server adapters and refactorings, include a
+real-server scenario in each newly supported language: a mock returning a requested answer
+cannot establish the server's coordinate encoding, reference completeness, or edit behavior.
+Check refusal cases as well as successful edits, and verify that a failed write preserves all
+original paths and contents.
+
+Record the exact command, revision, exit status, test counts (including ignored tests), and
+relevant output. Preserve the status of the checked command when filtering its output; the
+success of `tail`, `grep`, or a logging step does not mean the test passed. Compare performance
+on the same build profile, workload, cache state, and node class. Report cold and warm runs
+separately, including errors and timeouts rather than percentiles of successes alone.
+
+A released dependency bump remains a version/lockfile change followed by the consumer's
+existing checks. Do not add tests of the dependency's own algorithms or an extra audit unless
+the requested work includes that scope.
 
 ## Labels
 
@@ -90,8 +129,8 @@ journalctl --user -u prod-code-gateway -o short-precise --since "-10min"
 
 ## Coverage
 
-Every file is at or above 80% of regions, and the gate that says so runs on a build node like
-everything else:
+The required floor is 80% of regions per Rust source file. The gate runs on a build node
+like everything else; the result belongs to the revision it measured:
 
 ```sh
 prod-code exec --timeout-secs 1800 --no-pull -- python3 scripts/coverage.py --min 80
@@ -101,8 +140,15 @@ It names each file under the bar and how many regions it is short. There are no 
 if a new file cannot reach the bar, that is worth a sentence in the pull request rather than an
 entry in `EXEMPT`.
 
-Tests do not need an analyzer or a node: `crates/prod-code-testkit` stands up a gateway that
+Coverage is evidence only for files actually measured in the report. Missing or malformed
+measurements must fail the gate; an existing source file absent from the report is not a file
+with no executable code. A zero-region result must be explicitly present in the report. Run
+`python3 -m unittest discover -s scripts -p test_coverage.py` through remote execution when
+changing the coverage gate. Coverage percentages supplement the behavioral and real-server
+checks above; they do not replace them.
+
+Most orchestration tests do not need a live analyzer: `crates/prod-code-testkit` stands up a gateway that
 answers each LSP method from a closure, and `crates/prod-code-mcp/tests/orchestration.rs` is
 the worked example. The exception is `crates/prod-code-gateway/tests/live.rs`, which starts the
-real daemon and drives it against real language servers — it is the slowest thing here (about
-four minutes) and the only thing that proves a workspace loads.
+real daemon and drives it against real language servers. These tests complement the mock
+tests by proving that real workspaces load and the adapter speaks the server's protocol.
