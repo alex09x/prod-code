@@ -27,6 +27,8 @@ futures-util.workspace = true
 serde.workspace = true
 rapidfire = "0.2"
 serde_json.workspace = true
+# Shadow runs read sccache's TOML config (#426); the same version the Rust engine uses.
+toml = "0.9"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 libc = "0.2"
