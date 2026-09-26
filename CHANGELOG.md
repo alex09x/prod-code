@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.15 — 2026-09-25
+
 ### Changed
 - **Index questions wait until the language server has indexed** (#391). The engines declare
   `window.workDoneProgress` and follow the work each server begins and ends (`$/progress`); for
