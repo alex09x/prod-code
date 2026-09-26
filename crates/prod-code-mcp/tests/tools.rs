@@ -3562,11 +3562,16 @@ async fn code_dead_code_finds_an_unreferenced_function() {
 #[tokio::test]
 async fn code_impact_attributes_a_changed_line_to_its_function() {
     let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
-    write(&ws, "src/lib.rs", "pub fn a() -> i32 {\n    10\n}\n");
-    let remote = scripted_gateway(Arc::new(|method, _| match method {
+    let lib = write(&ws, "src/lib.rs", "pub fn a() -> i32 {\n    10\n}\n");
+    let uri = format!("file://{}", std::fs::canonicalize(&lib).unwrap().display());
+    // `a` has a call-hierarchy item and nothing calls it: "no test reaches it" is established,
+    // not assumed from an analyzer that had nothing to say (#434).
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
         "textDocument/documentSymbol" => {
             serde_json::json!([answers::document_symbol("a", 12, 1, 3, 8)])
         }
+        "textDocument/prepareCallHierarchy" => serde_json::json!([{ "name": "a", "uri": uri }]),
+        "callHierarchy/incomingCalls" => serde_json::json!([]),
         _ => serde_json::Value::Null,
     }))
     .await;

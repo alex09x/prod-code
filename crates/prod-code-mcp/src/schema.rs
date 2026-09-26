@@ -716,7 +716,9 @@ pub async fn rename(
         let after = if edits.is_empty() {
             text.clone()
         } else {
-            crate::refactor::apply_text_edits(text, &edits)
+            // `scan` counts columns in characters, not in the UTF-16 units an analyzer's
+            // edits use.
+            crate::refactor::apply_scalar_text_edits(text, &edits)
                 .with_context(|| format!("rewriting the text of {}", display(root, path)))?
         };
         let on_disk = originals

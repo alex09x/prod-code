@@ -40,7 +40,8 @@ use tokio_util::codec::Framed;
 /// JSON-RPC `error` object.
 pub const LSP_ERROR: &str = "prod-code/lsp-error";
 
-/// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out.
+/// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out. An
+/// answer made by [`answers::failure`] goes back as the JSON-RPC `error` instead.
 pub type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 
 /// A gateway that syncs nothing, loads nothing, and answers from a script.
@@ -223,11 +224,9 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                // An answer `{"prod-code/lsp-error": {code, message}}` is the server refusing the
-                // request, sent as a JSON-RPC error as a language server sends it.
-                let response = match result.get(LSP_ERROR) {
+                let response = match result.get(answers::FAILURE).or_else(|| result.get(LSP_ERROR)) {
                     Some(error) => {
-                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error.clone() })
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error })
                     }
                     None => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 };
@@ -320,6 +319,15 @@ impl Workspace {
 /// The answer shapes the engines really return, so a script does not have to spell them out.
 pub mod answers {
     use super::*;
+
+    /// The key of an answer that the gateway sends as a JSON-RPC error.
+    pub const FAILURE: &str = "prod-code/failure";
+
+    /// A request that fails: the gateway answers with a JSON-RPC error carrying `message`, as
+    /// an analyzer does when it crashes, times out or refuses the request.
+    pub fn failure(message: &str) -> serde_json::Value {
+        serde_json::json!({ FAILURE: { "code": -32603, "message": message } })
+    }
 
     /// A clean pull-diagnostics report.
     pub fn no_diagnostics() -> serde_json::Value {

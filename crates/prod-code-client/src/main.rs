@@ -960,7 +960,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Change what a function takes — reorder, add, remove parameters — with every call site.
+    /// Change a Rust function's parameters with its call sites, refusing changes to argument
+    /// evaluation or destruction order (including possible Deref coercions).
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
         symbol: String,
@@ -987,7 +988,7 @@ enum Commands {
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
-        /// Drop a parameter the body still uses, and write even when it does not compile.
+        /// Override body-use/compiler errors; never incomplete references or effect-order checks.
         #[arg(long, default_value_t = false)]
         force: bool,
     },
@@ -2693,32 +2694,30 @@ async fn run_impact(
             started.elapsed().as_secs_f64()
         );
     }
-    // CI runs the selection only when it can be trusted, the whole suite otherwise (#201).
+    // CI runs the selection only when it can be trusted, the whole suite otherwise (#201, #434).
     let (command, why) = if ci {
-        let full = || {
-            prod_code_mcp::verify::plan_command_with(
-                &prod_code_mcp::verify::detect_tools(&root),
-                &report.language,
-                prod_code_mcp::verify::VerifyKind::Test,
-                None,
-            )
-            .ok()
+        let decision = report.ci_decision();
+        let command = match decision.run {
+            // Running nothing in place of a whole suite would pass a change nobody tested.
+            prod_code_mcp::impact::CiRun::WholeSuite => Some(
+                prod_code_mcp::verify::plan_command_with(
+                    &prod_code_mcp::verify::detect_tools(&root),
+                    &report.language,
+                    prod_code_mcp::verify::VerifyKind::Test,
+                    None,
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "impact --ci has to run {}, but there is no test command for {}: {e:#}",
+                        decision.why,
+                        report.language
+                    )
+                })?,
+            ),
+            prod_code_mcp::impact::CiRun::Selected(selected) => Some(selected),
+            prod_code_mcp::impact::CiRun::Nothing => None,
         };
-        match (report.full_suite_reason(), report.test_command.clone()) {
-            (Some(reason), _) => (full(), format!("the whole suite, because {reason}")),
-            (None, Some(selected)) => (
-                Some(selected),
-                format!("{} test(s) that reach the change", report.tests.len()),
-            ),
-            (None, None) if report.changed.is_empty() => (None, "no function changed".to_string()),
-            (None, None) if report.tests.is_empty() => {
-                (None, "no test reaches the changed functions".to_string())
-            }
-            (None, None) => (
-                full(),
-                "the whole suite, because this language's tests cannot be selected".to_string(),
-            ),
-        }
+        (command, decision.why)
     } else {
         (report.test_command.clone(), String::new())
     };
