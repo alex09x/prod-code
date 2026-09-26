@@ -459,38 +459,195 @@ fn sccache_config_path(
     Ok(config_home.join("sccache").join("config"))
 }
 
-/// The config file's bytes as the hypothesis sees them (`None`: no file). Inside the workspace
-/// the hypothesis's own files shadow the copy on disk; the run script deletes after mounting,
-/// so deleting the file or a parent directory wins over proposed content.
+/// The config file's bytes as the hypothesis sees them (`None`: no file). The path is followed
+/// through `..` and symlinks in the hypothesis's own view, so an alias such as
+/// `ws/ci/../sccache.toml` or a symlink from outside into the workspace reads the proposed file
+/// the overlay command would read (#426).
 fn sccache_config_content(
     path: &Path,
     workspace: &Path,
     files: &[FileDelta],
 ) -> std::result::Result<Option<Vec<u8>>, String> {
-    if let Ok(rel) = path.strip_prefix(workspace) {
-        let mut proposed = None;
+    let unreadable = |why: &str| format!("cannot read the sccache config {}: {why}", path.display());
+    let view = HypothesisView::new(workspace, files);
+    let (physical, node) = view.resolve(path, true).map_err(|why| unreadable(&why))?;
+    match node {
+        Node::Missing => Ok(None),
+        Node::Proposed(bytes) => Ok(Some(bytes.to_vec())),
+        Node::Disk => match std::fs::read(&physical) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(unreadable(&e.kind().to_string())),
+        },
+        Node::Dir { .. } => Err(unreadable("is a directory")),
+        Node::Link(_) => Err(unreadable("is a symbolic link")),
+    }
+}
+
+/// Symlinks followed while resolving one path before giving up, as Linux does (`ELOOP`).
+const MAX_SYMLINKS: usize = 40;
+
+/// What a path is in the hypothesis's mount namespace.
+enum Node<'a> {
+    Missing,
+    /// `upper_only`: a staged directory that hides a non-directory below it, so the workspace
+    /// copy contributes nothing under it.
+    Dir {
+        upper_only: bool,
+    },
+    Link(PathBuf),
+    Proposed(&'a [u8]),
+    Disk,
+}
+
+enum Step {
+    Root,
+    Up,
+    Name(OsString),
+}
+
+fn steps(path: &Path) -> Vec<Step> {
+    path.components()
+        .filter_map(|c| match c {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => Some(Step::Root),
+            std::path::Component::CurDir => None,
+            std::path::Component::ParentDir => Some(Step::Up),
+            std::path::Component::Normal(name) => Some(Step::Name(name.to_os_string())),
+        })
+        .collect()
+}
+
+/// The filesystem as an overlay hypothesis sees it: at the workspace path, the proposed files
+/// (staged as regular files, so one replaces a symlink rather than writing through it) over the
+/// workspace copy, minus the deletions the run script applies after mounting; everywhere else,
+/// the gateway's own filesystem.
+struct HypothesisView<'a> {
+    /// Where the overlay is mounted: the workspace path with its symlinks resolved.
+    workspace: PathBuf,
+    proposed: Vec<(PathBuf, &'a [u8])>,
+    /// Physical paths `rm -rf` removes, in the view without symlinks.
+    deleted: Vec<PathBuf>,
+}
+
+impl<'a> HypothesisView<'a> {
+    fn new(workspace: &Path, files: &'a [FileDelta]) -> Self {
+        let workspace =
+            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+        let mut view = Self {
+            workspace,
+            proposed: Vec::new(),
+            deleted: Vec::new(),
+        };
+        let mut deletions = Vec::new();
         for file in files {
-            let Some(p) = safe_relative(&file.relative_path) else {
+            // An invalid path fails staging, so the command never runs.
+            let Some(rel) = safe_relative(&file.relative_path) else {
                 continue;
             };
             match &file.content {
-                None if rel.starts_with(&p) => return Ok(None),
-                Some(bytes) if rel == p => proposed = Some(bytes.clone()),
-                _ => {}
+                Some(bytes) => view.proposed.push((rel, bytes.as_slice())),
+                None => deletions.push(rel),
             }
         }
-        if proposed.is_some() {
-            return Ok(proposed);
+        // Each `rm -rf` follows the directories of its path in the mount as the earlier ones
+        // left it, and removes the last component itself, not what a symlink there points to.
+        for rel in deletions {
+            let path = view.workspace.join(rel);
+            match view.resolve(&path, false) {
+                Ok((_, Node::Missing)) | Err(_) => {}
+                Ok((target, _)) => view.deleted.push(target),
+            }
         }
+        view
     }
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!(
-            "cannot read the sccache config {}: {}",
-            path.display(),
-            e.kind()
-        )),
+
+    /// Follows an absolute path component by component as the kernel does inside the
+    /// namespace, through `..` and symlinks (the last one only with `follow_last`), and returns
+    /// the physical path reached and what is there.
+    fn resolve(
+        &self,
+        path: &Path,
+        follow_last: bool,
+    ) -> std::result::Result<(PathBuf, Node<'a>), String> {
+        if !path.is_absolute() {
+            return Err("it is not an absolute path".to_string());
+        }
+        let mut pending = steps(path);
+        pending.reverse();
+        let mut cur = PathBuf::from("/");
+        // One entry per component of `cur`: whether it is an upper-only directory.
+        let mut upper_only: Vec<bool> = Vec::new();
+        let mut links = 0;
+        while let Some(step) = pending.pop() {
+            let name = match step {
+                Step::Root => {
+                    cur = PathBuf::from("/");
+                    upper_only.clear();
+                    continue;
+                }
+                Step::Up => {
+                    if cur.pop() {
+                        upper_only.pop();
+                    }
+                    continue;
+                }
+                Step::Name(name) => name,
+            };
+            let next = cur.join(&name);
+            let last = pending.is_empty();
+            match self.node(&next, upper_only.last().copied().unwrap_or(false))? {
+                Node::Dir { upper_only: hidden } => {
+                    cur = next;
+                    upper_only.push(hidden);
+                }
+                Node::Link(target) if follow_last || !last => {
+                    links += 1;
+                    if links > MAX_SYMLINKS {
+                        return Err("too many levels of symbolic links".to_string());
+                    }
+                    pending.extend(steps(&target).into_iter().rev());
+                }
+                node if last => return Ok((next, node)),
+                Node::Missing => return Ok((next, Node::Missing)),
+                _ => return Err("a component of the path is not a directory".to_string()),
+            }
+        }
+        let hidden = upper_only.last().copied().unwrap_or(false);
+        Ok((cur, Node::Dir { upper_only: hidden }))
+    }
+
+    /// What `path`, whose parent is a directory of the view without symlinks, is. `upper_only`
+    /// says the parent is a staged directory that hides the workspace copy.
+    fn node(&self, path: &Path, upper_only: bool) -> std::result::Result<Node<'a>, String> {
+        if self.deleted.iter().any(|d| path.starts_with(d)) {
+            return Ok(Node::Missing);
+        }
+        if let Ok(rel) = path.strip_prefix(&self.workspace) {
+            // Staged in order, so the last copy of a path wins.
+            if let Some((_, bytes)) = self.proposed.iter().rev().find(|(p, _)| p == rel) {
+                return Ok(Node::Proposed(bytes));
+            }
+            if self.proposed.iter().any(|(p, _)| p.starts_with(rel)) {
+                // A staged directory merges with a directory below it and hides anything else.
+                let merged =
+                    !upper_only && std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir());
+                return Ok(Node::Dir {
+                    upper_only: !merged,
+                });
+            }
+            if upper_only {
+                return Ok(Node::Missing);
+            }
+        }
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.file_type().is_symlink() => std::fs::read_link(path)
+                .map(Node::Link)
+                .map_err(|e| e.kind().to_string()),
+            Ok(m) if m.is_dir() => Ok(Node::Dir { upper_only: false }),
+            Ok(_) => Ok(Node::Disk),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Node::Missing),
+            Err(e) => Err(e.kind().to_string()),
+        }
     }
 }
 
@@ -1565,6 +1722,207 @@ mod tests {
         refused(
             verdict(&vars, ws.path(), &[delta("ci/other.toml", Some(""))]),
             "dist.scheduler_url",
+        );
+    }
+
+    #[test]
+    fn aliases_of_a_proposed_sccache_config_resolve_as_in_the_hypothesis() {
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (w, o) = (ws.path(), outside.path());
+        let safe = "[cache.disk]\ndir = \"/tmp/c\"\n";
+        std::fs::create_dir_all(w.join("ci")).unwrap();
+        std::fs::write(w.join("sccache.toml"), safe).unwrap();
+        std::fs::write(w.join("ci/sccache.toml"), safe).unwrap();
+        let check = |conf: &Path, files: &[FileDelta]| {
+            verdict(
+                &[
+                    ("SCCACHE_CONF", conf.to_str().unwrap()),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                w,
+                files,
+            )
+        };
+        let scheduler = |rel: &str| vec![delta(rel, Some(SCHEDULER_TOML))];
+
+        // A parent component: the proposed file is the one the path resolves to.
+        let dotdot = w.join("ci/../sccache.toml");
+        check(&dotdot, &[]).unwrap();
+        refused(
+            check(&dotdot, &scheduler("sccache.toml")),
+            "dist.scheduler_url",
+        );
+        // Through a directory only the hypothesis creates; without it the path does not exist.
+        let staged = w.join("new/../sccache.toml");
+        check(&staged, &scheduler("sccache.toml")).unwrap();
+        refused(
+            check(
+                &staged,
+                &[
+                    delta("new/keep.txt", Some("")),
+                    delta("sccache.toml", Some(SCHEDULER_TOML)),
+                ],
+            ),
+            "dist.scheduler_url",
+        );
+
+        // Symlinks outside the workspace into it, to the file and to its directory.
+        symlink(w.join("ci/sccache.toml"), o.join("into.toml")).unwrap();
+        symlink(w.join("ci"), o.join("intodir")).unwrap();
+        for conf in [o.join("into.toml"), o.join("intodir/sccache.toml")] {
+            check(&conf, &[]).unwrap();
+            refused(
+                check(&conf, &scheduler("ci/sccache.toml")),
+                "dist.scheduler_url",
+            );
+            // Deleting the directory still wins over its proposed content.
+            check(
+                &conf,
+                &[
+                    delta("ci/sccache.toml", Some(SCHEDULER_TOML)),
+                    delta("ci", None),
+                ],
+            )
+            .unwrap();
+        }
+        // A symlink inside the workspace to another file in it.
+        symlink("ci/sccache.toml", w.join("link.toml")).unwrap();
+        refused(
+            check(&w.join("link.toml"), &scheduler("ci/sccache.toml")),
+            "dist.scheduler_url",
+        );
+        // The workspace named through a symlink is mounted where it resolves to.
+        symlink(w, o.join("ws")).unwrap();
+        refused(
+            verdict(
+                &[
+                    ("SCCACHE_CONF", w.join("sccache.toml").to_str().unwrap()),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                &o.join("ws"),
+                &scheduler("sccache.toml"),
+            ),
+            "dist.scheduler_url",
+        );
+
+        // Deleting through a symlinked directory removes the file it points into.
+        symlink("ci", w.join("lnk")).unwrap();
+        std::fs::write(w.join("ci/sccache.toml"), SCHEDULER_TOML).unwrap();
+        let in_ci = w.join("ci/sccache.toml");
+        refused(check(&in_ci, &[]), "dist.scheduler_url");
+        check(&in_ci, &[delta("lnk/sccache.toml", None)]).unwrap();
+        // A staged directory hides a symlink of the same name and what it points to.
+        let via_lnk = w.join("lnk/sccache.toml");
+        refused(check(&via_lnk, &[]), "dist.scheduler_url");
+        check(&via_lnk, &[delta("lnk/other.toml", Some(""))]).unwrap();
+
+        // A proposed file replaces a symlink as a regular file; its target no longer counts.
+        std::fs::write(o.join("out.toml"), SCHEDULER_TOML).unwrap();
+        symlink(o.join("out.toml"), w.join("out.toml")).unwrap();
+        let out = w.join("out.toml");
+        refused(check(&out, &[]), "dist.scheduler_url");
+        check(&out, &[delta("out.toml", Some(safe))]).unwrap();
+        refused(
+            check(&o.join("out.toml"), &[delta("out.toml", Some(safe))]),
+            "dist.scheduler_url",
+        );
+        std::fs::write(o.join("out.toml"), safe).unwrap();
+        check(&out, &[]).unwrap();
+        refused(check(&out, &scheduler("out.toml")), "dist.scheduler_url");
+        // Deleting the symlink removes the link, not its target.
+        std::fs::write(o.join("out.toml"), SCHEDULER_TOML).unwrap();
+        check(&out, &[delta("out.toml", None)]).unwrap();
+        refused(
+            check(&o.join("out.toml"), &[delta("out.toml", None)]),
+            "dist.scheduler_url",
+        );
+
+        // A symlink loop is refused rather than guessed.
+        symlink("loop", w.join("loop")).unwrap();
+        refused(
+            check(&w.join("loop"), &[]),
+            "too many levels of symbolic links",
+        );
+    }
+
+    /// The validator against the kernel: for each alias, the config the validator reads is
+    /// what `cat` reads inside the hypothesis. Needs overlay shadows; skipped elsewhere.
+    #[tokio::test]
+    async fn aliased_sccache_configs_read_what_the_overlay_command_reads() {
+        if let Some(reason) = overlay_unavailable() {
+            eprintln!("skipped: {reason}");
+            return;
+        }
+        use std::os::unix::fs::symlink;
+        let ws = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let (w, o) = (ws.path(), outside.path());
+        std::fs::create_dir_all(w.join("ci")).unwrap();
+        std::fs::write(w.join("sccache.toml"), "# disk root\n").unwrap();
+        std::fs::write(w.join("ci/sccache.toml"), "# disk ci\n").unwrap();
+        std::fs::write(o.join("outside.toml"), "# outside\n").unwrap();
+        symlink("ci", w.join("lnk")).unwrap();
+        symlink("ci/sccache.toml", w.join("link.toml")).unwrap();
+        symlink(o.join("outside.toml"), w.join("out.toml")).unwrap();
+        symlink(w.join("ci/sccache.toml"), o.join("into.toml")).unwrap();
+        symlink(w.join("ci"), o.join("intodir")).unwrap();
+        let root = || delta("sccache.toml", Some("# proposed root\n"));
+        let ci = || delta("ci/sccache.toml", Some("# proposed ci\n"));
+        let cases: Vec<(PathBuf, Vec<FileDelta>)> = vec![
+            (w.join("ci/../sccache.toml"), vec![root()]),
+            (w.join("new/../sccache.toml"), vec![root()]),
+            (
+                w.join("new/../sccache.toml"),
+                vec![delta("new/keep.txt", Some("")), root()],
+            ),
+            (o.join("into.toml"), vec![ci()]),
+            (o.join("intodir/sccache.toml"), vec![ci()]),
+            (
+                o.join("intodir/sccache.toml"),
+                vec![ci(), delta("ci", None)],
+            ),
+            (w.join("link.toml"), vec![ci()]),
+            (w.join("out.toml"), vec![]),
+            (
+                w.join("out.toml"),
+                vec![delta("out.toml", Some("# proposed out\n"))],
+            ),
+            (w.join("out.toml"), vec![delta("out.toml", None)]),
+            (o.join("outside.toml"), vec![delta("out.toml", None)]),
+            (w.join("lnk/sccache.toml"), vec![]),
+            (
+                w.join("lnk/sccache.toml"),
+                vec![delta("lnk/other.toml", Some(""))],
+            ),
+            (
+                w.join("ci/sccache.toml"),
+                vec![delta("lnk/sccache.toml", None)],
+            ),
+        ];
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let argv = ["sh", "-c", "cat \"$SCCACHE_CONF\" 2>/dev/null || echo missing"];
+        for (i, (conf, files)) in cases.into_iter().enumerate() {
+            let expected = match sccache_config_content(&conf, w, &files).unwrap() {
+                Some(bytes) => String::from_utf8(bytes).unwrap(),
+                None => "missing\n".to_string(),
+            };
+            let what = format!("case {i}: {}", conf.display());
+            let mut j = job(w, shadow.path(), &format!("alias-{i}"), files, &argv);
+            j.env = vec![("SCCACHE_CONF".to_string(), conf.to_str().unwrap().to_string())];
+            let r = run_overlay(j, rx.clone()).await;
+            assert_eq!(r.exit_code, Some(0), "{what}: {:?}", r.error);
+            assert_eq!(output(&r), expected, "{what}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(o.join("outside.toml")).unwrap(),
+            "# outside\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(w.join("ci/sccache.toml")).unwrap(),
+            "# disk ci\n"
         );
     }
 
