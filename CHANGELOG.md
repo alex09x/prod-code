@@ -10,6 +10,18 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
+  described as a reporting policy restriction instead of falsely claiming they do not
+  exist in the repository.
+- Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
+  earlier writes and resource operations when a later step fails (#425). Paths are checked
+  again after directory moves, and deleted files do not survive as hidden backup files.
+  Rust module refactors send text changes before file moves, matching LSP ordering.
+- Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
+  unattributed changes, failed hierarchy queries or a depth limit leave the selection
+  incomplete (#434). It includes directly changed tests, all call-hierarchy items and
+  Git-quoted filenames. Dead-code scans mark failed or malformed analyzer answers as
+  unverified; pruning keeps those symbols and files (#435).
 - MCP sessions serialize queries per workspace instead of holding one process-wide lock
   across network operations (#430). Opening a session has a three-minute deadline; pooled
   queries include queueing, sync and loading in their total budget (three minutes normally,
