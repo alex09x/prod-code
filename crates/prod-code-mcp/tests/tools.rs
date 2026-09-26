@@ -1557,6 +1557,244 @@ async fn the_nested_project_that_names_the_symbol_is_asked_before_the_others() {
     assert!(text.contains("apkg/Sources/Pkg/Thing.swift"), "{text}");
 }
 
+/// Five functions per Go file, `<Stem>1` to `<Stem>5`, as a server outlines them.
+fn five_functions(params: &serde_json::Value) -> serde_json::Value {
+    let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+    let stem = uri
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".go")
+        .to_ascii_uppercase();
+    serde_json::Value::Array(
+        (1..=5)
+            .map(|i| answers::document_symbol(&format!("Func{stem}{i}"), 12, i, i, 6))
+            .collect(),
+    )
+}
+
+/// A directory's outline stops at its byte budget and names the files it did not reach, with
+/// exact counts; a first file over the budget alone is cut after the symbols that fit (#368).
+#[tokio::test]
+async fn a_directory_outline_stops_at_its_budget_and_says_what_it_left_out() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("pkg/a.go", "package pkg\n"),
+        ("pkg/b.go", "package pkg\n"),
+        ("pkg/c.go", "package pkg\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, params| match method {
+        "textDocument/documentSymbol" => five_functions(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let root = ws.root();
+    let outline = |args: serde_json::Value| execute_tool(remote, &root, "code_outline", args);
+
+    let whole = text_of(
+        &outline(serde_json::json!({ "path": "pkg" }))
+            .await
+            .expect("outline"),
+    );
+    assert!(
+        whole.contains("3 file(s) outlined, 0 skipped, 15 symbol(s) listed"),
+        "{whole}"
+    );
+    assert!(!whole.contains("stops"), "{whole}");
+
+    let budgeted = text_of(
+        &outline(serde_json::json!({ "path": "pkg", "max_bytes": 400 }))
+            .await
+            .expect("outline"),
+    );
+    assert!(
+        budgeted.contains("FuncA5") && budgeted.contains("FuncB5"),
+        "{budgeted}"
+    );
+    assert!(!budgeted.contains("FuncC1"), "{budgeted}");
+    assert!(
+        budgeted.contains("2 file(s) outlined, 0 skipped, 10 symbol(s) listed"),
+        "{budgeted}"
+    );
+    assert!(
+        budgeted.contains(
+            "The listing stops at the budget of 400 bytes; 1 more file(s) not outlined: c.go."
+        ),
+        "{budgeted}"
+    );
+
+    let first_only = text_of(
+        &outline(serde_json::json!({ "path": "pkg", "max_items": 3 }))
+            .await
+            .expect("outline"),
+    );
+    assert!(
+        first_only.contains("FuncA3") && !first_only.contains("FuncA4"),
+        "{first_only}"
+    );
+    assert!(
+        first_only.contains("2 more symbol(s) of this file not listed"),
+        "{first_only}"
+    );
+    assert!(
+        first_only.contains(
+            "The listing stops at the limit of 3 symbols; 2 more file(s) not outlined: b.go, c.go."
+        ),
+        "{first_only}"
+    );
+}
+
+/// `kinds` and `exported_only` narrow an outline; Go exports capitalised names, and a method only
+/// when its receiver's type is exported too (#368).
+#[tokio::test]
+async fn an_outline_lists_the_kinds_and_exports_asked_for() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        (
+            "pkg/x.go",
+            "package pkg\nfunc Exported() {}\nfunc hidden() {}\ntype Thing struct{}\nfunc (t *Thing) Run() {}\nfunc (t *thing) Run() {}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("Exported", 12, 2, 2, 6),
+            answers::document_symbol("hidden", 12, 3, 3, 6),
+            answers::document_symbol("Thing", 23, 4, 4, 6),
+            answers::document_symbol("(*Thing).Run", 6, 5, 5, 18),
+            answers::document_symbol("(*thing).Run", 6, 6, 6, 18),
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let root = ws.root();
+    let outline = |args: serde_json::Value| execute_tool(remote, &root, "code_outline", args);
+
+    let exported = text_of(
+        &outline(serde_json::json!({ "path": "pkg/x.go", "exported_only": true }))
+            .await
+            .expect("outline"),
+    );
+    for name in ["Exported", "[Struct] Thing", "(*Thing).Run"] {
+        assert!(exported.contains(name), "{name}: {exported}");
+    }
+    assert!(
+        !exported.contains("hidden") && !exported.contains("(*thing).Run"),
+        "{exported}"
+    );
+
+    let functions = text_of(
+        &outline(serde_json::json!({ "path": "pkg/x.go", "kinds": ["Function"] }))
+            .await
+            .expect("outline"),
+    );
+    assert!(
+        functions.contains("Exported") && functions.contains("hidden"),
+        "{functions}"
+    );
+    assert!(!functions.contains("Thing"), "{functions}");
+}
+
+/// A package's exports leave its test files out: Go's `TestX` is capitalised, but no part of the
+/// package's API (#368).
+#[tokio::test]
+async fn a_directory_outline_of_exports_leaves_the_tests_out() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("pkg/x.go", "package pkg\n"),
+        ("pkg/x_test.go", "package pkg\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, params| match method {
+        "textDocument/documentSymbol" => five_functions(params),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_outline",
+            serde_json::json!({ "path": "pkg", "exported_only": true }),
+        )
+        .await
+        .expect("outline"),
+    );
+    assert!(
+        text.contains("pkg/x.go") && !text.contains("x_test.go"),
+        "{text}"
+    );
+    assert!(
+        text.contains("1 file(s) outlined, 0 skipped, 5 symbol(s) listed, 1 test file(s) left out"),
+        "{text}"
+    );
+}
+
+/// Rust exports what its declaration marks `pub`, read from the file's text (#368).
+#[tokio::test]
+async fn a_rust_outline_of_exports_lists_the_pub_items() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn open() {}\nfn closed() {}\npub(crate) fn inner() {}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("open", 12, 1, 1, 8),
+            answers::document_symbol("closed", 12, 2, 2, 4),
+            answers::document_symbol("inner", 12, 3, 3, 15),
+        ]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_outline",
+            serde_json::json!({ "path": "src/lib.rs", "exported_only": true }),
+        )
+        .await
+        .expect("outline"),
+    );
+    assert!(text.contains("open") && text.contains("inner"), "{text}");
+    assert!(!text.contains("closed"), "{text}");
+}
+
+/// A directory with no source files of its own names its subdirectories that have some (#368):
+/// it said "0 file(s) outlined" for a Go module's `internal/`.
+#[tokio::test]
+async fn a_directory_of_packages_names_its_subdirectories() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("internal/alpha/a.go", "package alpha\n"),
+        ("internal/alpha/b.go", "package alpha\n"),
+        ("internal/beta/c.go", "package beta\n"),
+        ("internal/docs/README.md", "# docs\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_outline",
+            serde_json::json!({ "path": "internal" }),
+        )
+        .await
+        .expect("outline"),
+    );
+    assert!(
+        text.contains("internal has no source files of its own; outline one of its 2 subdirectories with sources:"),
+        "{text}"
+    );
+    assert!(text.contains("internal/alpha (2 source file(s))"), "{text}");
+    assert!(text.contains("internal/beta (1 source file(s))"), "{text}");
+    assert!(!text.contains("docs"), "{text}");
+}
+
 /// A Markdown file's outline is its headings, read without a server (#362): front matter and
 /// fenced code are not headings.
 #[tokio::test]

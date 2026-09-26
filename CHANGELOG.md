@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+- **A package's outline that fits** (#368). `code_outline` / `prod-code outline` take `kinds`
+  (`--kinds function,struct`), `exported_only` (`--exported`: Go's capitalised names, a method
+  only on an exported type; Rust's `pub`; Swift's `public`/`open`; TypeScript's `export`; Python
+  without a leading underscore; test files left out), `max_bytes` and `max_items`. A directory's
+  outline has a 40,000-byte budget by default (`0` for none), counts the symbols it lists, and when
+  it stops names the files it did not reach. A directory with no source files of its own lists its
+  subdirectories that have some. One Go package went from 79 KB and 1,667 symbols to 40 KB by
+  default, or 6.9 KB and 141 symbols for its exported functions, types and methods.
+
 ## v0.3.12 — 2026-09-25
 
 ### Fixed
