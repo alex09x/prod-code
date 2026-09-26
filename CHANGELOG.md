@@ -15,6 +15,13 @@
   with `--compile`, 3 × E0603 in 10.4 s. The `compile` description now names that case.
 
 ### Fixed
+- **A name declared in a file the analyzer does not load** (#379) was "no symbol named ... in
+  the workspace index", the answer for a name that exists nowhere. When the index has no symbol
+  by that name, the checkout's source files are searched for its declaration, and the answer
+  names it and why the analyzer has nothing there: no hover at it (no target includes the
+  file; for Rust, no `mod` chain from a crate root) or an item the index does not list (inside
+  a function body). In a Rust checkout whose `src/utils2/` only disabled binaries declare:
+  `` `AnomalyDetector` is declared at src/utils2/data_quality.rs:70:12 ``.
 - **References of a dependency's item asked at its declaration** (#373). `refs --symbol` lands on
   the declaration inside the dependency, where the server finds nothing to search for; an empty
   answer there is now asked again from a use in the checkout whose definition is that declaration,
