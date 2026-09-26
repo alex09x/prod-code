@@ -2784,3 +2784,147 @@ async fn special_characters_in_paths_survive_navigation_and_edits() {
     files.sort();
     assert_eq!(files, vec!["src/lib.rs".to_string(), odd_rel.to_string()]);
 }
+
+/// #442: the planner consumes actual analyzer hovers/references/SSR, and a permitted
+/// scalar reorder preserves the compiled program's output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn signature_effect_checks_use_real_analyzer_types() {
+    const PROGRAM: &str = r#"use std::ops::Deref;
+use std::sync::Mutex;
+
+static LOG: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+fn log(s: &'static str) {
+    LOG.lock().unwrap().push(s);
+}
+
+pub struct Inner {
+    pub n: u32,
+}
+
+pub struct Wrap(pub &'static str, pub Inner);
+
+impl Deref for Wrap {
+    type Target = Inner;
+    fn deref(&self) -> &Inner {
+        log(self.0);
+        &self.1
+    }
+}
+
+#[allow(dead_code)]
+pub enum Option<T> {
+    None,
+    Some(T),
+}
+
+impl<T> Drop for Option<T> {
+    fn drop(&mut self) {
+        log(match self {
+            Option::Some(_) => "some",
+            Option::None => "none",
+        });
+    }
+}
+
+pub fn fields(first: u32, second: u32) -> u32 {
+    first * 10 + second
+}
+
+pub fn refs(first: &Inner, second: &Inner) -> u32 {
+    first.n * 10 + second.n
+}
+
+pub fn shadowed(first: Option<u32>, second: Option<u32>) -> u32 {
+    let _ = (&first, &second);
+    7
+}
+
+pub fn scalars(first: u32, second: u32) -> u32 {
+    first * 10 + second
+}
+
+fn main() {
+    let (a, b) = (Wrap("a", Inner { n: 1 }), Wrap("b", Inner { n: 2 }));
+    let (p, q): (u32, u32) = (3, 4);
+    let (s, t) = (Option::Some(5), Option::None);
+    let v = [
+        fields(a.n, b.n),
+        refs(&a, &b),
+        shadowed(s, t),
+        scalars(p /* p, /* then */ q, */, q),
+    ];
+    println!("{v:?} {:?}", LOG.lock().unwrap());
+}
+"#;
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    checkout.write("src/lib.rs", "");
+    checkout.write("src/main.rs", PROGRAM);
+    checkout.commit();
+    let root = checkout.root();
+    let file = checkout.path("src/main.rs");
+    let params = ["second", "first"].map(|p| prod_code_mcp::signature::parse_param(p).unwrap());
+    let position = |name: &str| {
+        let at = PROGRAM.find(&format!("fn {name}(")).unwrap() + 3;
+        let line = PROGRAM[..at].matches('\n').count() as u32 + 1;
+        let col = (at - PROGRAM[..at].rfind('\n').map_or(0, |p| p + 1)) as u32 + 1;
+        (line, col)
+    };
+    for (name, expected) in [
+        ("fields", "Deref"),
+        ("refs", "Deref"),
+        ("shadowed", "drops"),
+    ] {
+        let (line, col) = position(name);
+        let err = prod_code_mcp::signature::change(
+            gateway.addr,
+            &root,
+            &file,
+            line,
+            col,
+            &params,
+            true,
+            true,
+        )
+        .await
+        .expect_err("observable effects must be refused even with force");
+        assert!(format!("{err:#}").contains(expected), "{name}: {err:#}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), PROGRAM);
+    }
+    let output = || {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", "-A", "warnings"])
+            .arg(&file)
+            .arg("-o")
+            .arg(&bin)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&bin).output().unwrap();
+        assert!(ran.status.success());
+        ran.stdout
+    };
+    let before = output();
+    let (line, col) = position("scalars");
+    let changed = prod_code_mcp::signature::change(
+        gateway.addr,
+        &root,
+        &file,
+        line,
+        col,
+        &params,
+        true,
+        false,
+    )
+    .await
+    .expect("real analyzer confirms primitive scalar types");
+    assert!(changed.applied);
+    assert_eq!(before, output());
+}

@@ -10,6 +10,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust signature changes refuse reordered or removed argument effects and changes to
+  parameter destruction order, including user `Deref` calls and types that shadow built-ins
+  (#442). Missing, malformed or unreadable references stop planning, even with `force`.
+  Confirmed scalar arguments can still be reordered; unproven reference coercions are refused.
 - Path translation rewrites URI and path fields without changing source, edit text or
   documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
   compare complete path components, and decode a URI exactly once.
