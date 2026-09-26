@@ -2008,6 +2008,83 @@ async fn a_file_no_target_compiles_does_not_spend_the_search_for_a_use() {
     assert!(text.contains("Found 2 reference(s)"), "{text}");
 }
 
+/// A name the index lacks but a source file declares is answered with that declaration and why
+/// the analyzer has nothing there: no hover at it means a file no target loads; a hover means an
+/// item the index does not list. A name declared nowhere keeps the plain answer (#379).
+#[tokio::test]
+async fn a_name_declared_in_a_file_the_analyzer_does_not_load_says_where() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {\n    fn inner_helper() {}\n}\n"),
+        (
+            "src/orphan.rs",
+            "use crate::a;\n\npub struct Lost {\n    pub at: u64,\n}\n",
+        ),
+    ]);
+    let remote = scripted_gateway(Arc::new(|method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "workspace/symbol" => serde_json::json!([]),
+            "textDocument/hover" if uri.ends_with("src/lib.rs") => {
+                answers::hover("fn inner_helper()")
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let root = ws.root();
+    let lost = execute_tool(
+        remote,
+        &root,
+        "code_definition",
+        serde_json::json!({ "symbol": "Lost" }),
+    )
+    .await
+    .expect_err("no symbol in the index");
+    let text = format!("{lost:#}");
+    assert!(
+        text.starts_with("no symbol named `Lost` in the workspace index"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "`Lost` is declared at src/orphan.rs:3:12 (`pub struct Lost {`), in a file the analyzer does not load"
+        ),
+        "{text}"
+    );
+
+    let listed = text_of(
+        &execute_tool(
+            remote,
+            &root,
+            "code_symbols",
+            serde_json::json!({ "query": "inner_helper" }),
+        )
+        .await
+        .expect("the search"),
+    );
+    assert!(
+        listed.contains("No symbols match `inner_helper`.\n`inner_helper` is declared at src/lib.rs:2:8 (`fn inner_helper() {}`), which the analyzer sees but its index does not list"),
+        "{listed}"
+    );
+
+    let nowhere = execute_tool(
+        remote,
+        &root,
+        "code_definition",
+        serde_json::json!({ "symbol": "Nowhere" }),
+    )
+    .await
+    .expect_err("declared nowhere");
+    assert!(
+        !format!("{nowhere:#}").contains("declared at"),
+        "{nowhere:#}"
+    );
+}
+
 /// `also_in` searches other checkouts too: each resolves the name to its own declaration, every
 /// answer is under its checkout's directory, and one that fails does not hide the others (#375).
 #[tokio::test]

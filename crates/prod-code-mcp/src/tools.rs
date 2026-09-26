@@ -5420,8 +5420,9 @@ async fn handle_symbols(
     )
     .await?;
     if hits.is_empty() {
+        let unindexed = unindexed_declarations(remote, workspace_root, query).await;
         return Ok(McpToolCallResult::text(format!(
-            "No symbols match `{query}`."
+            "No symbols match `{query}`.{unindexed}"
         )));
     }
     Ok(McpToolCallResult::text(render_symbol_hits(
@@ -5781,7 +5782,8 @@ pub async fn resolve_symbol(
         }
     }
     if exact.is_empty() {
-        anyhow::bail!(no_symbol_message(symbol, name, &others));
+        let unindexed = unindexed_declarations(remote, root, name).await;
+        anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
     }
     let remote_texts = remote_sources(remote, &exact).await;
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
@@ -5977,6 +5979,117 @@ fn bare_symbol_name(name: &str) -> &str {
         Some(i) if i < name.len() => &name[i..],
         _ => name,
     }
+}
+
+/// The most declarations of a name the index lacks that an answer names.
+const MAX_UNINDEXED_DECLARATIONS: usize = 3;
+
+/// Where the checkout's own source files declare `name` when the index has no symbol by that
+/// name, and why the analyzer has nothing there: a file no target includes (it has no hover at
+/// the declaration), or an item the index does not list (#379). Empty when no file declares it.
+async fn unindexed_declarations(remote: SocketAddr, root: &Path, name: &str) -> String {
+    if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut listed = 0usize;
+    let files = source_files(root)
+        .filter(|path| crate::sync::engine_for_file(path).is_some())
+        .take(MAX_SCANNED_FILES);
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !names_word(&text, name) {
+            continue;
+        }
+        for (index, line) in text.lines().enumerate() {
+            let Some(col) = declared_at(line, name) else {
+                continue;
+            };
+            let Ok(uri) = Url::from_file_path(&path) else {
+                continue;
+            };
+            let hover = execute_lsp_query(
+                remote,
+                root,
+                &path,
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": uri.to_string() },
+                    "position": { "line": index, "character": col }
+                }),
+            )
+            .await
+            .unwrap_or(serde_json::Value::Null);
+            let why = if hover.is_null() {
+                "in a file the analyzer does not load: no target includes it (for Rust, no `mod` \
+                 chain from a crate root reaches it)"
+            } else {
+                "which the analyzer sees but its index does not list (an item inside a function \
+                 body is not indexed): ask by its position"
+            };
+            out.push_str(&format!(
+                "\n`{name}` is declared at {}:{}:{} (`{}`), {why}.",
+                path.strip_prefix(root).unwrap_or(&path).display(),
+                index + 1,
+                col + 1,
+                line.trim()
+            ));
+            listed += 1;
+            if listed == MAX_UNINDEXED_DECLARATIONS {
+                return out;
+            }
+        }
+    }
+    out
+}
+
+/// The 0-based column where `line` declares `name`: the name right after a declaring keyword
+/// (`fn`, `struct`, `func`, `class`, `def`, ...) or after a Go method's receiver
+/// (`func (s *T) name`). `None` for a line that only uses it.
+fn declared_at(line: &str, name: &str) -> Option<usize> {
+    const KEYWORDS: &[&str] = &[
+        "fn",
+        "struct",
+        "enum",
+        "trait",
+        "type",
+        "union",
+        "mod",
+        "const",
+        "static",
+        "macro_rules!",
+        "func",
+        "function",
+        "class",
+        "interface",
+        "def",
+        "protocol",
+        "actor",
+    ];
+    let chars: Vec<char> = line.chars().collect();
+    let wanted: Vec<char> = name.chars().collect();
+    let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    (0..chars.len()).find(|&col| {
+        if !chars[col..].starts_with(&wanted)
+            || (col > 0 && is_name(chars.get(col - 1)))
+            || is_name(chars.get(col + wanted.len()))
+        {
+            return false;
+        }
+        let before: String = chars[..col].iter().collect();
+        let trimmed = before.trim_end();
+        if trimmed.len() == before.len() {
+            return false;
+        }
+        let last = trimmed
+            .rsplit(|c: char| c.is_whitespace() || c == '(')
+            .next()
+            .unwrap_or("");
+        KEYWORDS.contains(&last)
+            || (trimmed.ends_with(')') && trimmed.trim_start().starts_with("func"))
+    })
 }
 
 /// The error for a name nothing in the index is called. The first sentence stays the same
@@ -6650,6 +6763,24 @@ fn identifier_at(path: &Path, remote: &RemoteSources, line: u32, col: u32, name:
 
 #[cfg(test)]
 mod tests {
+    /// A declaration is the name right after a declaring keyword or a Go receiver; a use, a
+    /// path or a local binding is not (#379).
+    #[test]
+    fn a_declaration_is_the_name_after_a_declaring_keyword() {
+        let at = super::declared_at;
+        assert_eq!(at("pub struct Lost {", "Lost"), Some(11));
+        assert_eq!(at("pub(crate) fn go(x: u8) {}", "go"), Some(14));
+        assert_eq!(at("func (s *Server) Serve() error {", "Serve"), Some(17));
+        assert_eq!(at("func Serve() {", "Serve"), Some(5));
+        assert_eq!(at("    async def fetch(self):", "fetch"), Some(14));
+        assert_eq!(at("export function render() {", "render"), Some(16));
+        assert_eq!(at("macro_rules! twice {", "twice"), Some(13));
+        assert_eq!(at("use crate::Lost;", "Lost"), None);
+        assert_eq!(at("    let lost = Lost::new();", "Lost"), None);
+        assert_eq!(at("impl Display for Lost {", "Lost"), None);
+        assert_eq!(at("pub struct Lostness;", "Lost"), None);
+    }
+
     #[test]
     fn an_item_ends_where_its_brackets_or_its_indentation_do() {
         let rust = [
