@@ -6,6 +6,11 @@
 //! the planner against a scripted gateway, and the original and the rewritten program are both
 //! compiled with `rustc` and run where the test runs: every `Guard` prints when it is dropped, and
 //! the two programs have to print the same.
+//!
+//! A primitive's name does not prove a type has no destructor: a program may declare or import
+//! its own `struct bool` with `Drop`. The planner asks the analyzer, whose hover on a parameter
+//! says whether its type has drop glue. The scripted hovers are the ones rust-analyzer gave on a
+//! build node (`prod-code hover` on each parameter), and the last test asks a real one.
 
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::collections::HashMap;
@@ -81,6 +86,10 @@ pub(crate) // async once
     println!(\"plain {} {}\", a.0, b.0);
 }
 
+async fn counted(a: Guard, n: u32) {
+    println!(\"counted {} {}\", a.0, n);
+}
+
 fn main() {
     take(Guard(\"A\"), Guard(\"B\"));
     around(Guard(\"X\"), Guard(\"A\"), Guard(\"B\"), Guard(\"Y\"));
@@ -97,12 +106,14 @@ fn main() {
     drop(later(Guard(\"A\"), Guard(\"B\")));
     drop(noted(Guard(\"A\"), Guard(\"B\")));
     drop(spread(Guard(\"A\"), Guard(\"B\")));
+    drop(counted(Guard(\"A\"), 3));
     plain(Guard(\"A\"), Guard(\"B\"));
 }
 ";
 
 /// What `DROPS` prints: `B` before `A` at the end of every call, and the futures of `later`,
-/// `noted` and `spread`, dropped before they are polled, dropping `A` before `B`.
+/// `noted` and `spread`, dropped before they are polled, dropping `A` before `B`; the future of
+/// `counted` drops its only value.
 const PRINTED: &str = "take A B
 drop B
 drop A
@@ -145,6 +156,7 @@ drop A
 drop B
 drop A
 drop B
+drop A
 plain A B
 drop B
 drop A
@@ -178,11 +190,16 @@ fn words(text: &str, from: usize, to: usize, word: &str) -> Vec<usize> {
     out
 }
 
-/// The references rust-analyzer gives in a source written like `DROPS`: a function is called
-/// from `main`, and a parameter is used in its function's body.
-fn references(text: &str) -> HashMap<(u32, u32), Vec<(u32, u32)>> {
+/// 1-based positions, and what the analyzer finds at each.
+type At<T> = HashMap<(u32, u32), T>;
+
+/// What rust-analyzer finds in a source written like `DROPS`: the references (a function is
+/// called from `main`, and a parameter is used in its function's body), and the declaration of
+/// each parameter, which a hover on its name shows.
+fn tables(text: &str) -> (At<Vec<(u32, u32)>>, At<String>) {
     let main = text.find("fn main()").expect("a main");
     let mut table = HashMap::new();
+    let mut declared = HashMap::new();
     let mut at = 0;
     while let Some(n) = text[at..main].find("fn ") {
         let decl = at + n + 3;
@@ -207,20 +224,71 @@ fn references(text: &str) -> HashMap<(u32, u32), Vec<(u32, u32)>> {
                 .map(|u| spot(text, u))
                 .collect();
             table.insert(spot(text, param), uses);
+            declared.insert(spot(text, param), raw.to_string());
             param += raw.len() + 2;
         }
     }
-    table
+    (table, declared)
 }
 
-async fn gateway(file: &Path, text: &str) -> SocketAddr {
-    let (file, table) = (file.to_path_buf(), references(text));
+/// How the scripted analyzer answers a hover on the parameter declared as `raw` (`n: u32`) in
+/// the program `text`.
+type Hover = fn(&str, &str) -> serde_json::Value;
+
+/// The hover rust-analyzer gives a parameter: its declaration, then whether its type has drop
+/// glue. A name means the program's own type where the program declares or imports one — a
+/// `struct bool` with `Drop` gives `needs Drop` — and the builtin, with `no Drop`, where not.
+fn analyzer(raw: &str, text: &str) -> serde_json::Value {
+    let ty = raw.split_once(':').map_or("", |(_, t)| t);
+    let declared = ty
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|word| !word.is_empty() && text.contains(&format!("struct {word}(")));
+    let glue = if declared { "needs Drop" } else { "no Drop" };
+    answers::hover(&format!("```rust\n{raw}\n```\n\n---\n\n{glue}"))
+}
+
+/// No hover at all: a workspace the analyzer has not loaded.
+fn silent(_: &str, _: &str) -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+fn crashed(_: &str, _: &str) -> serde_json::Value {
+    answers::failure("rust-analyzer panicked")
+}
+
+/// What rust-analyzer says of a type it cannot resolve: `{unknown}`, without drop glue.
+fn unresolved(raw: &str, _: &str) -> serde_json::Value {
+    let name = raw.split(':').next().unwrap_or(raw);
+    answers::hover(&format!(
+        "```rust\n{name}: {{unknown}}\n```\n\n---\n\nno Drop"
+    ))
+}
+
+/// A type parameter that has the primitive's name (`fn gap<u32>(…)`).
+fn generic(raw: &str, _: &str) -> serde_json::Value {
+    answers::hover(&format!(
+        "```rust\n{raw}\n```\n\n---\n\ntype param may need Drop"
+    ))
+}
+
+/// A hover that does not say, as from an analyzer configured without drop glue.
+fn wordless(raw: &str, _: &str) -> serde_json::Value {
+    answers::hover(&format!("```rust\n{raw}\n```"))
+}
+
+async fn gateway(file: &Path, text: &str, hover: Hover) -> SocketAddr {
+    let (file, text) = (file.to_path_buf(), text.to_string());
+    let (table, declared) = tables(&text);
     ScriptedGateway::start(move |method, params| {
         let at = |p: &str| params.pointer(p).and_then(|v| v.as_u64()).unwrap_or(0) as u32 + 1;
+        let asked = (at("/position/line"), at("/position/character"));
         match method {
             "textDocument/references" => table
-                .get(&(at("/position/line"), at("/position/character")))
+                .get(&asked)
                 .map_or_else(|| serde_json::json!([]), |s| answers::locations(&file, s)),
+            "textDocument/hover" => declared
+                .get(&asked)
+                .map_or(serde_json::Value::Null, |raw| hover(raw, &text)),
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,
         }
@@ -228,6 +296,8 @@ async fn gateway(file: &Path, text: &str) -> SocketAddr {
     .await
     .addr()
 }
+
+const CARGO_2021: &str = "[package]\nname = \"drops\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
 fn workspace(edition: &str) -> Workspace {
     manifest(&format!(
@@ -240,6 +310,19 @@ fn manifest(cargo_toml: &str) -> Workspace {
     Workspace::new(&[("Cargo.toml", cargo_toml), ("src/main.rs", DROPS)])
 }
 
+/// A program at `rel` in a workspace, and how the scripted analyzer answers a hover in it.
+struct Source<'a> {
+    rel: &'a str,
+    text: &'a str,
+    hover: Hover,
+}
+
+const MAIN: Source<'static> = Source {
+    rel: "src/main.rs",
+    text: DROPS,
+    hover: analyzer,
+};
+
 /// Bundles `params` of `function` in `src/main.rs` into `name`, bound as `binding`.
 async fn bundle(
     ws: &Workspace,
@@ -248,7 +331,7 @@ async fn bundle(
     name: &str,
     apply: bool,
 ) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
-    bundle_in(ws, "src/main.rs", function, params, name, apply).await
+    bundle_source(ws, &MAIN, function, params, name, apply).await
 }
 
 /// Bundles `params` of `function` in `rel`, a copy of `DROPS`, into `name`.
@@ -260,13 +343,26 @@ async fn bundle_in(
     name: &str,
     apply: bool,
 ) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
-    let file = ws.path(rel);
-    let remote = gateway(&file, DROPS).await;
-    let at = DROPS
+    bundle_source(ws, &Source { rel, ..MAIN }, function, params, name, apply).await
+}
+
+/// Bundles `params` of `function` in `source` into `name`.
+async fn bundle_source(
+    ws: &Workspace,
+    source: &Source<'_>,
+    function: &str,
+    params: &[&str],
+    name: &str,
+    apply: bool,
+) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
+    let file = ws.path(source.rel);
+    let remote = gateway(&file, source.text, source.hover).await;
+    let at = source
+        .text
         .find(&format!("fn {function}("))
         .unwrap_or_else(|| panic!("`{function}` is declared"))
         + 3;
-    let (line, col) = spot(DROPS, at);
+    let (line, col) = spot(source.text, at);
     let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
     prod_code_mcp::parameter_object::introduce(
         remote,
@@ -346,7 +442,8 @@ async fn adjacent_owned_parameters_are_dropped_in_the_order_they_were() {
 
 /// Owned parameters on either side of the bundle, a value moved out of it before an early
 /// return by `?` or `return`, a scalar between two bundled values, a move closure that takes one
-/// field, and a borrow and a scalar bundled around an owned value: each program prints what the
+/// field, a borrow and a scalar bundled around an owned value, and a value bundled with a scalar
+/// in an `async` function: each program prints what the
 /// original did.
 #[tokio::test]
 async fn neighbours_moves_early_returns_and_closures_keep_the_drop_order() {
@@ -377,6 +474,14 @@ async fn neighbours_moves_early_returns_and_closures_keep_the_drop_order() {
             "pub struct Labels<'a> {\n    pub name: &'a str,\n    pub count: u32,\n}",
         ),
         ("hold", &["a", "b"], "Pair", "let g = pair.a;"),
+        // An `async` function's value and a scalar the analyzer finds no drop glue in: the
+        // future drops one value either way.
+        (
+            "counted",
+            &["a", "n"],
+            "Pair",
+            "drop(counted(Pair { a: Guard(\"A\"), n: 3 }));",
+        ),
         // `async` only in comments: a function that runs at once, bundled like `take`.
         (
             "plain",
@@ -536,4 +641,324 @@ async fn the_edition_is_the_one_cargo_reads_from_the_manifest() {
         .expect("a body without a closure does not depend on the edition");
     let text = main_rs(&done);
     assert_eq!(run(&text, "2021"), PRINTED, "{text}");
+}
+
+/// A program may name its own type `bool` and give it `Drop` (#441), declared in the file or
+/// imported: the spelling proves nothing, and the analyzer resolves the name. Two such
+/// parameters are reversed in the struct like any owned pair, a builtin scalar between two of
+/// them still bundles, and one of them between the bundled ones is refused.
+#[tokio::test]
+async fn a_type_of_the_program_named_bool_keeps_its_drop_order() {
+    let declared = DROPS.replace("Guard", "bool");
+    let imported = format!(
+        "mod shadow {{\n    pub struct bool(pub &'static str);\n\n    impl Drop for bool {{\n        \
+         fn drop(&mut self) {{\n            println!(\"drop {{}}\", self.0);\n        }}\n    \
+         }}\n}}\n\nuse shadow::bool;\n\n{}",
+        &declared[declared.find("fn take(").expect("a take")..]
+    );
+    for (how, text) in [
+        ("declared", declared.as_str()),
+        ("imported", imported.as_str()),
+    ] {
+        let ws = Workspace::new(&[("Cargo.toml", CARGO_2021), ("src/main.rs", text)]);
+        let source = Source { text, ..MAIN };
+        assert_eq!(run(text, "2021"), PRINTED, "{how}");
+
+        let done = bundle_source(&ws, &source, "take", &["a", "b"], "Pair", false)
+            .await
+            .unwrap_or_else(|e| panic!("{how}: adjacent parameters are bundled: {e:#}"));
+        let rewritten = main_rs(&done);
+        assert_eq!(run(&rewritten, "2021"), PRINTED, "{how}: {rewritten}");
+        assert!(
+            rewritten.contains("pub struct Pair {\n    pub b: bool,\n    pub a: bool,\n}"),
+            "{how}: {rewritten}"
+        );
+
+        let done = bundle_source(&ws, &source, "gap", &["a", "b"], "Pair", false)
+            .await
+            .unwrap_or_else(|e| panic!("{how}: the builtin `u32` has no destructor: {e:#}"));
+        let rewritten = main_rs(&done);
+        assert!(
+            rewritten.contains("gap(Pair { a: bool(\"A\"), b: bool(\"B\") }, 1);"),
+            "{how}: {rewritten}"
+        );
+        assert_eq!(run(&rewritten, "2021"), PRINTED, "{how}: {rewritten}");
+
+        let err = bundle_source(&ws, &source, "apart", &["a", "b"], "Pair", true)
+            .await
+            .expect_err("`x` is dropped between `b` and `a`");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(
+                "`apart` drops the parameters that may have a destructor in the order `b`, `x`, \
+                 `a`; with `a`, `b` in `Pair` it would drop them in the order `x`, `b`, `a`"
+            ),
+            "{how}: {err}"
+        );
+        assert!(
+            err.contains("`x` is spelled `bool`, but the analyzer reports `needs Drop` for it"),
+            "{how}: {err}"
+        );
+        assert!(err.contains("nothing was rewritten"), "{how}: {err}");
+        assert_eq!(ws.read("src/main.rs"), text, "{how}: nothing was written");
+    }
+}
+
+/// A primitive's name is taken for the builtin only on the analyzer's word. No hover, a failed
+/// query, a type it cannot resolve (which it reports without drop glue), a type parameter of
+/// that name, and a hover that does not say all leave the parameter as one that may have a
+/// destructor: `n: u32` between two bundled values is refused, and so is bundling it with the
+/// value of an `async` function — both of which bundle with the analyzer's `no Drop` above.
+#[tokio::test]
+async fn a_primitive_the_analyzer_does_not_vouch_for_may_have_a_destructor() {
+    let ws = workspace("2021");
+    let cases: &[(Hover, &str)] = &[
+        (silent, "the analyzer gave no hover for it"),
+        (crashed, "the hover query failed"),
+        (
+            unresolved,
+            "the analyzer does not resolve its type (`{unknown}`)",
+        ),
+        (
+            generic,
+            "the analyzer reports `type param may need Drop` for it",
+        ),
+        (
+            wordless,
+            "the analyzer's hover does not say whether its type has drop glue",
+        ),
+    ];
+    for (hover, why) in cases {
+        let source = Source {
+            hover: *hover,
+            ..MAIN
+        };
+        let err = bundle_source(&ws, &source, "gap", &["a", "b"], "Pair", true)
+            .await
+            .expect_err(why);
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(
+                "`gap` drops the parameters that may have a destructor in the order `b`, `n`, `a`"
+            ),
+            "{why}: {err}"
+        );
+        assert!(
+            err.contains(&format!("`n` is spelled `u32`, but {why}")),
+            "{err}"
+        );
+
+        let err = bundle_source(&ws, &source, "counted", &["a", "n"], "Pair", true)
+            .await
+            .expect_err(why);
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(
+                "`counted` is `async`: a future dropped before it is polled drops the parameters \
+                 that may have a destructor in the order `a`, `n`"
+            ),
+            "{why}: {err}"
+        );
+        assert!(err.contains("nothing was rewritten"), "{err}");
+    }
+    assert_eq!(ws.read("src/main.rs"), DROPS, "nothing was written");
+}
+
+/// One file where `bool` is the program's type with `Drop` at the top and in `imported`, and
+/// the builtin in `builtin`, which only the analyzer can tell apart.
+const LIVE: &str = r#"struct Guard(&'static str);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        println!("drop {}", self.0);
+    }
+}
+
+#[allow(non_camel_case_types)]
+struct bool(&'static str);
+
+impl Drop for bool {
+    fn drop(&mut self) {
+        println!("drop {}", self.0);
+    }
+}
+
+fn take(a: bool, b: bool) {
+    println!("take {} {}", a.0, b.0);
+}
+
+fn apart(a: Guard, x: bool, b: Guard) {
+    println!("apart {} {} {}", a.0, x.0, b.0);
+}
+
+mod imported {
+    use super::bool;
+
+    fn pass(a: bool, b: bool) {
+        println!("pass {} {}", a.0, b.0);
+    }
+
+    pub fn run() {
+        pass(bool("A"), bool("B"));
+    }
+}
+
+mod builtin {
+    use super::Guard;
+
+    fn gap(a: Guard, on: bool, b: Guard) {
+        println!("gap {} {} {}", a.0, on, b.0);
+    }
+
+    pub fn run() {
+        gap(Guard("A"), true, Guard("B"));
+    }
+}
+
+fn main() {
+    take(bool("A"), bool("B"));
+    apart(Guard("A"), bool("X"), Guard("B"));
+    imported::run();
+    builtin::run();
+}
+"#;
+
+const LIVE_PRINTED: &str = "take A B
+drop B
+drop A
+apart A X B
+drop B
+drop X
+drop A
+pass A B
+drop B
+drop A
+gap A true B
+drop B
+drop A
+";
+
+/// Bundles `a` and `b` of `function` in `LIVE` against the gateway at `addr`, without writing.
+async fn live_bundle(
+    addr: SocketAddr,
+    root: &Path,
+    function: &str,
+) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
+    let at = LIVE.find(&format!("fn {function}(")).expect("declared") + 3;
+    let (line, col) = spot(LIVE, at);
+    prod_code_mcp::parameter_object::introduce(
+        addr,
+        root,
+        &root.join("src/main.rs"),
+        line,
+        col,
+        &["a".to_string(), "b".to_string()],
+        "Pair",
+        "pair",
+        false,
+        false,
+    )
+    .await
+}
+
+/// `LIVE` against a real gateway and its rust-analyzer: the same spelling `bool` is the
+/// program's type with `Drop` in two places and the builtin in a third, and each bundle compiles
+/// and prints what the original did. It runs when `PROD_CODE_LIVE_GATEWAY` holds the address of
+/// a gateway built from this checkout, and is skipped, saying so, everywhere else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_real_rust_analyzer_tells_the_programs_bool_from_the_builtin() {
+    let Some(addr) = std::env::var("PROD_CODE_LIVE_GATEWAY")
+        .ok()
+        .and_then(|a| a.parse::<SocketAddr>().ok())
+    else {
+        eprintln!("skipping: PROD_CODE_LIVE_GATEWAY names no gateway to run against");
+        return;
+    };
+    assert_eq!(run(LIVE, "2021"), LIVE_PRINTED);
+    // Not a dot-directory: some tools pass over hidden ones.
+    let dir = tempfile::Builder::new()
+        .prefix("po-drop-live-")
+        .tempdir()
+        .expect("checkout dir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+    for (rel, text) in [("Cargo.toml", CARGO_2021), ("src/main.rs", LIVE)] {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git runs")
+    };
+    assert!(git(&["init", "-q"]).success());
+    assert!(git(&["add", "-A"]).success());
+    git(&[
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+
+    // Until the analyzer has loaded the crate it gives no hover, and `on: bool` is refused as a
+    // type that may have a destructor; a preview costs nothing, so it is repeated until then.
+    let mut gap = Err(anyhow::anyhow!("not asked"));
+    for _ in 0..60 {
+        gap = live_bundle(addr, &root, "gap").await;
+        if gap
+            .as_ref()
+            .is_ok_and(|d| d.call_sites == 1 && d.diagnostics.is_empty())
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    }
+    let gap = gap.unwrap_or_else(|e| panic!("the builtin `bool` has no destructor: {e:#}"));
+    let text = main_rs(&gap);
+    eprintln!("{text}");
+    assert!(
+        text.contains("pub struct Pair {\n    pub b: Guard,\n    pub a: Guard,\n}"),
+        "{text}"
+    );
+    assert!(
+        text.contains("gap(Pair { a: Guard(\"A\"), b: Guard(\"B\") }, true);"),
+        "{text}"
+    );
+    assert_eq!(run(&text, "2021"), LIVE_PRINTED, "{text}");
+
+    for function in ["take", "pass"] {
+        let done = live_bundle(addr, &root, function)
+            .await
+            .unwrap_or_else(|e| panic!("`{function}` is bundled: {e:#}"));
+        assert_eq!(done.call_sites, 1, "{function}");
+        let text = main_rs(&done);
+        eprintln!("{text}");
+        assert!(
+            text.contains("pub struct Pair {\n    pub b: bool,\n    pub a: bool,\n}"),
+            "{function}: {text}"
+        );
+        assert_eq!(run(&text, "2021"), LIVE_PRINTED, "{function}: {text}");
+    }
+
+    let err = live_bundle(addr, &root, "apart")
+        .await
+        .expect_err("the program's `bool` is dropped between `b` and `a`");
+    let err = format!("{err:#}");
+    eprintln!("{err}");
+    assert!(
+        err.contains("`x` is spelled `bool`, but the analyzer reports `needs Drop` for it"),
+        "{err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/main.rs")).expect("read"),
+        LIVE,
+        "nothing was written"
+    );
 }
