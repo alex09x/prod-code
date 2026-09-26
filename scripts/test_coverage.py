@@ -101,6 +101,42 @@ class TestReportValidation(unittest.TestCase):
             self.assertIn("invalid JSON", err)
 
 
+    def test_malformed_measurements_never_become_zero_region_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = os.path.join(td, "src.rs")
+            pathlib.Path(source).write_text("fn executable() {}\n")
+            good = {"filename": source, "summary": {"regions": {"count": 1, "covered": 1}}}
+            invalid = [
+                {"filename": source},
+                {"filename": source, "summary": None},
+                {"filename": source, "summary": {"regions": {}}},
+            ]
+            for total, covered in [(0, None), (None, 0), (-1, 0), (1, -1), (1, 2),
+                                   (1.0, 1), (1, float("nan")), (True, 1), (0, 1)]:
+                invalid.append({"filename": source, "summary": {
+                    "regions": {"count": total, "covered": covered}}})
+            report_path = os.path.join(td, "report.json")
+            for entry in invalid:
+                for entries in [[entry], [good, entry]]:
+                    with self.subTest(entries=entries):
+                        pathlib.Path(report_path).write_text(json.dumps({"data": [{"files": entries}]}))
+                        with mock.patch("coverage.repo_root", return_value=td):
+                            code, out, err = run_coverage(["--report", report_path, "--min", "80", "src.rs"])
+                        self.assertEqual(code, 2)
+                        self.assertIn("region measurements", err)
+                        self.assertNotIn("no code", out)
+                        self.assertNotIn("every file", out)
+
+    def test_malformed_records_after_a_valid_record_are_rejected(self) -> None:
+        good = {"files": [{"filename": "src.rs", "summary": {
+            "regions": {"count": 1, "covered": 1}}}]}
+        for bad in [None, {"files": None}, {"files": {}}, {"files": [None]},
+                    {"files": [{"filename": 123}]}]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                coverage.validate_report({"data": [good, bad]})
+
+
+
 class TestRequestedPathHandling(unittest.TestCase):
     def test_empty_report_with_requested_source_fails_instead_of_no_code(self) -> None:
         """Baseline bug: {"data": []} with refactor.rs exited 0 and labeled it 'no code (nothing to cover)'."""
@@ -294,6 +330,15 @@ class TestRootContainment(unittest.TestCase):
         self.assertFalse(coverage.is_under_root("/workspaces/other/lib.rs", root))
         self.assertFalse(coverage.is_under_root("/workspaces/myrepo", root))  # Root itself
         self.assertFalse(coverage.is_under_root("/workspaces/myrepo/../myrepo_sibling/lib.rs", root))
+
+    def test_symlink_beneath_root_does_not_import_external_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td) / "repo"
+            root.mkdir()
+            outside = pathlib.Path(td) / "outside.rs"
+            outside.write_text("fn external() {}\n")
+            (root / "alias.rs").symlink_to(outside)
+            self.assertFalse(coverage.is_under_root(str(root / "alias.rs"), str(root)))
 
     def test_sibling_root_excluded_from_report_parsing(self) -> None:
         with tempfile.TemporaryDirectory() as td:

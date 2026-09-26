@@ -74,38 +74,44 @@ def parse_threshold(value: str) -> float:
 
 
 def is_under_root(path: str, root: str) -> bool:
-    """Return True if path is strictly inside root directory (not sibling or parent)."""
+    """Compare complete path components, resolving symlinks on either side."""
     try:
-        norm_path = pathlib.Path(os.path.abspath(path))
-        norm_root = pathlib.Path(os.path.abspath(root))
-        if norm_path.is_relative_to(norm_root) and norm_path != norm_root:
-            return True
-        real_path = pathlib.Path(os.path.realpath(path))
-        real_root = pathlib.Path(os.path.realpath(root))
-        return real_path.is_relative_to(real_root) and real_path != real_root
-    except (ValueError, TypeError, OSError):
+        candidate = pathlib.Path(path).resolve()
+        base = pathlib.Path(root).resolve()
+        return candidate != base and candidate.is_relative_to(base)
+    except (ValueError, TypeError, OSError, RuntimeError):
         return False
 
 
 def validate_report(report: dict) -> None:
-    """Validate that report is a usable llvm-cov json export dictionary.
-    Raises ValueError if invalid, missing data, or empty."""
+    """Require measurements, including explicit zeroes; absence is not zero coverage."""
     if not isinstance(report, dict):
         raise ValueError("coverage report must be a JSON object")
-    if "data" not in report or not isinstance(report["data"], list):
+    data = report.get("data")
+    if not isinstance(data, list):
         raise ValueError("coverage report missing 'data' list")
-    if not report["data"]:
+    if not data:
         raise ValueError("coverage report 'data' is empty")
-    has_valid_file = False
-    for item in report["data"]:
-        if isinstance(item, dict) and isinstance(item.get("files"), list):
-            for f in item["files"]:
-                if isinstance(f, dict) and isinstance(f.get("filename"), str) and f["filename"].strip():
-                    has_valid_file = True
-                    break
-        if has_valid_file:
-            break
-    if not has_valid_file:
+    count = 0
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("files"), list):
+            raise ValueError("each coverage data record must contain a files list")
+        for entry in item["files"]:
+            if not isinstance(entry, dict):
+                raise ValueError("each coverage file entry must be an object")
+            filename = entry.get("filename")
+            if not isinstance(filename, str) or not filename.strip():
+                raise ValueError("coverage file entry has no valid filename")
+            summary = entry.get("summary")
+            regions = summary.get("regions") if isinstance(summary, dict) else None
+            if not isinstance(regions, dict):
+                raise ValueError(f"missing region measurements for {filename}")
+            total, covered = regions.get("count"), regions.get("covered")
+            if (type(total) is not int or type(covered) is not int
+                    or total < 0 or covered < 0 or covered > total):
+                raise ValueError(f"invalid region measurements for {filename}")
+            count += 1
+    if not count:
         raise ValueError("coverage report contains no valid file entries")
 
 
@@ -264,9 +270,11 @@ def main(argv: list[str] | None = None) -> int:
 
         rows = matched_rows
     else:
-        if not rows:
+        if not rows and not zero_region_files:
             print("no coverage data for repository files in report", file=sys.stderr)
             return 2
+        for path in sorted(zero_region_files):
+            print(f"  {path}  no code (nothing to cover)")
 
     width = max((len(r[0]) for r in rows), default=10)
     total_covered = sum(r[2] for r in rows)
