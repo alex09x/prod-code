@@ -955,6 +955,331 @@ async fn a_walk_cut_by_the_depth_limit_makes_ci_run_the_whole_suite() {
     assert_eq!(report.ci_decision().run, selecting(&["it_calls_wrapper"]));
 }
 
+/// `script` with `method` answered by `answer` instead.
+fn answering(
+    script: Answer,
+    method: &'static str,
+    answer: impl Fn(&serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+) -> Answer {
+    Arc::new(move |m, params| {
+        if m == method {
+            answer(params)
+        } else {
+            script(m, params)
+        }
+    })
+}
+
+/// Git quotes a path with a byte beyond ASCII, a tab, a quote or a backslash in its diff
+/// headers (`"a/\303\274 x.rs"`), and follows a name with a space with a tab. Every such path is
+/// read back as it is on disk, a deleted one included; before, a quoted path was dropped and a
+/// spaced one carried the tab.
+#[cfg(unix)]
+#[tokio::test]
+async fn changed_lines_reads_quoted_and_unicode_paths_and_their_deletions() {
+    let modified = ["src/ü x.rs", "src/sp ace.rs", "src/t\tq\\\"z.rs"];
+    let mut files: Vec<(&str, &str)> = modified.iter().map(|f| (*f, "a\nb\n")).collect();
+    files.extend([("src/plain.rs", "a\nb\n"), ("src/gône.rs", "a\n")]);
+    let ws = Workspace::new(&files);
+    for file in modified {
+        ws.write(file, "a\nc\n");
+    }
+    std::fs::remove_file(ws.path("src/gône.rs")).expect("delete");
+    ws.write("src/nëw \"u\".rs", "n\n");
+
+    let lines = impact::changed_lines(&ws.root(), None).expect("diff parses");
+
+    let mut expected: std::collections::BTreeMap<String, Vec<(u32, u32)>> = modified
+        .iter()
+        .map(|f| (f.to_string(), vec![(2, 2)]))
+        .collect();
+    expected.insert("src/gône.rs".to_string(), vec![]);
+    expected.insert("src/nëw \"u\".rs".to_string(), vec![(1, u32::MAX)]);
+    assert_eq!(lines, expected);
+}
+
+/// A change under a path git quotes is analyzed like any other, and the deletion of one is a
+/// gap. Before, both were dropped: the change selected nothing and CI ran nothing.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_quoted_path_is_analyzed_and_its_deletion_runs_the_whole_suite() {
+    let lib_name = "src/ünï \"q\"\tt.rs";
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (lib_name, IMPACT_LIB),
+        ("src/gône.rs", "pub fn gone() -> i32 {\n    1\n}\n"),
+    ]);
+    let root = ws.root();
+    ws.write(lib_name, &IMPACT_LIB.replace("x + 1", "x + 2"));
+    let remote = ScriptedGateway::start_arc(impact_script(&ws.path(lib_name), the_real_callers))
+        .await
+        .addr();
+
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(report.changed_files, vec![lib_name.to_string()]);
+    assert_eq!(report.changed, vec![sym("helper", lib_name, 1, 8)]);
+    assert_eq!(report.tests, vec![sym("it_calls_wrapper", lib_name, 12, 8)]);
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_wrapper"]));
+
+    std::fs::remove_file(ws.path("src/gône.rs")).expect("delete");
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(
+        report.incomplete,
+        vec![Gap::Deleted {
+            file: "src/gône.rs".to_string()
+        }]
+    );
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(
+        decision.why.contains("src/gône.rs was deleted"),
+        "{}",
+        decision.why
+    );
+}
+
+/// A binary change to a source file has no text hunks, and what it touches is unknown: a gap,
+/// not a mode change. Before, it read as a mode change and CI ran nothing. A real mode change
+/// still changes no function.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_binary_source_change_runs_the_whole_suite_and_a_mode_change_does_not() {
+    use std::os::unix::fs::PermissionsExt;
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", IMPACT_LIB),
+        ("src/blob.rs", "\0binary\n"),
+    ]);
+    let root = ws.root();
+    let remote = ScriptedGateway::start_arc(impact_script(
+        &ws.path("src/lib.rs"),
+        the_real_callers,
+    ))
+    .await
+    .addr();
+
+    std::fs::set_permissions(
+        ws.path("src/lib.rs"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .expect("chmod");
+    let lines = impact::changed_lines(&root, None).expect("diff parses");
+    assert_eq!(lines.get("src/lib.rs"), Some(&vec![]), "{lines:?}");
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(report.changed_files, vec!["src/lib.rs".to_string()]);
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(report.ci_decision().run, CiRun::Nothing);
+
+    ws.write("src/blob.rs", "\0binary, changed\n");
+    let lines = impact::changed_lines(&root, None).expect("diff parses");
+    assert_eq!(lines.get("src/blob.rs"), Some(&vec![(1, u32::MAX)]));
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    match report.incomplete.as_slice() {
+        [Gap::Diff { file, error }] => {
+            assert_eq!(file, "src/blob.rs");
+            assert!(error.contains("binary"), "{error}");
+        }
+        other => panic!("one gap expected: {other:?}"),
+    }
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(decision.why.contains("src/blob.rs"), "{}", decision.why);
+}
+
+/// A symbol list with an entry that is not a symbol, at any depth, is not a list of the file's
+/// functions: the file is a gap. Before, the entry was skipped (a position out of range was cut
+/// to line 1) and the selection was trusted. An empty list is an answer; `null` says nothing.
+#[tokio::test]
+async fn a_malformed_symbol_list_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+    let hidden = |start: serde_json::Value| {
+        serde_json::json!({
+            "name": "hidden", "kind": 12,
+            "range": { "start": { "line": start, "character": 0 }, "end": { "line": 6, "character": 1 } },
+            "selectionRange": { "start": { "line": 4, "character": 7 }, "end": { "line": 4, "character": 13 } }
+        })
+    };
+    for bad in [
+        serde_json::json!(7),
+        serde_json::json!({ "name": "hidden", "kind": 12 }),
+        serde_json::json!({ "name": 5, "kind": 12 }),
+        serde_json::json!({ "name": "m", "kind": 2, "children": { "hidden": 1 } }),
+        serde_json::json!({ "name": "m", "kind": 2, "children": [hidden(serde_json::json!(-1))] }),
+        hidden(serde_json::json!(4_294_967_296u64)),
+    ] {
+        let symbols = serde_json::json!([
+            answers::document_symbol("helper", 12, 1, 3, 8),
+            answers::document_symbol("wrapper", 12, 5, 7, 8),
+            answers::document_symbol("it_calls_wrapper", 12, 12, 14, 8),
+            bad.clone(),
+        ]);
+        let remote = ScriptedGateway::start_arc(answering(
+            impact_script(&lib, the_real_callers),
+            "textDocument/documentSymbol",
+            move |_| symbols.clone(),
+        ))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+        match report.incomplete.as_slice() {
+            [Gap::Symbols { file, error }] => {
+                assert_eq!(file, "src/lib.rs", "{bad}");
+                assert!(error.contains("cannot read"), "{bad}: {error}");
+            }
+            other => panic!("{bad}: one gap expected: {other:?}"),
+        }
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "{bad}");
+    }
+
+    for (answer, gap) in [
+        (serde_json::json!([]), false),
+        (serde_json::Value::Null, true),
+    ] {
+        let remote = ScriptedGateway::start_arc(answering(
+            impact_script(&lib, the_real_callers),
+            "textDocument/documentSymbol",
+            move |_| answer.clone(),
+        ))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+        assert!(report.changed.is_empty());
+        if gap {
+            assert!(
+                matches!(report.incomplete.as_slice(), [Gap::Symbols { error, .. }] if error.contains("null")),
+                "{:?}",
+                report.incomplete
+            );
+        } else {
+            // No function: the change lies outside any, which the whole suite covers.
+            assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+            assert_eq!(report.unattributed_files, vec!["src/lib.rs".to_string()]);
+        }
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+    }
+}
+
+/// A call whose caller has no name, or whose position is not a line and column (negative,
+/// beyond u32, missing), or whose test flag is not a flag, is not "no caller". Before, a call
+/// without a name was skipped and a bad position became line 1.
+#[tokio::test]
+async fn a_call_without_a_readable_caller_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+    // Each call as the analyzer sends it, but for the caller's file, filled in below.
+    let from = |name: Option<&str>, start: serde_json::Value| {
+        let mut from = serde_json::json!({ "selectionRange": { "start": start } });
+        if let Some(name) = name {
+            from["name"] = name.into();
+        }
+        serde_json::json!({ "from": from })
+    };
+    let good = serde_json::json!({ "line": 4, "character": 7 });
+    let mut flagged = from(Some("wrapper"), good.clone());
+    flagged["isTest"] = "no".into();
+    let cases = [
+        from(None, good.clone()),
+        from(Some(""), good.clone()),
+        from(Some("wrapper"), serde_json::json!({ "line": -1, "character": 7 })),
+        from(
+            Some("wrapper"),
+            serde_json::json!({ "line": 4_294_967_300u64, "character": 7 }),
+        ),
+        from(Some("wrapper"), serde_json::json!({ "line": 4 })),
+        flagged,
+    ];
+    for (n, case) in cases.into_iter().enumerate() {
+        let remote = ScriptedGateway::start_arc(impact_script(&lib, move |id, uri| match id {
+            "helper" => {
+                let mut call = case.clone();
+                call["from"]["uri"] = uri.into();
+                serde_json::json!([call])
+            }
+            _ => serde_json::json!([]),
+        }))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+        match report.incomplete.as_slice() {
+            [Gap::Callers { symbol, error }] => {
+                assert_eq!(symbol.name, "helper", "case {n}");
+                assert!(error.contains("cannot read"), "case {n}: {error}");
+            }
+            other => panic!("case {n}: one gap expected: {other:?}"),
+        }
+        assert!(report.tests.is_empty(), "case {n}");
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "case {n}");
+    }
+}
+
+/// A name can stand for several call-hierarchy items (a declaration and its definition): the
+/// callers of each are callers of the function. Before, only the first was asked, and a test
+/// reaching the second was missed: CI ran nothing.
+#[tokio::test]
+async fn the_callers_of_every_call_hierarchy_item_are_walked() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+    let uri = format!("file://{}", lib.display());
+    let items = move |params: &serde_json::Value, second: serde_json::Value| {
+        match params.pointer("/position/line").and_then(|l| l.as_u64()) {
+            Some(0) => serde_json::json!([
+                { "name": "helper", "uri": uri, "_id": "helper-declaration" },
+                second,
+            ]),
+            Some(4) => serde_json::json!([{ "name": "wrapper", "uri": uri, "_id": "wrapper" }]),
+            _ => serde_json::json!([]),
+        }
+    };
+    let definition = serde_json::json!({ "name": "helper", "_id": "helper" });
+
+    let both = {
+        let (items, definition) = (items.clone(), definition.clone());
+        move |params: &serde_json::Value| items(params, definition.clone())
+    };
+    let remote = ScriptedGateway::start_arc(answering(
+        impact_script(&lib, the_real_callers),
+        "textDocument/prepareCallHierarchy",
+        both,
+    ))
+    .await
+    .addr();
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(report.callers, vec![sym("wrapper", "src/lib.rs", 5, 8)]);
+    assert_eq!(
+        report.tests,
+        vec![sym("it_calls_wrapper", "src/lib.rs", 12, 8)]
+    );
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_wrapper"]));
+
+    // The second item's callers cannot be asked: unknown, whatever the first said.
+    let remote = ScriptedGateway::start_arc(answering(
+        impact_script(&lib, |id, uri| match id {
+            "helper" => answers::failure("the definition's callers are gone"),
+            other => the_real_callers(other, uri),
+        }),
+        "textDocument/prepareCallHierarchy",
+        move |params| items(params, definition.clone()),
+    ))
+    .await
+    .addr();
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert!(
+        matches!(report.incomplete.as_slice(), [Gap::Callers { error, .. }] if error.contains("gone")),
+        "{:?}",
+        report.incomplete
+    );
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+}
+
 // ---------------------------------------------------------------------------------------------
 // dead_code::find_dead_code
 // ---------------------------------------------------------------------------------------------
@@ -1176,6 +1501,12 @@ async fn a_symbol_the_analyzer_could_not_answer_for_is_unverified_not_dead() {
     );
     assert!(report.unverified[0].reason.contains("references failed"));
     assert!(report.unverified[1].reason.contains("null"));
+    // `null` is the protocol's "no result": it does not prove nothing was searched for.
+    assert!(
+        !report.unverified[1].reason.contains("no symbol was searched"),
+        "{}",
+        report.unverified[1].reason
+    );
     assert!(report.unverified[2].reason.contains("cannot read"));
     assert!(
         report.unverified[3]
@@ -1212,6 +1543,117 @@ async fn a_symbol_the_analyzer_could_not_answer_for_is_unverified_not_dead() {
     );
     assert!(text.contains("kept everything in src/other.rs"), "{text}");
     assert!(text.contains("nothing proven orphaned"), "{text}");
+}
+
+/// A symbol list with an entry that cannot be read, at any depth, leaves its file unverified:
+/// the scan is not complete, and pruning deletes nothing in it. Before, the entry was skipped or
+/// its position cut to line 1, the scan claimed to be complete, and `lonely` was pruned from an
+/// answer that never placed it. An empty list is an answer; `null` leaves its file unverified.
+#[tokio::test]
+async fn a_malformed_symbol_list_leaves_its_file_unverified_and_unpruned() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const LONELY: &str = "fn lonely() {}\n";
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", LONELY),
+        ("src/empty.rs", "\n"),
+        ("src/quiet.rs", "fn quiet() {}\n"),
+    ]);
+    let root = ws.root();
+    let lonely = |start: serde_json::Value| {
+        serde_json::json!({ "name": "lonely", "kind": 12, "selectionRange": { "start": start } })
+    };
+    let at = |line: serde_json::Value| serde_json::json!({ "line": line, "character": 3 });
+    let gateway = |lib: serde_json::Value, quiet: serde_json::Value| {
+        let deletes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&deletes);
+        let script: Answer = Arc::new(move |method, params| match method {
+            "textDocument/documentSymbol" => {
+                let uri = params
+                    .pointer("/textDocument/uri")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
+                if uri.ends_with("lib.rs") {
+                    lib.clone()
+                } else if uri.ends_with("quiet.rs") {
+                    quiet.clone()
+                } else {
+                    serde_json::json!([])
+                }
+            }
+            "textDocument/references" => serde_json::json!([]),
+            "prodCode/safeDelete" => {
+                counted.fetch_add(1, Ordering::SeqCst);
+                serde_json::Value::Null
+            }
+            _ => serde_json::Value::Null,
+        });
+        (script, deletes)
+    };
+
+    // The control: a readable list makes `lonely` dead, and an empty one is a complete answer.
+    let (script, _) = gateway(
+        serde_json::json!([lonely(at(serde_json::json!(0)))]),
+        serde_json::json!([]),
+    );
+    let remote = ScriptedGateway::start_arc(script).await.addr();
+    let report = dead_code::find_dead_code(remote, &root, false, 100)
+        .await
+        .expect("scan runs");
+    let dead: Vec<(&str, u32, u32)> = report
+        .dead
+        .iter()
+        .map(|d| (d.name.as_str(), d.line, d.col))
+        .collect();
+    assert_eq!(dead, [("lonely", 1, 4)]);
+    assert!(report.complete(), "{:?}", report.unverified);
+
+    for bad in [
+        serde_json::json!([lonely(at(serde_json::json!(4_294_967_296u64)))]),
+        serde_json::json!([lonely(at(serde_json::json!(-1)))]),
+        serde_json::json!([lonely(serde_json::json!({ "line": 0 }))]),
+        serde_json::json!([{ "name": "lonely", "kind": 12 }]),
+        serde_json::json!([42, lonely(at(serde_json::json!(0)))]),
+        serde_json::json!([{ "name": "Holder", "kind": 23,
+            "selectionRange": { "start": { "line": 0, "character": 0 } },
+            "children": { "lonely": 1 } }]),
+        serde_json::json!([{ "name": "m", "kind": 2,
+            "children": [lonely(at(serde_json::json!(0))), { "kind": 12 }] }]),
+    ] {
+        let (script, deletes) = gateway(bad.clone(), serde_json::Value::Null);
+        let remote = ScriptedGateway::start_arc(script).await.addr();
+        let report = dead_code::find_dead_code(remote, &root, false, 100)
+            .await
+            .expect("scan runs");
+        assert!(report.dead.is_empty(), "{bad}: {:?}", report.dead);
+        let unverified: Vec<(&str, Option<&str>)> = report
+            .unverified
+            .iter()
+            .map(|u| (u.file.as_str(), u.name.as_deref()))
+            .collect();
+        assert_eq!(
+            unverified,
+            [("src/lib.rs", None), ("src/quiet.rs", None)],
+            "{bad}"
+        );
+        assert!(
+            report.unverified[0].reason.contains("cannot read"),
+            "{bad}: {}",
+            report.unverified[0].reason
+        );
+        assert!(report.unverified[1].reason.contains("null"), "{bad}");
+        assert_eq!(report.files_scanned, 1, "{bad}: only the empty list counts");
+        assert!(!report.complete(), "{bad}");
+
+        let pruned = prod_code_mcp::prune::prune_orphans(remote, &root, 100, true, false)
+            .await
+            .expect("prune runs");
+        assert!(pruned.removed.is_empty(), "{bad}: {:?}", pruned.removed);
+        assert!(!pruned.applied, "{bad}");
+        assert_eq!(pruned.unverified.len(), 2, "{bad}");
+        assert_eq!(deletes.load(Ordering::SeqCst), 0, "{bad}: nothing offered");
+        assert_eq!(ws.read("src/lib.rs"), LONELY, "{bad}");
+    }
 }
 
 /// [`DeadCodeReport::render`] names every dead symbol, flags the exported ones, lists the
