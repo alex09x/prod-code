@@ -7,6 +7,10 @@
   `assert_eq!`/`assert_ne!` retain left/right order, and supported Node assertion formats
   retain actual/expected roles. Each failure uses its own output; multiline values and
   raw evidence are preserved, while ambiguous or incomplete blocks get no structured values.
+- Go signature permutations through gopls (#448): reorder named parameters of functions
+  and methods, including grouped parameters, while preserving receivers, results and variadic
+  tails. CLI and MCP preview or apply only fully reconciled, type-checked edits. Add/remove,
+  modifier changes, indirect calls and uncertain argument effects remain refused.
 - Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
   imported aliases and supported calls. Unsupported call/default shapes are refused before
   writing; validation reports syntax diagnostics, not a JavaScript type-check guarantee.
