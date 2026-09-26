@@ -1065,7 +1065,7 @@ enum Commands {
         duration_secs: u64,
     },
     /// Multi-worktree divergence and correctness benchmark: forks isolated git worktrees from a
-    /// base repo (e.g. BTCR or govcon-intel), applies controlled mutations (signature change,
+    /// base repo (a real Rust or Go repository), applies controlled mutations (signature change,
     /// dependency manifest change, untracked file), then hammers them with concurrent LSP queries
     /// from a simulated agent fleet to assert zero cross-worktree bleed.
     DivergentBench {

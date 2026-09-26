@@ -219,7 +219,7 @@ pub struct DivergenceSetup {
 pub struct DivergentBenchConfig {
     /// Address of the prod-code remote gateway to hammer with LSP queries.
     pub remote: SocketAddr,
-    /// Base git repository to fork worktrees from (e.g. a BTCR or CodeHaus checkout).
+    /// Base git repository to fork worktrees from (a checkout of a real Rust or Go repository).
     /// When `None`, a disposable scratch repository is created instead.
     pub base_repo: Option<PathBuf>,
     /// Scratch directory to materialize the origin clone and worktrees in.

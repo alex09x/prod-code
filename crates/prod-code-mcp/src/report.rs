@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn private_details_are_scrubbed_and_documentation_addresses_stay() {
-        let text = "gateway 192.168.2.190:9400 and 10.0.0.7 failed; loopback 127.0.0.1:9400, \
+        let text = "gateway 192.168.77.5:9400 and 10.0.0.7 failed; loopback 127.0.0.1:9400, \
                     docs 192.0.2.20:9400; version 1.2.3.4.5 and 300.1.1.1; \
                     /Users/alice/work/repo/src/a.rs and /home/bob/.cargo/registry; \
                     /Users/carol:end; host studio-7.local answered, studio-7 too";
