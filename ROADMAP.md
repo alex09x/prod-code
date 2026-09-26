@@ -2,16 +2,18 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.3.16, 2026-09-26): 56 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift and macOS-only Go, 907 tests in the coverage run, and every file held at or above 80% of regions.
+**Where it stands** (v0.3.17, 2026-09-26): 56 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift and macOS-only Go, 910 tests in the coverage run, and every file held at or above 80% of regions.
 A 2026-09-26 audit put a status note on each finished item whose text promised more than was built.
 Editors get the language's own server on the node through `prod-code lsp`, with a Zed extension
 in `editors/zed`.
 The refactoring catalog (7.1) is complete for Rust. Across the other languages it works through
 the language servers' own code actions; `extract_parameter` and `introduce_parameter_object` also
 cover TypeScript, Python, Go, C, C++ and Swift. Agents report prod-code bugs themselves with
-`code_report_issue`. Partial: caches shared across worktrees beyond the C/C++ compiler cache — the
-clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7, 6.2, 6.3).
+`code_report_issue`. A new worktree's copy starts from the main copy's compiled Rust crates,
+`node_modules` and virtual environments, while the package caches are shared per node. Still
+partial: a clangd index and a Swift module cache shared across worktree copies, pre-resolved
+`@types`, and caches on a RAM disk (3.4, 3.5, 3.7, 6.2).
 
 ---
 
@@ -107,17 +109,31 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
   - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
   - Offloads multi-gigabyte AST indexing for massive C++ codebases (e.g. Chromium, ClickHouse, trading engines) from local laptops to 32–128 core servers.
-- [~] **3.5. TypeScript & JavaScript Engine (`crates/prod-code-engine-ts` / `vtsls`)** — shipped 2026-09-19: the native TypeScript 7 language server (`tsc --lsp --stdio` from the global `typescript` install, no Node in the query path) with fallback to `typescript-language-server`; hover / definition / references / symbols verified on both nodes, `prod-code check` = `tsc --noEmit`. Shared `node_modules` volume still open.
+  - Status (2026-09-26):
+    - Until #416, a new worktree's copy took the main copy's `build/`: its `check` failed on the old `CMakeCache.txt`, and clangd read the other copy's `compile_commands.json`. Now each copy configures its own `build/`, and ccache makes the compile cheap.
+    - Not built: a clangd index shared across worktrees. clangd keys its background-index shards by absolute path and every worktree copy has its own path, so each copy indexes itself.
+    - Precompiled headers are not shared beyond what ccache caches.
+- [~] **3.5. TypeScript & JavaScript Engine (`crates/prod-code-engine-ts` / `vtsls`)** — shipped 2026-09-19: the native TypeScript 7 language server (`tsc --lsp --stdio` from the global `typescript` install, no Node in the query path) with fallback to `typescript-language-server`; hover / definition / references / symbols verified on both nodes, `prod-code check` = `tsc --noEmit`. `node_modules` reaches new worktree copies since 2026-09-26 (#412); see the status below.
   - Supervised `vtsls` worker pool running on server Bun/Node runtime.
   - Shared global `@types/*` and `node_modules` cache volume to eliminate duplicate multi-gigabyte `node_modules` across concurrent agent worktrees.
   - Instant type inference and signature resolution for React, Vue, Svelte, Next.js, and large monorepos (5–15 ms latency).
-- [~] **3.6. Python Semantic Engine (`crates/prod-code-engine-python` / `basedpyright`)** — shipped 2026-09-19: `basedpyright-langserver` (fallback pyright / ruff / pylsp), hover / symbols verified on both nodes, `prod-code check` = `basedpyright --outputjson`, `prod-code test` = pytest with parsed failures. Shared venv stub cache still open.
+  - Status (2026-09-26):
+    - A new worktree's copy takes the main copy's `node_modules` trees (#412). Before, its imports resolved to `any` until something ran an install. Seeding 56 MB took 40 ms.
+    - The trees are copied rather than shared. The storage filesystems are ext4 on two nodes (no reflink), and hard links would let one worktree's in-place package edit reach another's.
+    - The npm cache (`~/.npm`) is shared by every copy on a node. pnpm 12.6 and yarn 1.22 are installed on every Linux node, so a pnpm project's store is shared per user too.
+    - Not built: pre-resolved `@types/*`.
+- [x] **3.6. Python Semantic Engine (`crates/prod-code-engine-python` / `basedpyright`)** — shipped 2026-09-19: `basedpyright-langserver` (fallback pyright / ruff / pylsp), hover / symbols verified on both nodes, `prod-code check` = `basedpyright --outputjson`, `prod-code test` = pytest with parsed failures. Virtual environments reach new worktree copies since 2026-09-26 (#414); see the status below.
   - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
   - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
   - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
+  - Status (2026-09-26):
+    - A new worktree's copy takes the main copy's virtual environments whole, with their symlinks kept and the scripts in `bin` rewritten to name the copy (#414). It used to double site-packages through `lib64` and start the other copy's interpreter.
+    - uv's cache (`~/.cache/uv`) is shared by every copy on a node.
+    - basedpyright bundles typeshed, so there is no separate stub cache to share. The per-venv packages are what a worktree needs, and it now has them from its first query.
 - [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: a Mac (launchd unit `com.prod-code.gateway`; as of 2026-09-26 a laptop started with `--engines swift,go`, while the developer workstation runs no node) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
   - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
   - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
+  - Status (2026-09-26): SwiftPM's repository cache (package checkouts) is per user, so it is shared by every copy on the node. A worktree's copy no longer takes the main copy's `.build` (#416), whose paths belong to the other copy. Not built: a module cache shared across copies. The one SwiftPM uses lives in each package's `.build`.
 
 
 ---
@@ -209,11 +225,16 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
     - TypeScript: shared global `pnpm` store and pre-resolved `@types/*`.
     - Python: pre-warmed `.venv` wheels and pycache.
   - Because code deltas are synced incrementally in < 2 ms, only modified files trigger re-compilation; dependencies stay permanently warm in server RAM.
+  - Status (2026-09-26, checked on a node):
+    - Shared by every workspace copy on a node, since all run as one user: Rust `~/.cargo/registry`, Go `GOCACHE` and `GOMODCACHE`, npm `~/.npm` (pnpm 12.6 and yarn 1.22 installed, so a pnpm store is shared too), uv `~/.cache/uv`, and ccache for C/C++ (#243).
+    - Kept per workspace: `target/`, `node_modules/` and virtual environments. A new worktree's copy starts from the main copy's (#278, #412, #414).
+    - Not built: caches on a RAM disk (they are on each node's disk), sccache (ccache covers C/C++), and pre-warmed pycache.
 
-- [~] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19). Process-group supervision was checked on 2026-09-23. Each exec runs in its own process group (`process_group(0)`), and the whole tree is killed on a timeout or a client disconnect. `bash -c '(sleep 283 &); sleep 282'` left no process on the node after a 3 s timeout, and none when the client was killed. A new worktree's copy takes the main copy's compiled Rust dependencies since 2026-09-24 (#278): `target/debug/{deps,build,.fingerprint}` is copied when the copy is seeded, with modification times kept, so its first `cargo test --workspace --no-run` compiled 8 crates in 38.8 s against 305 in 106.2 s. The copy is the worktree's own; nothing is shared afterwards. C/C++ gets the same effect from ccache (#243); a shared clangd index, `node_modules` and Python wheels are still open.
+- [x] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19). Process-group supervision was checked on 2026-09-23. Each exec runs in its own process group (`process_group(0)`), and the whole tree is killed on a timeout or a client disconnect. `bash -c '(sleep 283 &); sleep 282'` left no process on the node after a 3 s timeout, and none when the client was killed. A new worktree's copy takes the main copy's compiled Rust dependencies since 2026-09-24 (#278): `target/debug/{deps,build,.fingerprint}` is copied when the copy is seeded, with modification times kept, so its first `cargo test --workspace --no-run` compiled 8 crates in 38.8 s against 305 in 106.2 s. The copy is the worktree's own; nothing is shared afterwards. C/C++ gets the same effect from ccache (#243).
   - Isolated build artifacts per worktree session to eliminate build cache lock contention across concurrent agents.
   - Shared read-only dependency artifact cache across worktrees.
   - Process group supervision: automatic SIGKILL tree cleanup on client disconnect or timeout.
+  - Status (2026-09-26): a new worktree's copy now starts from the main copy's dependencies in every language that keeps them in the tree: compiled Rust crates (#278), `node_modules` (#412) and virtual environments (#414). It no longer takes caches that hold the main copy's paths, such as CMake's `build/`, SwiftPM's `.build` and clangd's `.cache` (#416). Each worktree still owns its copy, so no build waits on another's lock. What is shared read-only is the per-user caches listed under 6.2. Not built: a clangd index shared across copies (see 3.4).
 
 - [x] **6.4. Client CLI & Native Agent MCP Integration** — `prod-code exec -- <cmd>` and MCP tool `code_exec`; typed `prod-code check | lint | test [FILTER]` and MCP `code_check`, `code_lint`, `code_test` with structured diagnostics (cargo JSON, rustc text, libtest failures, go build/vet, go test -json) (2026-09-19). `--json` prints the full report (2026-09-19). Benchmarks followed on 2026-09-23 (#178). `prod-code benchmarks [FILTER]` and MCP `code_benchmarks` run `cargo bench --workspace` or `go test -run '^$' -bench`. The results are parsed from criterion (estimate and interval, with a long name read from the line before), libtest (`ns/iter (+/- N)`) and Go (`ns/op`). `prod-code bench` stays the gateway's own load benchmark. CPU and peak RSS in the exec summary followed on 2026-09-23 (#180).
   - **Client CLI Commands**:
