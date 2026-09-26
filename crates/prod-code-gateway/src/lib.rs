@@ -4288,7 +4288,7 @@ fn lsp_rename(
         .and_then(|n| n.as_str())
         .unwrap_or("")
         .to_string();
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
