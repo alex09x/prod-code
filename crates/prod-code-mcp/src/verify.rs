@@ -1207,6 +1207,23 @@ pub fn parse_pytest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
+/// What a script prod-code runs says about itself on stderr as `prod-code: …`, such as the Go
+/// lint script falling back to go vet, as notes at the head of the report.
+fn script_notes(stderr: &str) -> Vec<Diagnostic> {
+    stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("prod-code: "))
+        .map(|message| Diagnostic {
+            level: "note".to_string(),
+            code: None,
+            message: message.trim().to_string(),
+            file: None,
+            line: None,
+            column: None,
+        })
+        .collect()
+}
+
 /// Parses `go build` / `go vet` / `golangci-lint run` output lines of the form
 /// `path/file.go:12:34: message`; golangci-lint's quoted source lines and its summary are
 /// skipped.
@@ -1885,6 +1902,7 @@ pub async fn run_verify_with(
             failures = fails;
         }
         ("go", _) => {
+            diagnostics.extend(script_notes(&stderr));
             diagnostics.extend(parse_go_text(&stderr));
             diagnostics.extend(parse_go_text(&stdout));
         }
@@ -2449,6 +2467,16 @@ expected 42, got 43\n\
         assert_eq!(
             fix_command(&configured, "go").unwrap().unwrap(),
             ["golangci-lint", "run", "--fix", "./..."]
+        );
+
+        // The fallback's line on stderr becomes a note at the head of the report.
+        let notes = script_notes(
+            "prod-code: golangci-lint is not installed on this node; linting with go vet\n# m\n",
+        );
+        assert_eq!(notes.len(), 1);
+        assert_eq!(
+            notes[0].render(),
+            "note: golangci-lint is not installed on this node; linting with go vet"
         );
     }
 
