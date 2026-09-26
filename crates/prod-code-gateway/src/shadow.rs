@@ -1069,6 +1069,13 @@ impl InPlace {
         }
         // A directory the command filled is left like the rest of its output.
         for dir in self.created.iter().rev() {
+            if !self.real_parents(dir) {
+                problems.push(format!(
+                    "{}: a parent is no longer a real directory; not removed",
+                    dir.display()
+                ));
+                continue;
+            }
             if let Err(e) = std::fs::remove_dir(dir) {
                 tracing::warn!(
                     path = %dir.display(),
@@ -3186,5 +3193,31 @@ mod tests {
             "base\n"
         );
         assert_eq!(in_place_lock_users(held.path()), None);
+    }
+    #[tokio::test]
+    async fn created_directory_cleanup_never_follows_a_replaced_parent() {
+        let (_root, ws, outside) = workspace_with_sibling();
+        std::fs::create_dir(outside.join("sub")).unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let out = outside.to_str().unwrap().to_string();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let r = run_in_place(
+            job(
+                &ws,
+                shadow.path(),
+                "directory-swap",
+                vec![delta("new/sub/a.txt", Some("proposed\n"))],
+                &["sh", "-c", "mv new saved && ln -s \"$1\" new", "sh", &out],
+            ),
+            rx,
+        )
+        .await;
+        assert_eq!(r.exit_code, Some(0), "{:?}", r.error);
+        assert!(r.error.is_some(), "restore failure must be reported");
+        assert!(
+            outside.join("sub").is_dir(),
+            "cleanup deleted an outside directory through the replaced parent"
+        );
+        assert_eq!(sentinel(&outside).as_deref(), Some("keep\n"));
     }
 }

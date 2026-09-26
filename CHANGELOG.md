@@ -12,7 +12,8 @@
 ### Fixed
 - Shadow hypotheses reject control characters, duplicate or nested paths and symlinked
   parents before staging (#440). In-place runs take turns per workspace across requests,
-  restore failed writes, preserve file modes and report restoration failures. Internal
+  restore failed writes, preserve file modes and report restoration failures. Rollback
+  checks symlink containment again before restoring files or removing created directories. Internal
   overlay variables cannot be overridden by request environment values.
 - Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
   They enable client-side compilation and refuse settings that disable it or send work
