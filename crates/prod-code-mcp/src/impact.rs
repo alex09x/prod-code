@@ -1375,7 +1375,15 @@ async fn incoming_calls(
     let items = match items {
         serde_json::Value::Null => return Incoming::NoItem,
         serde_json::Value::Array(all) if all.is_empty() => return Incoming::NoItem,
-        serde_json::Value::Array(all) if all.iter().all(|item| item.is_object()) => all,
+        serde_json::Value::Array(all)
+            if all.iter().all(|item| {
+                item.get("name")
+                    .and_then(|n| n.as_str())
+                    .is_some_and(|n| !n.is_empty())
+            }) =>
+        {
+            all
+        }
         other => return Incoming::Failed(unreadable(prepare, &other)),
     };
     // One name can stand for several items (a declaration and its definition, overloads):
@@ -1442,6 +1450,13 @@ fn caller(
         Some(serde_json::Value::Bool(flag)) => *flag,
         Some(_) => return Err(malformed()),
     };
+    let absolute = Url::parse(uri)
+        .ok()
+        .and_then(|url| url.to_file_path().ok())
+        .ok_or_else(malformed)?;
+    if !absolute.is_absolute() {
+        return Err(malformed());
+    }
     let file = rel(root, uri);
     if file.starts_with('/') {
         return Ok(None); // outside the checkout

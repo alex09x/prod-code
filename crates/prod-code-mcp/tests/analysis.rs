@@ -902,22 +902,28 @@ async fn a_malformed_reply_makes_ci_run_the_whole_suite() {
         assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "{bad}");
     }
 
-    let remote = ScriptedGateway::start_arc(Arc::new(|method, _| match method {
-        "textDocument/documentSymbol" => {
-            serde_json::json!([answers::document_symbol("helper", 12, 1, 3, 8)])
-        }
-        "textDocument/prepareCallHierarchy" => serde_json::json!("helper"),
-        _ => serde_json::Value::Null,
-    }))
-    .await
-    .addr();
-    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
-    assert!(
-        matches!(report.incomplete.as_slice(), [Gap::Callers { error, .. }] if error.contains("prepareCallHierarchy")),
-        "{:?}",
-        report.incomplete
-    );
-    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+    for malformed_item in [
+        serde_json::json!("helper"),
+        serde_json::json!([{}]),
+        serde_json::json!([{"name": ""}]),
+    ] {
+        let remote = ScriptedGateway::start_arc(Arc::new(move |method, _| match method {
+            "textDocument/documentSymbol" => {
+                serde_json::json!([answers::document_symbol("helper", 12, 1, 3, 8)])
+            }
+            "textDocument/prepareCallHierarchy" => malformed_item.clone(),
+            _ => serde_json::Value::Null,
+        }))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+        assert!(
+            matches!(report.incomplete.as_slice(), [Gap::Callers { error, .. }] if error.contains("prepareCallHierarchy")),
+            "{:?}",
+            report.incomplete
+        );
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+    }
 }
 
 /// The walk stops at the depth limit; a function there that still has callers not yet seen is
@@ -1216,6 +1222,30 @@ async fn a_call_without_a_readable_caller_makes_ci_run_the_whole_suite() {
         }
         assert!(report.tests.is_empty(), "case {n}");
         assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "case {n}");
+    }
+}
+
+#[tokio::test]
+async fn an_invalid_caller_uri_is_unknown_not_a_selected_test() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+    for bad_uri in ["not-a-uri", "https://example.invalid/test.rs"] {
+        let remote = ScriptedGateway::start_arc(impact_script(&lib, move |id, _| match id {
+            "helper" => serde_json::json!([call_from("test_lost", bad_uri, 4)]),
+            _ => serde_json::json!([]),
+        }))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.unwrap();
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "{bad_uri}");
+        assert!(report.tests.is_empty(), "{bad_uri}");
+        assert!(
+            matches!(report.incomplete.as_slice(), [Gap::Callers { .. }]),
+            "{bad_uri}: {:?}",
+            report.incomplete
+        );
     }
 }
 
