@@ -11,7 +11,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | Item | Implemented scope and evidence | Remaining requirement or verification limit |
 |---|---|---|
 | 1.1 Transport | Length-framed JSON and optional authentication in the protocol crate; `gateway/tests/e2e_phase1.rs` exercises transport. | Protocol fields have compatibility defaults; there is no negotiated feature set, NUL framing, Unix socket or named-pipe transport. |
-| 1.2 Paths | Workspace and worktree path translation in the protocol, gateway and MCP sync code. | Resource edits need transaction and post-move containment repairs (#425). |
+| 1.2 Paths | Workspace and worktree path translation in the protocol, gateway and MCP sync code. | The #425 repair covers ordered edits, UTF-16 columns, rollback and containment after directory moves; preview still flags unmodeled resource operations. |
 | 1.3 Editor client | `prod-code lsp` bridges the editor to a remote language server and exits unsuccessfully on disconnect. | Recovery is an editor restart, not in-process replay of LSP state. Zero-allocation hot paths are not established by the recorded evidence. |
 | 1.4 Gateway | Session registry, command execution and JSON status in `gateway/src/lib.rs`. | A healthy snapshot does not establish capacity for another engine (#433). |
 | 2.1 Rust database | In-process analyzer and per-workspace resident databases in `engine-rust/src/lib.rs`. | Distinct worktrees retain distinct databases; memory is not a single shared dependency database. |
@@ -26,11 +26,11 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 3.6 Python | basedpyright and copied virtual environments with corrected paths. | Copied environments are not shared mutable environments; semantic completeness follows the server. |
 | 3.7 Swift | sourcekit-lsp on the macOS node and per-project build indexing. | Cross-copy module cache remains absent; Linux Swift was not installed or tested. |
 | 4.1 MCP | Native tool discovery and typed dispatch in `mcp/src/tools.rs`. | Public help must describe each tool's actual languages and refusal cases. |
-| 4.2 Sync | Delta transfer, worktree seeding and persistent MCP sessions in `mcp/src/sync.rs` and `session.rs`. | CLI invocations still reconnect; timings depend on checkout size and cache state. |
+| 4.2 Sync | Delta transfer, worktree seeding and persistent MCP sessions in `mcp/src/sync.rs` and `session.rs`. | The #430 repair gives each pooled session its own lock and bounds opening and complete query waits; CLI invocations still reconnect and timings depend on checkout size and cache state. |
 | 5.1 Placement | Gossip-aware placement and remembered repository affinity. | Memory admission must also protect already-affined worktrees (#433). |
 | 5.2 Discovery | Seed-address discovery and cached gossip membership. | This is the documented replacement for DNS/SRV discovery, not an implementation of it. |
 | 5.3 Pressure | Memory/disk thresholds influence placement and idle eviction. | Concurrent resident analysis can still exceed memory; new-load reservations are being repaired (#433). |
-| 5.4 Macros | Build-script loading and out-of-process macro expansion. | Derive diagnostics produced false preexisting E0282 reports in validation (#424); compiler checks passed. |
+| 5.4 Macros | Build-script loading and out-of-process macro expansion. | Raw analyzer derive diagnostics can contain E0282 artifacts; existing #159 handling labels them in_derive and excludes them from the error count. #424 was closed after confirming that handling; compiler checks passed. |
 | 5.5 Fleet tests | Persistent-session and divergent-worktree benchmarks. | Warm success does not erase cold timeouts; record both error counts and percentiles. |
 | 6.1 Execution | Streamed commands, exit status, timeout and cancellation. | A command's exit status must survive any output filtering in the acceptance command. |
 | 6.2 Caches | Persistent workspace artifacts and per-user package/compiler caches. | RAM-backed caches, pre-warmed Python bytecode and some language-specific shared caches remain open. sccache was observed in node Cargo configuration; the older blanket claim that it was absent is incorrect. |
@@ -42,13 +42,13 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 7.4 Shadows | Overlay hypotheses and a serialized fallback in `gateway/src/shadow.rs`. | The #426 regression uses real sccache, build scripts and namespace checks; unsupported environments must not count as a passing integration scenario. |
 | 7.5 Graphs | Callers, callees, implementations and supertypes. | Traversal is bounded and server-dependent; the advertised sub-5 ms whole-workspace target is not established for arbitrary repositories. |
 | 7.6 Schemas | Analyzer-assisted cross-language rename with text handling for schema formats. | This coordinates known references and schema names; it does not infer every external API consumer. |
-| 7.7 Validation | Analyzer overlays, multi-file proposals and optional compiler verification. | Analyzer acceptance is not full compiler/borrow-checker proof; preexisting derive errors are tracked in #424. |
-| 8.1 Impact | Changed ranges, incoming-call traversal and test selection in `mcp/src/impact.rs`. | Deleted files, mixed-scope edits, direct test edits and incomplete hierarchy queries can produce an unsafe selection (#434). |
+| 7.7 Validation | Analyzer overlays, multi-file proposals and optional compiler verification. | Analyzer acceptance is not full compiler/borrow-checker proof; derive artifacts are separately labeled and excluded from the error count (#159; #424 confirmed this existing behavior). |
+| 8.1 Impact | Changed ranges, incoming-call traversal and test selection in `mcp/src/impact.rs`. | The #434 repair includes direct test edits and falls back to a full suite on deleted/binary files, unreadable symbols, incomplete hierarchy queries or depth truncation. Selection still depends on the language server's semantic reachability. |
 | 8.2 Diagnosis | Failure text, source sites, caller context, diffs and ranked suspects in `mcp/src/dossier.rs`. | No debugger-style runtime capture or structured runtime-values field; assertion output is retained as text. |
 | 8.3 Dependencies | Read-only dependency/SDK source retrieval with gateway root restrictions. | This audit did not rerun every SDK/toolchain combination. |
 | 8.4 Search | Lexical and optional dense ranking in `gateway/src/search.rs` and `embed.rs`. | The measured ranking is imperfect; typed graph fusion and universal sub-10 ms latency are not established. |
 | 8.5 Fixtures | Rust value generation with explicit fallback types in `mcp/src/fixture.rs`. | General mock/builder generation, randomized generation and equivalent other-language tools remain open. |
-| 8.6 Pruning | Reference-count candidates and analyzer safe-delete in `dead_code.rs` and `prune.rs`. | This is not entry-point reachability. Reference errors were treated as no uses (#435); attribute-only references remain a documented limitation. |
+| 8.6 Pruning | Reference-count candidates and analyzer safe-delete in `dead_code.rs` and `prune.rs`. | This is not entry-point reachability. The #435 repair marks failed and malformed reference/symbol queries unverified and keeps them during pruning; attribute-only references remain a documented limitation. |
 | 8.7 Codemods | Rust structural search/replace through the analyzer. | Other-language codemods and the broad sub-second migration target remain open. |
 
 Paths shortened above are under `crates/prod-code-*`. The main integration evidence lives in
