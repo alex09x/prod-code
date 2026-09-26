@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.14 — 2026-09-25
+
 ### Added
 - **References across checkouts** (#375). `code_references` takes `also_in` (other checkouts'
   directories) with `symbol`, and `prod-code refs --symbol NAME --in DIR` (repeatable): the name
@@ -16,8 +18,8 @@
 
 ### Fixed
 - **Worktree copies no longer fill a build node's disk** (#386). The gateway deleted a
-  `<repo>--wt-*` copy only after 7 idle days; 47 copies of 13–21 GB (446 GB) filled a 913 GB disk
-  in two days, none older than 5.3 days. Below `PROD_CODE_PRUNE_BELOW_FREE_PERCENT` free (15 by
+  `<repo>--wt-*` copy only after 7 idle days; 47 copies (the largest 21 GB, at least 350 GB of the
+  446 GB of workspace storage) filled a 913 GB disk in two days, none older than 5.3 days. Below `PROD_CODE_PRUNE_BELOW_FREE_PERCENT` free (15 by
   default, 0 disables) the janitor now deletes idle copies that are not loaded, oldest first,
   however young (never one used within the hour), until the share is back, logging each with its
   idle time and the free space before and after.
@@ -50,7 +52,8 @@
   and in each nested project a miss goes on to ask. The handshake now carries the engine's age
   (`engine_age_ms`): a warm engine's empty answer is final, one loaded less than 30 s ago is
   asked again up to three times (0.8, 1.6, 3.2 s) while it indexes, and a gateway that does not
-  say keeps the single retry.
+  say keeps the single retry. A miss in a checkout with three nested projects, against the same
+  warm gateway: 3.52–3.58 s before, 0.28–0.30 s after.
 - **`impact` runs Go tests in their packages** (#371): `go test ./internal/push -run ...` instead
   of `go test ./... -run ...`, which built every package's tests to run a filter most of them never
   match. One package of a large module: 0.7 s instead of 24.8 s; `impact --run` 2.1 s in all.
