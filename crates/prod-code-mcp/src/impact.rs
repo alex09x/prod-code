@@ -457,20 +457,39 @@ pub fn test_command(
             c.extend(names.iter().map(|n| n.to_string()));
             c
         }
-        "go" => vec![
-            "go".to_string(),
-            "test".to_string(),
-            "./...".to_string(),
-            "-run".to_string(),
-            format!(
+        "go" => {
+            // The packages that hold the tests, not `./...`: that builds every package's test
+            // binary to run a filter most of them never match, 25 s against 0.7 s for one
+            // package of a large module (#371).
+            let mut packages: Vec<String> = tests
+                .iter()
+                .map(|t| {
+                    let dir = std::path::Path::new(&t.file)
+                        .parent()
+                        .map(|d| d.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    if dir.is_empty() {
+                        ".".to_string()
+                    } else {
+                        format!("./{dir}")
+                    }
+                })
+                .collect();
+            packages.sort_unstable();
+            packages.dedup();
+            let mut c = vec!["go".to_string(), "test".to_string()];
+            c.extend(packages);
+            c.push("-run".to_string());
+            c.push(format!(
                 "^({})$",
                 names
                     .iter()
                     .map(|n| go_name(n))
                     .collect::<Vec<_>>()
                     .join("|")
-            ),
-        ],
+            ));
+            c
+        }
         "python" => {
             let mut c = crate::verify::plan_command_with(
                 tools,
@@ -859,11 +878,27 @@ mod tests {
             line: 1,
             col: 1,
         };
+        // Go runs the packages that hold the tests, each once (#371).
+        let in_file = |name: &str, file: &str| Symbol {
+            name: name.into(),
+            file: file.into(),
+            line: 1,
+            col: 1,
+        };
         assert_eq!(
-            test_command("go", &tools, &[t("TestA"), t("pkg.TestB")])
-                .unwrap()
-                .join(" "),
-            "go test ./... -run ^(TestA|TestB)$"
+            test_command(
+                "go",
+                &tools,
+                &[
+                    in_file("TestA", "internal/push/a_test.go"),
+                    in_file("pkg.TestB", "internal/push/b_test.go"),
+                    in_file("TestC", "cmd/tool/c_test.go"),
+                    in_file("TestD", "main_test.go"),
+                ]
+            )
+            .unwrap()
+            .join(" "),
+            "go test . ./cmd/tool ./internal/push -run ^(TestA|TestB|TestC|TestD)$"
         );
         assert_eq!(
             test_command("rust", &tools, &[t("a"), t("b")])

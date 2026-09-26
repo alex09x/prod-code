@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+- **`impact` runs Go tests in their packages** (#371): `go test ./internal/push -run ...` instead
+  of `go test ./... -run ...`, which built every package's tests to run a filter most of them never
+  match. One package of a large module: 0.7 s instead of 24.8 s; `impact --run` 2.1 s in all.
+
 ## v0.3.13 — 2026-09-25
 
 ### Added
