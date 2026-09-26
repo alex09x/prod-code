@@ -329,7 +329,9 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
     let table = move |at: (u32, u32)| -> Option<serde_json::Value> {
         let spots = match at {
             _ if at == pad => vec![s("pad(\"a\""), s("pad(\"b\""), s("pad(\"c\"")],
-            _ if at == s("width: number, fill: string = \" \"): string {\n  return text.padStart") => {
+            _ if at
+                == s("width: number, fill: string = \" \"): string {\n  return text.padStart") =>
+            {
                 vec![s("width, fill);\n}\n\nexport function stamp")]
             }
             _ if at == s("fill: string = \" \"): string {\n  return text.padStart") => {
@@ -339,7 +341,9 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
             _ if at == s("at: number") => vec![s("at} ")],
             _ if at == s("zone: string") => vec![s("zone}`")],
             _ if at == edge => vec![s("edge(\"e\"")],
-            _ if at == s("width: number, fill: string = \" \"): string {\n  return text.padEnd") => {
+            _ if at
+                == s("width: number, fill: string = \" \"): string {\n  return text.padEnd") =>
+            {
                 vec![s("width, fill);\n}\n\nexport function run")]
             }
             _ if at == s("fill: string = \" \"): string {\n  return text.padEnd") => {
@@ -373,7 +377,10 @@ async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one
         "opts",
     )
     .await;
-    assert_eq!(done.was, "text: string, width: number, fill: string = \" \"");
+    assert_eq!(
+        done.was,
+        "text: string, width: number, fill: string = \" \""
+    );
     assert_eq!(done.now, "text: string, opts: Pad");
     assert_eq!(done.call_sites, 3);
     assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
@@ -429,7 +436,11 @@ export function pad(text: string, opts: Pad): string {
         };
         assert!(err.contains(&reason), "{params:?}: {err}");
     }
-    assert_eq!(ws.read("src/defaults.ts"), TS_DEFAULTS, "nothing was written");
+    assert_eq!(
+        ws.read("src/defaults.ts"),
+        TS_DEFAULTS,
+        "nothing was written"
+    );
 }
 
 const PY_HOME: &str = "\"\"\"Shapes.\"\"\"
