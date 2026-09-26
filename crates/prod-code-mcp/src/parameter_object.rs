@@ -29,6 +29,14 @@
 //! name is no proof — a getter, a computed property, a macro or a copy constructor may run when
 //! it is read — and the call is refused.
 //!
+//! A Rust function drops its parameters last to first and a struct its fields first to last, so
+//! when two or more of the bundled parameters may have a destructor the struct declares them in
+//! reverse (#441). The literal names its fields and is evaluated in the order it is written, so
+//! the calls do not change. What no order of the fields keeps is refused before anything is
+//! written: an owned parameter left between bundled ones, an `async` function, whose future
+//! drops its parameters first to last when it is dropped before it is polled, and a closure or an
+//! `async` block in a crate before edition 2021, which captures the whole struct.
+//!
 //! TypeScript bundles a defaulted parameter the way JavaScript does: only a constant default,
 //! which the callers then write into the literal where they passed `void 0` or nothing. A
 //! default computed in the callee is refused, since at the callers it would run at another time
@@ -484,6 +492,134 @@ fn reordered(
     )
 }
 
+/// Whether a value of the Rust type `ty` may run a destructor, as far as its spelling shows. A
+/// reference, a pointer, a primitive, and a tuple or an array of those cannot; any type the
+/// program or a library names may, and so may a generic one.
+fn may_drop(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.starts_with(['&', '*']) || ty.starts_with("fn(") {
+        return false;
+    }
+    if let Some(inner) = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        return split_args(inner).iter().any(|t| may_drop(t));
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        return may_drop(inner.rsplit_once(';').map_or(inner, |(element, _)| element));
+    }
+    !matches!(
+        ty,
+        "bool"
+            | "char"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "!"
+    )
+}
+
+/// The parameters that may run a destructor (`owned`), in the order a Rust function drops them
+/// before bundling and after (#441). A function drops its parameters last to first, and the
+/// struct, where the first bundled parameter was, drops its fields in the order `fields` declares
+/// them. With `forward` it is the order a future of an `async` function drops them in when it is
+/// dropped before it is polled: first to last, as the fields of the future.
+fn drop_order(
+    count: usize,
+    bundled: &[usize],
+    fields: &[usize],
+    owned: &[bool],
+    forward: bool,
+) -> (Vec<usize>, Vec<usize>) {
+    let first = bundled.first().copied().unwrap_or(0);
+    let mut was: Vec<usize> = (0..count).collect();
+    let mut units: Vec<Vec<usize>> = (0..count)
+        .filter(|i| *i == first || !bundled.contains(i))
+        .map(|i| if i == first { fields.to_vec() } else { vec![i] })
+        .collect();
+    if !forward {
+        was.reverse();
+        units.reverse();
+    }
+    let owned_only = |order: Vec<usize>| -> Vec<usize> {
+        order.into_iter().filter(|i| owned[*i]).collect()
+    };
+    (owned_only(was), owned_only(units.concat()))
+}
+
+/// The refusal for a bundle that would drop the parameters in another order; see
+/// [`drop_order`]. The names are listed already quoted.
+fn dropped_differently(
+    callee: &str,
+    name: &str,
+    bundled: &str,
+    was: &str,
+    now: &str,
+    forward: bool,
+) -> anyhow::Error {
+    let (who, then, advice) = if forward {
+        (
+            format!("`{callee}` is `async`: a future dropped before it is polled drops"),
+            ", and one that has run drops them the other way round, which the same fields \
+             cannot keep as well",
+            "Bundle at most one parameter whose type may have a destructor",
+        )
+    } else {
+        (
+            format!("`{callee}` drops"),
+            "",
+            "Bundle parameters that are next to each other, or apart only by references and \
+             primitives",
+        )
+    };
+    anyhow::anyhow!(
+        "{who} the parameters that may have a destructor in the order {was}; with {bundled} in \
+         `{name}` it would drop them in the order {now}{then} (#441). {advice}; nothing was \
+         rewritten"
+    )
+}
+
+/// The edition of the crate `file` belongs to: its manifest's, or its workspace's where the
+/// manifest inherits it, and 2015 where neither says, as Cargo reads it.
+fn rust_edition(file: &Path) -> u32 {
+    let mut section = "[package]";
+    for dir in file.ancestors().skip(1) {
+        let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
+            continue;
+        };
+        let Some(at) = manifest.find(section) else {
+            continue;
+        };
+        let table = &manifest[at + section.len()..];
+        let table = &table[..table.find("\n[").unwrap_or(table.len())];
+        let Some(value) = table
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("edition"))
+        else {
+            return 2015;
+        };
+        if value.contains("workspace") {
+            section = "[workspace.package]";
+            continue;
+        }
+        return value
+            .trim_start_matches(['=', ' ', '"'])
+            .get(..4)
+            .and_then(|year| year.parse().ok())
+            .unwrap_or(2015);
+    }
+    2015
+}
+
 /// Bundles `params` of the function at `file:line:col` into a struct called `name`.
 #[allow(clippy::too_many_arguments)]
 pub async fn introduce(
@@ -560,11 +696,89 @@ pub async fn introduce(
             (d.name.clone(), type_of(&d.raw).unwrap_or("()").to_string())
         })
         .collect();
-    let struct_text = struct_text(
-        name,
-        &fields,
-        &format!("The parameters `{callee}` takes together."),
-    );
+
+    // A function drops its parameters last to first and a struct its fields first to last, so
+    // with two or more that may have a destructor the fields are declared the other way round
+    // (#441). The literal names them and is evaluated in the order it writes them.
+    let owned: Vec<bool> = declared
+        .iter()
+        .map(|d| type_of(&d.raw).is_none_or(may_drop))
+        .collect();
+    let owned_bundled: Vec<&str> = bundled
+        .iter()
+        .filter(|i| owned[**i])
+        .map(|i| declared[*i].name.as_str())
+        .collect();
+    let reverse = owned_bundled.len() >= 2;
+    let order: Vec<usize> = if reverse {
+        bundled.iter().rev().copied().collect()
+    } else {
+        bundled.clone()
+    };
+    let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let is_async = text[item_line_start..offset]
+        .split_whitespace()
+        .any(|w| w == "async");
+    let quoted = |list: &[usize]| -> String {
+        list.iter()
+            .map(|i| format!("`{}`", declared[*i].name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for forward in [false, true] {
+        if forward && !is_async {
+            continue;
+        }
+        let (was, now) = drop_order(declared.len(), &bundled, &order, &owned, forward);
+        if was != now {
+            return Err(dropped_differently(
+                &callee,
+                name,
+                &quoted(&bundled),
+                &quoted(&was),
+                &quoted(&now),
+                forward,
+            ));
+        }
+    }
+    // Before edition 2021 a closure or an `async` block that uses `binding.a` captures all of
+    // `binding`, and keeps every field alive for as long as it lives.
+    let body = text[close..]
+        .find(['{', ';'])
+        .filter(|b| text.as_bytes()[close + b] == b'{')
+        .and_then(|b| matching_bracket(&text, close + b))
+        .map_or("", |end| &text[close..end]);
+    if !owned_bundled.is_empty() && (body.contains('|') || body.contains("async")) {
+        let edition = rust_edition(file);
+        anyhow::ensure!(
+            edition >= 2021,
+            "`{callee}` is in a crate of edition {edition}, where a closure or an `async` block \
+             that uses a field of `{binding}` captures all of it, and would keep {} (whose types \
+             may have a destructor) until it is dropped rather than drop them when `{callee}` \
+             returns (#441). Bundle them in edition 2021 or later, or from a body without \
+             closures; nothing was rewritten",
+            owned_bundled
+                .iter()
+                .map(|n| format!("`{n}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    let laid_out: Vec<(String, String)> = if reverse {
+        fields.iter().rev().cloned().collect()
+    } else {
+        fields.clone()
+    };
+    let doc = if reverse {
+        format!(
+            "The parameters `{callee}` takes together, last to first: a struct drops its fields \
+             first to last, and `{callee}` dropped them last to first."
+        )
+    } else {
+        format!("The parameters `{callee}` takes together.")
+    };
+    let struct_text = struct_text(name, &laid_out, &doc);
 
     // Every edit is computed against the file as it is now and applied from the last offset
     // backwards, so no edit has to know what the ones before it did to the offsets.
@@ -694,7 +908,6 @@ pub async fn introduce(
     };
     let declaring = edits.entry(file.to_path_buf()).or_default();
     declaring.push((open, close - open, now.clone()));
-    let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let item_start = text[..item_line_start]
         .rfind("\n\n")
         .map(|i| i + 2)
@@ -4880,5 +5093,73 @@ mod tests {
         assert_eq!(outermost_container(symbols, 11), Some(9));
         assert_eq!(outermost_container(symbols, 7), Some(7));
         assert_eq!(outermost_container(symbols, 2), None);
+    }
+
+    /// Only what the spelling shows cannot run a destructor is taken for that (#441).
+    #[test]
+    fn a_type_may_drop_unless_its_spelling_shows_it_cannot() {
+        for inert in [
+            "&str",
+            "&mut Guard",
+            "&'a [u8]",
+            "*const Guard",
+            "fn(u32) -> u32",
+            "u32",
+            "()",
+            "(u8, &str)",
+            "[[u8; 4]; 2]",
+        ] {
+            assert!(!may_drop(inert), "{inert}");
+        }
+        for owned in ["Guard", "String", "T", "impl Drop", "(u8, Guard)", "[Guard; 2]"] {
+            assert!(may_drop(owned), "{owned}");
+        }
+    }
+
+    /// `f(a, x, b, y)` with `a`, `b` bundled: `x` is dropped before the struct rather than
+    /// between its fields, and an `async` future dropped unpolled drops first to last.
+    #[test]
+    fn the_drop_order_is_compared_before_and_after_bundling() {
+        let owned = [true, true, true, true];
+        assert_eq!(
+            drop_order(4, &[1, 2], &[2, 1], &owned, false),
+            (vec![3, 2, 1, 0], vec![3, 2, 1, 0])
+        );
+        assert_eq!(
+            drop_order(3, &[0, 2], &[2, 0], &owned, false),
+            (vec![2, 1, 0], vec![1, 2, 0])
+        );
+        assert_eq!(
+            drop_order(3, &[0, 2], &[2, 0], &[true, false, true], false),
+            (vec![2, 0], vec![2, 0])
+        );
+        assert_eq!(
+            drop_order(2, &[0, 1], &[1, 0], &owned, true),
+            (vec![0, 1], vec![1, 0])
+        );
+    }
+
+    #[test]
+    fn the_edition_is_the_crates_or_the_workspaces_it_inherits() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let at = |rel: &str, text: &str| {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(&path, text).expect("write");
+            path
+        };
+        at(
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        );
+        at(
+            "a/Cargo.toml",
+            "[package]\nname = \"a\"\nedition.workspace = true\n",
+        );
+        at("b/Cargo.toml", "[package]\nname = \"b\"\nedition = \"2018\"\n");
+        at("c/Cargo.toml", "[package]\nname = \"c\"\n\n[dependencies]\n");
+        assert_eq!(rust_edition(&at("a/src/lib.rs", "")), 2024);
+        assert_eq!(rust_edition(&at("b/src/lib.rs", "")), 2018);
+        assert_eq!(rust_edition(&at("c/src/lib.rs", "")), 2015);
     }
 }
