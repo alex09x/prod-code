@@ -19,7 +19,12 @@
 //! calls pass an object literal, and nothing is declared, annotated or imported for it. What a
 //! type checker would catch in TypeScript nothing catches there, so what cannot be shown to mean
 //! the same afterwards — a spread, `arguments`, a default that is not a constant, a name the
-//! object would shadow — is refused with the reason instead of being written.
+//! object would shadow, a reference the file no longer has — is refused with the reason instead
+//! of being written.
+//!
+//! In every language the literal keeps the arguments in the order the call evaluated them, and
+//! a call whose bundled arguments are not next to each other is refused unless the arguments
+//! that would trade places cannot affect each other (#436).
 //!
 //! Swift takes the same path, with a `struct` of `let` properties whose memberwise initialiser
 //! is the literal, and argument labels that bind the arguments to the parameters. C and C++
@@ -434,6 +439,27 @@ fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+/// Why nothing is rewritten when the analyzer cannot list the references to `name`: with some
+/// of them missing, a call or a use would be left behind that the check afterwards may not see
+/// (#436).
+fn unlisted(name: &str, root: &Path, file: &Path, line: u32, col: u32) -> String {
+    format!(
+        "the references to `{name}` at {}:{line}:{col} could not be listed, so nothing was \
+         rewritten",
+        display(root, file)
+    )
+}
+
+/// The refusal for a call whose arguments bundling would evaluate in another order; see
+/// [`reordered_arguments`].
+fn reordered(callee: &str, place: &str, moved: &str, passed: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "`{callee}` at {place} passes `{passed}` between the bundled arguments; in the object \
+         `{moved}` would be evaluated before it, and either may change what the other sees. \
+         Bundle adjacent parameters, or give the arguments names first; nothing was rewritten"
+    )
+}
+
 /// Bundles `params` of the function at `file:line:col` into a struct called `name`.
 #[allow(clippy::too_many_arguments)]
 pub async fn introduce(
@@ -552,10 +578,10 @@ pub async fn introduce(
         }
     };
 
-    for (path, rl, rc) in crate::signature::references(remote, root, file, line, col)
+    let callers = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
+    for (path, rl, rc) in callers {
         let body = texts(&path);
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
             continue;
@@ -580,6 +606,11 @@ pub async fn introduce(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         }
+        let bound: Vec<Option<usize>> = (0..args.len()).map(Some).collect();
+        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
+            let place = format!("{}:{rl}:{rc}", display(root, &path));
+            return Err(reordered(&callee, &place, moved, passed));
+        }
         let (spelling, _) = spelling_in(&path);
         edits.entry(path).or_default().push((
             args_start,
@@ -598,10 +629,10 @@ pub async fn introduce(
             continue;
         };
         let (l, c) = crate::signature::line_col_at(&text, at);
-        for (path, rl, rc) in crate::signature::references(remote, root, file, l, c)
+        let refs = crate::signature::references(remote, root, file, l, c)
             .await
-            .unwrap_or_default()
-        {
+            .with_context(|| unlisted(&d.name, root, file, l, c))?;
+        for (path, rl, rc) in refs {
             if path != file || rl == l {
                 continue;
             }
@@ -1532,11 +1563,17 @@ fn parameter_in(language: Language, binding: &str, name: &str) -> String {
 /// `(struct Opts){.a = x, .b = y}`, since a braced list alone is not an expression there; C++
 /// converts a braced list to the parameter's type, and its designators are C++20's — see
 /// [`aggregate_text`] for the standards before it.
+///
+/// A TypeScript or JavaScript field called `__proto__` is written as a computed key: written
+/// plainly, `__proto__: x` sets the object's prototype instead of giving it that field.
 pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String)]) -> String {
     let join = |sep: &str| {
         pairs
             .iter()
-            .map(|(f, v)| format!("{f}{sep}{v}"))
+            .map(|(f, v)| match language {
+                Language::TypeScript | Language::JavaScript => format!("{}{sep}{v}", js_key(f)),
+                _ => format!("{f}{sep}{v}"),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1556,6 +1593,16 @@ pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String
         Language::C => format!("(struct {spelling}){{{}}}", designated()),
         Language::Cpp => format!("{{{}}}", designated()),
         Language::Swift => format!("{spelling}({})", join(": ")),
+    }
+}
+
+/// The key an object literal gives the field `name`: the name itself, except `__proto__`, which
+/// only a computed key makes an own property.
+fn js_key(name: &str) -> String {
+    if name == "__proto__" {
+        "[\"__proto__\"]".to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -1761,22 +1808,60 @@ fn bind_js_arguments(args: &[String], params: &[Param]) -> Option<Vec<Option<usi
 }
 
 /// Whether a JavaScript expression is a constant, the same value wherever and whenever it is
-/// evaluated: a number, a string with no substitution, `true`, `false`, `null`, `undefined`, or
-/// an empty `[]` or `{}` (a new one either way). A default like that can be written at the call
+/// evaluated: a number, a string with no substitution, `true`, `false`, `null`, `void 0`, or an
+/// empty `[]` or `{}` (a new one either way). A default like that can be written at the call
 /// instead of in the function without meaning anything else.
+///
+/// `undefined` is not one: it is a name, which a parameter or a variable can shadow. Nor is
+/// `1..x`, which reads a property of a number and is `undefined` when there is none.
 pub fn js_constant(expr: &str) -> bool {
     let e = expr.trim();
-    if matches!(e, "true" | "false" | "null" | "undefined" | "[]" | "{}") {
+    if matches!(e, "true" | "false" | "null" | "void 0" | "[]" | "{}") {
         return true;
     }
-    let number = e.strip_prefix('-').map_or(e, str::trim_start);
-    if number.starts_with(|c: char| c.is_ascii_digit() || c == '.')
-        && number
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
-    {
-        return true;
+    number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
+        || (string_literal(e) && !(e.starts_with('`') && e.contains("${")))
+}
+
+/// Whether `e` is one number literal and nothing after it: digits with a fraction, an exponent,
+/// separators, a radix prefix or a type suffix (`1.5e-3`, `0xff`, `1_000`, `10n`, `2u8`). A point
+/// is followed by a digit, an exponent or nothing; a name after it (`1..x`, `1.e`) is a property.
+fn number_literal(e: &str) -> bool {
+    let b = e.as_bytes();
+    let starts = b.first().is_some_and(u8::is_ascii_digit)
+        || (b.first() == Some(&b'.') && b.get(1).is_some_and(u8::is_ascii_digit));
+    if !starts {
+        return false;
     }
+    let radix = b.len() > 1 && b[0] == b'0' && b[1].is_ascii_alphabetic();
+    let exponent = |at: usize| {
+        matches!(b.get(at), Some(b'e' | b'E'))
+            && b.get(at + 1)
+                .is_some_and(|n| n.is_ascii_digit() || matches!(n, b'+' | b'-'))
+    };
+    let mut points = 0;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'.' => {
+                points += 1;
+                let fraction = b.get(i + 1).is_none_or(u8::is_ascii_digit) || exponent(i + 1);
+                if points > 1 || radix || !fraction {
+                    return false;
+                }
+            }
+            // A sign only in a decimal exponent: in `0xe+1` it is an addition.
+            b'+' | b'-' if !radix && i > 0 && matches!(b[i - 1], b'e' | b'E') => {}
+            c if c.is_ascii_alphanumeric() || c == b'_' => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Whether `e` is one quoted literal: it starts and ends with the same quote, and has no
+/// unescaped quote of its kind inside, which would make it two joined. What it may substitute
+/// (`${…}`, `\(…)`) is the caller's to rule out.
+fn string_literal(e: &str) -> bool {
     let bytes = e.as_bytes();
     let Some(&quote) = bytes.first().filter(|q| matches!(**q, b'"' | b'\'' | b'`')) else {
         return false;
@@ -1784,7 +1869,6 @@ pub fn js_constant(expr: &str) -> bool {
     if bytes.len() < 2 || bytes[bytes.len() - 1] != quote {
         return false;
     }
-    // One literal, not two joined: no unescaped quote of its own kind inside it.
     let inner = &bytes[1..bytes.len() - 1];
     let mut escaped = false;
     for &b in inner {
@@ -1796,7 +1880,87 @@ pub fn js_constant(expr: &str) -> bool {
             return false;
         }
     }
-    !(quote == b'`' && e.contains("${"))
+    !escaped
+}
+
+/// What evaluating an argument may do, as far as its text shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Effect {
+    /// A literal: it reads and writes nothing.
+    Nothing,
+    /// A plain name: it reads a variable and writes nothing.
+    Reads,
+    /// A call, an assignment, a property that may be a getter: anything.
+    Unknown,
+}
+
+fn effect_of(arg: &str, language: Language) -> Effect {
+    let e = arg.trim();
+    let constant = match language {
+        Language::TypeScript | Language::JavaScript => js_constant(e),
+        _ => {
+            let word = match language {
+                Language::Python => matches!(e, "True" | "False" | "None"),
+                Language::Rust => matches!(e, "true" | "false"),
+                Language::Swift => matches!(e, "true" | "false" | "nil"),
+                Language::Cpp => matches!(e, "true" | "false" | "nullptr"),
+                _ => false,
+            };
+            word || number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
+                || (string_literal(e) && !e.contains("\\(") && !e.starts_with('`'))
+        }
+    };
+    if constant {
+        return Effect::Nothing;
+    }
+    let name = leading_ident(e);
+    if !name.is_empty()
+        && name.len() == e.len()
+        && !name.as_bytes()[0].is_ascii_digit()
+        && !matches!(name, "yield" | "await")
+    {
+        return Effect::Reads;
+    }
+    Effect::Unknown
+}
+
+/// The value an argument passes, without the keyword (Python) or the label (Swift) it is
+/// passed under.
+fn argument_value(arg: &str, language: Language) -> &str {
+    match language {
+        Language::Python => keyword_arg(arg).map_or(arg, |(_, v)| v),
+        Language::Swift => swift_label(arg).map_or(arg, |(_, v)| v),
+        _ => arg,
+    }
+}
+
+/// Two arguments of a call whose order of evaluation bundling would change, the bundled one
+/// first, when nothing shows that it does not matter (#436). The literal is written where the
+/// first bundled argument was, holding the bundled arguments in the order the call wrote them,
+/// so a bundled argument after one that is not bundled is evaluated before it afterwards. That
+/// is the same program when either of the two is a literal, or when both are plain names:
+/// reading a variable changes nothing another read could see. Anything else is refused.
+pub fn reordered_arguments<'a>(
+    args: &'a [String],
+    bound: &[Option<usize>],
+    bundled: &[usize],
+    language: Language,
+) -> Option<(&'a str, &'a str)> {
+    let in_bundle = |a: usize| bound[a].is_some_and(|p| bundled.contains(&p));
+    let first = (0..args.len()).find(|a| in_bundle(*a))?;
+    let effect = |a: usize| effect_of(argument_value(&args[a], language), language);
+    for passed in (first..args.len()).filter(|a| !in_bundle(*a)) {
+        for moved in (passed + 1..args.len()).filter(|a| in_bundle(*a)) {
+            let commute = matches!(
+                (effect(moved), effect(passed)),
+                (Effect::Nothing, _) | (_, Effect::Nothing) | (Effect::Reads, Effect::Reads)
+            );
+            if !commute {
+                return Some((args[moved].trim(), args[passed].trim()));
+            }
+        }
+    }
+    None
 }
 
 /// The argument list a call ends up with: the bundled arguments collected into one literal where
@@ -1835,32 +1999,34 @@ fn rewritten_call_with(
     binding: &str,
     literal: impl Fn(&[(String, String)]) -> String,
 ) -> String {
-    let value_of = |arg: &str| -> String {
-        match language {
-            Language::Python => keyword_arg(arg).map_or(arg, |(_, v)| v).to_string(),
-            Language::Swift => swift_label(arg).map_or(arg, |(_, v)| v).to_string(),
-            _ => arg.to_string(),
-        }
-    };
-    let pairs: Vec<(String, String)> = bundled
+    let js = language == Language::JavaScript;
+    // In the order the call wrote them, which is the order they are evaluated in: a Python
+    // call may pass keywords in any order (#436). A field the call left out goes after them.
+    let mut pairs: Vec<(usize, (String, String))> = bundled
         .iter()
         .filter_map(|p| {
             let name = params[*p].name.clone();
             // A JavaScript default stands in for `undefined`, passed or left out; the object
             // carries it now, since the field has none. Only a constant gets this far.
-            let default = params[*p]
-                .default
-                .clone()
-                .filter(|_| language == Language::JavaScript);
+            let default = params[*p].default.clone().filter(|_| js);
             match bound.iter().position(|b| *b == Some(*p)) {
-                Some(a) if default.is_some() && args[a].trim() == "undefined" => {
-                    Some((name, default?))
+                Some(a) if default.is_some() && args[a].trim() == "void 0" => {
+                    Some((a, (name, default?)))
                 }
-                Some(a) => Some((name, value_of(&args[a]))),
-                None => default.map(|d| (name, d)),
+                Some(a) => Some((a, (name, argument_value(&args[a], language).to_string()))),
+                // Left out, a JavaScript parameter was `undefined`, and the field is too — an own
+                // one, so that `toString` does not read the one every object inherits. `void 0`
+                // is `undefined` wherever it is written; the name can be shadowed.
+                None if js => Some((
+                    usize::MAX,
+                    (name, default.unwrap_or_else(|| "void 0".to_string())),
+                )),
+                None => None,
             }
         })
         .collect();
+    pairs.sort_by_key(|(at, _)| *at);
+    let pairs: Vec<(String, String)> = pairs.into_iter().map(|(_, pair)| pair).collect();
     let literal = literal(&pairs);
     let first = bound
         .iter()
@@ -1886,10 +2052,10 @@ fn rewritten_call_with(
     }
     // A JavaScript call that stopped short of the bundled parameters still has to pass the
     // object, which the body reads fields of; what it left out before it was `undefined`.
-    if first.is_none() && language == Language::JavaScript {
+    if first.is_none() && js {
         let at = bundled.first().copied().unwrap_or(0);
         while out.len() < at {
-            out.push("undefined".to_string());
+            out.push("void 0".to_string());
         }
         out.push(literal);
     }
@@ -2481,19 +2647,28 @@ async fn introduce_in(
     for i in &bundled {
         let p = &declared[*i];
         let (l, c) = crate::signature::line_col_at(&text, open + p.name_at);
-        for (path, rl, rc) in crate::signature::references(remote, root, file, l, c)
+        let refs = crate::signature::references(remote, root, file, l, c)
             .await
-            .unwrap_or_default()
-        {
+            .with_context(|| unlisted(&p.name, root, file, l, c))?;
+        for (path, rl, rc) in refs {
             if path != file {
                 continue;
             }
-            let Some(o) = crate::signature::offset_of(&text, rl, rc) else {
+            // A use the analyzer places where the file has something else was not rewritten,
+            // and in JavaScript no check afterwards would say so: the body would read a name
+            // that is gone.
+            let o = crate::signature::offset_of(&text, rl, rc)
+                .filter(|o| text[*o..].starts_with(&p.name));
+            anyhow::ensure!(
+                o.is_some() || language != Language::JavaScript,
+                "the analyzer places a use of `{}` at {}:{rl}:{rc}, but the file says otherwise; \
+                 it changed since the analyzer read it, so nothing was rewritten",
+                p.name,
+                display(root, file)
+            );
+            let Some(o) = o else {
                 continue;
             };
-            if !text[o..].starts_with(&p.name) {
-                continue;
-            }
             if o <= body.0 || o >= body.1 {
                 // Another parameter's default reads this one, and would lose it. TypeScript's
                 // checker says so after the rewrite; in JavaScript nothing would.
@@ -2516,7 +2691,7 @@ async fn introduce_in(
             let replacement =
                 if language == Language::JavaScript && object_shorthand(&text, body.0, o, p.name.len())
                 {
-                    format!("{}: {field}", p.name)
+                    format!("{}: {field}", js_key(&p.name))
                 } else {
                     field
                 };
@@ -2567,23 +2742,30 @@ async fn introduce_in(
     let mut call_sites = 0usize;
     let mut consumed = vec![false; uses.len()];
     let mut bare_callers: Vec<PathBuf> = Vec::new();
-    for (path, rl, rc) in crate::signature::references(remote, root, file, line, col)
+    let callers = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
+    for (path, rl, rc) in callers {
         let source = texts(&path);
-        let Some(at) = crate::signature::offset_of(&source, rl, rc) else {
-            continue;
-        };
-        // As in Rust (#75): the position is trusted only when the name is there.
-        let Some(called) = called_name(&source, at, &callee, language) else {
-            unmatched.push(format!(
-                "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
-                display(root, &path)
-            ));
-            continue;
-        };
         let place = format!("{}:{rl}:{rc}", display(root, &path));
+        // As in Rust (#75): the position is trusted only when the name is there. A JavaScript
+        // call left as it was would pass the old arguments to the new parameter, and only a
+        // type checker would see that, so there it stops the whole change.
+        let called = crate::signature::offset_of(&source, rl, rc)
+            .and_then(|at| Some((at, called_name(&source, at, &callee, language)?)));
+        anyhow::ensure!(
+            called.is_some() || language != Language::JavaScript,
+            "the analyzer places `{callee}` at {place}, but the file says otherwise; it changed \
+             since the analyzer read it, so nothing was rewritten"
+        );
+        let Some((at, called)) = called else {
+            if crate::signature::offset_of(&source, rl, rc).is_some() {
+                unmatched.push(format!(
+                    "{place} (the analyzer places `{callee}` here, but the file says otherwise)"
+                ));
+            }
+            continue;
+        };
         // `build.call(receiver, …)` passes the receiver first and the arguments after it;
         // `apply` passes them in an array that only the running call can take apart.
         let mut after_name = at + called;
@@ -2627,10 +2809,12 @@ async fn introduce_in(
             .map(|(_, a)| a.to_string())
             .collect();
         let receiver_arg = if through_call {
-            if args.is_empty() {
-                unmatched.push(place);
-                continue;
-            }
+            // Left as it was, the call would give the body no object to read fields of.
+            anyhow::ensure!(
+                !args.is_empty(),
+                "`{callee}` is called through `call` with no arguments at {place}; there is no \
+                 receiver to keep in front of the object, so nothing was rewritten"
+            );
             Some(args.remove(0))
         } else {
             None
@@ -2654,8 +2838,8 @@ async fn introduce_in(
                     js_constant(value),
                     "`{callee}` at {place} passes `{value}` as `{}`, which defaults to \
                      `{default}`: if it is `undefined` when the call runs the default applies, \
-                     and in the object it would not. Pass a constant there, or leave `{}` out \
-                     of the bundle",
+                     and in the object it would not. Pass a constant there (`void 0` for the \
+                     default), or leave `{}` out of the bundle",
                     declared[*p].name,
                     declared[*p].name
                 );
@@ -2665,6 +2849,9 @@ async fn introduce_in(
             unmatched.push(place);
             continue;
         };
+        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
+            return Err(reordered(&callee, &place, moved, passed));
+        }
         // A method's qualifier is the object it is called on, not where the type lives, and a
         // TypeScript or JavaScript literal names no type at all.
         let qualifier =
@@ -3087,10 +3274,10 @@ async fn introduce_c(
 
     let calls = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default();
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
     let everything = references_with_declarations(remote, root, file, line, col)
         .await
-        .unwrap_or_default();
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
     let mut spots = vec![(file.to_path_buf(), line, col)];
     spots.extend(everything.into_iter().filter(|r| !calls.contains(r)));
 
@@ -3231,10 +3418,10 @@ async fn introduce_c(
         for i in &bundled {
             let p = &declared[*i];
             let (l, c) = crate::signature::line_col_at(&def.text, def.open + p.name_at);
-            for (path, rl, rc) in crate::signature::references(remote, root, &def.path, l, c)
+            let refs = crate::signature::references(remote, root, &def.path, l, c)
                 .await
-                .unwrap_or_default()
-            {
+                .with_context(|| unlisted(&p.name, root, &def.path, l, c))?;
+            for (path, rl, rc) in refs {
                 if path != def.path {
                     continue;
                 }
@@ -3305,6 +3492,10 @@ async fn introduce_c(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         };
+        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
+            let place = format!("{}:{rl}:{rc}", display(root, &path));
+            return Err(reordered(&callee, &place, moved, passed));
+        }
         let new_args = rewritten_call_with(
             &args, &bound, &bundled, &declared, language, binding, literal,
         );
@@ -3631,15 +3822,24 @@ mod tests {
             Some("\"a\", { width: 3, height: 2 }")
         );
         assert_eq!(
-            call(&["\"a\"", "3", "undefined"]).as_deref(),
+            call(&["\"a\"", "3", "void 0"]).as_deref(),
             Some("\"a\", { width: 3, height: 2 }")
         );
-        // A call that stopped before the bundle still passes the object the body reads.
+        // `undefined` is a name a scope may give another value; it is passed on as written.
+        assert_eq!(
+            call(&["\"a\"", "3", "undefined"]).as_deref(),
+            Some("\"a\", { width: 3, height: undefined }")
+        );
+        // A call that stopped before the bundle still passes the object the body reads, with
+        // what it left out as own fields.
         assert_eq!(
             call(&["\"a\""]).as_deref(),
-            Some("\"a\", { height: 2 }")
+            Some("\"a\", { width: void 0, height: 2 }")
         );
-        assert_eq!(call(&[]).as_deref(), Some("undefined, { height: 2 }"));
+        assert_eq!(
+            call(&[]).as_deref(),
+            Some("void 0, { width: void 0, height: 2 }")
+        );
         // An argument past the last parameter is evaluated as before, and still goes nowhere.
         assert_eq!(
             call(&["\"a\"", "3", "4", "log()"]).as_deref(),
@@ -3668,8 +3868,8 @@ mod tests {
     #[test]
     fn only_a_constant_javascript_default_moves_to_the_callers() {
         for constant in [
-            "2", "-1.5", ".5", "0xff", "1_000", "10n", "\"a, b\"", "'it\\'s'", "`plain`", "true",
-            "null", "undefined", "[]", "{}",
+            "2", "-1.5", ".5", "1.", "1.5e-3", "1.e5", "0xff", "1_000", "10n", "\"a, b\"",
+            "'it\\'s'", "`plain`", "true", "null", "void 0", "[]", "{}",
         ] {
             assert!(js_constant(constant), "{constant}");
         }
@@ -3682,9 +3882,108 @@ mod tests {
             "[1]",
             "{ a: 1 }",
             "new Map()",
+            // A name, which a parameter or a variable can shadow.
+            "undefined",
+            "void x",
+            // A property of a number, `undefined` when there is none.
+            "1..missing",
+            "1.x",
+            "1.e",
+            "0xe+1",
+            "1.5.x",
+            // The closing quote is escaped: the literal does not end there.
+            "\"a\\\"",
         ] {
             assert!(!js_constant(expr), "{expr}");
         }
+    }
+
+    #[test]
+    fn a_bundled_argument_is_not_moved_past_one_that_may_change_it() {
+        let (_, params) = parse_params("a, b, c", Language::JavaScript);
+        let order = |args: &[&str], bundled: &[usize]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, Language::JavaScript).expect("bound");
+            reordered_arguments(&args, &bound, bundled, Language::JavaScript)
+                .map(|(m, p)| (m.to_string(), p.to_string()))
+        };
+        let mark = ["mark(\"a\")", "mark(\"b\")", "mark(\"c\")"];
+        assert_eq!(
+            order(&mark, &[0, 2]),
+            Some(("mark(\"c\")".to_string(), "mark(\"b\")".to_string())),
+            "the object would evaluate `c` before `b`"
+        );
+        assert_eq!(order(&mark, &[0, 1]), None, "adjacent: nothing moves");
+        assert_eq!(order(&mark, &[1, 2]), None, "adjacent: nothing moves");
+        assert_eq!(order(&["x", "y", "z"], &[0, 2]), None, "three reads commute");
+        assert_eq!(order(&["1", "mark(\"b\")", "\"c\""], &[0, 2]), None);
+        assert_eq!(order(&["mark(\"a\")", "b", "3"], &[0, 2]), None);
+        assert!(order(&["x", "mark(\"b\")", "z"], &[0, 2]).is_some(), "b may set z");
+        assert!(order(&["x", "b", "next()"], &[0, 2]).is_some(), "next() may set b");
+        assert!(order(&["x", "b", "1..missing"], &[0, 2]).is_some());
+
+        // Rust and the others are positional too; Python's keywords are compared by value.
+        let (_, py) = parse_params("a, b, c", Language::Python);
+        let args = strings(&["mark(1)", "c=mark(3)", "b=2"]);
+        let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
+        assert_eq!(
+            reordered_arguments(&args, &bound, &[0, 1], Language::Python),
+            None,
+            "a keyword argument whose value is a literal"
+        );
+        let args = strings(&["mark(1)", "b=mark(2)", "c=mark(3)"]);
+        let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
+        assert!(reordered_arguments(&args, &bound, &[0, 2], Language::Python).is_some());
+        let rust = strings(&["a()", "b()", "c()"]);
+        let bound: Vec<Option<usize>> = (0..3).map(Some).collect();
+        assert!(reordered_arguments(&rust, &bound, &[0, 2], Language::Rust).is_some());
+        assert_eq!(
+            reordered_arguments(&rust, &bound, &[1, 2], Language::Rust),
+            None
+        );
+    }
+
+    #[test]
+    fn python_keywords_go_into_the_literal_in_the_order_the_call_wrote_them() {
+        let (_, params) = parse_params("a, b, c", Language::Python);
+        let args = strings(&["c=mark(\"c\")", "a=mark(\"a\")", "b=mark(\"b\")"]);
+        let bound = bind_arguments(&args, &params, Language::Python).expect("bound");
+        assert_eq!(
+            rewritten_call(
+                &args,
+                &bound,
+                &[0, 2],
+                &params,
+                Language::Python,
+                "Pair",
+                "pair"
+            ),
+            "pair=Pair(c=mark(\"c\"), a=mark(\"a\")), b=mark(\"b\")"
+        );
+    }
+
+    #[test]
+    fn a_proto_field_is_an_own_property_in_the_literal_and_the_body() {
+        assert_eq!(
+            literal_text(
+                Language::JavaScript,
+                "Tag",
+                &[
+                    ("__proto__".to_string(), "p".to_string()),
+                    ("name".to_string(), "n".to_string())
+                ]
+            ),
+            "{ [\"__proto__\"]: p, name: n }"
+        );
+        assert_eq!(
+            literal_text(
+                Language::TypeScript,
+                "Tag",
+                &[("__proto__".to_string(), "p".to_string())]
+            ),
+            "{ [\"__proto__\"]: p }"
+        );
+        assert_eq!(js_key("proto"), "proto");
     }
 
     #[test]
@@ -3916,8 +4215,9 @@ mod tests {
         );
         assert_eq!(
             rewrite(&["name", "height=3", "width=1"]).as_deref(),
-            Some("name, size=Size(width=1, height=3)"),
-            "after a keyword argument the literal is passed by keyword"
+            Some("name, size=Size(height=3, width=1)"),
+            "after a keyword argument the literal is passed by keyword, its keywords in the \
+             order they are evaluated (#436)"
         );
         assert_eq!(
             rewrite(&["width=1", "name=n"]).as_deref(),

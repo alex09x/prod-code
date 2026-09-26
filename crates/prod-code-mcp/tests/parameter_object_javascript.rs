@@ -515,6 +515,263 @@ async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
     assert_eq!(ws.read("src/refusals.js"), REFUSALS, "nothing was written");
 }
 
+/// The 1-based line and column of the first `needle` in `text`, `skip` bytes into it.
+fn spot(text: &str, needle: &str, skip: usize) -> (u32, u32) {
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` is in the fixture"))
+        + skip;
+    let line = text[..at].matches('\n').count() as u32 + 1;
+    let col = (at - text[..at].rfind('\n').map_or(0, |n| n + 1)) as u32 + 1;
+    (line, col)
+}
+
+/// A gateway that answers a reference request at a 1-based position from `table`, and finds
+/// no error in any file.
+async fn table_gateway(
+    table: impl Fn((u32, u32)) -> Option<serde_json::Value> + Send + Sync + 'static,
+) -> SocketAddr {
+    scripted_gateway(Arc::new(move |method, params| {
+        let (_, line, ch) = position(params);
+        match method {
+            "textDocument/references" => table((line as u32 + 1, ch as u32 + 1))
+                .unwrap_or_else(|| serde_json::json!([])),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await
+}
+
+/// Runs `text` as a script with `program`, and returns what it printed; `None` when the program
+/// is not installed where the test runs.
+fn run_script(program: &str, name: &str, text: &str) -> Option<String> {
+    let dir = tempfile::tempdir().expect("script dir");
+    let path = dir.path().join(name);
+    std::fs::write(&path, text).expect("write the script");
+    let out = std::process::Command::new(program).arg(&path).output().ok()?;
+    assert!(
+        out.status.success(),
+        "{program} {name} failed: {}\n{text}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+const ORDER: &str = "const seen = [];
+function mark(v) {
+  seen.push(v);
+  return v;
+}
+
+export function place(a, b, c) {
+  return [a, b, c].join(\"\");
+}
+
+export function run() {
+  return place(mark(\"a\"), mark(\"b\"), mark(\"c\"));
+}
+";
+
+/// What would make the rewrite a different program, or one written from a partial answer, stops
+/// it before anything is written (#436): bundled arguments that would be evaluated in another
+/// order, a reference the file no longer has at the analyzer's position — for the function and
+/// for a parameter, since no type checker would notice either in JavaScript — and a reference
+/// query that fails, for the function and for a parameter.
+#[tokio::test]
+async fn javascript_refuses_reordering_stale_references_and_failed_queries() {
+    let ws = Workspace::new(&[FILES[0], FILES[1], ("src/order.js", ORDER)]);
+    let file = ws.path("src/order.js");
+    let mode = Arc::new(std::sync::Mutex::new(""));
+    let (f, m) = (file.clone(), mode.clone());
+    let decl = spot(ORDER, "place(a", 0);
+    let param = |skip: usize| spot(ORDER, "place(a", skip);
+    let remote = table_gateway(move |at| {
+        let mode = *m.lock().expect("mode");
+        let refs = |spots: &[(u32, u32)]| Some(answers::locations(&f, spots));
+        match at {
+            _ if at == decl && mode == "callee fails" => Some(answers::failure("server crashed")),
+            _ if at == decl && mode == "callee stale" => refs(&[spot(ORDER, "seen", 0)]),
+            _ if at == decl => refs(&[spot(ORDER, "place(mark", 0)]),
+            _ if at == param(6) && mode == "param fails" => {
+                Some(answers::failure("server crashed"))
+            }
+            _ if at == param(6) && mode == "param stale" => refs(&[spot(ORDER, "[a, b", 0)]),
+            _ if at == param(6) => refs(&[spot(ORDER, "a, b, c]", 0)]),
+            _ if at == param(9) => refs(&[spot(ORDER, "b, c]", 0)]),
+            _ if at == param(12) => refs(&[spot(ORDER, "c]", 0)]),
+            _ => None,
+        }
+    })
+    .await;
+    let root = ws.root();
+    let cases: [(&str, &[&str], &str); 5] = [
+        (
+            "",
+            &["a", "c"],
+            "`place` at src/order.js:12:10 passes `mark(\"b\")` between the bundled arguments; \
+             in the object `mark(\"c\")` would be evaluated before it",
+        ),
+        (
+            "callee stale",
+            &["a", "b"],
+            "the analyzer places `place` at src/order.js:1:7, but the file says otherwise",
+        ),
+        (
+            "param stale",
+            &["a", "b"],
+            "the analyzer places a use of `a` at src/order.js:8:10, but the file says otherwise",
+        ),
+        (
+            "callee fails",
+            &["a", "b"],
+            "the references to `place` at src/order.js:7:17 could not be listed, so nothing was \
+             rewritten",
+        ),
+        (
+            "param fails",
+            &["a", "b"],
+            "the references to `a` at src/order.js:7:23 could not be listed",
+        ),
+    ];
+    for (case, params, reason) in cases {
+        *mode.lock().expect("mode") = case;
+        let err = match introduce(remote, &root, &file, decl.0, decl.1, params, "opts", true).await
+        {
+            Ok(done) => panic!("{case:?} was bundled: {}", done.render(4000)),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(err.contains(reason), "{case:?}: {err}");
+    }
+    assert_eq!(ws.read("src/order.js"), ORDER, "nothing was written");
+
+    // Adjacent, the same arguments are evaluated in the same order, and the change is made.
+    *mode.lock().expect("mode") = "";
+    let done = introduce(remote, &root, &file, decl.0, decl.1, &["b", "c"], "opts", false)
+        .await
+        .expect("adjacent arguments are bundled");
+    assert!(
+        rewritten(&done, "order.js")
+            .contains("place(mark(\"a\"), { b: mark(\"b\"), c: mark(\"c\") })"),
+        "{done:?}"
+    );
+}
+
+const RUN: &str = "\"use strict\";
+const seen = [];
+function mark(v) {
+  seen.push(v);
+  return v;
+}
+
+function place(a, b, c) {
+  return [a, b, c].join(\"\");
+}
+
+function tag(__proto__, toString, fill = 0) {
+  const own = { __proto__ };
+  return [Object.getPrototypeOf(own) === Object.prototype, own.__proto__, typeof toString, fill].join(\" \");
+}
+
+const x = \"x\";
+const y = \"y\";
+console.log(place(1, mark(\"b\"), \"c\"), place(x, y, x));
+console.log(tag(\"p\"), tag(\"q\", void 0, 5), tag(\"r\", 1, void 0));
+console.log(seen.join(\",\"));
+";
+
+/// What JavaScript does with the result, run with Node where the test runs: arguments that trade
+/// places only where nothing can tell, a `__proto__` field that stays a field (a computed key in
+/// the literal and in the body's shorthand), a left-out `toString` that is `undefined` and not
+/// the one every object inherits, and `void 0` standing for a default. The rewritten script
+/// prints what the original printed.
+#[tokio::test]
+async fn rewritten_javascript_prints_what_the_original_printed() {
+    let ws = Workspace::new(&[FILES[0], FILES[1], ("src/run.js", RUN)]);
+    let file = ws.path("src/run.js");
+    let f = file.clone();
+    let place = spot(RUN, "place(a", 0);
+    let tag = spot(RUN, "tag(__proto__", 0);
+    let decl = |at: (u32, u32), skip: u32| (at.0, at.1 + skip);
+    let remote = table_gateway(move |at| {
+        let spots: Vec<(u32, u32)> = match at {
+            _ if at == place => vec![spot(RUN, "place(1", 0), spot(RUN, "place(x", 0)],
+            _ if at == decl(place, 6) => vec![spot(RUN, "a, b, c]", 0)],
+            _ if at == decl(place, 9) => vec![spot(RUN, "b, c]", 0)],
+            _ if at == decl(place, 12) => vec![spot(RUN, "c]", 0)],
+            _ if at == tag => vec![
+                spot(RUN, "tag(\"p\"", 0),
+                spot(RUN, "tag(\"q\"", 0),
+                spot(RUN, "tag(\"r\"", 0),
+            ],
+            _ if at == decl(tag, 4) => vec![spot(RUN, "__proto__ }", 0)],
+            _ if at == decl(tag, 15) => vec![spot(RUN, "toString, fill]", 0)],
+            _ if at == decl(tag, 25) => vec![spot(RUN, "fill].", 0)],
+            _ => return None,
+        };
+        Some(answers::locations(&f, &spots))
+    })
+    .await;
+    let root = ws.root();
+
+    let placed = introduce(remote, &root, &file, place.0, place.1, &["a", "c"], "opts", false)
+        .await
+        .expect("literals and plain names may trade places");
+    let placed = rewritten(&placed, "run.js");
+    assert!(
+        placed.contains("function place(opts, b) {\n  return [opts.a, b, opts.c].join(\"\");"),
+        "{placed}"
+    );
+    assert!(
+        placed.contains("place({ a: 1, c: \"c\" }, mark(\"b\")), place({ a: x, c: x }, y)"),
+        "{placed}"
+    );
+
+    let tagged = introduce(
+        remote,
+        &root,
+        &file,
+        tag.0,
+        tag.1,
+        &["__proto__", "toString", "fill"],
+        "opts",
+        false,
+    )
+    .await
+    .expect("a `__proto__` parameter is bundled");
+    let tagged = rewritten(&tagged, "run.js");
+    assert!(
+        tagged.contains("const own = { [\"__proto__\"]: opts.__proto__ };"),
+        "{tagged}"
+    );
+    assert!(tagged.contains("typeof opts.toString, opts.fill]"), "{tagged}");
+    assert!(
+        tagged.contains(
+            "tag({ [\"__proto__\"]: \"p\", toString: void 0, fill: 0 }), \
+             tag({ [\"__proto__\"]: \"q\", toString: void 0, fill: 5 }), \
+             tag({ [\"__proto__\"]: \"r\", toString: 1, fill: 0 })"
+        ),
+        "{tagged}"
+    );
+    assert_eq!(ws.read("src/run.js"), RUN, "a preview writes nothing");
+
+    let Some(before) = run_script("node", "run.js", RUN) else {
+        eprintln!("skipping the run: `node` is not installed here");
+        return;
+    };
+    assert_eq!(
+        before,
+        "1bc xyx\ntrue p undefined 0 true q undefined 5 true r number 0\nb\n"
+    );
+    for text in [&placed, &tagged] {
+        assert_eq!(
+            run_script("node", "run.js", text).as_deref(),
+            Some(before.as_str()),
+            "{text}"
+        );
+    }
+}
+
 /// The same fixture against a real gateway and its TypeScript server, applied to disk. It runs
 /// when `PROD_CODE_LIVE_GATEWAY` holds the gateway's address — a build node, with the server
 /// built from this checkout — and is skipped, saying so, everywhere else.

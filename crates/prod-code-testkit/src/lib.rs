@@ -36,6 +36,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+/// The key of an answer that is sent as a JSON-RPC error; see [`answers::failure`].
+const FAILURE: &str = "prod-code/error";
+
 /// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out.
 pub type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 
@@ -219,7 +222,16 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                // A script that wants the request to fail answers with `answers::failure`,
+                // which goes out as a JSON-RPC error instead of a result.
+                let response = match result.get(FAILURE).and_then(|m| m.as_str()) {
+                    Some(message) => serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32603, "message": message },
+                    }),
+                    None => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                };
                 framed
                     .send(WireMessage::LspPayload(response.to_string()))
                     .await?;
@@ -309,6 +321,11 @@ impl Workspace {
 /// The answer shapes the engines really return, so a script does not have to spell them out.
 pub mod answers {
     use super::*;
+
+    /// A request the server failed: the client gets a JSON-RPC error with this message.
+    pub fn failure(message: &str) -> serde_json::Value {
+        serde_json::json!({ FAILURE: message })
+    }
 
     /// A clean pull-diagnostics report.
     pub fn no_diagnostics() -> serde_json::Value {
