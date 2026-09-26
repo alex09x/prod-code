@@ -884,6 +884,18 @@ async fn bundling_rewrites_the_declaration_the_body_and_every_call_site() {
                 _ => serde_json::json!([]),
             }
         }
+        // What rust-analyzer says of each: the builtin `u32`, without drop glue (#441).
+        "textDocument/hover" => {
+            let ch = params
+                .pointer("/position/character")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            match ch {
+                25 => answers::hover("```rust\nwidth: u32\n```\n\n---\n\nno Drop"),
+                37 => answers::hover("```rust\nheight: u32\n```\n\n---\n\nno Drop"),
+                _ => serde_json::Value::Null,
+            }
+        }
         "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))

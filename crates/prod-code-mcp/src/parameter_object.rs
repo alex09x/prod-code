@@ -492,21 +492,36 @@ fn reordered(
     )
 }
 
-/// Whether a value of the Rust type `ty` may run a destructor, as far as its spelling shows. A
-/// reference, a pointer, a primitive, and a tuple or an array of those cannot; any type the
-/// program or a library names may, and so may a generic one.
-fn may_drop(ty: &str) -> bool {
+/// What the spelling of a Rust type shows about whether a value of it may run a destructor
+/// (#441). A tuple or an array is what its most doubtful element is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Spelled {
+    /// A reference, a pointer, a function pointer, `!`, `()`, or a tuple or an array of those:
+    /// nothing a program declares changes what these are.
+    Inert,
+    /// Inert if every primitive name in it (`bool`, `u32`) is the builtin type. A program may
+    /// declare or import its own type of that name, with `Drop`, so only the analyzer can tell.
+    Primitive,
+    /// Any other type the program or a library names, or a generic one.
+    MayDrop,
+}
+
+fn spelled(ty: &str) -> Spelled {
     let ty = ty.trim();
-    if ty.starts_with(['&', '*']) || ty.starts_with("fn(") {
-        return false;
+    if ty.starts_with(['&', '*']) || ty.starts_with("fn(") || ty == "!" {
+        return Spelled::Inert;
     }
     if let Some(inner) = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
-        return split_args(inner).iter().any(|t| may_drop(t));
+        return split_args(inner)
+            .iter()
+            .map(|t| spelled(t))
+            .max()
+            .unwrap_or(Spelled::Inert);
     }
     if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        return may_drop(inner.rsplit_once(';').map_or(inner, |(element, _)| element));
+        return spelled(inner.rsplit_once(';').map_or(inner, |(element, _)| element));
     }
-    !matches!(
+    if matches!(
         ty,
         "bool"
             | "char"
@@ -524,8 +539,91 @@ fn may_drop(ty: &str) -> bool {
             | "usize"
             | "f32"
             | "f64"
-            | "!"
+    ) {
+        Spelled::Primitive
+    } else {
+        Spelled::MayDrop
+    }
+}
+
+/// Where the parameter `name` is written in `raw`, its declaration (`mut n: u32`): the last
+/// place before the colon where it stands as a whole name.
+fn name_in(raw: &str, name: &str) -> Option<usize> {
+    let head = &raw[..raw.find(':')?];
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    head.match_indices(name)
+        .map(|(at, _)| at)
+        .filter(|at| {
+            !head[..*at].chars().next_back().is_some_and(ident)
+                && !head[at + name.len()..].chars().next().is_some_and(ident)
+        })
+        .last()
+}
+
+/// Whether rust-analyzer's hover on the parameter `name` vouches that its type has no drop glue
+/// (#441): `Ok` for `no Drop` on a type it resolved, otherwise why the type may have a
+/// destructor for all the hover shows. A type it cannot resolve is `{unknown}`, and has
+/// `no Drop` as well, which proves nothing.
+fn no_drop_glue(hover: &str, name: &str) -> Result<(), String> {
+    let mut lines = hover.lines().map(str::trim);
+    let declared = lines
+        .by_ref()
+        .skip_while(|l| *l != "```rust")
+        .nth(1)
+        .ok_or_else(|| "the analyzer's hover does not show its type".to_string())?;
+    let ty = declared
+        .strip_prefix("mut ")
+        .unwrap_or(declared)
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map(str::trim)
+        .ok_or_else(|| format!("the analyzer's hover is about `{declared}`, not it"))?;
+    if ty.contains("{unknown}") {
+        return Err(format!("the analyzer does not resolve its type (`{ty}`)"));
+    }
+    match lines.find(|l| {
+        matches!(
+            *l,
+            "no Drop" | "needs Drop" | "impl Drop" | "type param may need Drop"
+        )
+    }) {
+        Some("no Drop") => Ok(()),
+        Some(glue) => Err(format!("the analyzer reports `{glue}` for it")),
+        None => Err("the analyzer's hover does not say whether its type has drop glue".into()),
+    }
+}
+
+/// Asks the analyzer about the parameter `name` of `file`, written at byte `at` of `text`; see
+/// [`no_drop_glue`]. A failed query or no hover vouches for nothing.
+async fn drop_glue(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    at: usize,
+    name: &str,
+) -> Result<(), String> {
+    let (line, col) = crate::signature::line_col_at(text, at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|()| format!("{} has no file URI", file.display()))?
+        .to_string();
+    let res = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        }),
     )
+    .await
+    .map_err(|e| format!("the hover query failed: {e:#}"))?;
+    let hover = res
+        .pointer("/contents/value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "the analyzer gave no hover for it".to_string())?;
+    no_drop_glue(hover, name)
 }
 
 /// The parameters that may run a destructor (`owned`), in the order a Rust function drops them
@@ -556,7 +654,8 @@ fn drop_order(
 }
 
 /// The refusal for a bundle that would drop the parameters in another order; see
-/// [`drop_order`]. The names are listed already quoted.
+/// [`drop_order`]. The names are listed already quoted; `unsure` says why each parameter
+/// spelled as a primitive was taken for one that may have a destructor.
 fn dropped_differently(
     callee: &str,
     name: &str,
@@ -564,7 +663,9 @@ fn dropped_differently(
     was: &str,
     now: &str,
     forward: bool,
+    unsure: &[String],
 ) -> anyhow::Error {
+    let unsure: String = unsure.iter().map(|u| format!("; {u}")).collect();
     let (who, then, advice) = if forward {
         (
             format!("`{callee}` is `async`: a future dropped before it is polled drops"),
@@ -582,8 +683,8 @@ fn dropped_differently(
     };
     anyhow::anyhow!(
         "{who} the parameters that may have a destructor in the order {was}; with {bundled} in \
-         `{name}` it would drop them in the order {now}{then} (#441). {advice}; nothing was \
-         rewritten"
+         `{name}` it would drop them in the order {now}{then}{unsure} (#441). {advice}; nothing \
+         was rewritten"
     )
 }
 
@@ -637,13 +738,7 @@ fn rust_code(code: &str) -> Vec<u8> {
                 blank(end + 1, end + close.len());
             }
             i = (end + close.len()).min(bytes.len());
-        } else if bytes[i] == b'"'
-            || (bytes[i] == b'\''
-                && (bytes
-                    .get(i + 1)
-                    .is_some_and(|n| *n != b'_' && !n.is_ascii_alphabetic())
-                    || bytes.get(i + 2) == Some(&b'\'')))
-        {
+        } else if bytes[i] == b'"' || (bytes[i] == b'\'' && char_literal(code, i)) {
             let quote = bytes[i];
             let mut j = i + 1;
             while j < bytes.len() && bytes[j] != quote {
@@ -657,6 +752,18 @@ fn rust_code(code: &str) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Whether the quote at byte `at` of `code` opens a character literal (`'a'`, `'\n'`, `'ä'`)
+/// rather than a lifetime or a label (`'a`, `'ä`), whose name may be in any script: a literal is
+/// an escape, or one character and a quote.
+fn char_literal(code: &str, at: usize) -> bool {
+    let rest = &code[at + 1..];
+    match rest.chars().next() {
+        Some('\\') => true,
+        Some(c) => rest[c.len_utf8()..].starts_with('\'') || !(c == '_' || c.is_alphabetic()),
+        None => false,
+    }
 }
 
 /// The token of `code` (blanked by [`rust_code`]) that ends at `*end`, whitespace skipped: a
@@ -889,10 +996,40 @@ pub async fn introduce(
     // A function drops its parameters last to first and a struct its fields first to last, so
     // with two or more that may have a destructor the fields are declared the other way round
     // (#441). The literal names them and is evaluated in the order it writes them.
-    let owned: Vec<bool> = declared
-        .iter()
-        .map(|d| type_of(&d.raw).is_none_or(may_drop))
-        .collect();
+    //
+    // The spelling proves that a reference or a pointer has no destructor, but not that a
+    // primitive's name means the builtin: the program may declare or import a `struct bool` with
+    // `Drop`. For those the analyzer resolves the parameter's type, and anything short of its
+    // word that a resolved type has no drop glue — a failed query included — counts as a type
+    // that may have a destructor.
+    let mut owned = Vec::with_capacity(declared.len());
+    let mut unsure = Vec::new();
+    let mut from = open;
+    for d in &declared {
+        let at = text[from..close].find(&d.raw).map(|o| from + o);
+        if let Some(at) = at {
+            from = at + d.raw.len();
+        }
+        let ty = type_of(&d.raw);
+        owned.push(match ty.map_or(Spelled::MayDrop, spelled) {
+            Spelled::Inert => false,
+            Spelled::MayDrop => true,
+            Spelled::Primitive => {
+                let glue = match at.and_then(|at| Some(at + name_in(&d.raw, &d.name)?)) {
+                    Some(at) => drop_glue(remote, root, file, &text, at, &d.name).await,
+                    None => Err("its name was not found in the declaration".to_string()),
+                };
+                if let Err(why) = &glue {
+                    unsure.push(format!(
+                        "`{}` is spelled `{}`, but {why}",
+                        d.name,
+                        ty.unwrap_or_default()
+                    ));
+                }
+                glue.is_err()
+            }
+        });
+    }
     let owned_bundled: Vec<&str> = bundled
         .iter()
         .filter(|i| owned[**i])
@@ -927,6 +1064,7 @@ pub async fn introduce(
                 &quoted(&was),
                 &quoted(&now),
                 forward,
+                &unsure,
             ));
         }
     }
@@ -5293,7 +5431,8 @@ mod tests {
         assert_eq!(outermost_container(symbols, 2), None);
     }
 
-    /// Only what the spelling shows cannot run a destructor is taken for that (#441).
+    /// Only what the spelling shows cannot run a destructor is taken for that, and a primitive's
+    /// name only for a type the analyzer has to resolve (#441).
     #[test]
     fn a_type_may_drop_unless_its_spelling_shows_it_cannot() {
         for inert in [
@@ -5302,12 +5441,14 @@ mod tests {
             "&'a [u8]",
             "*const Guard",
             "fn(u32) -> u32",
-            "u32",
             "()",
-            "(u8, &str)",
-            "[[u8; 4]; 2]",
+            "!",
+            "(&bool, *mut u8)",
         ] {
-            assert!(!may_drop(inert), "{inert}");
+            assert_eq!(spelled(inert), Spelled::Inert, "{inert}");
+        }
+        for primitive in ["u32", "bool", "(u8, &str)", "[[u8; 4]; 2]", "[bool; 2]"] {
+            assert_eq!(spelled(primitive), Spelled::Primitive, "{primitive}");
         }
         for owned in [
             "Guard",
@@ -5316,8 +5457,70 @@ mod tests {
             "impl Drop",
             "(u8, Guard)",
             "[Guard; 2]",
+            "core::primitive::bool",
         ] {
-            assert!(may_drop(owned), "{owned}");
+            assert_eq!(spelled(owned), Spelled::MayDrop, "{owned}");
+        }
+        assert_eq!(name_in("mut m: u32", "m"), Some(4));
+        assert_eq!(name_in("t: (u8, u8)", "t"), Some(0));
+        assert_eq!(name_in("n: u32", "m"), None);
+    }
+
+    /// The hovers are rust-analyzer's on parameters, asked with `prod-code hover` on a build
+    /// node: `bool` there was the program's own struct with `Drop`, declared or imported.
+    #[test]
+    fn only_a_resolved_type_without_drop_glue_is_vouched_for() {
+        for (hover, name) in [
+            ("```rust\nn: u32\n```\n\n---\n\nno Drop", "n"),
+            ("\n```rust\nmut m: u32\n```\n\n---\n\nno Drop", "m"),
+            ("```rust\nt: (bool, &str)\n```\n\n---\n\nno Drop", "t"),
+            ("```rust\nr: [u8; 2]\n```\n\n---\n\nno Drop", "r"),
+        ] {
+            assert_eq!(no_drop_glue(hover, name), Ok(()), "{hover}");
+        }
+        for (hover, name, why) in [
+            (
+                "```rust\na: bool\n```\n\n---\n\nneeds Drop",
+                "a",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\nt: (bool, u32)\n```\n\n---\n\nneeds Drop",
+                "t",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\nr: [bool; 2]\n```\n\n---\n\nneeds Drop",
+                "r",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\na: bool\n```\n\n---\n\ntype param may need Drop",
+                "a",
+                "the analyzer reports `type param may need Drop` for it",
+            ),
+            (
+                "```rust\nu: {unknown}\n```\n\n---\n\nno Drop",
+                "u",
+                "the analyzer does not resolve its type (`{unknown}`)",
+            ),
+            (
+                "```rust\nu32\n```\n\n---\n\nThe 32-bit unsigned integer type.",
+                "n",
+                "the analyzer's hover is about `u32`, not it",
+            ),
+            (
+                "```rust\nn: u32\n```",
+                "n",
+                "the analyzer's hover does not say whether its type has drop glue",
+            ),
+            (
+                "no Drop",
+                "n",
+                "the analyzer's hover does not show its type",
+            ),
+        ] {
+            assert_eq!(no_drop_glue(hover, name), Err(why.to_string()), "{hover}");
         }
     }
 
@@ -5472,6 +5675,10 @@ mod tests {
             "const async // why\nunsafe fn f(a: A) {}",
             "impl T {\n    async\n    fn f(a: A) {}\n}",
             "'a: loop {}\nlet c = '\"';\npub async fn f(a: A) {}",
+            // A lifetime named in another script is not a character literal running on to the
+            // next quote, and takes neither the comment nor the `async` with it.
+            "fn g<'ä>(x: &'ä u8, y: &'ä u8) {}\npub async /* it's */ fn f(a: A) {}",
+            "impl<'ä> S<'ä> {\n    fn g(&'ä self) -> char { 'é' }\n}\nasync fn f(a: A) {}",
         ] {
             assert_eq!(at(text), Some(true), "{text}");
         }
@@ -5485,9 +5692,21 @@ mod tests {
             "const S: &str = r#\"\" async \"#;\nfn f(a: A) {}",
             "async fn g() {}\nfn f(a: A) {}",
             "unsafe extern \"C\" fn f(a: A) {}",
+            "fn g<'ä>(x: &'ä u8, y: &'ä u8) {}\n/* it's not async */ fn f(a: A) {}",
         ] {
             assert_eq!(at(text), Some(false), "{text}");
         }
         assert_eq!(at("x f(a: A)"), None);
+    }
+
+    /// A lifetime or a label is code in any script; a character literal's inside is blanked.
+    #[test]
+    fn a_lifetime_in_any_script_is_not_a_character_literal() {
+        let code = "fn g<'ä>(s: &'ä str) -> [char; 3] { 'l: loop { break 'l ['é', '\\'', '\"'] } }";
+        let blanked = String::from_utf8(rust_code(code)).expect("still UTF-8");
+        assert_eq!(
+            blanked,
+            "fn g<'ä>(s: &'ä str) -> [char; 3] { 'l: loop { break 'l ['  ', '  ', ' '] } }"
+        );
     }
 }
