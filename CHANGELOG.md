@@ -13,6 +13,13 @@
 - Path translation rewrites URI and path fields without changing source, edit text or
   documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
   compare complete path components, and decode a URI exactly once.
+- New language engines reserve memory before loading (#433), including on a node already
+  holding the checkout. Concurrent loads count against an 85% host-memory limit; idle
+  engines may be reclaimed, while existing sessions remain available. A canceled
+  handshake keeps its load and reservation alive, and a failed load answers its waiters.
+  An invalidated load cannot publish over a newer load of the same workspace.
+  The reservation defaults to 4 GiB for Rust and 1 GiB for other language servers and
+  can be adjusted with `--engine-reserve-mib`. This bounds admission, not later engine growth.
 - Shadow hypotheses reject control characters, duplicate or nested paths and symlinked
   parents before staging (#440). In-place runs take turns per workspace across requests,
   restore failed writes, preserve file modes and report restoration failures. Rollback

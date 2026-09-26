@@ -18,6 +18,10 @@ pub struct WorkspaceKey(pub PathBuf);
 /// shared between the workspace and the validation view derived from it.
 pub type RustEngines = Arc<std::sync::Mutex<Vec<Arc<Mutex<prod_code_engine_rust::RustEngine>>>>>;
 
+/// Loads the in-process Rust engine of a root, on a blocking thread; tests put a slow one in
+/// its place.
+pub type RustLoader = Arc<dyn Fn(&Path) -> Result<prod_code_engine_rust::RustEngine> + Send + Sync>;
+
 /// A loaded base workspace shared across multiple sessions/worktrees.
 pub struct SharedWorkspace {
     pub key: WorkspaceKey,
@@ -91,52 +95,21 @@ impl SharedWorkspace {
     /// overlay. The second engine is loaded by the first validation session, costs the memory
     /// of one more database, and is dropped with this workspace. If it cannot be loaded,
     /// validation runs on the main engine as before.
-    pub async fn validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+    ///
+    /// The second engine is a new engine like any other: while `admission` has no memory for
+    /// it, validation runs on the main engine, and a later validation session asks again.
+    pub async fn validation_view(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+    ) -> Arc<SharedWorkspace> {
         if self.engine == "cpp" && self.generic_engine.is_some() {
-            return self.cpp_validation_view().await;
+            return self.cpp_validation_view(admission).await;
         }
         if self.rust_engine.is_none() {
             return Arc::clone(self);
         }
-        let engines = Arc::clone(&self.rust_engines);
-        let root = self.root.clone();
-        let validation = self
-            .validation
-            .get_or_init(|| async move {
-                let load_root = root.clone();
-                let loaded = tokio::task::spawn_blocking(move || {
-                    prod_code_engine_rust::RustEngine::load(&load_root)
-                })
-                .await;
-                match loaded {
-                    Ok(Ok(mut engine)) => {
-                        engine.set_label("validation");
-                        let engine = Arc::new(Mutex::new(engine));
-                        if let Ok(mut all) = engines.lock() {
-                            all.push(Arc::clone(&engine));
-                        }
-                        tracing::info!(workspace = ?root, "validation engine loaded");
-                        // Nothing is warm after a load, and the files modified last are the
-                        // ones an agent validates next (#233).
-                        crate::priming::warm_in_background(
-                            Arc::clone(&engine),
-                            root.clone(),
-                            crate::priming::recent_rust_files(&root, crate::priming::RECENT_FILES),
-                        );
-                        Some(engine)
-                    }
-                    Ok(Err(err)) => {
-                        tracing::warn!(error = %err, workspace = ?root, "validation engine failed to load; validating on the main engine");
-                        None
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, workspace = ?root, "validation engine load panicked; validating on the main engine");
-                        None
-                    }
-                }
-            })
-            .await;
-        let Some(engine) = validation.clone() else {
+        let load: RustLoader = Arc::new(prod_code_engine_rust::RustEngine::load);
+        let Some(engine) = self.validation_engine(admission, load).await else {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
@@ -159,6 +132,70 @@ impl SharedWorkspace {
 }
 
 impl SharedWorkspace {
+    /// The validation engine, loaded with `load` by the first session that asks while the host
+    /// has memory for it. The load runs in a task of its own: a session that stops waiting
+    /// leaves it running with its reservation, and the next session waits for its engine
+    /// instead of loading another beside it.
+    async fn validation_engine(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+        load: RustLoader,
+    ) -> Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>> {
+        let this = Arc::clone(self);
+        let admission = Arc::clone(admission);
+        let loading = tokio::spawn(async move {
+            let engines = Arc::clone(&this.rust_engines);
+            let root = this.root.clone();
+            this.validation
+                .get_or_try_init(|| async move {
+                    let reservation = admission.try_reserve("rust").map_err(|shortfall| {
+                        let refused = crate::admission::CapacityRefused {
+                            shortfall,
+                            reclaimed: 0,
+                        };
+                        tracing::warn!(workspace = ?root, %refused, "validation engine not loaded; validating on the main engine");
+                    })?;
+                    let load_root = root.clone();
+                    let loaded = tokio::task::spawn_blocking(move || load(&load_root)).await;
+                    reservation.release_after_settling();
+                    Ok::<_, ()>(match loaded {
+                        Ok(Ok(mut engine)) => {
+                            engine.set_label("validation");
+                            let engine = Arc::new(Mutex::new(engine));
+                            if let Ok(mut all) = engines.lock() {
+                                all.push(Arc::clone(&engine));
+                            }
+                            tracing::info!(workspace = ?root, "validation engine loaded");
+                            // Nothing is warm after a load, and the files modified last are the
+                            // ones an agent validates next (#233).
+                            crate::priming::warm_in_background(
+                                Arc::clone(&engine),
+                                root.clone(),
+                                crate::priming::recent_rust_files(
+                                    &root,
+                                    crate::priming::RECENT_FILES,
+                                ),
+                            );
+                            Some(engine)
+                        }
+                        Ok(Err(err)) => {
+                            tracing::warn!(error = %err, workspace = ?root, "validation engine failed to load; validating on the main engine");
+                            None
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, workspace = ?root, "validation engine load panicked; validating on the main engine");
+                            None
+                        }
+                    })
+                })
+                .await
+                .ok()
+                .cloned()
+                .flatten()
+        });
+        loading.await.ok().flatten()
+    }
+
     /// The validation view of a C or C++ workspace: this workspace, answered by a second
     /// clangd that nothing but validation touches (#293).
     ///
@@ -169,29 +206,48 @@ impl SharedWorkspace {
     /// server they stay there. It indexes nothing in the background, costs one more clangd
     /// while the workspace is loaded, and is dropped with it. If it cannot start, validation
     /// runs on the main server as before.
-    async fn cpp_validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
-        let root = self.root.clone();
-        let validation = self
-            .cpp_validation
-            .get_or_init(|| async move {
-                match prod_code_engine_generic::GenericLspEngine::spawn(
-                    &root,
-                    prod_code_engine_generic::GenericLspConfig::for_cpp_validation(),
-                )
+    async fn cpp_validation_view(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+    ) -> Arc<SharedWorkspace> {
+        // Started in a task of its own, like the Rust validation engine: a session that stops
+        // waiting leaves the start, and its reservation, to finish for the next one.
+        let this = Arc::clone(self);
+        let admission = Arc::clone(admission);
+        let starting = tokio::spawn(async move {
+            let root = this.root.clone();
+            this.cpp_validation
+                .get_or_try_init(|| async move {
+                    let reservation = admission.try_reserve("cpp").map_err(|shortfall| {
+                        let refused = crate::admission::CapacityRefused {
+                            shortfall,
+                            reclaimed: 0,
+                        };
+                        tracing::warn!(workspace = ?root, %refused, "C/C++ validation server not started; validating on the main server");
+                    })?;
+                    let started = prod_code_engine_generic::GenericLspEngine::spawn(
+                        &root,
+                        prod_code_engine_generic::GenericLspConfig::for_cpp_validation(),
+                    )
+                    .await;
+                    reservation.release_after_settling();
+                    Ok::<_, ()>(match started {
+                        Ok(engine) => {
+                            tracing::info!(workspace = ?root, "C/C++ validation server started");
+                            Some(Arc::new(engine))
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, workspace = ?root, "C/C++ validation server failed to start; validating on the main server");
+                            None
+                        }
+                    })
+                })
                 .await
-                {
-                    Ok(engine) => {
-                        tracing::info!(workspace = ?root, "C/C++ validation server started");
-                        Some(Arc::new(engine))
-                    }
-                    Err(err) => {
-                        tracing::warn!(error = %err, workspace = ?root, "C/C++ validation server failed to start; validating on the main server");
-                        None
-                    }
-                }
-            })
-            .await;
-        let Some(engine) = validation.clone() else {
+                .ok()
+                .cloned()
+                .flatten()
+        });
+        let Some(engine) = starting.await.ok().flatten() else {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
@@ -214,6 +270,19 @@ impl SharedWorkspace {
 
     pub fn touch(&self) {
         self.last_used.store(unix_now(), Ordering::Relaxed);
+    }
+
+    /// What unloading this workspace is counted to free: its engine, and its validation engine
+    /// once one runs.
+    fn reclaimable(&self, admission: &crate::admission::Admission) -> u64 {
+        let engines = if self.validation.get().is_some_and(Option::is_some)
+            || self.cpp_validation.get().is_some_and(Option::is_some)
+        {
+            2
+        } else {
+            1
+        };
+        admission.reserve_for(&self.engine).saturating_mul(engines)
     }
 
     /// Whether a language server this workspace answers from has exited. One that crashed (the
@@ -299,13 +368,41 @@ enum LoadState {
     Ready(Arc<SharedWorkspace>),
 }
 
+/// The session a load counts for its leader on the workspace it made. Given back, as if the
+/// session had ended, unless the leader claims it: one that stopped waiting must not keep the
+/// workspace from ever being idle.
+struct LeaderSession(Option<Arc<SharedWorkspace>>);
+
+impl LeaderSession {
+    fn claim(mut self) -> Arc<SharedWorkspace> {
+        self.0.take().expect("a leader session is claimed once")
+    }
+}
+
+impl Drop for LeaderSession {
+    fn drop(&mut self) {
+        if let Some(ws) = self.0.take() {
+            ws.touch();
+            ws.active_sessions.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
 /// Thread-safe manager coordinating workspace lifecycle and leader-follower loading.
 pub struct WorkspaceManager {
     workspaces: RwLock<HashMap<WorkspaceKey, LoadState>>,
     worktree_owners: Mutex<HashMap<PathBuf, usize>>,
     /// The language servers of editors' sessions, which run outside the shared workspaces.
     pub editor_servers: crate::editor_proxy::EditorServers,
+    /// Whether the host has memory for another engine (#433).
+    admission: Arc<crate::admission::Admission>,
+    rust_loader: RustLoader,
 }
+
+/// How long an engine must have been without a session before a load that finds no memory may
+/// unload it. An agent's commands come in bursts with short gaps between them, and an engine
+/// unloaded in such a gap is loaded again, cold, by the next command.
+pub const RECLAIM_MIN_IDLE: Duration = Duration::from_secs(120);
 
 impl Default for WorkspaceManager {
     fn default() -> Self {
@@ -314,54 +411,160 @@ impl Default for WorkspaceManager {
 }
 
 impl WorkspaceManager {
+    /// A manager that admits every new engine. The server admits against the host's memory
+    /// ([`Self::with_admission`]); a test's outcome must not depend on the node it runs on.
     pub fn new() -> Self {
+        Self::with_admission(Arc::new(crate::admission::Admission::unbounded()))
+    }
+
+    pub fn with_admission(admission: Arc<crate::admission::Admission>) -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
             worktree_owners: Mutex::new(HashMap::new()),
             editor_servers: crate::editor_proxy::EditorServers::default(),
+            admission,
+            rust_loader: Arc::new(prod_code_engine_rust::RustEngine::load),
         }
+    }
+
+    #[cfg(test)]
+    fn with_rust_loader(mut self, rust_loader: RustLoader) -> Self {
+        self.rust_loader = rust_loader;
+        self
+    }
+
+    pub fn admission(&self) -> &Arc<crate::admission::Admission> {
+        &self.admission
     }
 
     /// Drops every loaded workspace that has had no session for `idle` (engines and their
     /// databases are freed once the last reference goes). Returns the evicted roots.
     pub async fn evict_idle(&self, idle: Duration) -> Vec<PathBuf> {
         let now = unix_now();
+        let evicted = self
+            .remove_idle(|candidates| {
+                candidates
+                    .into_iter()
+                    .filter(|ws| {
+                        now.saturating_sub(ws.last_used.load(Ordering::Relaxed)) >= idle.as_secs()
+                    })
+                    .collect()
+            })
+            .await;
+        let roots = evicted.iter().map(|ws| ws.root.clone()).collect();
+        release(evicted).await;
+        roots
+    }
+
+    /// Takes the workspaces `pick` chooses among those without a session out of the map, under
+    /// its lock, and hands them back to be dropped after it is released.
+    async fn remove_idle(
+        &self,
+        pick: impl FnOnce(Vec<Arc<SharedWorkspace>>) -> Vec<Arc<SharedWorkspace>>,
+    ) -> Vec<Arc<SharedWorkspace>> {
         let mut guard = self.workspaces.write().await;
-        let stale: Vec<WorkspaceKey> = guard
-            .iter()
-            .filter_map(|(key, state)| match state {
-                LoadState::Ready(ws)
-                    if ws.active_sessions.load(Ordering::Relaxed) == 0
-                        && now.saturating_sub(ws.last_used.load(Ordering::Relaxed))
-                            >= idle.as_secs() =>
-                {
-                    Some(key.clone())
+        let idle = guard
+            .values()
+            .filter_map(|state| match state {
+                // Sessions are counted under this lock's read side, so none can attach while
+                // the count is read here.
+                LoadState::Ready(ws) if ws.active_sessions.load(Ordering::Relaxed) == 0 => {
+                    Some(Arc::clone(ws))
                 }
                 _ => None,
             })
             .collect();
-        let mut evicted = Vec::with_capacity(stale.len());
-        for key in stale {
-            guard.remove(&key);
-            evicted.push(key.0);
+        let picked = pick(idle);
+        for ws in &picked {
+            guard.remove(&ws.key);
         }
-        evicted
+        picked
+    }
+
+    /// Unloads idle engines, least recently used first, until what they are counted to free
+    /// covers `excess` bytes. Only engines without a session for [`RECLAIM_MIN_IDLE`] are
+    /// taken, never `loading`. Returns how many were unloaded.
+    async fn reclaim_idle(&self, excess: u64, loading: &WorkspaceKey) -> usize {
+        let now = unix_now();
+        let admission = Arc::clone(&self.admission);
+        let reclaimed = self
+            .remove_idle(|candidates| {
+                let mut candidates: Vec<_> = candidates
+                    .into_iter()
+                    .filter(|ws| {
+                        ws.key != *loading
+                            && now.saturating_sub(ws.last_used.load(Ordering::Relaxed))
+                                >= RECLAIM_MIN_IDLE.as_secs()
+                    })
+                    .collect();
+                candidates.sort_by_key(|ws| ws.last_used.load(Ordering::Relaxed));
+                let mut freed = 0;
+                candidates
+                    .into_iter()
+                    .take_while(|ws| {
+                        let take = freed < excess;
+                        freed = freed.saturating_add(ws.reclaimable(&admission));
+                        take
+                    })
+                    .collect()
+            })
+            .await;
+        for ws in &reclaimed {
+            tracing::info!(workspace = %ws.root.display(), engine = %ws.engine, excess_bytes = excess, "💤 [RECLAIM] unloaded an idle engine to make room for a new one");
+        }
+        let count = reclaimed.len();
+        release(reclaimed).await;
+        count
+    }
+
+    /// Admits a new engine of `engine` for `loading`: at once when the host has room for it,
+    /// otherwise after unloading idle engines, if that makes room. The host is read again once
+    /// they are gone, so only memory actually returned counts.
+    async fn admit(
+        &self,
+        engine: &str,
+        loading: &WorkspaceKey,
+    ) -> Result<crate::admission::Reservation, crate::admission::CapacityRefused> {
+        let shortfall = match self.admission.try_reserve(engine) {
+            Ok(reservation) => return Ok(reservation),
+            Err(shortfall) => shortfall,
+        };
+        let reclaimed = self.reclaim_idle(shortfall.excess(), loading).await;
+        if reclaimed == 0 {
+            return Err(crate::admission::CapacityRefused {
+                shortfall,
+                reclaimed,
+            });
+        }
+        self.admission
+            .try_reserve(engine)
+            .map_err(|shortfall| crate::admission::CapacityRefused {
+                shortfall,
+                reclaimed,
+            })
     }
 
     /// Drops every loaded workspace rooted at or below `prefix` (the checkout and the engines
     /// of its nested projects), so the next session loads it afresh. Sessions that still hold
     /// the old workspace keep it until they end. Returns how many were dropped.
     pub async fn unload_under(&self, prefix: &Path) -> usize {
-        let mut guard = self.workspaces.write().await;
-        let keys: Vec<WorkspaceKey> = guard
-            .keys()
-            .filter(|key| key.0.starts_with(prefix))
-            .cloned()
-            .collect();
-        for key in &keys {
-            guard.remove(key);
-        }
-        keys.len()
+        let mut unloaded = Vec::new();
+        let count = {
+            let mut guard = self.workspaces.write().await;
+            let keys: Vec<WorkspaceKey> = guard
+                .keys()
+                .filter(|key| key.0.starts_with(prefix))
+                .cloned()
+                .collect();
+            for key in &keys {
+                if let Some(LoadState::Ready(ws)) = guard.remove(key) {
+                    unloaded.push(ws);
+                }
+            }
+            keys.len()
+        };
+        release(unloaded).await;
+        count
     }
 
     /// The loaded workspaces rooted at or below `prefix`: the checkout's and those of its
@@ -433,7 +636,7 @@ impl WorkspaceManager {
     /// If another session is already loading this workspace, current session becomes
     /// a follower and awaits the leader's result without duplicating compiler work.
     pub async fn get_or_load(
-        &self,
+        self: &Arc<Self>,
         workspace_root: &Path,
         engine: &str,
     ) -> Result<Arc<SharedWorkspace>> {
@@ -479,12 +682,13 @@ impl WorkspaceManager {
 
         // Slow path: acquire write lock to become leader
         let (tx, _rx) = broadcast::channel(1);
+        let mut replaced = Vec::new();
         {
             let mut guard = self.workspaces.write().await;
             let stale =
                 matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for(engine));
-            if stale {
-                guard.remove(&key);
+            if stale && let Some(LoadState::Ready(ws)) = guard.remove(&key) {
+                replaced.push(ws);
             }
             // Double check
             if let Some(state) = guard.get(&key) {
@@ -510,8 +714,99 @@ impl WorkspaceManager {
 
             guard.insert(key.clone(), LoadState::Loading(tx.clone()));
         }
+        // From here the load runs in a task of its own, which holds the reservation and answers
+        // the map and the followers whatever becomes of this wait: a client that gives up on
+        // its handshake must neither return the memory of a load still running nor leave a
+        // Loading entry that nothing will ever answer.
+        let (leader_tx, leader_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(Arc::clone(self).lead(key, engine.to_string(), tx, replaced, leader_tx));
+        match leader_rx.await {
+            Ok(Ok(session)) => Ok(session.claim()),
+            Ok(Err(err)) => Err(err),
+            Err(_) => anyhow::bail!("the workspace load ended without a result"),
+        }
+    }
 
-        // Leader performs actual workspace load
+    /// Leads the load of `key` to its end: makes it Ready, or takes its Loading entry out of
+    /// the map when it failed or was refused, then answers the leader, if it still waits, and
+    /// the followers. Everything that could panic, dropping the replaced engines among it, runs
+    /// in a task of its own, so that a load that panics is answered too and never leaves its
+    /// Loading entry behind.
+    async fn lead(
+        self: Arc<Self>,
+        key: WorkspaceKey,
+        engine: String,
+        tx: broadcast::Sender<Result<Arc<SharedWorkspace>, String>>,
+        replaced: Vec<Arc<SharedWorkspace>>,
+        leader: tokio::sync::oneshot::Sender<Result<LeaderSession>>,
+    ) {
+        let manager = Arc::clone(&self);
+        let root = key.0.clone();
+        let loading = tokio::spawn(async move {
+            release(replaced).await;
+            manager.load_as_leader(root, engine).await
+        });
+        let loaded = loading
+            .await
+            .unwrap_or_else(|err| Err(anyhow::anyhow!("the workspace load panicked: {err}")));
+        match loaded {
+            Ok((ws, reservation)) => {
+                reservation.release_after_settling();
+                // The leader's session is counted before the workspace can be seen, so it is
+                // never idle in between; one whose leader has gone is not counted, or is given
+                // back by the LeaderSession nobody claims.
+                let session = (!leader.is_closed()).then(|| {
+                    ws.active_sessions.fetch_add(1, Ordering::Relaxed);
+                    LeaderSession(Some(Arc::clone(&ws)))
+                });
+                let mut guard = self.workspaces.write().await;
+                if !matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx)) {
+                    drop(guard);
+                    let reason = "the workspace was unloaded while its engine was loading; retry the request";
+                    let _ = tx.send(Err(reason.to_string()));
+                    let _ = leader.send(Err(anyhow::anyhow!(reason)));
+                    return;
+                }
+                guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
+                drop(guard);
+                if let Some(session) = session {
+                    let _ = leader.send(Ok(session));
+                }
+                let _ = tx.send(Ok(ws));
+            }
+            Err(err) => {
+                {
+                    let mut guard = self.workspaces.write().await;
+                    if matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx))
+                    {
+                        guard.remove(&key);
+                    }
+                }
+                let _ = tx.send(Err(format!("{err:#}")));
+                let _ = leader.send(Err(err));
+            }
+        }
+    }
+
+    /// Admits a new engine of `engine` at `workspace_root` and loads it. The reservation is
+    /// handed back with the workspace, to be held while the engine settles.
+    async fn load_as_leader(
+        self: Arc<Self>,
+        workspace_root: PathBuf,
+        engine: String,
+    ) -> Result<(Arc<SharedWorkspace>, crate::admission::Reservation)> {
+        let workspace_root = workspace_root.as_path();
+        let engine = engine.as_str();
+        // A new engine loads only while the host has memory for it (#433); sessions of engines
+        // already loaded never get here.
+        let reservation = self
+            .admit(engine, &WorkspaceKey(workspace_root.to_path_buf()))
+            .await
+            .map_err(|refused| {
+                tracing::warn!(workspace = ?workspace_root, engine, %refused, "🚫 [CAPACITY] refused to load a new engine");
+                anyhow::Error::new(refused)
+            })?;
+
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
         let mut rust_engine = None;
         let mut go_engine = None;
@@ -521,10 +816,11 @@ impl WorkspaceManager {
         match engine {
             "rust" => {
                 let ws_path = workspace_root.to_path_buf();
+                let load = Arc::clone(&self.rust_loader);
                 let loaded_engine = tokio::task::spawn_blocking(move || {
                     // Every worktree copy builds into its own target directory: worktrees
                     // never share cargo state or wait on each other's build lock.
-                    prod_code_engine_rust::RustEngine::load(&ws_path)
+                    load(&ws_path)
                 })
                 .await
                 .ok()
@@ -666,17 +962,7 @@ impl WorkspaceManager {
             generic_engine,
             backend,
         ));
-        ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-
-        // Transition state to Ready
-        {
-            let mut guard = self.workspaces.write().await;
-            guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
-        }
-
-        // Notify followers
-        let _ = tx.send(Ok(Arc::clone(&ws)));
-        Ok(ws)
+        Ok((ws, reservation))
     }
 
     /// Register a session's view over a worktree.
@@ -718,6 +1004,16 @@ impl WorkspaceManager {
             }
         }
     }
+}
+
+/// Drops unloaded workspaces on a blocking thread, after the map's lock is released: freeing an
+/// analysis database takes a while, and must hold up neither other sessions nor a runtime
+/// worker. Engines a session still holds live on until it ends.
+async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
+    if workspaces.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || drop(workspaces)).await;
 }
 
 /// Extract a clean, generic workspace identifier from any client workspace or worktree path.
@@ -1319,9 +1615,466 @@ mod tests {
         assert_eq!(with_probe_line("").1, 0);
     }
 
+    /// A manager admitting against the host memory `snapshots` report in turn, counting every
+    /// new engine at 2 GiB.
+    fn manager_on(snapshots: Vec<(u64, u64)>) -> Arc<WorkspaceManager> {
+        Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::with_probe(
+                crate::admission::scripted_probe(snapshots),
+                2048,
+                crate::admission::LOAD_SETTLE,
+            ),
+        )))
+    }
+
+    /// `used` of `total` GiB in use.
+    fn host(used: u64, total: u64) -> (u64, u64) {
+        const GIB: u64 = 1 << 30;
+        ((total - used) * GIB, total * GIB)
+    }
+
+    /// A loaded workspace at `root`, without a session for `idle_secs`.
+    fn loaded(root: &str, idle_secs: u64) -> Arc<SharedWorkspace> {
+        let ws = Arc::new(SharedWorkspace::new(
+            PathBuf::from(root),
+            "text".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        ws.last_used
+            .store(unix_now() - idle_secs, Ordering::Relaxed);
+        ws
+    }
+
+    /// Six worktrees handshake at once on a host with 80 of 100 GiB in use: 5 GiB are left
+    /// under the 85% limit, so two new engines of 2 GiB load and four are refused for capacity,
+    /// while a session of the engine already loaded attaches as before (#433).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_new_engines_load_only_while_memory_lasts() {
+        let manager = manager_on(vec![host(80, 100)]);
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/warm", 0))
+            .await;
+        let start = Arc::new(tokio::sync::Barrier::new(6));
+        let loads: Vec<_> = (0..6)
+            .map(|i| {
+                let manager = Arc::clone(&manager);
+                let start = Arc::clone(&start);
+                tokio::spawn(async move {
+                    start.wait().await;
+                    manager
+                        .get_or_load(&PathBuf::from(format!("/srv/ws/new-{i}")), "text")
+                        .await
+                })
+            })
+            .collect();
+        let mut refusals = Vec::new();
+        let mut admitted = 0;
+        for load in loads {
+            match load.await.unwrap() {
+                Ok(_) => admitted += 1,
+                Err(err) => refusals.push(err.to_string()),
+            }
+        }
+        assert_eq!(admitted, 2, "{refusals:?}");
+        assert_eq!(refusals.len(), 4);
+        for refusal in &refusals {
+            assert!(refusal.starts_with("capacity: "), "{refusal}");
+            assert!(refusal.contains("another node"), "{refusal}");
+        }
+        assert_eq!(manager.admission().reserved_bytes(), 4 << 30);
+        assert_eq!(
+            manager.loaded_count().await,
+            3,
+            "no refused load is left behind"
+        );
+
+        let warm = manager
+            .get_or_load(Path::new("/srv/ws/warm"), "text")
+            .await
+            .expect("a loaded engine is used whatever the memory");
+        assert_eq!(warm.active_sessions.load(Ordering::Relaxed), 1);
+    }
+
+    /// A new engine that finds no room unloads the least recently used engine that has been
+    /// idle for a while, as many as it needs, and loads once the host shows the memory back;
+    /// engines with a session or used a moment ago stay (#433).
+    #[tokio::test]
+    async fn a_new_engine_makes_room_by_unloading_only_idle_engines() {
+        // 84% in use: a new 2 GiB engine passes the limit by 1 GiB, until one is unloaded.
+        let manager = manager_on(vec![host(84, 100), host(82, 100)]);
+        let oldest = loaded("/srv/ws/oldest", 7200);
+        let older = loaded("/srv/ws/older", 3600);
+        let in_use = loaded("/srv/ws/in-use", 9000);
+        in_use.active_sessions.store(1, Ordering::Relaxed);
+        let recent = loaded("/srv/ws/recent", 30);
+        let gone = Arc::downgrade(&oldest);
+        for ws in [oldest, older, in_use, recent] {
+            manager.insert_ready_for_test(ws).await;
+        }
+
+        manager
+            .get_or_load(Path::new("/srv/ws/new"), "text")
+            .await
+            .expect("room was made");
+        assert!(!manager.is_loaded(Path::new("/srv/ws/oldest")).await);
+        assert!(gone.upgrade().is_none(), "its engine is freed");
+        for kept in ["older", "in-use", "recent", "new"] {
+            assert!(
+                manager.is_loaded(&Path::new("/srv/ws").join(kept)).await,
+                "{kept} was unloaded"
+            );
+        }
+    }
+
+    /// With nothing idle long enough to unload, a new engine is refused and the map is left as
+    /// it was; so is it when the engines unloaded did not give the memory back.
+    #[tokio::test]
+    async fn a_new_engine_is_refused_when_unloading_cannot_make_room() {
+        let manager = manager_on(vec![host(90, 100)]);
+        let in_use = loaded("/srv/ws/in-use", 9000);
+        in_use.active_sessions.store(1, Ordering::Relaxed);
+        manager.insert_ready_for_test(in_use).await;
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/recent", 30))
+            .await;
+        let Err(err) = manager.get_or_load(Path::new("/srv/ws/new"), "text").await else {
+            panic!("admitted without room");
+        };
+        let refused = err
+            .downcast_ref::<crate::admission::CapacityRefused>()
+            .expect("refused for capacity");
+        assert_eq!(refused.reclaimed, 0);
+        assert!(!manager.is_loaded(Path::new("/srv/ws/new")).await);
+        assert_eq!(manager.loaded_count().await, 2);
+        assert_eq!(manager.admission().reserved_bytes(), 0);
+
+        let manager = manager_on(vec![host(90, 100)]);
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/idle", 7200))
+            .await;
+        let Err(err) = manager.get_or_load(Path::new("/srv/ws/new"), "text").await else {
+            panic!("admitted though unloading gave no memory back");
+        };
+        let text = err.to_string();
+        assert!(text.contains("1 idle engine(s) were unloaded"), "{text}");
+        assert_eq!(manager.loaded_count().await, 0);
+    }
+
+    /// A Rust loader that reports each load as it starts, holds it until the test lets one
+    /// through (or drops the gate), and then fails, so that no real engine is built.
+    struct SlowLoader {
+        load: RustLoader,
+        started: tokio::sync::mpsc::UnboundedReceiver<()>,
+        gate: std::sync::mpsc::Sender<()>,
+        loads: Arc<AtomicUsize>,
+    }
+
+    fn slow_loader() -> SlowLoader {
+        let (started_tx, started) = tokio::sync::mpsc::unbounded_channel();
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let gate_rx = std::sync::Mutex::new(gate_rx);
+        let loads = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&loads);
+        SlowLoader {
+            load: Arc::new(
+                move |_root: &Path| -> Result<prod_code_engine_rust::RustEngine> {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    let _ = started_tx.send(());
+                    let _ = gate_rx.lock().unwrap().recv();
+                    anyhow::bail!("scripted load")
+                },
+            ),
+            started,
+            gate,
+            loads,
+        }
+    }
+
+    /// Admission on a host with 10 of 100 GiB in use, 2 GiB a new engine, returned as soon as
+    /// its load ends.
+    fn roomy_admission() -> Arc<crate::admission::Admission> {
+        Arc::new(crate::admission::Admission::with_probe(
+            crate::admission::scripted_probe(vec![host(10, 100)]),
+            2048,
+            Duration::ZERO,
+        ))
+    }
+
+    /// A leader whose client gives up while its Rust engine loads cancels only its wait
+    /// (#433): the load goes on holding its reservation, a follower arriving meanwhile is
+    /// answered by that same load instead of waiting on a Loading entry forever, and no session
+    /// is left counted for the leader that went away.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_canceled_leader_leaves_its_load_running_reserved_and_answering() {
+        let SlowLoader {
+            load,
+            mut started,
+            gate,
+            loads,
+        } = slow_loader();
+        let admission = roomy_admission();
+        let manager = Arc::new(
+            WorkspaceManager::with_admission(Arc::clone(&admission)).with_rust_loader(load),
+        );
+        let root = PathBuf::from("/srv/ws/slow");
+        let attach = || {
+            let manager = Arc::clone(&manager);
+            let root = root.clone();
+            tokio::spawn(async move { manager.get_or_load(&root, "rust").await })
+        };
+
+        let leader = attach();
+        started.recv().await.expect("the load started");
+        leader.abort();
+        assert!(leader.await.err().is_some_and(|err| err.is_cancelled()));
+        assert_eq!(
+            admission.reserved_bytes(),
+            2 << 30,
+            "the running load keeps its reservation"
+        );
+        assert!(
+            manager.is_loaded(&root).await,
+            "the load is still in flight"
+        );
+
+        let follower = attach();
+        gate.send(()).unwrap();
+        let ws = tokio::time::timeout(Duration::from_secs(30), follower)
+            .await
+            .expect("the follower was answered")
+            .unwrap()
+            .expect("the load completed");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "one load for both");
+        assert_eq!(
+            ws.active_sessions.load(Ordering::Relaxed),
+            1,
+            "only the follower's session is counted"
+        );
+        assert_eq!(
+            admission.reserved_bytes(),
+            0,
+            "returned once the load ended"
+        );
+        assert!(manager.get_loaded(&root).await.is_some());
+    }
+
+    /// An unloaded in-flight engine cannot replace a later load of the same path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unloaded_load_cannot_publish_over_its_replacement() {
+        let SlowLoader {
+            load,
+            mut started,
+            gate,
+            loads,
+        } = slow_loader();
+        let manager =
+            Arc::new(WorkspaceManager::with_admission(roomy_admission()).with_rust_loader(load));
+        let root = PathBuf::from("/srv/ws/replaced");
+        let attach = || {
+            let manager = Arc::clone(&manager);
+            let root = root.clone();
+            tokio::spawn(async move { manager.get_or_load(&root, "rust").await })
+        };
+        let old = attach();
+        started.recv().await.unwrap();
+        assert_eq!(manager.unload_under(&root).await, 1);
+        let fresh = attach();
+        started.recv().await.unwrap();
+        gate.send(()).unwrap();
+        let old_result = tokio::time::timeout(Duration::from_secs(30), old)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            old_result.is_err(),
+            "an unloaded engine was published as ready"
+        );
+        assert!(
+            manager.get_loaded(&root).await.is_none(),
+            "the newer load is still pending"
+        );
+        gate.send(()).unwrap();
+        let current = tokio::time::timeout(Duration::from_secs(30), fresh)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let registered = manager.get_loaded(&root).await.unwrap();
+        assert!(Arc::ptr_eq(&current, &registered));
+        assert_eq!(current.active_sessions.load(Ordering::Relaxed), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
+    }
+
+    /// A load that panics, here while it reads the host's memory, is answered like one that
+    /// failed: its leader and a follower waiting on it get the error, no Loading entry is left
+    /// to trap later sessions, nothing stays reserved, and the next session loads afresh.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_load_that_panics_answers_its_sessions_and_leaves_no_loading_entry() {
+        let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+        let (gate, gate_rx) = std::sync::mpsc::channel::<()>();
+        let gate_rx = std::sync::Mutex::new(gate_rx);
+        let reads = AtomicUsize::new(0);
+        let probe: crate::admission::MemoryProbe = Arc::new(move || {
+            if reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                let _ = started_tx.send(());
+                let _ = gate_rx.lock().unwrap().recv();
+                panic!("scripted probe failure");
+            }
+            Some(host(10, 100))
+        });
+        let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::with_probe(probe, 2048, Duration::ZERO),
+        )));
+        let root = PathBuf::from("/srv/ws/panics");
+        let attach = || {
+            let manager = Arc::clone(&manager);
+            let root = root.clone();
+            tokio::spawn(async move { manager.get_or_load(&root, "text").await })
+        };
+
+        let leader = attach();
+        started.recv().await.expect("the load started");
+        let follower = attach();
+        // The leader holds one receiver of the load's broadcast; the follower adds another.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let subscribed = match manager
+                    .workspaces
+                    .read()
+                    .await
+                    .get(&WorkspaceKey(root.clone()))
+                {
+                    Some(LoadState::Loading(tx)) => tx.receiver_count() >= 2,
+                    _ => false,
+                };
+                if subscribed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the follower waits on the load");
+        gate.send(()).unwrap();
+
+        let answered = |task: tokio::task::JoinHandle<Result<Arc<SharedWorkspace>>>| async {
+            tokio::time::timeout(Duration::from_secs(30), task)
+                .await
+                .expect("answered")
+                .unwrap()
+                .err()
+                .map(|err| format!("{err:#}"))
+        };
+        let leader_err = answered(leader)
+            .await
+            .expect("the leader is told it failed");
+        assert!(leader_err.contains("panicked"), "{leader_err}");
+        let follower_err = answered(follower)
+            .await
+            .expect("the follower is told it failed");
+        assert!(follower_err.contains("panicked"), "{follower_err}");
+        assert!(
+            !manager.is_loaded(&root).await,
+            "no Loading entry is left behind"
+        );
+        assert_eq!(manager.admission().reserved_bytes(), 0);
+
+        let ws = manager
+            .get_or_load(&root, "text")
+            .await
+            .expect("loaded afresh");
+        assert_eq!(ws.active_sessions.load(Ordering::Relaxed), 1);
+    }
+
+    /// The validation engine is a load like any other: a session that stops waiting leaves it
+    /// running with its reservation, and the next session waits for that load instead of
+    /// starting a second one beside it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_canceled_validation_session_leaves_one_load_running_with_its_reservation() {
+        let SlowLoader {
+            load,
+            mut started,
+            gate,
+            loads,
+        } = slow_loader();
+        let admission = roomy_admission();
+        let ws = loaded("/srv/ws/validated", 0);
+        let validate = || {
+            let ws = Arc::clone(&ws);
+            let admission = Arc::clone(&admission);
+            let load = Arc::clone(&load);
+            tokio::spawn(async move { ws.validation_engine(&admission, load).await.is_some() })
+        };
+
+        let first = validate();
+        started.recv().await.expect("the load started");
+        first.abort();
+        assert!(first.await.err().is_some_and(|err| err.is_cancelled()));
+        assert_eq!(
+            admission.reserved_bytes(),
+            2 << 30,
+            "the running load keeps its reservation"
+        );
+
+        let second = validate();
+        gate.send(()).unwrap();
+        let validated = tokio::time::timeout(Duration::from_secs(30), second)
+            .await
+            .expect("the second session was answered")
+            .unwrap();
+        assert!(
+            !validated,
+            "the scripted load fails: validation stays on the main engine"
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "one load for both");
+        assert_eq!(
+            admission.reserved_bytes(),
+            0,
+            "returned once the load ended"
+        );
+    }
+
+    /// A validation engine the host has no memory for is not loaded, and not remembered as
+    /// failed: a later session, once the memory is back, loads it.
+    #[tokio::test]
+    async fn a_refused_validation_engine_is_asked_for_again() {
+        let SlowLoader {
+            load, gate, loads, ..
+        } = slow_loader();
+        drop(gate);
+        let admission = Arc::new(crate::admission::Admission::with_probe(
+            crate::admission::scripted_probe(vec![host(90, 100), host(10, 100)]),
+            2048,
+            Duration::ZERO,
+        ));
+        let ws = loaded("/srv/ws/validated", 0);
+        assert!(
+            ws.validation_engine(&admission, Arc::clone(&load))
+                .await
+                .is_none()
+        );
+        assert_eq!(loads.load(Ordering::SeqCst), 0, "refused before loading");
+        assert!(
+            ws.validation_engine(&admission, Arc::clone(&load))
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "asked again once memory is back"
+        );
+        assert_eq!(admission.reserved_bytes(), 0);
+    }
+
     #[tokio::test]
     async fn test_leader_follower_coalescing() {
-        let manager = Arc::new(WorkspaceManager::new());
+        let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::unbounded(),
+        )));
         let root = PathBuf::from("/test/workspace");
 
         // Concurrent requests for the same workspace
@@ -1345,7 +2098,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_owner_detection() {
-        let manager = WorkspaceManager::new();
+        let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::unbounded(),
+        )));
         let root = PathBuf::from("/test/repo");
         let ws = manager.get_or_load(&root, "rust").await.unwrap();
 
