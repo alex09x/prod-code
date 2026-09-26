@@ -275,6 +275,163 @@ async fn a_typescript_method_gets_its_interface_above_the_class() {
     assert!(other.contains("c.draw(\"b\", { x: 5, y: 6 })"), "{other}");
 }
 
+const TS_DEFAULTS: &str = "export function pad(text: string, width: number, fill: string = \" \"): string {
+  return text.padStart(width, fill);
+}
+
+export function stamp(label: string, at: number = Date.now(), zone: string = \"utc\"): string {
+  return `${label} ${at} ${zone}`;
+}
+
+export function edge(text: string, width: number, fill: string = \" \"): string {
+  return text.padEnd(width, fill);
+}
+
+export function run(ch: string): string {
+  return pad(\"a\", 3) + pad(\"b\", 4, \"*\") + pad(\"c\", 5, void 0) + stamp(\"s\") + edge(\"e\", 2, ch);
+}
+";
+
+/// The 1-based line and column of the first `needle` in `text`, `skip` bytes into it.
+fn spot(text: &str, needle: &str, skip: usize) -> (u32, u32) {
+    let at = text
+        .find(needle)
+        .unwrap_or_else(|| panic!("`{needle}` is in the fixture"))
+        + skip;
+    let line = text[..at].matches('\n').count() as u32 + 1;
+    let col = (at - text[..at].rfind('\n').map_or(0, |n| n + 1)) as u32 + 1;
+    (line, col)
+}
+
+/// A TypeScript default is not dropped (#436). A constant one moves into the literal where a
+/// call left the parameter off or passed `void 0`, as in JavaScript, and the interface field
+/// keeps the type; a default computed in the callee, and a variable passed where the default
+/// would apply when it is `undefined`, are refused, and nothing is written.
+#[tokio::test]
+async fn a_typescript_constant_default_moves_into_the_literal_and_a_computed_one_is_refused() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            "{ \"name\": \"po-ts\", \"version\": \"1.0.0\", \"private\": true }\n",
+        ),
+        (
+            "tsconfig.json",
+            "{ \"compilerOptions\": { \"target\": \"es2020\", \"module\": \"commonjs\", \"strict\": true }, \"include\": [\"src\"] }\n",
+        ),
+        ("src/defaults.ts", TS_DEFAULTS),
+    ]);
+    let file = ws.path("src/defaults.ts");
+    let f = file.clone();
+    let pad = spot(TS_DEFAULTS, "pad(text", 0);
+    let stamp = spot(TS_DEFAULTS, "stamp(label", 0);
+    let edge = spot(TS_DEFAULTS, "edge(text", 0);
+    let s = |needle: &str| spot(TS_DEFAULTS, needle, 0);
+    let table = move |at: (u32, u32)| -> Option<serde_json::Value> {
+        let spots = match at {
+            _ if at == pad => vec![s("pad(\"a\""), s("pad(\"b\""), s("pad(\"c\"")],
+            _ if at == s("width: number, fill: string = \" \"): string {\n  return text.padStart") => {
+                vec![s("width, fill);\n}\n\nexport function stamp")]
+            }
+            _ if at == s("fill: string = \" \"): string {\n  return text.padStart") => {
+                vec![s("fill);\n}\n\nexport function stamp")]
+            }
+            _ if at == stamp => vec![s("stamp(\"s\")")],
+            _ if at == s("at: number") => vec![s("at} ")],
+            _ if at == s("zone: string") => vec![s("zone}`")],
+            _ if at == edge => vec![s("edge(\"e\"")],
+            _ if at == s("width: number, fill: string = \" \"): string {\n  return text.padEnd") => {
+                vec![s("width, fill);\n}\n\nexport function run")]
+            }
+            _ if at == s("fill: string = \" \"): string {\n  return text.padEnd") => {
+                vec![s("fill);\n}\n\nexport function run")]
+            }
+            _ => return None,
+        };
+        Some(answers::locations(&f, &spots))
+    };
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let (_, line, ch) = position(params);
+        match method {
+            "textDocument/references" => {
+                table((line as u32 + 1, ch as u32 + 1)).unwrap_or_else(|| serde_json::json!([]))
+            }
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let root = ws.root();
+
+    let done = bundle(
+        remote,
+        &root,
+        &file,
+        pad.0,
+        pad.1,
+        &["width", "fill"],
+        "Pad",
+        "opts",
+    )
+    .await;
+    assert_eq!(done.was, "text: string, width: number, fill: string = \" \"");
+    assert_eq!(done.now, "text: string, opts: Pad");
+    assert_eq!(done.call_sites, 3);
+    assert!(done.unmatched.is_empty(), "{:?}", done.unmatched);
+    let text = rewritten(&done, "defaults.ts");
+    assert!(
+        text.starts_with(
+            "/** The parameters `pad` takes together. */
+export interface Pad {
+  width: number;
+  fill: string;
+}
+
+export function pad(text: string, opts: Pad): string {
+  return text.padStart(opts.width, opts.fill);
+}
+"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "return pad(\"a\", { width: 3, fill: \" \" }) + pad(\"b\", { width: 4, fill: \"*\" }) \
+             + pad(\"c\", { width: 5, fill: \" \" }) + stamp(\"s\")"
+        ),
+        "{text}"
+    );
+
+    let call = s("edge(\"e\"");
+    for (at, params, reason) in [
+        (
+            stamp,
+            ["at", "zone"],
+            "`at` defaults to `Date.now()`, which is evaluated in `stamp` on every call"
+                .to_string(),
+        ),
+        (
+            edge,
+            ["width", "fill"],
+            format!(
+                "`edge` at src/defaults.ts:{}:{} passes `ch` as `fill`, which defaults to `\" \"`",
+                call.0, call.1
+            ),
+        ),
+    ] {
+        let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+        let err = match prod_code_mcp::parameter_object::introduce(
+            remote, &root, &file, at.0, at.1, &params, "Opts", "opts", true, false,
+        )
+        .await
+        {
+            Ok(done) => panic!("{params:?} was bundled: {}", done.render(4000)),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(err.contains(&reason), "{params:?}: {err}");
+    }
+    assert_eq!(ws.read("src/defaults.ts"), TS_DEFAULTS, "nothing was written");
+}
+
 const PY_HOME: &str = "\"\"\"Shapes.\"\"\"
 
 import math

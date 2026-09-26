@@ -715,15 +715,13 @@ function tag(__proto__, toString, fill = 0) {
   return [Object.getPrototypeOf(own) === Object.prototype, own.__proto__, typeof toString, fill].join(\" \");
 }
 
-const x = \"x\";
-const y = \"y\";
-console.log(place(1, mark(\"b\"), \"c\"), place(x, y, x));
+console.log(place(1, mark(\"b\"), \"c\"));
 console.log(tag(\"p\"), tag(\"q\", void 0, 5), tag(\"r\", 1, void 0));
 console.log(seen.join(\",\"));
 ";
 
 /// What JavaScript does with the result, run with Node where the test runs: arguments that trade
-/// places only where nothing can tell, a `__proto__` field that stays a field (a computed key in
+/// places only where one of them is a literal, a `__proto__` field that stays a field (a computed key in
 /// the literal and in the body's shorthand), a left-out `toString` that is `undefined` and not
 /// the one every object inherits, and `void 0` standing for a default. The rewritten script
 /// prints what the original printed.
@@ -737,7 +735,7 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     let decl = |at: (u32, u32), skip: u32| (at.0, at.1 + skip);
     let remote = table_gateway(move |at| {
         let spots: Vec<(u32, u32)> = match at {
-            _ if at == place => vec![spot(RUN, "place(1", 0), spot(RUN, "place(x", 0)],
+            _ if at == place => vec![spot(RUN, "place(1", 0)],
             _ if at == decl(place, 6) => vec![spot(RUN, "a, b, c]", 0)],
             _ if at == decl(place, 9) => vec![spot(RUN, "b, c]", 0)],
             _ if at == decl(place, 12) => vec![spot(RUN, "c]", 0)],
@@ -767,14 +765,14 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
         false,
     )
     .await
-    .expect("literals and plain names may trade places");
+    .expect("literals may trade places");
     let placed = rewritten(&placed, "run.js");
     assert!(
         placed.contains("function place(opts, b) {\n  return [opts.a, b, opts.c].join(\"\");"),
         "{placed}"
     );
     assert!(
-        placed.contains("place({ a: 1, c: \"c\" }, mark(\"b\")), place({ a: x, c: x }, y)"),
+        placed.contains("console.log(place({ a: 1, c: \"c\" }, mark(\"b\")));"),
         "{placed}"
     );
 
@@ -815,7 +813,7 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     };
     assert_eq!(
         before,
-        "1bc xyx\ntrue p undefined 0 true q undefined 5 true r number 0\nb\n"
+        "1bc\ntrue p undefined 0 true q undefined 5 true r number 0\nb\n"
     );
     for text in [&placed, &tagged] {
         assert_eq!(
@@ -824,6 +822,109 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
             "{text}"
         );
     }
+}
+
+const GETTERS: &str = "\"use strict\";
+const seen = [];
+for (const key of [\"a\", \"b\", \"c\"]) {
+  Object.defineProperty(globalThis, key, {
+    get() {
+      seen.push(key);
+      return key;
+    },
+  });
+}
+
+function place(a, b, c) {
+  return [a, b, c].join(\"\");
+}
+
+console.log(place(a, b, c));
+console.log(seen.join(\",\"));
+";
+
+/// Three plain names are no proof that bundled arguments may trade places (#436): each of `a`,
+/// `b` and `c` here is a getter on `globalThis`. Bundling `a` and `c` would write
+/// `place({ a: a, c: c }, b)`, which Node runs reading `a`, `c`, `b` where the original read
+/// `a`, `b`, `c` — both are run here — so it is refused, and nothing is written. Bundling the
+/// adjacent `b` and `c` keeps the order, is made, and prints what the original printed.
+#[tokio::test]
+async fn plain_javascript_names_that_are_getters_are_not_reordered() {
+    let ws = Workspace::new(&[FILES[0], FILES[1], ("src/getters.js", GETTERS)]);
+    let file = ws.path("src/getters.js");
+    let f = file.clone();
+    let place = spot(GETTERS, "place(a", 0);
+    let decl = move |skip: u32| (place.0, place.1 + skip);
+    let remote = table_gateway(move |at| {
+        let spots: Vec<(u32, u32)> = match at {
+            _ if at == place => vec![spot(GETTERS, "place(a, b, c));", 0)],
+            _ if at == decl(6) => vec![spot(GETTERS, "a, b, c].", 0)],
+            _ if at == decl(9) => vec![spot(GETTERS, "b, c].", 0)],
+            _ if at == decl(12) => vec![spot(GETTERS, "c].", 0)],
+            _ => return None,
+        };
+        Some(answers::locations(&f, &spots))
+    })
+    .await;
+    let root = ws.root();
+
+    let err = match introduce(remote, &root, &file, place.0, place.1, &["a", "c"], "opts", true)
+        .await
+    {
+        Ok(done) => panic!("the getters were reordered: {}", done.render(4000)),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        err.contains(
+            "`place` at src/getters.js:16:13 passes `b` between the bundled arguments; in the \
+             object `c` would be evaluated before it"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("a plain name may be an accessor of `globalThis`"),
+        "{err}"
+    );
+    assert_eq!(ws.read("src/getters.js"), GETTERS, "nothing was written");
+
+    let adjacent = introduce(remote, &root, &file, place.0, place.1, &["b", "c"], "opts", false)
+        .await
+        .expect("adjacent arguments are bundled");
+    let adjacent = rewritten(&adjacent, "getters.js");
+    assert!(
+        adjacent.contains("function place(a, opts) {\n  return [a, opts.b, opts.c].join(\"\");"),
+        "{adjacent}"
+    );
+    assert!(
+        adjacent.contains("console.log(place(a, { b: b, c: c }));"),
+        "{adjacent}"
+    );
+
+    // What bundling `a` and `c` would have written before #436 refused it.
+    let reordered = GETTERS
+        .replace(
+            "function place(a, b, c) {\n  return [a, b, c].join(\"\");",
+            "function place(opts, b) {\n  return [opts.a, b, opts.c].join(\"\");",
+        )
+        .replace(
+            "console.log(place(a, b, c));",
+            "console.log(place({ a: a, c: c }, b));",
+        );
+    let Some(before) = run_script("node", "getters.js", GETTERS) else {
+        eprintln!("skipping the run: `node` is not installed here");
+        return;
+    };
+    assert_eq!(before, "abc\na,b,c\n");
+    assert_eq!(
+        run_script("node", "getters.js", &reordered).as_deref(),
+        Some("abc\na,c,b\n"),
+        "the reordered call reads the getters in another order:\n{reordered}"
+    );
+    assert_eq!(
+        run_script("node", "getters.js", &adjacent).as_deref(),
+        Some(before.as_str()),
+        "{adjacent}"
+    );
 }
 
 /// The same fixture against a real gateway and its TypeScript server, applied to disk. It runs

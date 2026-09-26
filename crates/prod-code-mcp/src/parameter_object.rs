@@ -24,7 +24,15 @@
 //!
 //! In every language the literal keeps the arguments in the order the call evaluated them, and
 //! a call whose bundled arguments are not next to each other is refused unless the arguments
-//! that would trade places cannot affect each other (#436).
+//! that would trade places cannot affect each other (#436). A literal whose conversion runs no
+//! code of the program's cannot; nor can two plain names in Rust or Go. Anywhere else a plain
+//! name is no proof — a getter, a computed property, a macro or a copy constructor may run when
+//! it is read — and the call is refused.
+//!
+//! TypeScript bundles a defaulted parameter the way JavaScript does: only a constant default,
+//! which the callers then write into the literal where they passed `void 0` or nothing. A
+//! default computed in the callee is refused, since at the callers it would run at another time
+//! and in another scope.
 //!
 //! Swift takes the same path, with a `struct` of `let` properties whose memberwise initialiser
 //! is the literal, and argument labels that bind the arguments to the parameters. C and C++
@@ -452,11 +460,27 @@ fn unlisted(name: &str, root: &Path, file: &Path, line: u32, col: u32) -> String
 
 /// The refusal for a call whose arguments bundling would evaluate in another order; see
 /// [`reordered_arguments`].
-fn reordered(callee: &str, place: &str, moved: &str, passed: &str) -> anyhow::Error {
+fn reordered(
+    callee: &str,
+    place: &str,
+    moved: &str,
+    passed: &str,
+    language: Language,
+) -> anyhow::Error {
+    let (why, advice) = match opaque_reads(language) {
+        Some(why) => (
+            format!(" (in {}, {why})", language.label()),
+            "Bundle adjacent parameters",
+        ),
+        None => (
+            String::new(),
+            "Bundle adjacent parameters, or give the arguments names first",
+        ),
+    };
     anyhow::anyhow!(
         "`{callee}` at {place} passes `{passed}` between the bundled arguments; in the object \
-         `{moved}` would be evaluated before it, and either may change what the other sees. \
-         Bundle adjacent parameters, or give the arguments names first; nothing was rewritten"
+         `{moved}` would be evaluated before it, and either may change what the other \
+         sees{why}. {advice}; nothing was rewritten"
     )
 }
 
@@ -607,9 +631,10 @@ pub async fn introduce(
             continue;
         }
         let bound: Vec<Option<usize>> = (0..args.len()).map(Some).collect();
-        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
+        // A Rust literal converts to nothing of the program's, so no parameter types are needed.
+        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, &[], language) {
             let place = format!("{}:{rl}:{rc}", display(root, &path));
-            return Err(reordered(&callee, &place, moved, passed));
+            return Err(reordered(&callee, &place, moved, passed, language));
         }
         let (spelling, _) = spelling_in(&path);
         edits.entry(path).or_default().push((
@@ -1664,7 +1689,8 @@ fn keyword_arg(arg: &str) -> Option<(&str, &str)> {
 /// declaration with the right arity. An argument bound to no parameter (`None` in the list) is
 /// one Python's `*args` or `**kwargs` takes, and it stays as it was.
 ///
-/// TypeScript and Go pass every argument by position, so the count has to match, as in Rust.
+/// Go passes every argument by position, so the count has to match, as in Rust. TypeScript does
+/// too, but a call may leave off trailing parameters that are optional or have defaults.
 /// Python binds positional arguments in order and keyword arguments by name; a parameter no
 /// argument binds has to have a default. A call that spreads (`*xs`, `**kw`) cannot be mapped
 /// without running it.
@@ -1681,6 +1707,17 @@ pub fn bind_arguments(
         Language::Python => {}
         Language::Swift => return bind_swift_arguments(args, params),
         Language::JavaScript => return bind_js_arguments(args, params),
+        // A parameter left off at the end is `undefined`, which an optional or a defaulted one
+        // (or a rest one, as none) accepts. A spread has no position until the call runs.
+        Language::TypeScript => {
+            let short = params[args.len().min(params.len())..]
+                .iter()
+                .any(|p| p.default.is_none() && !p.optional && p.kind != Kind::Variadic);
+            if args.len() > params.len() || short || args.iter().any(|a| a.starts_with("...")) {
+                return None;
+            }
+            return Some((0..args.len()).map(Some).collect());
+        }
         Language::C | Language::Cpp => {
             let variadic = params.last().is_some_and(|p| p.kind == Kind::Variadic);
             let fixed = params.len() - usize::from(variadic);
@@ -1883,20 +1920,57 @@ fn string_literal(e: &str) -> bool {
     !escaped
 }
 
-/// What evaluating an argument may do, as far as its text shows.
+/// What evaluating an argument may do, as far as its text and the language show.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Effect {
-    /// A literal: it reads and writes nothing.
+    /// A literal converted by the language alone: it reads and writes nothing.
     Nothing,
-    /// A plain name: it reads a variable and writes nothing.
+    /// A plain name in a language where reading one runs nothing: it reads a variable and
+    /// writes nothing.
     Reads,
     /// A call, an assignment, a property that may be a getter: anything.
     Unknown,
 }
 
-fn effect_of(arg: &str, language: Language) -> Effect {
+/// Why a plain name does not show that reading it runs nothing, in the languages where it does
+/// not (#436); `None` in Rust and Go, where a name is a variable, a constant or a function, and
+/// reading one runs no code of the program's.
+///
+/// In JavaScript `Object.defineProperty(globalThis, "b", { get() { … } })` makes `b` a getter,
+/// so `f(a, b, c)` reads `a`, `b`, `c` where `f({ a: a, c: c }, b)` reads `a`, `c`, `b`.
+fn opaque_reads(language: Language) -> Option<&'static str> {
+    match language {
+        Language::Rust | Language::Go => None,
+        Language::TypeScript | Language::JavaScript => Some(
+            "a plain name may be an accessor of `globalThis`, whose getter runs when it is read",
+        ),
+        Language::Swift => Some(
+            "a plain name may be a computed property, whose getter runs when it is read, and a \
+             literal runs the `init(…Literal:)` of a type the program declares",
+        ),
+        Language::Cpp => Some(
+            "a plain name may be a macro, a value passed by copy runs a constructor, and a \
+             literal may run a converting constructor or a literal operator",
+        ),
+        Language::C => Some("a plain name may be a macro"),
+        Language::Python => Some(
+            "a global or class-level name is looked up through a mapping that may run code, and \
+             an unbound one raises for whichever is read first",
+        ),
+    }
+}
+
+/// What evaluating `arg`, passed as `param`, may do.
+///
+/// A literal is inert only where its conversion to the parameter's type is the language's own:
+/// a Swift literal passed as a type the program declares runs that type's `init(…Literal:)`, a
+/// C++ one passed as a class runs a converting constructor, and a C++ number or string with a
+/// suffix of the program's (`12_km`, `"x"_s`) calls its `operator""`. So in those two languages
+/// a literal counts only when the parameter's declared type is a standard one; a parameter the
+/// call binds to nothing has none.
+fn effect_of(arg: &str, param: Option<&Param>, language: Language) -> Effect {
     let e = arg.trim();
-    let constant = match language {
+    let literal = match language {
         Language::TypeScript | Language::JavaScript => js_constant(e),
         _ => {
             let word = match language {
@@ -1906,22 +1980,73 @@ fn effect_of(arg: &str, language: Language) -> Effect {
                 Language::Cpp => matches!(e, "true" | "false" | "nullptr"),
                 _ => false,
             };
-            word || number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
-                || (string_literal(e) && !e.contains("\\(") && !e.starts_with('`'))
+            // C++ separates digits with `'`, so an `_` in a number starts a user-defined suffix.
+            let number = number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
+                && !(language == Language::Cpp && e.contains('_'));
+            word || number || (string_literal(e) && !e.contains("\\(") && !e.starts_with('`'))
         }
     };
-    if constant {
-        return Effect::Nothing;
+    if literal {
+        let ty = param.and_then(|p| p.ty.as_deref());
+        let inert = match language {
+            Language::Swift => ty.is_some_and(swift_literal_type),
+            Language::Cpp => param.is_some_and(|p| ty.is_some_and(|t| cpp_builtin(t, &p.name))),
+            _ => true,
+        };
+        return if inert {
+            Effect::Nothing
+        } else {
+            Effect::Unknown
+        };
     }
     let name = leading_ident(e);
     if !name.is_empty()
         && name.len() == e.len()
         && !name.as_bytes()[0].is_ascii_digit()
         && !matches!(name, "yield" | "await")
+        && opaque_reads(language).is_none()
     {
         return Effect::Reads;
     }
     Effect::Unknown
+}
+
+/// Whether a Swift parameter type is one the standard library initialises a literal of,
+/// optional or not: a number, `Bool`, `String` or `Character`.
+fn swift_literal_type(ty: &str) -> bool {
+    let ty = ty.trim().trim_end_matches(['?', '!']);
+    let ty = ty.strip_prefix("Swift.").unwrap_or(ty);
+    matches!(
+        ty,
+        "Int"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Double"
+            | "Float"
+            | "Bool"
+            | "String"
+            | "Character"
+    )
+}
+
+/// Whether a C++ parameter, declared as `ty` (its name `name` included), has a built-in type —
+/// arithmetic, `bool`, a character, or a pointer or reference to one — which a literal
+/// converts to without a constructor.
+fn cpp_builtin(ty: &str, name: &str) -> bool {
+    const BUILTIN: &[&str] = &[
+        "const", "volatile", "signed", "unsigned", "short", "long", "int", "char", "char8_t",
+        "char16_t", "char32_t", "wchar_t", "bool", "float", "double",
+    ];
+    let spaced = ty.replace(['*', '&'], " ");
+    let words: Vec<&str> = spaced.split_whitespace().filter(|w| *w != name).collect();
+    !words.is_empty() && words.iter().all(|w| BUILTIN.contains(w))
 }
 
 /// The value an argument passes, without the keyword (Python) or the label (Swift) it is
@@ -1938,17 +2063,25 @@ fn argument_value(arg: &str, language: Language) -> &str {
 /// first, when nothing shows that it does not matter (#436). The literal is written where the
 /// first bundled argument was, holding the bundled arguments in the order the call wrote them,
 /// so a bundled argument after one that is not bundled is evaluated before it afterwards. That
-/// is the same program when either of the two is a literal, or when both are plain names:
-/// reading a variable changes nothing another read could see. Anything else is refused.
+/// is the same program when either of the two is a literal the language converts by itself, or
+/// when both are plain names in a language where reading a variable runs nothing — Rust and Go
+/// (see [`opaque_reads`]). Anything else is refused: the spelling of a name is no proof.
+///
+/// `params` are the declared parameters `bound` indexes, whose types say how a literal is
+/// converted; Rust's path, whose literals need no type, passes none.
 pub fn reordered_arguments<'a>(
     args: &'a [String],
     bound: &[Option<usize>],
     bundled: &[usize],
+    params: &[Param],
     language: Language,
 ) -> Option<(&'a str, &'a str)> {
     let in_bundle = |a: usize| bound[a].is_some_and(|p| bundled.contains(&p));
     let first = (0..args.len()).find(|a| in_bundle(*a))?;
-    let effect = |a: usize| effect_of(argument_value(&args[a], language), language);
+    let effect = |a: usize| {
+        let param = bound[a].and_then(|p| params.get(p));
+        effect_of(argument_value(&args[a], language), param, language)
+    };
     for passed in (first..args.len()).filter(|a| !in_bundle(*a)) {
         for moved in (passed + 1..args.len()).filter(|a| in_bundle(*a)) {
             let commute = matches!(
@@ -1999,7 +2132,9 @@ fn rewritten_call_with(
     binding: &str,
     literal: impl Fn(&[(String, String)]) -> String,
 ) -> String {
-    let js = language == Language::JavaScript;
+    // TypeScript applies a default when the argument is `undefined` the way JavaScript does, and
+    // only a constant one gets this far in either.
+    let js = matches!(language, Language::JavaScript | Language::TypeScript);
     // In the order the call wrote them, which is the order they are evaluated in: a Python
     // call may pass keywords in any order (#436). A field the call left out goes after them.
     let mut pairs: Vec<(usize, (String, String))> = bundled
@@ -2582,10 +2717,10 @@ async fn introduce_in(
             "`{}` is `inout`, and a field of the new type would be a copy of it",
             declared[*i].name
         );
-        // The callers write a JavaScript default into the object now. A constant means the
-        // same there; anything else runs in the function's scope, on every call, after the
-        // parameters before it are bound.
-        if language == Language::JavaScript
+        // The callers write a JavaScript or TypeScript default into the object now. A constant
+        // means the same there; anything else runs in the function's scope, on every call,
+        // after the parameters before it are bound.
+        if matches!(language, Language::JavaScript | Language::TypeScript)
             && let Some(default) = &declared[*i].default
         {
             anyhow::ensure!(
@@ -2836,6 +2971,8 @@ async fn introduce_in(
                      reaches is known only when the call runs, so it is not bundled"
                 );
             }
+        }
+        if matches!(language, Language::JavaScript | Language::TypeScript) {
             // The object carries a default where the call left the parameter out or passed
             // `undefined`, but a value that is `undefined` only at run time would get the
             // default before and not after.
@@ -2859,8 +2996,10 @@ async fn introduce_in(
             unmatched.push(place);
             continue;
         };
-        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
-            return Err(reordered(&callee, &place, moved, passed));
+        if let Some((moved, passed)) =
+            reordered_arguments(&args, &bound, &bundled, &declared, language)
+        {
+            return Err(reordered(&callee, &place, moved, passed, language));
         }
         // A method's qualifier is the object it is called on, not where the type lives, and a
         // TypeScript or JavaScript literal names no type at all.
@@ -3502,9 +3641,11 @@ async fn introduce_c(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         };
-        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, language) {
+        if let Some((moved, passed)) =
+            reordered_arguments(&args, &bound, &bundled, &declared, language)
+        {
             let place = format!("{}:{rl}:{rc}", display(root, &path));
-            return Err(reordered(&callee, &place, moved, passed));
+            return Err(reordered(&callee, &place, moved, passed, language));
         }
         let new_args = rewritten_call_with(
             &args, &bound, &bundled, &declared, language, binding, literal,
@@ -3914,7 +4055,7 @@ mod tests {
         let order = |args: &[&str], bundled: &[usize]| {
             let args = strings(args);
             let bound = bind_arguments(&args, &params, Language::JavaScript).expect("bound");
-            reordered_arguments(&args, &bound, bundled, Language::JavaScript)
+            reordered_arguments(&args, &bound, bundled, &params, Language::JavaScript)
                 .map(|(m, p)| (m.to_string(), p.to_string()))
         };
         let mark = ["mark(\"a\")", "mark(\"b\")", "mark(\"c\")"];
@@ -3925,11 +4066,13 @@ mod tests {
         );
         assert_eq!(order(&mark, &[0, 1]), None, "adjacent: nothing moves");
         assert_eq!(order(&mark, &[1, 2]), None, "adjacent: nothing moves");
+        // Each may be a getter on `globalThis`: the spelling of a name proves nothing (#436).
         assert_eq!(
             order(&["x", "y", "z"], &[0, 2]),
-            None,
-            "three reads commute"
+            Some(("z".to_string(), "y".to_string())),
+            "a JavaScript name may run a getter"
         );
+        assert_eq!(order(&["x", "y", "z"], &[1, 2]), None, "adjacent names");
         assert_eq!(order(&["1", "mark(\"b\")", "\"c\""], &[0, 2]), None);
         assert_eq!(order(&["mark(\"a\")", "b", "3"], &[0, 2]), None);
         assert!(
@@ -3947,19 +4090,183 @@ mod tests {
         let args = strings(&["mark(1)", "c=mark(3)", "b=2"]);
         let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
         assert_eq!(
-            reordered_arguments(&args, &bound, &[0, 1], Language::Python),
+            reordered_arguments(&args, &bound, &[0, 1], &py, Language::Python),
             None,
             "a keyword argument whose value is a literal"
         );
         let args = strings(&["mark(1)", "b=mark(2)", "c=mark(3)"]);
         let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
-        assert!(reordered_arguments(&args, &bound, &[0, 2], Language::Python).is_some());
+        assert!(reordered_arguments(&args, &bound, &[0, 2], &py, Language::Python).is_some());
         let rust = strings(&["a()", "b()", "c()"]);
         let bound: Vec<Option<usize>> = (0..3).map(Some).collect();
-        assert!(reordered_arguments(&rust, &bound, &[0, 2], Language::Rust).is_some());
+        assert!(reordered_arguments(&rust, &bound, &[0, 2], &[], Language::Rust).is_some());
         assert_eq!(
-            reordered_arguments(&rust, &bound, &[1, 2], Language::Rust),
+            reordered_arguments(&rust, &bound, &[1, 2], &[], Language::Rust),
             None
+        );
+
+        // Reading a name runs nothing in Rust and Go; anywhere else it may.
+        let names = strings(&["x", "y", "z"]);
+        for language in [Language::Rust, Language::Go] {
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[0, 2], &[], language),
+                None,
+                "{language:?}"
+            );
+        }
+        for (language, list) in [
+            (Language::Python, "a, b, c"),
+            (Language::TypeScript, "a: number, b: number, c: number"),
+            (Language::Swift, "_ a: Int, _ b: Int, _ c: Int"),
+            (Language::C, "int a, int b, int c"),
+            (Language::Cpp, "int a, int b, int c"),
+        ] {
+            let (_, params) = parse_params(list, language);
+            let bound = bind_arguments(&names, &params, language).expect("bound");
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[0, 2], &params, language),
+                Some(("z", "y")),
+                "{language:?}: a plain name is no proof"
+            );
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[1, 2], &params, language),
+                None,
+                "{language:?}: adjacent arguments keep their order"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_counts_as_inert_only_where_the_language_converts_it() {
+        let moved = |list: &str, language: Language, args: &[&str]| {
+            let (_, params) = parse_params(list, language);
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, language).expect("bound");
+            reordered_arguments(&args, &bound, &[0, 2], &params, language)
+                .map(|(m, _)| m.to_string())
+        };
+        // C++: a built-in parameter type takes a literal as it is; a class runs a converting
+        // constructor, and a suffix of the program's calls its `operator""`.
+        let cpp = Language::Cpp;
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, const char *c", cpp, &["a()", "b()", "\"c\""]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, unsigned long &c", cpp, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "12_km"]),
+            Some("12_km".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, Meters c", cpp, &["a()", "b()", "3"]),
+            Some("3".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, std::string c", cpp, &["a()", "b()", "\"c\""]),
+            Some("\"c\"".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "\"c\"_s"]),
+            Some("\"c\"_s".to_string())
+        );
+        // C has no literal operators or constructors, and a `_` separates nothing there either.
+        assert_eq!(
+            moved("int a, int b, int c", Language::C, &["a()", "b()", "3u"]),
+            None
+        );
+
+        // Swift: the standard library's own literal types, optional or not; a type of the
+        // program's runs its `init(…Literal:)`, and a substitution is code.
+        let swift = Language::Swift;
+        assert_eq!(
+            moved("_ a: Int, _ b: Int, _ c: Int", swift, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, c: String?",
+                swift,
+                &["a()", "b()", "c: \"x\""]
+            ),
+            None
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, _ c: Meters",
+                swift,
+                &["a()", "b()", "3"]
+            ),
+            Some("3".to_string())
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, _ c: String",
+                swift,
+                &["a()", "b()", "\"\\(b)\""]
+            ),
+            Some("\"\\(b)\"".to_string())
+        );
+
+        // JavaScript and Python: a substitution or a prefix makes a string code.
+        assert_eq!(
+            moved("a, b, c", Language::JavaScript, &["a()", "b()", "`${x}`"]),
+            Some("`${x}`".to_string())
+        );
+        assert_eq!(
+            moved("a, b, c", Language::Python, &["a()", "b()", "f\"{x}\""]),
+            Some("f\"{x}\"".to_string())
+        );
+        assert_eq!(
+            moved("a, b, c", Language::Python, &["a()", "b()", "\"{x}\""]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_typescript_call_may_leave_off_a_defaulted_parameter_and_the_literal_carries_it() {
+        let ts = Language::TypeScript;
+        let (_, params) = parse_params("text: string, width: number, fill: string = \" \"", ts);
+        let call = |args: &[&str]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, ts)?;
+            Some(rewritten_call(
+                &args,
+                &bound,
+                &[1, 2],
+                &params,
+                ts,
+                "Pad",
+                "pad",
+            ))
+        };
+        assert_eq!(
+            call(&["\"a\"", "3"]).as_deref(),
+            Some("\"a\", { width: 3, fill: \" \" }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "void 0"]).as_deref(),
+            Some("\"a\", { width: 3, fill: \" \" }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "\"*\""]).as_deref(),
+            Some("\"a\", { width: 3, fill: \"*\" }")
+        );
+        assert_eq!(call(&["\"a\""]), None, "`width` has no default");
+        assert_eq!(call(&["\"a\"", "3", "\"*\"", "4"]), None, "one too many");
+        assert_eq!(call(&["\"a\"", "...rest"]), None, "a spread");
+
+        // An optional parameter may be left off too, and a rest one given nothing.
+        let (_, params) = parse_params("a: number, b?: number, ...more: number[]", ts);
+        assert_eq!(
+            bind_arguments(&strings(&["1"]), &params, ts),
+            Some(vec![Some(0)])
         );
     }
 
