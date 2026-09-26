@@ -6,6 +6,8 @@
 //! use them) and methods that may be reached through a trait are left alone. Each deletion is
 //! computed against the checkout as it is; one that overlaps another is left for the next run.
 //! Removing a function can orphan the functions only it called, so a second run may find more.
+//! A symbol whose references the analyzer did not establish is never on that list (#435): it is
+//! reported as unverified and kept.
 
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -26,6 +28,9 @@ pub struct Pruned {
     pub diagnostics: Vec<String>,
     pub applied: bool,
     pub symbols_checked: usize,
+    /// What the scan could not judge, kept whatever it is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unverified: Vec<crate::dead_code::Unverified>,
 }
 
 impl Pruned {
@@ -46,6 +51,18 @@ impl Pruned {
                 "  kept {} {} ({}:{}): {why}\n",
                 d.kind, d.name, d.file, d.line
             ));
+        }
+        for u in &self.unverified {
+            match &u.name {
+                Some(name) => out.push_str(&format!(
+                    "  kept {name} ({}:{}): its references are unknown: {}\n",
+                    u.file, u.line, u.reason
+                )),
+                None => out.push_str(&format!(
+                    "  kept everything in {}: its symbols are unknown: {}\n",
+                    u.file, u.reason
+                )),
+            }
         }
         for (path, new_text) in &self.rewritten {
             let full = Path::new(path);
@@ -69,7 +86,11 @@ impl Pruned {
             );
         }
         if self.removed.is_empty() {
-            out.push_str("\nnothing to prune\n");
+            out.push_str(if self.unverified.is_empty() {
+                "\nnothing to prune\n"
+            } else {
+                "\nnothing proven orphaned; what could not be checked was kept\n"
+            });
             return out;
         }
         if self.diagnostics.is_empty() {
@@ -271,6 +292,7 @@ pub async fn prune_orphans(
         diagnostics,
         applied,
         symbols_checked: report.symbols_checked,
+        unverified: report.unverified,
     })
 }
 

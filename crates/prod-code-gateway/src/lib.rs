@@ -4,6 +4,7 @@
 //! stands in front of — the workspace manager, the dispatch, the language server backends —
 //! can be exercised directly by tests.
 
+pub mod admission;
 pub mod backend;
 pub mod detect;
 pub mod editor_proxy;
@@ -117,6 +118,12 @@ pub struct ServerCli {
     /// Unload a workspace's engine after this many seconds without a session (0 disables).
     #[arg(long, env = "PROD_CODE_IDLE_EVICT_SECS", default_value_t = 1800)]
     pub idle_evict_secs: u64,
+
+    /// Memory a new engine is counted at until it has loaded and settled, in MiB, when deciding
+    /// whether the host can take it without passing 85% in use (#433). 0: by engine, 4 GiB for
+    /// Rust, 1 GiB for the other language servers.
+    #[arg(long, env = "PROD_CODE_ENGINE_RESERVE_MIB", default_value_t = 0)]
+    pub engine_reserve_mib: u64,
 
     /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
@@ -366,8 +373,19 @@ impl ServerState {
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
-            host: memory::host_resources(&self.storage_root),
+            host: self.host_resources(),
         }
+    }
+
+    /// What this host has left, less the memory held for engines still loading: placement on
+    /// the other nodes then sees a load this one has admitted before the load shows (#433).
+    fn host_resources(&self) -> prod_code_protocol::HostResources {
+        let mut host = memory::host_resources(&self.storage_root);
+        let reserved = self.workspace_manager.admission().reserved_bytes();
+        host.memory_available_bytes = host
+            .memory_available_bytes
+            .map(|available| available.saturating_sub(reserved));
+        host
     }
 }
 
@@ -1093,9 +1111,6 @@ pub async fn apply_sync_probe(
     }
 }
 
-/// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: every
-/// rewritten file becomes one whole-file text edit, file moves become rename operations and
-/// new files become create operations followed by their content.
 /// Whether `path` is a source file the gateway may hand to clients: its own workspace
 /// copies, toolchain and dependency caches under the home directory, and system SDK
 /// locations. Nothing else on the host is readable this way.
@@ -1639,16 +1654,14 @@ fn hierarchy_query(
     })
 }
 
+/// Builds an LSP `WorkspaceEdit` (as `documentChanges`) from a refactoring outcome: new files
+/// become create operations followed by their content, every rewritten file one whole-file text
+/// edit, and file moves rename operations. The analyzer names every path as it was before the
+/// refactoring, and LSP applies `documentChanges` in order, so the moves come last, as
+/// rust-analyzer's own server sends them: a rewrite after them would name a path a move vacated
+/// or gave to another file.
 fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
     let mut changes = Vec::new();
-    for mv in &outcome.moves {
-        changes.push(serde_json::json!({
-            "kind": "rename",
-            "oldUri": format!("file://{}", mv.from.display()),
-            "newUri": format!("file://{}", mv.to.display()),
-            "options": { "overwrite": false }
-        }));
-    }
     for created in &outcome.created {
         let uri = format!("file://{}", created.path.display());
         changes.push(
@@ -1666,6 +1679,14 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
                 "range": { "start": { "line": 0, "character": 0 }, "end": { "line": file.old_line_count, "character": 0 } },
                 "newText": file.new_text
             } ]
+        }));
+    }
+    for mv in &outcome.moves {
+        changes.push(serde_json::json!({
+            "kind": "rename",
+            "oldUri": format!("file://{}", mv.from.display()),
+            "newUri": format!("file://{}", mv.to.display()),
+            "options": { "overwrite": false }
         }));
     }
     serde_json::json!({ "documentChanges": changes })
@@ -2648,8 +2669,9 @@ pub async fn handle_client(
                     // Validation runs on its own engine: that is the one to warm. Loading it
                     // warms the newest files, these among them.
                     let workspace = workspace.clone();
+                    let admission = Arc::clone(state.workspace_manager.admission());
                     tokio::spawn(async move {
-                        let view = loaded.validation_view().await;
+                        let view = loaded.validation_view(&admission).await;
                         if let Some(engine) = view.rust_engine.clone() {
                             priming::warm_in_background(engine, workspace, synced_rust);
                         }
@@ -2777,11 +2799,27 @@ pub async fn handle_client(
                     return outcome;
                 }
 
-                // Attach to shared workspace using leader-follower coalescing
-                let shared_ws = state
+                // Attach to shared workspace using leader-follower coalescing. A load refused
+                // for capacity (#433), or failed, is told to the client, which says why.
+                let shared_ws = match state
                     .workspace_manager
                     .get_or_load(&engine_root, engine)
-                    .await?;
+                    .await
+                {
+                    Ok(shared_ws) => shared_ws,
+                    Err(err) => {
+                        let reason = format!("{err:#}");
+                        tracing::warn!(
+                            client_root = %req.client_workspace_root,
+                            engine,
+                            reason,
+                            "refusing handshake: the engine could not be loaded"
+                        );
+                        state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                        framed.send(WireMessage::Disconnect { reason }).await?;
+                        return Ok(());
+                    }
+                };
                 let engine_age_ms = shared_ws.loaded_at.elapsed().as_millis() as u64;
                 // The in-process Rust engine answers from a complete analysis once loaded; gopls
                 // and the servers whose readiness is known are waited for (#391).
@@ -2799,7 +2837,10 @@ pub async fn handle_client(
                 // A session that only validates proposed texts runs on the workspace's second
                 // engine, so its overlays never invalidate the main one (#73).
                 if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION) {
-                    session_view.workspace = session_view.accounted.validation_view().await;
+                    session_view.workspace = session_view
+                        .accounted
+                        .validation_view(state.workspace_manager.admission())
+                        .await;
                 }
 
                 tracing::info!(
@@ -5385,6 +5426,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     );
 
     let mut state = ServerState::new(cli.storage);
+    state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+        admission::Admission::host(cli.engine_reserve_mib),
+    )));
     state.engine_allowlist = cli
         .engines
         .iter()
@@ -5641,6 +5685,65 @@ mod tests {
         assert_eq!(evict_after(1800, true), Some(Duration::from_secs(300)));
         assert_eq!(evict_after(120, true), Some(Duration::from_secs(120)));
         assert_eq!(evict_after(0, true), Some(Duration::from_secs(300)));
+    }
+
+    /// A handshake that needs a new engine on a host without the memory for it is refused with
+    /// capacity as the reason and a way forward, and leaves no session counted (#433).
+    #[tokio::test]
+    async fn a_handshake_without_memory_for_its_engine_is_refused_for_capacity() {
+        const GIB: u64 = 1 << 30;
+        let storage = tempfile::tempdir().expect("tempdir");
+        let mut state = ServerState::new(storage.path().join("workspaces"));
+        state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            admission::Admission::with_probe(
+                admission::scripted_probe(vec![(10 * GIB, 100 * GIB)]),
+                2048,
+                admission::LOAD_SETTLE,
+            ),
+        )));
+        let client_root = "/home/dev/app";
+        let server_root =
+            workspace::resolve_server_workspace(&state.storage_root, client_root, None);
+        std::fs::create_dir_all(&server_root).unwrap();
+        let state = Arc::new(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = Arc::clone(&state);
+        let serve = tokio::spawn(async move {
+            let (socket, peer) = listener.accept().await.unwrap();
+            handle_client(socket, peer, serving).await
+        });
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    client_name: "test".to_string(),
+                    client_pid: 1,
+                    auth_token: None,
+                    client_workspace_root: client_root.to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: None,
+                    engine_subpath: None,
+                    client_agent: None,
+                    client_host: None,
+                    purpose: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let Some(Ok(WireMessage::Disconnect { reason })) = framed.next().await else {
+            panic!("the handshake was not refused");
+        };
+        assert!(reason.starts_with("capacity: "), "{reason}");
+        assert!(reason.contains("memory 90% used"), "{reason}");
+        assert!(reason.contains("Retry in a few minutes"), "{reason}");
+        assert!(reason.contains("another node"), "{reason}");
+        serve.await.unwrap().unwrap();
+        assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0);
+        assert_eq!(state.workspace_manager.loaded_count().await, 0);
     }
 
     /// The first answer `state` gives a connection that opens with `token`, if any, and asks for
@@ -6745,6 +6848,147 @@ mod tests {
             fresh,
             "the probe's answer is what the next caller gets"
         );
+    }
+
+    /// A refactoring's rewrites are read at the paths the files had before it, and LSP applies
+    /// `documentChanges` in order, so they go out before the moves. Sent after them, the rewrite
+    /// of `a.rs` would land on the file `c.rs` was just moved to. Applied by the client, a module
+    /// rename (`foo.rs` and `foo/`, with a file created inside it) lands whole.
+    #[test]
+    fn a_refactoring_is_serialized_with_its_rewrites_before_its_moves() {
+        use prod_code_engine_rust::{FileMove, RefactorOutcome, RewrittenFile};
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write("src/lib.rs", "mod foo;\nmod a;\nmod c;\n");
+        write("src/foo.rs", "mod inner;\npub use inner::f;\n");
+        write("src/foo/inner.rs", "pub fn f() -> u8 { crate::foo::X }\n");
+        write("src/a.rs", "pub const A: u8 = 1;\n");
+        write("src/c.rs", "pub const C: u8 = 3;\n");
+        let rewrite = |rel: &str, new_text: &str| RewrittenFile {
+            path: root.join(rel),
+            new_text: new_text.to_string(),
+            edits: 1,
+            old_line_count: std::fs::read_to_string(root.join(rel))
+                .unwrap()
+                .lines()
+                .count() as u32,
+        };
+        let moved = |from: &str, to: &str| FileMove {
+            from: root.join(from),
+            to: root.join(to),
+        };
+        let outcome = RefactorOutcome {
+            files: vec![
+                rewrite("src/lib.rs", "mod bar;\nmod b;\nmod a;\n"),
+                rewrite("src/foo.rs", "mod inner;\nmod extra;\npub use inner::f;\n"),
+                rewrite("src/foo/inner.rs", "pub fn f() -> u8 { crate::bar::X }\n"),
+                rewrite("src/a.rs", "pub const B: u8 = 1;\n"),
+                rewrite("src/c.rs", "pub const A: u8 = 3;\n"),
+            ],
+            created: vec![RewrittenFile {
+                path: root.join("src/foo/extra.rs"),
+                new_text: "pub fn extra() {}\n".to_string(),
+                edits: 1,
+                old_line_count: 0,
+            }],
+            moves: vec![
+                moved("src/foo.rs", "src/bar.rs"),
+                moved("src/foo", "src/bar"),
+                moved("src/a.rs", "src/b.rs"),
+                moved("src/c.rs", "src/a.rs"),
+            ],
+        };
+        let edit = super::workspace_edit_json(&outcome);
+        let kinds: Vec<&str> = edit["documentChanges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|change| change["kind"].as_str().unwrap_or("edit"))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "create", "edit", "edit", "edit", "edit", "edit", "edit", "rename", "rename",
+                "rename", "rename"
+            ]
+        );
+        prod_code_mcp::refactor::apply_workspace_edit(&root, &edit).unwrap();
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
+        assert_eq!(
+            read("src/lib.rs").as_deref(),
+            Some("mod bar;\nmod b;\nmod a;\n")
+        );
+        assert_eq!(
+            read("src/bar.rs").as_deref(),
+            Some("mod inner;\nmod extra;\npub use inner::f;\n")
+        );
+        assert_eq!(
+            read("src/bar/inner.rs").as_deref(),
+            Some("pub fn f() -> u8 { crate::bar::X }\n")
+        );
+        assert_eq!(
+            read("src/bar/extra.rs").as_deref(),
+            Some("pub fn extra() {}\n")
+        );
+        assert_eq!(read("src/b.rs").as_deref(), Some("pub const B: u8 = 1;\n"));
+        assert_eq!(read("src/a.rs").as_deref(), Some("pub const A: u8 = 3;\n"));
+        for gone in ["src/foo.rs", "src/foo", "src/c.rs"] {
+            assert!(!root.join(gone).exists(), "{gone} was moved away");
+        }
+        prod_code_mcp::sync::clear_sync_cache(&root);
+    }
+
+    /// The same through rust-analyzer: renaming the module `foo`, kept in `foo.rs` with its
+    /// submodule in `foo/`, moves both and rewrites every use, the one inside `foo/` included,
+    /// and the client lands all of it.
+    #[test]
+    fn a_module_rename_by_the_analyzer_lands_whole_in_the_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(
+            "Cargo.toml",
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        write(
+            "src/lib.rs",
+            "pub mod foo;\npub fn g() -> u8 { foo::inner::f() }\n",
+        );
+        write("src/foo.rs", "pub mod inner;\npub const X: u8 = 1;\n");
+        write("src/foo/inner.rs", "pub fn f() -> u8 { crate::foo::X }\n");
+        let engine = prod_code_engine_rust::RustEngine::load(&root).unwrap();
+        // `foo` in `pub mod foo;` is line 1, column 9.
+        let outcome = engine
+            .rename(&root.join("src/lib.rs"), 1, 9, "bar")
+            .expect("rename query")
+            .expect("rename accepted");
+        assert_eq!(outcome.moves.len(), 2, "{outcome:?}");
+        let edit = super::workspace_edit_json(&outcome);
+        prod_code_mcp::refactor::apply_workspace_edit(&root, &edit).unwrap();
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
+        assert_eq!(
+            read("src/lib.rs").as_deref(),
+            Some("pub mod bar;\npub fn g() -> u8 { bar::inner::f() }\n")
+        );
+        assert_eq!(
+            read("src/bar.rs").as_deref(),
+            Some("pub mod inner;\npub const X: u8 = 1;\n")
+        );
+        assert_eq!(
+            read("src/bar/inner.rs").as_deref(),
+            Some("pub fn f() -> u8 { crate::bar::X }\n")
+        );
+        assert!(!root.join("src/foo.rs").exists() && !root.join("src/foo").exists());
+        prod_code_mcp::sync::clear_sync_cache(&root);
     }
 }
 

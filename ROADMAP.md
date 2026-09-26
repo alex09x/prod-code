@@ -251,7 +251,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Status (2026-09-26, checked on a node):
     - Shared by every workspace copy on a node, since all run as one user: Rust `~/.cargo/registry`, Go `GOCACHE` and `GOMODCACHE`, npm `~/.npm` (pnpm 12.6 and yarn 1.22 installed, so a pnpm store is shared too), uv `~/.cache/uv`, and ccache for C/C++ (#243).
     - Kept per workspace: `target/`, `node_modules/` and virtual environments. A new worktree's copy starts from the main copy's (#278, #412, #414).
-    - Not built: caches on a RAM disk (they are on each node's disk) and pre-warmed pycache. sccache is configured as a Cargo compiler wrapper on inspected build nodes; its shared daemon exposed a shadow-namespace bug (#426).
+    - Not built: caches on a RAM disk (they are on each node's disk) and pre-warmed pycache. sccache is configured as a Cargo compiler wrapper on inspected build nodes; overlay shadows now use client-side compilation and reject incompatible logging or distributed-compiler settings (#426).
 
 - [x] **6.3. Concurrent Multi-Worktree Build Isolation** — every worktree owns `<repo>--wt-<hash>` with its own build cache (2026-09-19). Process-group supervision was checked on 2026-09-23. Each exec runs in its own process group (`process_group(0)`), and the whole tree is killed on a timeout or a client disconnect. `bash -c '(sleep 283 &); sleep 282'` left no process on the node after a 3 s timeout, and none when the client was killed. A new worktree's copy takes the main copy's compiled Rust dependencies since 2026-09-24 (#278): `target/debug/{deps,build,.fingerprint}` is copied when the copy is seeded, with modification times kept, so its first `cargo test --workspace --no-run` compiled 8 crates in 38.8 s against 305 in 106.2 s. The copy is the worktree's own; nothing is shared afterwards. C/C++ gets the same effect from ccache (#243).
   - Isolated build artifacts per worktree session to eliminate build cache lock contention across concurrent agents.
@@ -401,8 +401,11 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     #181 (2026-09-23), which reads rust-analyzer's unresolved-reference highlighting. Since
     #63 every write tool also takes `verify: "compile"`, which runs `cargo check` on the proposed files
     in a shadow of the workspace and writes only what the compiler accepts too. The applicator is
-    transactional since #70: every path an edit touches is snapshotted before the first write and
-    put back if any write fails, so a multi-file refactor lands whole or not at all.
+    transactional for text edits since #70. The #425 repair extends rollback across ordered create,
+    rename and delete operations, uses UTF-16 columns, rechecks containment after directory moves,
+    and removes backups from their final paths. Rust outcomes send rewrites before moves. Resource
+    operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
+    a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
     - **Zero-Prompt Agent Automation**: AI coding agents can execute complex multi-file architectural refactors with single RPC calls without hallucinating intermediate edits.
@@ -418,7 +421,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     - `code_slice(path, symbol)`: extracts a minimal, self-contained semantic slice (e.g. 60 lines instead of 4,000 lines) representing 100% of data and control flow.
     - Reduces LLM context consumption by 85–95%, drastically lowering inference costs and model reasoning errors.
 
-- [x] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)** — second step shipped 2026-09-21: `code_shadow_run` / `prod-code shadow-run` run a command per named hypothesis in overlay shadows of the workspace copy (user namespace + overlayfs mounted at the workspace path, warm caches valid, hypotheses in parallel; in-place sequential fallback), rank the outcomes and return only the winner's diff. First step 2026-09-20: `code_validate_edits` places several proposed file contents in one private analyzer overlay and reports diagnostics per file (plus `also_check` for unchanged callers), so a multi-file refactor is judged before anything is written. Each hypothesis is named and runs its own command (a test suite included) on the node, and only the winner's diff comes back, so nothing of the earlier "remaining" list is left. The overlays live under `shadow` next to the storage directory; `--shadow-dir /dev/shm/prod-code-shadow` puts them in RAM.
+- [x] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)** — second step shipped 2026-09-21: `code_shadow_run` / `prod-code shadow-run` run a command per named hypothesis in overlay shadows of the workspace copy (user namespace + overlayfs mounted at the workspace path, warm caches valid, hypotheses in parallel; in-place sequential fallback), rank the outcomes and return only the winner's diff. First step 2026-09-20: `code_validate_edits` places several proposed file contents in one private analyzer overlay and reports diagnostics per file (plus `also_check` for unchanged callers), so a multi-file refactor is judged before anything is written. Each hypothesis is named and runs its own command (a test suite included) on the node, and only the winner's diff comes back, so nothing of the earlier "remaining" list is left. The #426 repair keeps sccache compilation inside the overlay and validates effective configuration against the proposed filesystem, including aliases and deletions. Settings that would escape the namespace are refused. The overlays live under `shadow` next to the storage directory; `--shadow-dir /dev/shm/prod-code-shadow` puts them in RAM.
   - When an AI agent explores multiple competing architectural solutions or bug-fix hypotheses:
     - Server creates lightweight in-memory VFS overlays (`shadow-branch-1`, `shadow-branch-2`, `shadow-branch-3`) in RAM (`/dev/shm`).
     - Remote execution engine (Phase 6) runs full test suites against all hypotheses simultaneously across 128 server cores.
@@ -458,6 +461,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).
   - Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
 
+  - Impact selection fails closed on deleted/binary files, unreadable diff or analyzer replies, unattributed hunks and truncated call walks (#434). Directly edited tests are selected, all call-hierarchy items are traversed, and quoted Git paths are decoded.
+
 - [~] **8.2. Automated Root-Cause Failure Dossier (`code_diagnose_failure`)** — shipped 2026-09-20: `prod-code diagnose [FILTER]` and MCP `code_diagnose_failure` run the tests and, per failure, return the failure output, the source around every location it mentions (Rust panics/`-->` notes, Go `file:line`, Python tracebacks, JS/TS stacks, Swift/C), the enclosing function with its callers, the working-tree diff of that file and the list of changed files; bare Go file names are resolved through the failing test's package. Suspect ranking shipped 2026-09-23 (#168). For each failure the dossier lists the changed functions whose callers graph reaches the failing test, nearest first, with the number of calls, plus the diff of their file when no failure site shows it. `impact` walks the graph from each changed function on its own, over a cache so no function is asked twice, and records which test each walk reached and at what depth. Suggested fixes followed on 2026-09-23 (#206): when the tests do not build (Rust), the dossier lists the compiler's machine-applicable fixes for the errors and names `prod-code check --fix`, which applies them. A failing assertion has no fix a tool can know, and the dossier stops at its evidence there.
   - When test suites fail (assertions, panics, unhandled exceptions), the server parses stack traces and maps frame pointers back to AST source spans.
   - Remaining requirement: structured runtime-value extraction, beyond the failure text currently retained. Original target dossier:
@@ -484,6 +489,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Detects unreachable functions, dead types, and orphaned imports left behind by large refactors.
   - Emits an atomic single-commit cleanup patch.
 
+
+  - Failed or malformed symbol/reference replies are recorded as unverified (#435). They make the scan incomplete and are kept by pruning; only a successful reference answer can establish a candidate.
 
 - [~] **8.7. Structural AST Codemod Engine (`code_codemod`)** — shipped 2026-09-21: `code_codemod` / `prod-code codemod` run rust-analyzer's structural search and replace over the workspace (`pattern ==>> replacement`, `$name` placeholders), return a unified diff and apply it on request; `path` restricts where edits land, not how long the search takes. Rust only, because the engine is the analyzer's.
   - Pattern-based structural code transformations (AST pattern matching).
