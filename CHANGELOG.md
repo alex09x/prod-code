@@ -14,8 +14,12 @@
   holding the checkout. Concurrent loads count against an 85% host-memory limit; idle
   engines may be reclaimed, while existing sessions remain available. A canceled
   handshake keeps its load and reservation alive, and a failed load answers its waiters.
+  An invalidated load cannot publish over a newer load of the same workspace.
   The reservation defaults to 4 GiB for Rust and 1 GiB for other language servers and
   can be adjusted with `--engine-reserve-mib`. This bounds admission, not later engine growth.
+- Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
+  described as a reporting policy restriction instead of falsely claiming they do not
+  exist in the repository.
 - Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
   earlier writes and resource operations when a later step fails (#425). Paths are checked
   again after directory moves, and deleted files do not survive as hidden backup files.
