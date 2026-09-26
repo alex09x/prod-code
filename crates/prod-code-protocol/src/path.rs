@@ -203,7 +203,7 @@ fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
                 }
             }
             for (key, item) in map.iter_mut() {
-                if !TEXT_FIELDS.contains(&key.as_str()) {
+                if !TEXT_FIELDS.contains(&key.as_str()) || (key == "label" && item.is_array()) {
                     changed |= translate_value(item, from, to);
                 }
             }
@@ -572,6 +572,25 @@ mod tests {
         assert_eq!(
             sent["params"]["textDocument"]["uri"],
             "file:///Users/dev/app2/src/lib.rs"
+        );
+    }
+    #[test]
+    fn inlay_label_locations_are_mapped_while_label_text_stays_verbatim() {
+        let input = serde_json::json!({"result": [{"label": [{
+            "value": "/srv/ws/app/type",
+            "tooltip": {"kind": "markdown", "value": "file:///srv/ws/app/type"},
+            "location": {"uri": "file:///srv/ws/app/src/lib.rs", "range": {}},
+            "command": {"title": "/srv/ws/app/title", "command": "open", "arguments": ["file:///srv/ws/app/src/lib.rs"]}
+        }]}]});
+        let output = json(&app().translate_lsp_to_client(&input.to_string()));
+        let label = &output["result"][0]["label"][0];
+        assert_eq!(label["value"], "/srv/ws/app/type");
+        assert_eq!(label["tooltip"]["value"], "file:///srv/ws/app/type");
+        assert_eq!(label["command"]["title"], "/srv/ws/app/title");
+        assert_eq!(label["location"]["uri"], "file:///Users/dev/app/src/lib.rs");
+        assert_eq!(
+            label["command"]["arguments"][0],
+            "file:///Users/dev/app/src/lib.rs"
         );
     }
 }
