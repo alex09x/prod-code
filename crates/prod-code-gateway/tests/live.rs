@@ -1252,7 +1252,12 @@ async fn the_handshake_says_how_old_the_engine_is() {
             .await
             .expect("handshake");
         match framed.next().await {
-            Some(Ok(WireMessage::HandshakeResponse(resp))) => resp.engine_age_ms,
+            Some(Ok(WireMessage::HandshakeResponse(resp))) => {
+                // The in-process Rust engine answers from a complete analysis: its index
+                // questions need no waiting, and an empty answer is final (#391).
+                assert!(resp.index_gated, "{resp:?}");
+                resp.engine_age_ms
+            }
             other => panic!("no handshake response: {other:?}"),
         }
     };

@@ -4,6 +4,9 @@
 //! health monitoring, and idle shutdown management.
 
 use anyhow::{Context, Result};
+use prod_code_protocol::readiness::{
+    BUSY_MEMBER, Busy, INDEX_WAIT, Readiness, ReadySignal, needs_index, pyright_found_sources,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -31,6 +34,12 @@ pub struct GenericLspConfig {
     /// than an order of magnitude — a formatter answers instantly, a type checker on a cold
     /// project does not — so this is per server rather than one number for all of them.
     pub request_timeout: Duration,
+    /// How the server tells that it has loaded and indexed its project, so that questions
+    /// answered from its index wait for it instead of getting nothing or a part (#391).
+    pub ready: ReadySignal,
+    /// How long such a question waits for the server at most before it is asked anyway, with
+    /// a note of how far the server got.
+    pub index_wait: Duration,
 }
 
 impl Default for GenericLspConfig {
@@ -42,6 +51,8 @@ impl Default for GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Unknown,
+            index_wait: INDEX_WAIT,
         }
     }
 }
@@ -138,6 +149,13 @@ impl GenericLspConfig {
         } else {
             ("pylsp".to_string(), vec![])
         };
+        // basedpyright and pyright report no progress; they log `Found N source files` once
+        // their program is set up, and hold a question from then on.
+        let ready = if cmd.contains("pyright") {
+            ReadySignal::Log(pyright_found_sources)
+        } else {
+            ReadySignal::Unknown
+        };
 
         Self {
             command: cmd,
@@ -146,6 +164,8 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready,
+            index_wait: INDEX_WAIT,
         }
     }
 
@@ -167,6 +187,9 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            // `backgroundIndexProgress`: begun at once, ended when the index is complete.
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
         }
     }
 
@@ -178,6 +201,8 @@ impl GenericLspConfig {
         let mut config = Self::for_cpp();
         config.args.retain(|a| !a.starts_with("--background-index"));
         config.args.push("--background-index=false".to_string());
+        // Without a background index there is nothing to wait for.
+        config.ready = ReadySignal::HoldsQuestions;
         config
     }
 
@@ -198,6 +223,9 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options: None,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            // It reports reloading the package as progress.
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
         }
     }
 
@@ -205,7 +233,15 @@ impl GenericLspConfig {
     pub fn for_typescript() -> Self {
         // TypeScript 7 (native) ships its own LSP: `tsc --lsp --stdio` from the platform
         // package. It needs no tsserver and no Node at all, so it wins when present.
-        let (cmd, args) = if let Some(native) = native_typescript_lsp() {
+        let native = native_typescript_lsp();
+        // The native server holds a question until its project is loaded; what the others do
+        // is not known.
+        let ready = if native.is_some() {
+            ReadySignal::HoldsQuestions
+        } else {
+            ReadySignal::Unknown
+        };
+        let (cmd, args) = if let Some(native) = native {
             (
                 native.to_string_lossy().into_owned(),
                 vec!["--lsp".to_string(), "--stdio".to_string()],
@@ -242,6 +278,8 @@ impl GenericLspConfig {
             working_dir: None,
             initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready,
+            index_wait: INDEX_WAIT,
         }
     }
 }
@@ -323,6 +361,8 @@ pub struct GenericLspEngine {
     /// Receives the `workspace/applyEdit` a server sends while a command runs.
     apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>>,
     is_alive: Arc<AtomicBool>,
+    /// What the server has said about loading and indexing its project (#391).
+    readiness: Arc<Readiness>,
     _child: Arc<Mutex<Child>>,
 }
 
@@ -394,6 +434,9 @@ impl GenericLspEngine {
         let last_activity = Arc::new(RwLock::new(Instant::now()));
         let activity_updater = last_activity.clone();
 
+        let readiness = Arc::new(Readiness::new(config.ready));
+        let readiness_reader = Arc::clone(&readiness);
+
         // Background reader loop: decodes Content-Length frames
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
@@ -426,8 +469,15 @@ impl GenericLspEngine {
                                 if let Ok(val) =
                                     serde_json::from_str::<serde_json::Value>(&json_str)
                                 {
+                                    readiness_reader.on_message(&val);
                                     if let Some(id_val) = val.get("id") {
-                                        if let Some(id) = id_val.as_u64() {
+                                        // Only an answer is ours: a request from the server
+                                        // (`window/workDoneProgress/create`) numbers its own ids
+                                        // from 1 too, and taken for the answer to ours it left
+                                        // the server waiting and our question empty (#391).
+                                        if val.get("method").is_none()
+                                            && let Some(id) = id_val.as_u64()
+                                        {
                                             let mut pending = pending_clone.lock().await;
                                             if let Some(tx) = pending.remove(&id) {
                                                 let _ = tx.send(val.clone());
@@ -597,6 +647,7 @@ impl GenericLspEngine {
             pull_unsupported: AtomicBool::new(false),
             apply_edit_waiter,
             is_alive,
+            readiness,
             _child: Arc::new(Mutex::new(child)),
         };
 
@@ -638,6 +689,11 @@ impl GenericLspEngine {
                 }
             ],
             "capabilities": {
+                // Servers report loading and indexing as progress only to a client that says
+                // it takes it (#391).
+                "window": {
+                    "workDoneProgress": true
+                },
                 "workspace": {
                     "workspaceFolders": true,
                     "configuration": true
@@ -669,8 +725,20 @@ impl GenericLspEngine {
 
         self.send_notification("initialized", serde_json::json!({}))
             .await?;
+        self.readiness.started();
 
         Ok(resp)
+    }
+
+    /// Whether the server's readiness is known, so that its index answers are final once it
+    /// has said it is ready (#391).
+    pub fn readiness_known(&self) -> bool {
+        self.readiness.known()
+    }
+
+    /// The loading or indexing the server is still doing, if any.
+    pub fn busy(&self) -> Option<Busy> {
+        self.readiness.busy()
     }
 
     /// Send a request and await its response.
@@ -854,6 +922,13 @@ impl GenericLspEngine {
         if !self.is_alive.load(Ordering::Relaxed) {
             anyhow::bail!("Language server process has exited");
         }
+        // A question answered from the index waits until the server has built it; one still
+        // not built when the wait ends is answered with a note of how far it got (#391).
+        let busy = if needs_index(method) {
+            self.readiness.wait(self.config.index_wait).await
+        } else {
+            None
+        };
 
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
@@ -873,7 +948,12 @@ impl GenericLspEngine {
         Self::write_frame_raw(&self.stdin, &payload).await?;
 
         match tokio::time::timeout(self.config.request_timeout, rx).await {
-            Ok(Ok(val)) => Ok(val),
+            Ok(Ok(mut val)) => {
+                if let Some(busy) = busy {
+                    val[BUSY_MEMBER] = serde_json::to_value(busy)?;
+                }
+                Ok(val)
+            }
             Ok(Err(_)) => {
                 anyhow::bail!("Language server process has exited while answering '{method}'")
             }

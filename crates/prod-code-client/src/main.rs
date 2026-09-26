@@ -2417,8 +2417,10 @@ async fn execute_lsp_query(
         let remaining = init_deadline - tokio::time::Instant::now();
         match tokio::time::timeout(remaining, framed.next()).await {
             Ok(Some(Ok(WireMessage::LspPayload(resp_json)))) => {
+                // An answer has no method: a server's own request may carry id 1 too (#391).
                 if serde_json::from_str::<serde_json::Value>(&resp_json)
                     .ok()
+                    .filter(|val| val.get("method").is_none())
                     .and_then(|val| val.get("id").and_then(|id| id.as_i64()))
                     == Some(1)
                 {
@@ -2482,7 +2484,9 @@ async fn execute_lsp_query(
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&resp_json)
                     .map_err(|_| ())
                     .and_then(|v| {
-                        if v.get("id").and_then(|id| id.as_i64()) == Some(2) {
+                        if v.get("method").is_none()
+                            && v.get("id").and_then(|id| id.as_i64()) == Some(2)
+                        {
                             Ok(v)
                         } else {
                             Err(())
@@ -4636,7 +4640,10 @@ async fn run_benchmark(
                         match msg_opt {
                             Some(Ok(WireMessage::LspPayload(payload))) => {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                                    let maybe_id = val.get("id").and_then(|v| v.as_u64());
+                                    let maybe_id = val
+                                        .get("id")
+                                        .filter(|_| val.get("method").is_none())
+                                        .and_then(|v| v.as_u64());
                                     if let Some(send_time) = maybe_id.and_then(|id| in_flight.remove(&id)) {
                                         let elapsed = send_time.elapsed().as_micros() as u64;
                                         latencies_us.push(elapsed);

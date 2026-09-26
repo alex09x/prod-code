@@ -53,6 +53,7 @@ async fn handle_connection(stream: TcpStream) {
                     detected_engine: "mock".to_string(),
                     stale_paths: Vec::new(),
                     engine_age_ms: None,
+                    index_gated: false,
                 });
                 if framed.send(resp).await.is_err() {
                     break;

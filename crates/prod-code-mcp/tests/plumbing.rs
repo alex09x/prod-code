@@ -719,6 +719,7 @@ impl RecordingGateway {
                             detected_engine: "rust".to_string(),
                             stale_paths: Vec::new(),
                             engine_age_ms: None,
+                            index_gated: false,
                         }))
                         .await?;
                 }
@@ -1082,6 +1083,7 @@ async fn reconnecting_gateway(first: FirstHover) -> (SocketAddr, Arc<AtomicUsize
                                     detected_engine: "rust".to_string(),
                                     stale_paths: Vec::new(),
                                     engine_age_ms: None,
+                                    index_gated: false,
                                 }))
                                 .await;
                         }

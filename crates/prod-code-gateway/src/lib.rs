@@ -634,6 +634,33 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
     }
 }
 
+/// Whether an LSP message is a request from the server (an id and a method), not a notification.
+fn is_server_request(json: &str) -> bool {
+    json.contains("\"id\"")
+        && serde_json::from_str::<serde_json::Value>(json)
+            .is_ok_and(|v| v.get("id").is_some() && v.get("method").is_some())
+}
+
+/// Sends the client the note an engine attached to an answer given while its server was still
+/// loading or indexing, just before the answer, and takes it off the answer (#391).
+async fn send_busy_note(
+    resp: &mut serde_json::Value,
+    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
+) {
+    let Some(busy) = resp
+        .as_object_mut()
+        .and_then(|o| o.remove(prod_code_protocol::readiness::BUSY_MEMBER))
+    else {
+        return;
+    };
+    let note = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
+        "params": busy
+    });
+    let _ = out_tx.send(WireMessage::LspPayload(note.to_string())).await;
+}
+
 /// Writes a file a client synced so that a failed write, such as on a full disk, leaves the old
 /// content: the text goes to a temporary file next to it, which then replaces it. `fs::write`
 /// truncated the file first, and a full disk left it empty (#385).
@@ -2483,6 +2510,7 @@ pub async fn handle_client(
                             detected_engine: engine.to_string(),
                             stale_paths: workspace::stale_paths(&server_workspace),
                             engine_age_ms: None,
+                            index_gated: false,
                         }))
                         .await?;
                     let outcome = editor_proxy::run(
@@ -2504,6 +2532,14 @@ pub async fn handle_client(
                     .get_or_load(&engine_root, engine)
                     .await?;
                 let engine_age_ms = shared_ws.loaded_at.elapsed().as_millis() as u64;
+                // The in-process Rust engine answers from a complete analysis once loaded; gopls
+                // and the servers whose readiness is known are waited for (#391).
+                let index_gated = shared_ws.rust_engine.is_some()
+                    || shared_ws.go_engine.is_some()
+                    || shared_ws
+                        .generic_engine
+                        .as_ref()
+                        .is_some_and(|engine| engine.readiness_known());
 
                 let mut session_view = state
                     .workspace_manager
@@ -2536,6 +2572,7 @@ pub async fn handle_client(
                         detected_engine: engine.to_string(),
                         stale_paths: workspace::stale_paths(&server_workspace),
                         engine_age_ms: Some(engine_age_ms),
+                        index_gated,
                     }))
                     .await?;
 
@@ -2656,6 +2693,11 @@ async fn run_session_loop(
         }
     });
 
+    // gopls and the supervised servers answer their own requests (`window/workDoneProgress/create`,
+    // `workspace/configuration`) in the engine; passed on, one carried the id of a client's
+    // question and was taken for its answer (#391). Only their notifications go to the client.
+    let engine_answers_requests =
+        view.workspace.go_engine.is_some() || view.workspace.generic_engine.is_some();
     let mut backend_rx = if let Some(ref go) = view.workspace.go_engine {
         Some(go.subscribe())
     } else if let Some(ref generic_eng) = view.workspace.generic_engine {
@@ -2682,6 +2724,9 @@ async fn run_session_loop(
             } => {
                 match backend_msg {
                     Ok(server_lsp) => {
+                        if engine_answers_requests && is_server_request(&server_lsp) {
+                            continue;
+                        }
                         let client_lsp = translator.translate_lsp_to_client(&server_lsp);
                         if out_tx.send(WireMessage::LspPayload(client_lsp)).await.is_err() {
                             tracing::error!("Failed to send LSP message to client channel");
@@ -3304,6 +3349,7 @@ async fn on_client_message(
 
                                 match resp_res {
                                     Ok(mut resp) => {
+                                        send_busy_note(&mut resp, &out_tx_task).await;
                                         if let Some(ref r_id) = req_id {
                                             resp["id"] = r_id.clone();
                                         }
@@ -3361,6 +3407,7 @@ async fn on_client_message(
                             );
                             let resp = match resp {
                                 Ok(mut resp) => {
+                                    send_busy_note(&mut resp, &out_tx_task).await;
                                     resp["id"] = r_id;
                                     resp
                                 }
@@ -3450,6 +3497,7 @@ async fn on_client_message(
 
                             match resp_res {
                                 Ok(mut resp) => {
+                                    send_busy_note(&mut resp, &out_tx_task).await;
                                     resp["id"] = r_id;
                                     let client_resp =
                                         translator_task.translate_lsp_to_client(&resp.to_string());
@@ -5144,6 +5192,20 @@ pub async fn run(cli: ServerCli) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Only a server's requests are held back from the client, not its notifications (#391).
+    #[test]
+    fn a_server_request_is_told_from_a_notification() {
+        assert!(super::is_server_request(
+            r#"{"jsonrpc":"2.0","id":2,"method":"workspace/configuration","params":{}}"#
+        ));
+        assert!(!super::is_server_request(
+            r#"{"jsonrpc":"2.0","method":"textDocument/publishDiagnostics","params":{"uri":"file:///a","diagnostics":[]}}"#
+        ));
+        assert!(!super::is_server_request(
+            r#"{"jsonrpc":"2.0","id":2,"result":null}"#
+        ));
+    }
+
     use super::*;
 
     fn peer(addr: &str, platform: &str, engines: &[&str], load_per_cpu: f64) -> PeerInfo {

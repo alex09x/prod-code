@@ -29,6 +29,9 @@ pub struct LspSession {
     pub engine: String,
     /// When the gateway loaded that engine; `None` when it does not say (#381).
     engine_loaded: Option<std::time::Instant>,
+    /// Whether the gateway holds this engine's index questions until its server is ready, so
+    /// that an empty answer is final (#391).
+    index_gated: bool,
 }
 
 /// How long after its engine was loaded an empty `workspace/symbol` answer may still be early:
@@ -52,11 +55,42 @@ fn budget_for(method: &str) -> std::time::Duration {
     std::time::Duration::from_secs(match method {
         "prodCode/structuralReplace" => 900,
         "textDocument/diagnostic" => 300,
+        // The gateway may hold an index question while the server finishes indexing (#391).
+        m if prod_code_protocol::readiness::needs_index(m) => 120,
         _ => 60,
     })
 }
 
+/// Notes, per checkout, of index questions the gateway answered while the language server was
+/// still loading or indexing; a tool's answer carries them (#391).
+static INDEXING_NOTES: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, Vec<String>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn record_indexing_note(root: &Path, note: String) {
+    let mut notes = INDEXING_NOTES.lock().unwrap_or_else(|e| e.into_inner());
+    let notes = notes.entry(root.to_path_buf()).or_default();
+    if !notes.contains(&note) {
+        notes.push(note);
+    }
+}
+
+/// The indexing notes recorded for the checkout at `root` since the last call.
+pub fn take_indexing_notes(root: &Path) -> Vec<String> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    INDEXING_NOTES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&root)
+        .unwrap_or_default()
+}
+
 impl LspSession {
+    /// Whether the gateway holds this session's index questions until its server is ready
+    /// (#391).
+    pub fn index_gated(&self) -> bool {
+        self.index_gated
+    }
+
     /// How long ago the gateway loaded this session's engine; `None` when it does not say
     /// (#381).
     pub fn engine_age(&self) -> Option<std::time::Duration> {
@@ -140,6 +174,7 @@ impl LspSession {
             engine_loaded: handshake.engine_age_ms.and_then(|ms| {
                 std::time::Instant::now().checked_sub(std::time::Duration::from_millis(ms))
             }),
+            index_gated: handshake.index_gated,
         };
         // Files the gateway lost from its copy (#262) that the sync above did not carry: the
         // next sync sends them again.
@@ -203,7 +238,23 @@ impl LspSession {
                     let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) else {
                         continue;
                     };
-                    if val.get("id").and_then(|i| i.as_i64()) != Some(id) {
+                    // The server was still loading or indexing when the gateway asked it: the
+                    // answer that follows may be incomplete, and the tool says so (#391).
+                    if val.get("method").and_then(|m| m.as_str())
+                        == Some(prod_code_protocol::readiness::BUSY_NOTIFICATION)
+                        && let Some(busy) = val.get("params").and_then(|p| {
+                            serde_json::from_value::<prod_code_protocol::readiness::Busy>(p.clone())
+                                .ok()
+                        })
+                    {
+                        record_indexing_note(&self.root, busy.describe());
+                        continue;
+                    }
+                    // An answer has no method: a request from the server that carries the same
+                    // id is not it (#391).
+                    if val.get("method").is_some()
+                        || val.get("id").and_then(|i| i.as_i64()) != Some(id)
+                    {
                         continue;
                     }
                     if let Some(err) = val.get("error") {
@@ -462,6 +513,17 @@ pub async fn pooled_engine_age(
         .await
         .get(&key)
         .and_then(LspSession::engine_age)
+}
+
+/// [`LspSession::index_gated`] of the pooled session that answers about `file` in the checkout
+/// at `root`; `false` when there is none yet (#391).
+pub async fn pooled_index_gated(remote: SocketAddr, root: &Path, file: &Path) -> bool {
+    let (_, key) = pool_key(remote, root, file);
+    pool()
+        .lock()
+        .await
+        .get(&key)
+        .is_some_and(LspSession::index_gated)
 }
 
 /// Runs one query on the pooled session for `root` (opening it on first use): local

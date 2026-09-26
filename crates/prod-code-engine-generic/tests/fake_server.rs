@@ -56,6 +56,11 @@ def read():
 
 PULLS = {}
 LINES = {}
+INDEXED = [not os.environ.get("FAKE_INDEXING")]
+
+def end_indexing():
+    INDEXED[0] = True
+    send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "end"}}})
 
 while True:
     message = read()
@@ -67,6 +72,27 @@ while True:
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {
             "capabilities": {"hoverProvider": True, "diagnosticProvider": {"interFileDependencies": False}}
+        }})
+    elif method == "initialized" and os.environ.get("FAKE_INDEXING"):
+        # As clangd does: create a progress token, begin indexing, report, and end it after
+        # FAKE_INDEXING seconds (or never), answering workspace/symbol with nothing until then.
+        send({"jsonrpc": "2.0", "id": 7000, "method": "window/workDoneProgress/create", "params": {"token": "index"}})
+        send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "begin", "title": "indexing", "percentage": 0}}})
+        send({"jsonrpc": "2.0", "method": "$/progress", "params": {"token": "index", "value": {"kind": "report", "message": "1/2", "percentage": 50}}})
+        if os.environ["FAKE_INDEXING"] != "forever":
+            threading.Timer(float(os.environ["FAKE_INDEXING"]), end_indexing).start()
+    elif method == "workspace/symbol":
+        found = [{"name": "indexed", "kind": 12, "location": {"uri": "file:///wherever/a.txt",
+                  "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 5}}}}]
+        send({"jsonrpc": "2.0", "id": message["id"], "result": found if INDEXED[0] else []})
+    elif method == "textDocument/hover" and os.environ.get("FAKE_COLLIDE"):
+        # A request of the server's own that happens to carry the id of the question it is
+        # answering, as gopls's window/workDoneProgress/create did; the answer follows once the
+        # client has answered it.
+        send({"jsonrpc": "2.0", "id": message["id"], "method": "window/workDoneProgress/create", "params": {"token": "t"}})
+        reply = read()
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {
+            "contents": {"kind": "markdown", "value": "answered after the client answered %s" % json.dumps(reply.get("result"))}
         }})
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {
@@ -143,6 +169,129 @@ fn config(script: &Path) -> GenericLspConfig {
         env: HashMap::new(),
         ..Default::default()
     }
+}
+
+/// A request from the server that carries the id of a question in flight is answered as a
+/// request, not taken for the question's answer: gopls's `window/workDoneProgress/create` was,
+/// which left the question empty and gopls waiting (#391).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_request_with_the_id_of_a_question_is_not_its_answer() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_COLLIDE".to_string(), "1".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the server starts");
+    let answer = engine
+        .send_request(
+            "textDocument/hover",
+            serde_json::json!({ "textDocument": { "uri": "file:///wherever/a.txt" }, "position": { "line": 0, "character": 0 } }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(
+        answer["result"]["contents"]["value"], "answered after the client answered null",
+        "{answer}"
+    );
+}
+
+/// A question answered from the index waits until the server has ended its indexing progress,
+/// and gets the whole answer; a question that is not waits for nothing (#391).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_question_from_the_index_waits_until_the_server_has_indexed() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_INDEXING".to_string(), "0.6".to_string());
+    settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the server starts");
+    assert!(engine.readiness_known());
+
+    let asked = std::time::Instant::now();
+    let answer = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert!(
+        asked.elapsed() >= Duration::from_millis(400),
+        "it waited for the index: {:?}",
+        asked.elapsed()
+    );
+    assert_eq!(
+        answer["result"].as_array().map(Vec::len),
+        Some(1),
+        "{answer}"
+    );
+    assert!(
+        answer
+            .get(prod_code_protocol::readiness::BUSY_MEMBER)
+            .is_none(),
+        "{answer}"
+    );
+    assert_eq!(engine.busy(), None);
+}
+
+/// A server still indexing when the wait ends is asked anyway, and the answer carries how far
+/// it got; a hover in the meantime does not wait at all (#391).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_still_indexing_when_the_wait_ends_is_asked_with_a_note() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_INDEXING".to_string(), "forever".to_string());
+    settings.ready = prod_code_protocol::readiness::ReadySignal::Progress;
+    settings.index_wait = Duration::from_millis(300);
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the server starts");
+
+    let asked = std::time::Instant::now();
+    let hover = engine
+        .send_request(
+            "textDocument/hover",
+            serde_json::json!({ "textDocument": { "uri": "file:///wherever/a.txt" }, "position": { "line": 0, "character": 0 } }),
+        )
+        .await
+        .expect("a hover");
+    assert!(
+        asked.elapsed() < Duration::from_millis(250),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert!(
+        hover
+            .get(prod_code_protocol::readiness::BUSY_MEMBER)
+            .is_none()
+    );
+
+    let answer = engine
+        .send_request(
+            "workspace/symbol",
+            serde_json::json!({ "query": "indexed" }),
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(answer["result"], serde_json::json!([]));
+    let busy: prod_code_protocol::readiness::Busy =
+        serde_json::from_value(answer[prod_code_protocol::readiness::BUSY_MEMBER].clone())
+            .expect("the note of how far it got");
+    assert_eq!(
+        (
+            busy.title.as_str(),
+            busy.message.as_deref(),
+            busy.percentage
+        ),
+        ("indexing", Some("1/2"), Some(50))
+    );
 }
 
 /// Writes the server and a workspace for it to serve.

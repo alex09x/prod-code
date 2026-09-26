@@ -92,6 +92,7 @@ impl ExecGateway {
                             detected_engine: "rust".to_string(),
                             stale_paths: Vec::new(),
                             engine_age_ms: None,
+                            index_gated: false,
                         }))
                         .await?;
                 }

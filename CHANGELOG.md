@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+### Changed
+- **Index questions wait until the language server has indexed** (#391). The engines declare
+  `window.workDoneProgress` and follow the work each server begins and ends (`$/progress`); for
+  basedpyright and pyright, which report none, the `Found N source files` log line. The index
+  questions (`workspace/symbol`, `references`, `implementation`, `rename`, call and type
+  hierarchy) wait for that, up to 30 s; an answer still given while the server indexes comes
+  with a note under it, in the form "(the language server was still indexing (n/m, p%) for 30 s
+  when asked: this answer may be incomplete)", never silently partial. The handshake says when the
+  gateway gates an engine (`index_gated`), and the client then takes an empty answer as final
+  instead of the #381 guess from the engine's age. `refs --symbol func0` right after first
+  contact with a C++ checkout of 900 files that all call it: 0, then 315, then 715 references
+  (asked 5 s apart) before; 899 on the first question after a 14.3 s wait for clangd's index,
+  then 899 in 0.3 s.
+
+### Fixed
+- **A request from the server taken for the answer to a question** (#391). A server numbers its
+  own requests from 1, as the client does: gopls's `window/workDoneProgress/create` and
+  `workspace/configuration` were matched to the engine's pending questions, and, passed on by the
+  gateway, to the client's, which then read an empty answer. Only a message without a method is
+  an answer now, in the engines, the client and the CLI, and the gateway no longer passes a
+  server's own requests on.
+- **A workspace copy named like a hidden directory** (#391). A checkout whose directory name
+  begins with `.` or `_` got a copy of that name, which Go tools skip: gopls found the module's
+  symbols in no package. Such a copy is now named `dot-…` or `under-…`.
+
 ## v0.3.14 — 2026-09-25
 
 ### Added
