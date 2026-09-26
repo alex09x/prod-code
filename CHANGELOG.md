@@ -15,6 +15,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Parameter-object refactoring preserves argument evaluation order and refuses uncertain
+  reordering (#436), including JavaScript global getters and Swift/C++ conversions. JavaScript
+  and TypeScript selected constant defaults move into object literals; computed defaults and
+  potentially undefined runtime values are refused before rewriting.
 - Parameter-object rewrites preserve keyword/field evaluation order and refuse calls whose
   argument reordering cannot be shown safe (#436). Failed reference requests and stale
   JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes

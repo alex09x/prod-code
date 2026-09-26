@@ -868,8 +868,17 @@ async fn plain_javascript_names_that_are_getters_are_not_reordered() {
     .await;
     let root = ws.root();
 
-    let err = match introduce(remote, &root, &file, place.0, place.1, &["a", "c"], "opts", true)
-        .await
+    let err = match introduce(
+        remote,
+        &root,
+        &file,
+        place.0,
+        place.1,
+        &["a", "c"],
+        "opts",
+        true,
+    )
+    .await
     {
         Ok(done) => panic!("the getters were reordered: {}", done.render(4000)),
         Err(err) => format!("{err:#}"),
@@ -887,9 +896,18 @@ async fn plain_javascript_names_that_are_getters_are_not_reordered() {
     );
     assert_eq!(ws.read("src/getters.js"), GETTERS, "nothing was written");
 
-    let adjacent = introduce(remote, &root, &file, place.0, place.1, &["b", "c"], "opts", false)
-        .await
-        .expect("adjacent arguments are bundled");
+    let adjacent = introduce(
+        remote,
+        &root,
+        &file,
+        place.0,
+        place.1,
+        &["b", "c"],
+        "opts",
+        false,
+    )
+    .await
+    .expect("adjacent arguments are bundled");
     let adjacent = rewritten(&adjacent, "getters.js");
     assert!(
         adjacent.contains("function place(a, opts) {\n  return [a, opts.b, opts.c].join(\"\");"),
