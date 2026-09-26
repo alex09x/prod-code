@@ -29,5 +29,14 @@ and workload.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings`
 - [ ] `cargo test -p <touched crates>`
 - [ ] scenario from the issue against a running gateway
+- [ ] regression fails on the base for the reported reason, then passes with the fix (or explain why not applicable)
+- [ ] coverage gate has valid measurements for the changed source files
+- [ ] supported languages and refused cases match the CLI/MCP help and roadmap
+
+Revision and node class:
+
+Results (exit status, passed/failed/ignored counts, and relevant output):
+
+Unverified acceptance criteria or remaining roadmap scope:
 
 Closes #
