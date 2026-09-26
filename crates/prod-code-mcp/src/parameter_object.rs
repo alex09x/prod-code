@@ -15,6 +15,12 @@
 //! a literal of the new type is spelled, where a string or a comment starts — and that is
 //! chosen by the declaring file's language. Rust keeps its own path, which predates the others.
 //!
+//! JavaScript takes TypeScript's path without the type: the parameter is a plain object, the
+//! calls pass an object literal, and nothing is declared, annotated or imported for it. What a
+//! type checker would catch in TypeScript nothing catches there, so what cannot be shown to mean
+//! the same afterwards — a spread, `arguments`, a default that is not a constant, a name the
+//! object would shadow — is refused with the reason instead of being written.
+//!
 //! Swift takes the same path, with a `struct` of `let` properties whose memberwise initialiser
 //! is the literal, and argument labels that bind the arguments to the parameters. C and C++
 //! take one of their own, because a function there is usually declared more than once — a
@@ -129,7 +135,13 @@ impl ParameterObject {
             &self.unreported,
             &self.file,
         ));
-        if self.diagnostics.is_empty() {
+        if self.diagnostics.is_empty() && self.language == "javascript" {
+            // Without types the server checks the syntax; the arguments were bound here.
+            out.push_str(
+                "\nthe analyzer accepts the result: 0 errors (in JavaScript that is the syntax; \
+                 nothing checks a call's arguments against the object)\n",
+            );
+        } else if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
             out.push_str("\nthe analyzer rejects the result:\n");
@@ -439,7 +451,8 @@ pub async fn introduce(
     anyhow::ensure!(params.len() >= 2, "bundling one parameter is not a bundle");
     let language = Language::of(file).with_context(|| {
         format!(
-            "bundling parameters works in Rust, TypeScript, Python, Go, C, C++ and Swift files; \
+            "bundling parameters works in Rust, TypeScript, JavaScript, Python, Go, C, C++ and \
+             Swift files; \
              {} is none of them",
             file.display()
         )
@@ -737,6 +750,7 @@ async fn check_and_apply(
 pub enum Language {
     Rust,
     TypeScript,
+    JavaScript,
     Python,
     Go,
     C,
@@ -746,13 +760,14 @@ pub enum Language {
 
 impl Language {
     /// The language a file is written in, or `None` for one parameters cannot be bundled in.
-    /// JavaScript is not TypeScript here: it has no interfaces to declare the new type with.
-    /// A `.h` header is C by its name alone; [`introduce_c`] treats it as C++ when the
-    /// definition or a caller is.
+    /// JavaScript is not TypeScript here: it has no interfaces to declare the new type with, so
+    /// its object is a plain one. A `.h` header is C by its name alone; [`introduce_c`] treats it
+    /// as C++ when the definition or a caller is.
     pub fn of(path: &Path) -> Option<Language> {
         match crate::lang::language_id_for_path(path) {
             "rust" => Some(Language::Rust),
             "typescript" | "typescriptreact" => Some(Language::TypeScript),
+            "javascript" | "javascriptreact" => Some(Language::JavaScript),
             "python" => Some(Language::Python),
             "go" => Some(Language::Go),
             "c" => Some(Language::C),
@@ -767,6 +782,7 @@ impl Language {
         match self {
             Language::Rust => "rust",
             Language::TypeScript => "typescript",
+            Language::JavaScript => "javascript",
             Language::Python => "python",
             Language::Go => "go",
             Language::C => "c",
@@ -779,6 +795,7 @@ impl Language {
         match self {
             Language::Rust => "Rust",
             Language::TypeScript => "TypeScript",
+            Language::JavaScript => "JavaScript",
             Language::Python => "Python",
             Language::Go => "Go",
             Language::C => "C",
@@ -790,10 +807,12 @@ impl Language {
 
 /// What the new parameter is called when the request does not say: the type's name in the casing
 /// the language gives a parameter — `render_options` in Rust, Python, C and C++,
-/// `renderOptions` in TypeScript, Go and Swift.
+/// `renderOptions` in TypeScript, JavaScript, Go and Swift.
 pub fn default_binding(file: &Path, name: &str) -> String {
     match Language::of(file) {
-        Some(Language::TypeScript | Language::Go | Language::Swift) => lower_camel(name),
+        Some(Language::TypeScript | Language::JavaScript | Language::Go | Language::Swift) => {
+            lower_camel(name)
+        }
         _ => crate::fixture::snake_case(name),
     }
 }
@@ -1098,6 +1117,11 @@ fn parse_param(entry: &str, at: usize, language: Language) -> Param {
                 head += 3;
             }
         }
+        // A destructuring pattern (`{ a, b }`, `[a, b]`) starts with no name and keeps none.
+        Language::JavaScript if entry.starts_with("...") => {
+            param.kind = Kind::Variadic;
+            head = 3;
+        }
         _ => {}
     }
     param.name = leading_ident(&entry[head..]).to_string();
@@ -1315,7 +1339,7 @@ fn indent_unit(text: &str, language: Language) -> String {
         return unit;
     }
     match language {
-        Language::TypeScript => "  ".to_string(),
+        Language::TypeScript | Language::JavaScript => "  ".to_string(),
         _ => "    ".to_string(),
     }
 }
@@ -1372,6 +1396,21 @@ pub fn type_text(
                 out.push_str(&format!("{indent}{}{optional}: {ty};\n", f.name));
             }
             out.push_str("}\n");
+        }
+        Language::JavaScript => {
+            // Only the report shows this: JavaScript has no type to declare, and a class written
+            // just to name the shape would be one more thing every caller has to construct.
+            out.push_str(&format!(
+                "// {name}: the plain object `{callee}` takes; nothing is declared for it\n"
+            ));
+            let shape: Vec<String> = fields
+                .iter()
+                .map(|f| match &f.default {
+                    Some(d) => format!("{} = {d}", f.name),
+                    None => f.name.clone(),
+                })
+                .collect();
+            out.push_str(&format!("{{ {} }}\n", shape.join(", ")));
         }
         Language::Python => {
             // A field without a default after one with a default is an error in a dataclass and
@@ -1475,9 +1514,10 @@ pub fn type_text(
 
 /// How the bundled parameter is declared: `opts: Opts` in TypeScript, Python and Swift,
 /// `opts Opts` in Go, `Opts opts` in C++, and `struct Opts opts` in C, where a struct's name is
-/// only a type together with the keyword.
+/// only a type together with the keyword. JavaScript's is the bare name.
 fn parameter_in(language: Language, binding: &str, name: &str) -> String {
     match language {
+        Language::JavaScript => binding.to_string(),
         Language::Go => format!("{binding} {name}"),
         Language::Cpp => format!("{name} {binding}"),
         Language::C => format!("struct {name} {binding}"),
@@ -1486,7 +1526,8 @@ fn parameter_in(language: Language, binding: &str, name: &str) -> String {
 }
 
 /// A literal of the new type from (field, value) pairs: `{ a: x, b: y }` in TypeScript, whose
-/// interfaces are structural and need no name; `Opts(a=x, b=y)` in Python; `Opts{a: x, b: y}`
+/// interfaces are structural and need no name, and in JavaScript, which has no type to name;
+/// `Opts(a=x, b=y)` in Python; `Opts{a: x, b: y}`
 /// in Go; `Opts(a: x, b: y)`, the memberwise initialiser, in Swift. C needs a compound literal,
 /// `(struct Opts){.a = x, .b = y}`, since a braced list alone is not an expression there; C++
 /// converts a braced list to the parameter's type, and its designators are C++20's — see
@@ -1507,7 +1548,8 @@ pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String
             .join(", ")
     };
     match language {
-        Language::TypeScript => format!("{{ {} }}", join(": ")),
+        Language::JavaScript if pairs.is_empty() => "{}".to_string(),
+        Language::TypeScript | Language::JavaScript => format!("{{ {} }}", join(": ")),
         Language::Python => format!("{spelling}({})", join("=")),
         Language::Go => format!("{spelling}{{{}}}", join(": ")),
         Language::Rust => format!("{spelling} {{ {} }}", join(": ")),
@@ -1591,6 +1633,7 @@ pub fn bind_arguments(
     match language {
         Language::Python => {}
         Language::Swift => return bind_swift_arguments(args, params),
+        Language::JavaScript => return bind_js_arguments(args, params),
         Language::C | Language::Cpp => {
             let variadic = params.last().is_some_and(|p| p.kind == Kind::Variadic);
             let fixed = params.len() - usize::from(variadic);
@@ -1702,6 +1745,60 @@ fn bind_swift_arguments(args: &[String], params: &[Param]) -> Option<Vec<Option<
     (!missing).then_some(bound)
 }
 
+/// JavaScript's binding: by position, with no count to match. A parameter no argument reaches
+/// is `undefined` (or its default), and an argument past the last one binds to nothing — a rest
+/// parameter takes it, or nothing does — and stays where it is. A spread argument has no
+/// position until the call runs, so a call with one is not bound.
+fn bind_js_arguments(args: &[String], params: &[Param]) -> Option<Vec<Option<usize>>> {
+    if args.iter().any(|a| a.starts_with("...")) {
+        return None;
+    }
+    let fixed = params
+        .iter()
+        .take_while(|p| p.kind != Kind::Variadic)
+        .count();
+    Some((0..args.len()).map(|a| (a < fixed).then_some(a)).collect())
+}
+
+/// Whether a JavaScript expression is a constant, the same value wherever and whenever it is
+/// evaluated: a number, a string with no substitution, `true`, `false`, `null`, `undefined`, or
+/// an empty `[]` or `{}` (a new one either way). A default like that can be written at the call
+/// instead of in the function without meaning anything else.
+pub fn js_constant(expr: &str) -> bool {
+    let e = expr.trim();
+    if matches!(e, "true" | "false" | "null" | "undefined" | "[]" | "{}") {
+        return true;
+    }
+    let number = e.strip_prefix('-').map_or(e, str::trim_start);
+    if number.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        && number
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+    {
+        return true;
+    }
+    let bytes = e.as_bytes();
+    let Some(&quote) = bytes.first().filter(|q| matches!(**q, b'"' | b'\'' | b'`')) else {
+        return false;
+    };
+    if bytes.len() < 2 || bytes[bytes.len() - 1] != quote {
+        return false;
+    }
+    // One literal, not two joined: no unescaped quote of its own kind inside it.
+    let inner = &bytes[1..bytes.len() - 1];
+    let mut escaped = false;
+    for &b in inner {
+        if escaped {
+            escaped = false;
+        } else if b == b'\\' {
+            escaped = true;
+        } else if b == quote {
+            return false;
+        }
+    }
+    !(quote == b'`' && e.contains("${"))
+}
+
 /// The argument list a call ends up with: the bundled arguments collected into one literal where
 /// the first of them was, every other argument where it was.
 ///
@@ -1748,8 +1845,20 @@ fn rewritten_call_with(
     let pairs: Vec<(String, String)> = bundled
         .iter()
         .filter_map(|p| {
-            let a = bound.iter().position(|b| *b == Some(*p))?;
-            Some((params[*p].name.clone(), value_of(&args[a])))
+            let name = params[*p].name.clone();
+            // A JavaScript default stands in for `undefined`, passed or left out; the object
+            // carries it now, since the field has none. Only a constant gets this far.
+            let default = params[*p]
+                .default
+                .clone()
+                .filter(|_| language == Language::JavaScript);
+            match bound.iter().position(|b| *b == Some(*p)) {
+                Some(a) if default.is_some() && args[a].trim() == "undefined" => {
+                    Some((name, default?))
+                }
+                Some(a) => Some((name, value_of(&args[a]))),
+                None => default.map(|d| (name, d)),
+            }
         })
         .collect();
     let literal = literal(&pairs);
@@ -1774,6 +1883,15 @@ fn rewritten_call_with(
     }
     if first.is_none() && language == Language::Python {
         out.push(format!("{binding}={literal}"));
+    }
+    // A JavaScript call that stopped short of the bundled parameters still has to pass the
+    // object, which the body reads fields of; what it left out before it was `undefined`.
+    if first.is_none() && language == Language::JavaScript {
+        let at = bundled.first().copied().unwrap_or(0);
+        while out.len() < at {
+            out.push("undefined".to_string());
+        }
+        out.push(literal);
     }
     out.join(", ")
 }
@@ -1916,6 +2034,14 @@ fn qualifier_before(text: &str, at: usize) -> &str {
 fn in_import(text: &str, at: usize, language: Language) -> bool {
     let starts = |l: &str| match language {
         Language::Python => l.starts_with("from ") || l.starts_with("import "),
+        // CommonJS imports with `require` and exports by assigning to `module.exports`.
+        Language::JavaScript => {
+            l.starts_with("import ")
+                || l.starts_with("export {")
+                || l.contains("require(")
+                || l.starts_with("module.exports")
+                || l.starts_with("exports.")
+        }
         _ => {
             l.starts_with("import ") || l.starts_with("export {") || l.starts_with("export type {")
         }
@@ -2031,8 +2157,176 @@ fn dataclass_import(text: &str) -> Option<(usize, String)> {
     Some((0, format!("{LINE}\n\n")))
 }
 
-/// Bundling in a TypeScript, Python, Go or Swift file: the same three edits as in Rust, with the
-/// text each language writes them in.
+/// How long the name at a reference the analyzer reported is: the function's own, or in
+/// JavaScript one an import gave it (`import { build as make }`, `const { build: make } =
+/// require(…)`, a default import). `None` when neither is written there: the file changed since
+/// the analyzer read it, and the position is not trusted (#75).
+fn called_name(text: &str, at: usize, callee: &str, language: Language) -> Option<usize> {
+    let rest = &text[at..];
+    if language != Language::JavaScript {
+        return rest.starts_with(callee).then_some(callee.len());
+    }
+    let name = leading_ident(rest);
+    (!name.is_empty() && (name == callee || js_alias(text, callee, name))).then_some(name.len())
+}
+
+/// Whether a JavaScript file gives `callee` the local name `alias`: renamed in an import or a
+/// destructured `require`, or bound by a default import or a whole-module `require`.
+fn js_alias(text: &str, callee: &str, alias: &str) -> bool {
+    let bytes = text.as_bytes();
+    let word_at = |at: usize, word: &str| {
+        (at == 0 || !is_ident_byte(bytes[at - 1]))
+            && !bytes.get(at + word.len()).is_some_and(|b| is_ident_byte(*b))
+    };
+    for (at, _) in text.match_indices(callee) {
+        if !word_at(at, callee) {
+            continue;
+        }
+        let after = text[at + callee.len()..].trim_start();
+        let renamed = after
+            .strip_prefix("as")
+            .filter(|r| r.starts_with(char::is_whitespace))
+            .or_else(|| after.strip_prefix(':').filter(|r| !r.starts_with(':')));
+        if renamed.is_some_and(|r| leading_ident(r.trim_start()) == alias) {
+            return true;
+        }
+    }
+    for (at, _) in text.match_indices(alias) {
+        if !word_at(at, alias) {
+            continue;
+        }
+        let before = text[..at].trim_end();
+        let after = text[at + alias.len()..].trim_start();
+        let keyword = |k: &str| {
+            before.ends_with(k)
+                && !before[..before.len() - k.len()]
+                    .bytes()
+                    .next_back()
+                    .is_some_and(is_ident_byte)
+        };
+        if keyword("import") && (after.starts_with("from") || after.starts_with(',')) {
+            return true;
+        }
+        if (keyword("const") || keyword("let") || keyword("var"))
+            && after
+                .strip_prefix('=')
+                .is_some_and(|r| r.trim_start().starts_with("require("))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Where `word` is written as a name between `from` and `to` of a JavaScript text: in code and
+/// in the `${…}` of a template literal, not in a string or a comment, not as a property after a
+/// `.` and not as the key of an object literal.
+fn ident_uses(text: &str, from: usize, to: usize, word: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let is_use = |at: usize| {
+        // An ASCII byte is where a character starts, so the slices below are safe.
+        if !is_ident_byte(bytes[at])
+            || !text[at..].starts_with(word)
+            || (at > 0 && is_ident_byte(bytes[at - 1]))
+            || bytes.get(at + word.len()).is_some_and(|b| is_ident_byte(*b))
+        {
+            return false;
+        }
+        let before = text[..at].trim_end();
+        let after = text[at + word.len()..].trim_start();
+        let property = before.ends_with('.') && !before.ends_with("...");
+        let key = (before.ends_with('{') || before.ends_with(','))
+            && after.starts_with(':')
+            && !after.starts_with("::");
+        !property && !key
+    };
+    let mut out = Vec::new();
+    let mut template: Option<usize> = None;
+    walk_code(text, from, Language::JavaScript, |i, c| {
+        if i >= to {
+            return false;
+        }
+        if c == b'`' {
+            let Some(open) = template.take() else {
+                template = Some(i);
+                return true;
+            };
+            let mut at = open + 1;
+            while let Some(n) = text[at..i].find("${") {
+                let start = at + n + 1;
+                let end = close_in(text, start, Language::JavaScript).map_or(i, |e| e.min(i));
+                out.extend((start + 1..end).filter(|o| is_use(*o)));
+                at = end;
+            }
+            return true;
+        }
+        if is_ident_byte(c) && is_use(i) {
+            out.push(i);
+        }
+        true
+    });
+    out
+}
+
+/// Whether the name at `at` is a shorthand property of an object literal (`{ width }`) or of a
+/// destructuring assignment (`({ width } = o)`), which becomes `width: size.width` — a bare
+/// `size.width` there does not parse. The braces around it tell an object from a block and from
+/// a JSX expression: an object follows an operator, an opening bracket or `return`; a block
+/// follows `)`, `=>` or a keyword, and a JSX expression an attribute's `=` or a tag's `>`.
+fn object_shorthand(text: &str, from: usize, at: usize, len: usize) -> bool {
+    let before = text[..at].trim_end();
+    let after = text[at + len..].trim_start();
+    let ends_an_entry = after.starts_with([',', '}'])
+        || (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"));
+    if !(before.ends_with('{') || before.ends_with(',')) || !ends_an_entry {
+        return false;
+    }
+    let mut open: Vec<usize> = Vec::new();
+    let mut in_string = false;
+    walk_code(text, from, Language::JavaScript, |i, c| {
+        if i >= at {
+            return false;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => in_string = !in_string,
+            b'(' | b'[' | b'{' => open.push(i),
+            b')' | b']' | b'}' => {
+                open.pop();
+            }
+            _ => {}
+        }
+        true
+    });
+    let Some(&brace) = open.last() else {
+        return false;
+    };
+    if in_string || text.as_bytes()[brace] != b'{' {
+        return false;
+    }
+    let lead = text[..brace].trim_end();
+    let keyword = |k: &str| {
+        lead.ends_with(k)
+            && !lead[..lead.len() - k.len()]
+                .bytes()
+                .next_back()
+                .is_some_and(is_ident_byte)
+    };
+    match lead.bytes().next_back() {
+        Some(b'(' | b'[' | b',' | b':' | b'?' | b'{' | b'!' | b'&' | b'|') => true,
+        // `x = {` is an assignment; `width={` with nothing around the `=` is a JSX attribute.
+        Some(b'=') => {
+            lead.len() < brace
+                || lead[..lead.len() - 1]
+                    .bytes()
+                    .next_back()
+                    .is_some_and(|b| b.is_ascii_whitespace())
+        }
+        _ => keyword("return") || keyword("yield") || keyword("await"),
+    }
+}
+
+/// Bundling in a TypeScript, JavaScript, Python, Go or Swift file: the same three edits as in
+/// Rust, with the text each language writes them in.
 #[allow(clippy::too_many_arguments)]
 async fn introduce_in(
     language: Language,
@@ -2051,9 +2345,11 @@ async fn introduce_in(
         !name.is_empty() && name.bytes().all(is_ident_byte) && !name.as_bytes()[0].is_ascii_digit(),
         "`{name}` is not a type name"
     );
-    // A Go type in lower case is an unexported one, which is a choice, not a mistake.
+    // A Go type in lower case is an unexported one, which is a choice, not a mistake. A
+    // JavaScript name only names the shape; nothing is declared under it.
     anyhow::ensure!(
-        language == Language::Go || name.starts_with(|c: char| c.is_ascii_uppercase()),
+        matches!(language, Language::Go | Language::JavaScript)
+            || name.starts_with(|c: char| c.is_ascii_uppercase()),
         "`{name}` is not a type name; {} types are UpperCamelCase",
         language.label()
     );
@@ -2067,6 +2363,18 @@ async fn introduce_in(
     let (receiver, declared) = parse_params(&old_inner, language);
 
     for p in params {
+        // A name a destructuring pattern binds is not a parameter a call passes by position.
+        if language == Language::JavaScript
+            && let Some(pattern) = declared.iter().find(|d| {
+                d.name.is_empty() && !ident_uses(&d.raw, 0, d.raw.len(), p).is_empty()
+            })
+        {
+            anyhow::bail!(
+                "`{p}` is bound by the destructuring pattern `{}` of `{callee}`, not a parameter \
+                 of its own; the call passes the pattern one value, so it is not bundled",
+                pattern.raw
+            );
+        }
         anyhow::ensure!(
             declared
                 .iter()
@@ -2104,6 +2412,20 @@ async fn introduce_in(
             "`{}` is `inout`, and a field of the new type would be a copy of it",
             declared[*i].name
         );
+        // The callers write a JavaScript default into the object now. A constant means the
+        // same there; anything else runs in the function's scope, on every call, after the
+        // parameters before it are bound.
+        if language == Language::JavaScript
+            && let Some(default) = &declared[*i].default
+        {
+            anyhow::ensure!(
+                js_constant(default),
+                "`{}` defaults to `{default}`, which is evaluated in `{callee}` on every call; \
+                 written at the callers it could mean something else, so only a constant \
+                 default is bundled",
+                declared[*i].name
+            );
+        }
     }
 
     let mut fields = Vec::with_capacity(bundled.len());
@@ -2111,16 +2433,20 @@ async fn introduce_in(
         let p = &declared[*i];
         let ty = match &p.ty {
             Some(ty) => Some(ty.clone()),
+            // No type is written in JavaScript, so none is asked for.
+            None if language == Language::JavaScript => None,
             None => hover_type(remote, root, file, &text, open + p.name_at, &p.name).await,
         };
         fields.push(Field {
             name: p.name.clone(),
             ty,
             // A TypeScript interface has no defaults; the field keeps the parameter's type.
-            default: p
-                .default
-                .clone()
-                .filter(|_| matches!(language, Language::Python | Language::Swift)),
+            default: p.default.clone().filter(|_| {
+                matches!(
+                    language,
+                    Language::Python | Language::Swift | Language::JavaScript
+                )
+            }),
             optional: p.optional,
         });
     }
@@ -2165,7 +2491,19 @@ async fn introduce_in(
             let Some(o) = crate::signature::offset_of(&text, rl, rc) else {
                 continue;
             };
-            if o <= body.0 || o >= body.1 || !text[o..].starts_with(&p.name) {
+            if !text[o..].starts_with(&p.name) {
+                continue;
+            }
+            if o <= body.0 || o >= body.1 {
+                // Another parameter's default reads this one, and would lose it. TypeScript's
+                // checker says so after the rewrite; in JavaScript nothing would.
+                anyhow::ensure!(
+                    language != Language::JavaScript || o == open + p.name_at,
+                    "`{}` is read at {}:{rl}:{rc}, outside the body of `{callee}` (another \
+                     parameter's default); it would not be in scope as a field",
+                    p.name,
+                    display(root, file)
+                );
                 continue;
             }
             // basedpyright counts the name of a keyword argument (`height=…`) as a reference;
@@ -2174,12 +2512,47 @@ async fn introduce_in(
             if language == Language::Python && after.starts_with('=') && !after.starts_with("==") {
                 continue;
             }
-            uses.push((o, p.name.len(), format!("{binding}.{}", p.name)));
+            let field = format!("{binding}.{}", p.name);
+            let replacement =
+                if language == Language::JavaScript && object_shorthand(&text, body.0, o, p.name.len())
+                {
+                    format!("{}: {field}", p.name)
+                } else {
+                    field
+                };
+            uses.push((o, p.name.len(), replacement));
         }
     }
     uses.sort();
     uses.dedup();
     let body_uses = uses.len();
+    if language == Language::JavaScript {
+        let line_of = |at: usize| crate::signature::line_col_at(&text, at).0;
+        // `arguments` still counts and orders the arguments the call passed, which bundling
+        // changes. A nested function has its own, but it is refused too rather than told apart.
+        if let Some(at) = ident_uses(&text, body.0, body.1, "arguments").first() {
+            anyhow::bail!(
+                "`{callee}` reads `arguments` ({}:{}), whose length and order bundling changes; \
+                 it is not bundled",
+                display(root, file),
+                line_of(*at)
+            );
+        }
+        // A name the function already has would shadow the object, or be shadowed by it; the
+        // analyzer's references are to the parameters, not to the binding that replaces them.
+        let taken = ident_uses(&text, open, body.1, binding).into_iter().find(|at| {
+            !uses.iter().any(|(o, _, _)| o == at)
+                && !bundled.iter().any(|i| open + declared[*i].name_at == *at)
+        });
+        if let Some(at) = taken {
+            anyhow::bail!(
+                "`{binding}` is already a name in `{callee}` ({}:{}); the object would shadow \
+                 it or be shadowed by it. Pass another `binding`",
+                display(root, file),
+                line_of(at)
+            );
+        }
+    }
 
     let texts = |path: &Path| -> String {
         if path == file {
@@ -2203,15 +2576,34 @@ async fn introduce_in(
             continue;
         };
         // As in Rust (#75): the position is trusted only when the name is there.
-        if !source[at..].starts_with(callee.as_str()) {
+        let Some(called) = called_name(&source, at, &callee, language) else {
             unmatched.push(format!(
                 "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
                 display(root, &path)
             ));
             continue;
+        };
+        let place = format!("{}:{rl}:{rc}", display(root, &path));
+        // `build.call(receiver, …)` passes the receiver first and the arguments after it;
+        // `apply` passes them in an array that only the running call can take apart.
+        let mut after_name = at + called;
+        let mut through_call = false;
+        if language == Language::JavaScript {
+            let rest = &source[after_name..];
+            let method = |m: &str| {
+                rest.starts_with(m) && !rest.as_bytes().get(m.len()).is_some_and(|b| is_ident_byte(*b))
+            };
+            anyhow::ensure!(
+                !method(".apply"),
+                "`{callee}` is called through `apply` at {place}, with its arguments in an array; \
+                 which of them are bundled is known only when it runs"
+            );
+            if method(".call") {
+                after_name += ".call".len();
+                through_call = true;
+            }
         }
-        let Some((args_start, args_end)) = call_args_in(&source, at + callee.len(), language)
-        else {
+        let Some((args_start, args_end)) = call_args_in(&source, after_name, language) else {
             if !in_import(&source, at, language) {
                 unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             }
@@ -2230,25 +2622,68 @@ async fn introduce_in(
                 }
             }
         }
-        let args: Vec<String> = entries(&inner, language)
+        let mut args: Vec<String> = entries(&inner, language)
             .into_iter()
             .map(|(_, a)| a.to_string())
             .collect();
+        let receiver_arg = if through_call {
+            if args.is_empty() {
+                unmatched.push(place);
+                continue;
+            }
+            Some(args.remove(0))
+        } else {
+            None
+        };
+        if language == Language::JavaScript {
+            if let Some(spread) = args.iter().find(|a| a.starts_with("...")) {
+                anyhow::bail!(
+                    "`{callee}` is called with `{spread}` at {place}; which parameters a spread \
+                     reaches is known only when the call runs, so it is not bundled"
+                );
+            }
+            // The object carries a default where the call left the parameter out or passed
+            // `undefined`, but a value that is `undefined` only at run time would get the
+            // default before and not after.
+            // A bundled parameter is never a rest one, so the argument at its position is its.
+            for p in &bundled {
+                let (Some(default), Some(value)) = (&declared[*p].default, args.get(*p)) else {
+                    continue;
+                };
+                anyhow::ensure!(
+                    js_constant(value),
+                    "`{callee}` at {place} passes `{value}` as `{}`, which defaults to \
+                     `{default}`: if it is `undefined` when the call runs the default applies, \
+                     and in the object it would not. Pass a constant there, or leave `{}` out \
+                     of the bundle",
+                    declared[*p].name,
+                    declared[*p].name
+                );
+            }
+        }
         let Some(bound) = bind_arguments(&args, &declared, language) else {
-            unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
+            unmatched.push(place);
             continue;
         };
         // A method's qualifier is the object it is called on, not where the type lives, and a
-        // TypeScript literal names no type at all.
-        let qualifier = if is_method || language == Language::TypeScript {
-            ""
-        } else {
-            qualifier_before(&source, at)
-        };
+        // TypeScript or JavaScript literal names no type at all.
+        let qualifier =
+            if is_method || matches!(language, Language::TypeScript | Language::JavaScript) {
+                ""
+            } else {
+                qualifier_before(&source, at)
+            };
         let spelling = format!("{qualifier}{name}");
-        let new_args = rewritten_call(
+        let mut new_args = rewritten_call(
             &args, &bound, &bundled, &declared, language, &spelling, binding,
         );
+        if let Some(receiver) = receiver_arg {
+            new_args = if new_args.is_empty() {
+                receiver
+            } else {
+                format!("{receiver}, {new_args}")
+            };
+        }
         for n in inside {
             consumed[n] = true;
         }
@@ -2329,7 +2764,10 @@ async fn introduce_in(
     } else {
         "\n"
     };
-    declaring.push((item_start, 0, format!("{type_decl}{gap}")));
+    // A JavaScript object has no type to declare; the text is only the report's.
+    if language != Language::JavaScript {
+        declaring.push((item_start, 0, format!("{type_decl}{gap}")));
+    }
 
     // A Python caller in another module names the type bare, so it has to import it, from the
     // module it already imports the function (or the class) from.
@@ -3078,7 +3516,7 @@ mod tests {
     }
 
     #[test]
-    fn the_language_is_the_files_and_javascript_is_not_typescript() {
+    fn the_language_is_the_files_and_javascript_is_its_own() {
         assert_eq!(Language::of(Path::new("a/b.rs")), Some(Language::Rust));
         assert_eq!(
             Language::of(Path::new("src/home.ts")),
@@ -3096,7 +3534,24 @@ mod tests {
             Language::of(Path::new("shapes/home.go")),
             Some(Language::Go)
         );
-        assert_eq!(Language::of(Path::new("src/home.js")), None);
+        assert_eq!(
+            Language::of(Path::new("src/home.js")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            Language::of(Path::new("src/view.jsx")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            Language::of(Path::new("lib/home.cjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(Language::of(Path::new("notes.txt")), None);
+        assert_eq!(Language::JavaScript.fence(), "javascript");
+        assert_eq!(
+            default_binding(Path::new("a.mjs"), "SyncRequest"),
+            "syncRequest"
+        );
         assert_eq!(
             default_binding(Path::new("a.rs"), "SyncRequest"),
             "sync_request"
@@ -3134,6 +3589,166 @@ mod tests {
         assert_eq!(params[3].default, None, "`=>` is not a default");
         assert_eq!(&list[params[4].name_at..params[4].name_at + 2], "id");
         assert_eq!(params[5].kind, Kind::Variadic);
+    }
+
+    #[test]
+    fn a_javascript_list_has_no_types_a_pattern_has_no_name_and_rest_is_variadic() {
+        let list = "label, { x, y } = {}, width = 2, ...rest";
+        let (receiver, params) = parse_params(list, Language::JavaScript);
+        assert_eq!(receiver, None, "JavaScript has no `this` parameter");
+        let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["label", "", "width", "rest"]);
+        assert!(params.iter().all(|p| p.ty.is_none()), "{params:?}");
+        assert_eq!(params[1].default.as_deref(), Some("{}"));
+        assert_eq!(params[2].default.as_deref(), Some("2"));
+        assert_eq!(params[3].kind, Kind::Variadic);
+        assert_eq!(&list[params[3].name_at..params[3].name_at + 4], "rest");
+    }
+
+    #[test]
+    fn a_javascript_call_binds_by_position_and_the_object_carries_constant_defaults() {
+        let (_, params) = parse_params("name, width, height = 2", Language::JavaScript);
+        let call = |args: &[&str]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, Language::JavaScript)?;
+            Some(rewritten_call(
+                &args,
+                &bound,
+                &[1, 2],
+                &params,
+                Language::JavaScript,
+                "Size",
+                "size",
+            ))
+        };
+        assert_eq!(
+            call(&["\"a\"", "3", "4"]).as_deref(),
+            Some("\"a\", { width: 3, height: 4 }")
+        );
+        // Left out or `undefined`, the parameter had its default; the object says so.
+        assert_eq!(
+            call(&["\"a\"", "3"]).as_deref(),
+            Some("\"a\", { width: 3, height: 2 }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "undefined"]).as_deref(),
+            Some("\"a\", { width: 3, height: 2 }")
+        );
+        // A call that stopped before the bundle still passes the object the body reads.
+        assert_eq!(
+            call(&["\"a\""]).as_deref(),
+            Some("\"a\", { height: 2 }")
+        );
+        assert_eq!(call(&[]).as_deref(), Some("undefined, { height: 2 }"));
+        // An argument past the last parameter is evaluated as before, and still goes nowhere.
+        assert_eq!(
+            call(&["\"a\"", "3", "4", "log()"]).as_deref(),
+            Some("\"a\", { width: 3, height: 4 }, log()")
+        );
+        assert_eq!(call(&["...pair"]), None, "a spread has no position");
+
+        let (_, params) = parse_params("a, b, ...more", Language::JavaScript);
+        let args = strings(&["1", "2", "3", "4"]);
+        let bound = bind_arguments(&args, &params, Language::JavaScript).expect("bound");
+        assert_eq!(
+            rewritten_call(
+                &args,
+                &bound,
+                &[0, 1],
+                &params,
+                Language::JavaScript,
+                "Pair",
+                "pair"
+            ),
+            "{ a: 1, b: 2 }, 3, 4",
+            "what the rest parameter took stays after the object"
+        );
+    }
+
+    #[test]
+    fn only_a_constant_javascript_default_moves_to_the_callers() {
+        for constant in [
+            "2", "-1.5", ".5", "0xff", "1_000", "10n", "\"a, b\"", "'it\\'s'", "`plain`", "true",
+            "null", "undefined", "[]", "{}",
+        ] {
+            assert!(js_constant(constant), "{constant}");
+        }
+        for expr in [
+            "Date.now()",
+            "x",
+            "-x",
+            "\"a\" + \"b\"",
+            "`${x}`",
+            "[1]",
+            "{ a: 1 }",
+            "new Map()",
+        ] {
+            assert!(!js_constant(expr), "{expr}");
+        }
+    }
+
+    #[test]
+    fn a_javascript_object_is_written_nowhere_and_its_literal_names_no_type() {
+        let fields = [field("width", None, None), field("height", None, Some("2"))];
+        let text = type_text(Language::JavaScript, "Size", "build", &fields, "  ", true);
+        assert_eq!(
+            text,
+            "// Size: the plain object `build` takes; nothing is declared for it\n{ width, height = 2 }\n"
+        );
+        assert_eq!(parameter_in(Language::JavaScript, "size", "Size"), "size");
+        assert_eq!(literal_text(Language::JavaScript, "Size", &[]), "{}");
+        assert_eq!(
+            literal_text(
+                Language::JavaScript,
+                "Size",
+                &[("width".to_string(), "3".to_string())]
+            ),
+            "{ width: 3 }"
+        );
+    }
+
+    #[test]
+    fn a_shorthand_property_is_told_from_a_block_and_a_jsx_expression() {
+        let text = "function f(width) {\n  const o = { width, h: 1 };\n  g({ width });\n  ({ width } = o);\n  if (o) { width }\n  const k = () => { width };\n  const v = <p w={width}>{width}</p>;\n  return { width };\n}\n";
+        let from = text.find(')').expect("the list closes");
+        let at = |needle: &str| text.find(needle).expect(needle) + needle.find("width").unwrap();
+        let shorthand = |needle: &str| object_shorthand(text, from, at(needle), "width".len());
+        assert!(shorthand("{ width, h"), "an object literal after `=`");
+        assert!(shorthand("g({ width"), "an object literal argument");
+        assert!(shorthand("({ width } = o"), "a destructuring assignment");
+        assert!(shorthand("return { width"), "an object literal after `return`");
+        assert!(!shorthand("(o) { width"), "a block after `)`");
+        assert!(!shorthand("=> { width"), "an arrow's block");
+        assert!(!shorthand("w={width"), "a JSX attribute");
+        assert!(!shorthand(">{width"), "a JSX child");
+    }
+
+    #[test]
+    fn a_name_is_found_in_code_and_substitutions_not_in_strings_keys_or_properties() {
+        let text = "{ const s = `${size} x`; return a.size + size + { size: 1 }.size; /* size */ \"size\"; }";
+        let found = ident_uses(text, 0, text.len(), "size");
+        let expected = [
+            text.find("${size}").unwrap() + 2,
+            text.find("+ size +").unwrap() + 2,
+        ];
+        assert_eq!(found, expected, "{text}");
+        assert!(ident_uses(text, 0, text.len(), "siz").is_empty());
+    }
+
+    #[test]
+    fn a_javascript_call_may_use_the_name_an_import_gave_the_function() {
+        let text = "import { build as make } from \"./home\";\nconst { build: other } = require(\"./home\");\nimport dflt from \"./home\";\nconst whole = require(\"./home\");\nmake(1); other(2); dflt(3); whole(4); stranger(5); build(6); builder(7);\n";
+        let at = |needle: &str| text.find(needle).expect(needle);
+        let js = |needle: &str| called_name(text, at(needle), "build", Language::JavaScript);
+        assert_eq!(js("make(1"), Some(4));
+        assert_eq!(js("other(2"), Some(5));
+        assert_eq!(js("dflt(3"), Some(4));
+        assert_eq!(js("whole(4"), Some(5));
+        assert_eq!(js("build(6"), Some(5));
+        assert_eq!(js("stranger(5"), None, "a name nothing aliases");
+        assert_eq!(js("builder(7"), None, "a longer name is another name");
+        assert!(in_import(text, at("other }"), Language::JavaScript));
+        assert!(!in_import(text, at("make(1"), Language::JavaScript));
     }
 
     #[test]
