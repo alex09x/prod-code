@@ -27,6 +27,9 @@
   argument reordering cannot be shown safe (#436). Failed reference requests and stale
   JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes
   an own computed property.
+- Path translation rewrites URI and path fields without changing source, edit text or
+  documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
+  compare complete path components, and decode a URI exactly once.
 - New language engines reserve memory before loading (#433), including on a node already
   holding the checkout. Concurrent loads count against an 85% host-memory limit; idle
   engines may be reclaimed, while existing sessions remain available. A canceled

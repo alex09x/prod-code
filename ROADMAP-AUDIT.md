@@ -11,7 +11,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | Item | Implemented scope and evidence | Remaining requirement or verification limit |
 |---|---|---|
 | 1.1 Transport | Length-framed JSON and optional authentication in the protocol crate; `gateway/tests/e2e_phase1.rs` exercises transport. | Protocol fields have compatibility defaults; there is no negotiated feature set, NUL framing, Unix socket or named-pipe transport. |
-| 1.2 Paths | Workspace and worktree path translation in the protocol, gateway and MCP sync code. | The #425 repair covers ordered edits, UTF-16 columns, rollback and containment after directory moves; preview still flags unmodeled resource operations. |
+| 1.2 Paths | Structured URI/path translation in the protocol, gateway and MCP sync code preserves source and edit text, with encoded file URIs and path-component boundaries (#438). | The #425 repair covers ordered edits, UTF-16 columns, rollback and containment after directory moves; preview still flags unmodeled resource operations. |
 | 1.3 Editor client | `prod-code lsp` bridges the editor to a remote language server and exits unsuccessfully on disconnect. | Recovery is an editor restart, not in-process replay of LSP state. Zero-allocation hot paths are not established by the recorded evidence. |
 | 1.4 Gateway | Session registry, command execution and JSON status in `gateway/src/lib.rs`. | The #433 repair reserves memory for concurrent new engines; this is admission control, not a hard limit on later analyzer growth. |
 | 2.1 Rust database | In-process analyzer and per-workspace resident databases in `engine-rust/src/lib.rs`. | Distinct worktrees retain distinct databases; memory is not a single shared dependency database. |
