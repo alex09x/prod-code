@@ -264,6 +264,10 @@ async fn run_child(
     job: &Job,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> ShadowHypothesisResult {
+    // The cluster's token is not the command's to see or send (#402).
+    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
+        cmd.env_remove(var);
+    }
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

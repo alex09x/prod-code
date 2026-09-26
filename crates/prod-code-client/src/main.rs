@@ -3324,6 +3324,10 @@ async fn run_status_probe(remote: SocketAddr, json: bool) -> Result<()> {
                     None => println!("Status:            HEALTHY"),
                 }
             }
+            // A gateway that requires a token this client did not send says so (#402).
+            WireMessage::Disconnect { reason } => {
+                anyhow::bail!("the gateway at {remote} closed the connection: {reason}")
+            }
             other => anyhow::bail!("Unexpected response from gateway: {:?}", other),
         }
     } else {

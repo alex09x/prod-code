@@ -18,6 +18,10 @@ pub enum WireMessage {
     Disconnect {
         reason: String,
     },
+    /// The first frame of a connection when the cluster shares a token (#402). A gateway that
+    /// requires one closes a connection that does not open with it; one that does not ignores
+    /// it. Nothing answers it.
+    Auth(AuthToken),
     /// Client manifest of its complete relevant file set; answered by `SyncProbeResponse`.
     SyncProbeRequest(SyncProbeRequest),
     SyncProbeResponse(SyncProbeResponse),
@@ -51,6 +55,32 @@ pub enum WireMessage {
     /// Usage metrics of one node (who asked what, how often, how fast).
     MetricsRequest(MetricsRequest),
     MetricsResponse(MetricsResponse),
+}
+
+/// The token a cluster's connections open with (#402). Its `Debug` never shows it, so a
+/// message that is logged cannot leak it.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct AuthToken(pub String);
+
+impl std::fmt::Debug for AuthToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("AuthToken(<redacted>)")
+    }
+}
+
+impl AuthToken {
+    /// Whether `expected` is this token, compared in a time that does not depend on where the
+    /// two differ.
+    pub fn matches(&self, expected: &str) -> bool {
+        let (given, expected) = (self.0.as_bytes(), expected.as_bytes());
+        given.len() == expected.len()
+            && given
+                .iter()
+                .zip(expected)
+                .fold(0u8, |differ, (a, b)| differ | (a ^ b))
+                == 0
+    }
 }
 
 /// Supported code intelligence engine kinds.
