@@ -25,6 +25,7 @@ pub struct MockGateway {
     pub addr: SocketAddr,
     pub calls: Arc<AtomicUsize>,
     pub fail_exec: Arc<AtomicBool>,
+    pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
 impl MockGateway {
@@ -37,9 +38,11 @@ impl MockGateway {
         let addr = listener.local_addr().expect("local addr");
         let calls = Arc::new(AtomicUsize::new(0));
         let fail_exec = Arc::new(AtomicBool::new(false));
+        let custom_exec = Arc::new(std::sync::Mutex::new(None));
 
         let calls_clone = Arc::clone(&calls);
         let fail_exec_clone = Arc::clone(&fail_exec);
+        let custom_exec_clone = Arc::clone(&custom_exec);
 
         tokio::spawn(async move {
             loop {
@@ -49,9 +52,10 @@ impl MockGateway {
                 let lsp = Arc::clone(&lsp_fn);
                 let calls = Arc::clone(&calls_clone);
                 let fail_exec = Arc::clone(&fail_exec_clone);
+                let custom_exec = Arc::clone(&custom_exec_clone);
 
                 tokio::spawn(async move {
-                    let _ = handle_client(socket, addr, lsp, calls, fail_exec).await;
+                    let _ = handle_client(socket, addr, lsp, calls, fail_exec, custom_exec).await;
                 });
             }
         });
@@ -60,6 +64,7 @@ impl MockGateway {
             addr,
             calls,
             fail_exec,
+            custom_exec,
         }
     }
 }
@@ -70,6 +75,7 @@ async fn handle_client(
     lsp_fn: Answer,
     calls: Arc<AtomicUsize>,
     fail_exec: Arc<AtomicBool>,
+    custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 ) -> anyhow::Result<()> {
     let mut framed = Framed::new(socket, ProdCodeCodec::new());
     while let Some(msg_res) = framed.next().await {
@@ -213,8 +219,26 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::ExecRequest(req) => {
-                let fail = fail_exec.load(Ordering::Relaxed);
-                if fail {
+                let custom = custom_exec.lock().unwrap().clone();
+                if let Some(stdout) = custom {
+                    framed
+                        .send(WireMessage::ExecChunk(ExecChunk {
+                            stderr: false,
+                            data: Some(stdout),
+                        }))
+                        .await?;
+                    framed
+                        .send(WireMessage::ExecExit(ExecExit {
+                            exit_code: Some(101),
+                            duration_ms: 10,
+                            server_workspace_root: req.client_workspace_root,
+                            timed_out: false,
+                            error: None,
+                            usage: None,
+                            platform: None,
+                        }))
+                        .await?;
+                } else if fail_exec.load(Ordering::Relaxed) {
                     framed
                         .send(WireMessage::ExecChunk(ExecChunk {
                             stderr: true,
@@ -1109,6 +1133,37 @@ async fn cli_diagnoses_test_suite_failures() {
 
     let out_json = run_cli(&ws, gw.addr, &["diagnose", "--json"]).await;
     assert!(out_json.status.success());
+}
+
+#[tokio::test]
+async fn cli_diagnoses_assertion_failure_and_exposes_additive_fields_in_json() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.custom_exec.lock().unwrap() = Some(
+        b"running 1 test\ntest tests::it_fails ... FAILED\n\nfailures:\n\n---- tests::it_fails stdout ----\n\nthread 'tests::it_fails' panicked at src/lib.rs:13:9:\nassertion `left == right` failed\n  left: 4\n right: 5\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nfailures:\n    tests::it_fails\n\ntest result: FAILED. 0 passed; 1 failed; 0 filtered out; finished in 0.00s\n".to_vec(),
+    );
+
+    let out = run_cli(&ws, gw.addr, &["diagnose"]).await;
+    assert_eq!(out.status.code(), Some(1));
+    let stdout_text = stdout_of(&out);
+    assert!(stdout_text.contains("assertion [assert_eq"));
+    assert!(stdout_text.contains("actual: 4, expected: 5"));
+
+    let out_json = run_cli(&ws, gw.addr, &["diagnose", "--json"]).await;
+    assert_eq!(out_json.status.code(), Some(1));
+    let val: serde_json::Value = serde_json::from_slice(&out_json.stdout).expect("valid json");
+    assert_eq!(val["tests_failed"], 1);
+    let dossiers = val["dossiers"].as_array().expect("dossiers array");
+    assert_eq!(dossiers.len(), 1);
+    let assertion = &dossiers[0]["assertion"];
+    assert_eq!(assertion["format"], "assert_eq");
+    assert_eq!(assertion["expression"], "left == right");
+    assert_eq!(assertion["left"], "4");
+    assert_eq!(assertion["right"], "5");
+    assert_eq!(assertion["actual"], "4");
+    assert_eq!(assertion["expected"], "5");
+    assert_eq!(assertion["operands"], serde_json::json!(["4", "5"]));
+    assert!(assertion["excerpt"].as_str().unwrap().contains("left: 4"));
 }
 
 #[tokio::test]

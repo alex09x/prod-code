@@ -1821,6 +1821,19 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     let dossier = &report.dossiers[0];
     assert_eq!(dossier.test, "tests::it_fails");
     assert!(dossier.output.contains("assertion `left == right` failed"));
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "assert_eq");
+    assert_eq!(assertion.expression.as_deref(), Some("left == right"));
+    assert_eq!(assertion.left.as_deref(), Some("4"));
+    assert_eq!(assertion.right.as_deref(), Some("5"));
+    assert_eq!(assertion.actual.as_deref(), Some("4"));
+    assert_eq!(assertion.expected.as_deref(), Some("5"));
+    assert_eq!(assertion.operands, vec!["4".to_string(), "5".to_string()]);
+    assert!(assertion.excerpt.contains("left: 4"));
+    assert!(assertion.excerpt.contains("right: 5"));
     assert_eq!(dossier.sites.len(), 1);
     let site = &dossier.sites[0];
     assert_eq!(site.file, "src/lib.rs");
@@ -1835,6 +1848,7 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     let rendered = report.render();
     assert!(rendered.contains("0 passed, 1 failed"));
     assert!(rendered.contains("=== tests::it_fails ==="));
+    assert!(rendered.contains("assertion [assert_eq"));
     assert!(rendered.contains("in it_fails"));
     assert!(rendered.contains("callers: test_runner"));
     assert!(rendered.contains("changed in the working tree:"));
@@ -1933,6 +1947,7 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
                 hops: 2,
                 diff: Some("@@ -2 +2 @@\n-    a + b\n+    a + b + 1\n".to_string()),
             }],
+            assertion: None,
         }],
         build_errors: vec![],
         suggested_fixes: vec![],
@@ -1969,4 +1984,113 @@ async fn diagnose_fails_cleanly_when_the_gateway_is_unreachable() {
         format!("{err:#}").contains("failed to connect to remote gateway"),
         "{err:#}"
     );
+}
+
+#[tokio::test]
+async fn diagnose_builds_a_dossier_for_node_strict_equal_failure() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"test-node","devDependencies":{"jest":"^29.0.0"}}"#,
+        ),
+        ("jest.config.js", "module.exports = {};\n"),
+        ("test/index.test.js", "test('adds', () => {});\n"),
+    ]);
+    let root = ws.root();
+    let jest_output = b"  \xe2\x97\x8f strict equality test\n\n    AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n    1 !== 2\n\n        at Object.<anonymous> (test/index.test.js:3:12) {\n      generatedMessage: true,\n      code: 'ERR_ASSERTION',\n      actual: 1,\n      expected: 2,\n      operator: 'strictEqual'\n    }\n\nTests: 1 failed, 0 passed, 1 total\n".to_vec();
+    let exec: ExecAnswer = Arc::new(move |_req| (jest_output.clone(), Vec::new(), Some(1)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+
+    let report = dossier::diagnose(remote, &root, None, 60)
+        .await
+        .expect("diagnose runs");
+
+    assert_eq!(report.tests_failed, 1);
+    assert_eq!(report.dossiers.len(), 1);
+    let dossier = &report.dossiers[0];
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "strictEqual");
+    assert_eq!(assertion.expression.as_deref(), Some("1 !== 2"));
+    assert_eq!(assertion.actual.as_deref(), Some("1"));
+    assert_eq!(assertion.expected.as_deref(), Some("2"));
+    assert_eq!(assertion.left.as_deref(), Some("1"));
+    assert_eq!(assertion.right.as_deref(), Some("2"));
+    assert_eq!(assertion.operands, vec!["1", "2"]);
+    assert!(assertion.excerpt.contains("AssertionError"));
+    assert!(assertion.excerpt.contains("operator: 'strictEqual'"));
+
+    let rendered = report.render();
+    assert!(rendered.contains("assertion [strictEqual (1 !== 2)]: actual: 1, expected: 2"));
+}
+
+#[tokio::test]
+async fn diagnose_builds_a_dossier_for_node_deep_strict_equal_failure() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"test-node","devDependencies":{"jest":"^29.0.0"}}"#,
+        ),
+        ("jest.config.js", "module.exports = {};\n"),
+        ("test/index.test.js", "test('diff', () => {});\n"),
+    ]);
+    let root = ws.root();
+    let jest_output = b"  \xe2\x97\x8f deep equality test\n\n    AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  {\n+   a: 1\n-   a: 2\n  }\n\n        at Object.<anonymous> (test/index.test.js:3:12) {\n      generatedMessage: true,\n      code: 'ERR_ASSERTION',\n      actual: {\n        a: 1,\n        b: [ 2 ]\n      },\n      expected: {\n        a: 1,\n        b: [ 3 ]\n      },\n      operator: 'deepStrictEqual'\n    }\n\nTests: 1 failed, 0 passed, 1 total\n".to_vec();
+    let exec: ExecAnswer = Arc::new(move |_req| (jest_output.clone(), Vec::new(), Some(1)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+
+    let report = dossier::diagnose(remote, &root, None, 60)
+        .await
+        .expect("diagnose runs");
+
+    assert_eq!(report.tests_failed, 1);
+    assert_eq!(report.dossiers.len(), 1);
+    let dossier = &report.dossiers[0];
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "deepStrictEqual");
+    assert_eq!(assertion.expression, None);
+    assert_eq!(
+        assertion.actual.as_deref(),
+        Some("{\n        a: 1,\n        b: [ 2 ]\n      }")
+    );
+    assert_eq!(
+        assertion.expected.as_deref(),
+        Some("{\n        a: 1,\n        b: [ 3 ]\n      }")
+    );
+    assert_eq!(assertion.operands.len(), 2);
+}
+
+#[tokio::test]
+async fn diagnose_builds_a_dossier_for_rust_multiline_colored_assertion() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", DOSSIER_LIB)]);
+    let root = ws.root();
+    let output = b"running 1 test\ntest tests::it_fails ... FAILED\n\nfailures:\n\n---- tests::it_fails stdout ----\n\n\x1b[1m\x1b[31mthread 'tests::it_fails' panicked at \x1b[0msrc/lib.rs:13:9:\n\x1b[1m\x1b[31massertion `left == right` failed\x1b[0m\n\x1b[1m\x1b[31m  left: \x1b[0mFoo {\n    x: 1,\n    y: 2,\n}\n\x1b[1m\x1b[31m right: \x1b[0mFoo {\n    x: 1,\n    y: 3,\n}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nfailures:\n    tests::it_fails\n\ntest result: FAILED. 0 passed; 1 failed; 0 filtered out; finished in 0.00s\n".to_vec();
+    let exec: ExecAnswer = Arc::new(move |_req| (output.clone(), Vec::new(), Some(101)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+
+    let report = dossier::diagnose(remote, &root, None, 60)
+        .await
+        .expect("diagnose runs");
+
+    assert_eq!(report.dossiers.len(), 1);
+    let dossier = &report.dossiers[0];
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "assert_eq");
+    assert_eq!(
+        assertion.left.as_deref(),
+        Some("Foo {\n    x: 1,\n    y: 2,\n}")
+    );
+    assert_eq!(
+        assertion.right.as_deref(),
+        Some("Foo {\n    x: 1,\n    y: 3,\n}")
+    );
+    assert_eq!(assertion.operands.len(), 2);
 }
