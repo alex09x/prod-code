@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+- **`prod-code lsp` fails loudly when the gateway goes away** (#394). The bridge noticed only on
+  the editor's next message, answered nothing until then, and exited 0, which an editor reads as a
+  clean shutdown and does not restart. It now says on stderr which gateway closed or broke the
+  connection and exits 1 at once, so the editor starts it again with a fresh session. An editor
+  that closes its side first still gets exit 0.
+
 ## v0.3.15 — 2026-09-25
 
 ### Changed

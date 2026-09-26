@@ -2606,6 +2606,13 @@ where
                             } else {
                                 answer(&val)
                             };
+                            // A script that answers "__close__" has the gateway go away.
+                            if result == Some(serde_json::json!("__close__")) {
+                                log.lock()
+                                    .expect("log")
+                                    .push((connection, format!("close after {method}")));
+                                break;
+                            }
                             let reply = result.map(|result| {
                                 WireMessage::LspPayload(
                                     serde_json::json!({ "jsonrpc": "2.0", "id": val["id"], "result": result })
@@ -2785,6 +2792,64 @@ async fn lsp_tells_the_editor_when_a_save_did_not_reach_the_node() {
             .any(|(_, event)| event == "lsp textDocument/didSave"),
         "the save still reaches the server: {seen:?}"
     );
+}
+
+/// When the gateway goes away while the editor still talks to it, `prod-code lsp` says so on
+/// stderr and exits with a failure at once, which an editor answers by starting it again; it
+/// used to wait for the editor's next message and then exit 0 (#394).
+#[tokio::test]
+async fn lsp_fails_loudly_when_the_gateway_goes_away() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("home");
+    let (addr, _) = recording_gateway_with(
+        |val| (val["method"] == "prod-code/goAway").then(|| serde_json::json!("__close__")),
+        HashMap::new(),
+        true,
+    )
+    .await;
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--remote", &addr.to_string()])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let mut stderr = child.stderr.take().expect("stderr");
+    let send = |message: serde_json::Value| {
+        let body = message.to_string();
+        format!("Content-Length: {}\r\n\r\n{body}", body.len())
+    };
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": { "capabilities": {} } })).as_bytes())
+        .await
+        .expect("initialize");
+    read_lsp_message(&mut stdout).await;
+    stdin
+        .write_all(send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "prod-code/goAway", "params": {} })).as_bytes())
+        .await
+        .expect("the message after which the gateway goes");
+
+    // The editor keeps its side open: the bridge must notice on its own.
+    let status = tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+        .await
+        .expect("it exits without waiting for the editor")
+        .expect("status");
+    let mut said = String::new();
+    let _ = stderr.read_to_string(&mut said).await;
+    assert!(!status.success(), "{status}: {said}");
+    assert!(
+        said.contains(&format!(
+            "prod-code lsp: the gateway at {addr} closed the connection"
+        )),
+        "{said}"
+    );
+    drop(stdin);
 }
 
 /// With no node to reach, `prod-code lsp` answers the editor's `initialize` with the reason

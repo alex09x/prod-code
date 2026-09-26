@@ -3439,10 +3439,12 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
     // The server's messages and the bridge's own warnings share the editor's stdout.
     let editor_out = std::sync::Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let stdout_out = std::sync::Arc::clone(&editor_out);
+    // Why the gateway's side ended, when it did; dropped unsent when the editor's side did.
+    let (closed_tx, mut closed_rx) = tokio::sync::oneshot::channel::<String>();
     let stdout_task = tokio::spawn(async move {
-        while let Some(msg_res) = socket_rx.next().await {
-            match msg_res {
-                Ok(WireMessage::LspPayload(json)) => {
+        let why = loop {
+            match socket_rx.next().await {
+                Some(Ok(WireMessage::LspPayload(json))) => {
                     let json = stdout_files.to_editor(json).await;
                     trace_message(&stdout_trace, "<-", &json);
                     let mut stdout = stdout_out.lock().await;
@@ -3450,23 +3452,41 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                         .await
                         .is_err()
                     {
-                        break;
+                        return;
                     }
                 }
-                Ok(WireMessage::Disconnect { .. }) => break,
-                Err(_) => break,
-                _ => {}
+                Some(Ok(WireMessage::Disconnect { reason })) => {
+                    break format!("closed the session: {reason}");
+                }
+                Some(Err(err)) => break format!("broke the connection: {err}"),
+                None => break "closed the connection".to_string(),
+                Some(Ok(_)) => {}
             }
-        }
+        };
+        let _ = closed_tx.send(why);
     });
 
     // Main loop: read standard LSP from stdin and forward as WireMessage::LspPayload over TCP
     let mut stdin_reader = BufReader::new(tokio::io::stdin());
     loop {
-        let Some(json_payload) = prod_code_client::editor_files::read_frame(&mut stdin_reader)
-            .await
-            .context("reading the editor's message")?
-        else {
+        let frame = tokio::select! {
+            frame = prod_code_client::editor_files::read_frame(&mut stdin_reader) => {
+                frame.context("reading the editor's message")?
+            }
+            closed = &mut closed_rx => match closed {
+                // The gateway went away while the editor still talks to it: say so and exit
+                // with a failure, which an editor answers by starting the server again. Left
+                // to the editor's next message, this hung and then exited 0 (#394).
+                Ok(why) => {
+                    keeper.abort();
+                    eprintln!("prod-code lsp: the gateway at {remote} {why}");
+                    std::process::exit(1);
+                }
+                // The editor stopped reading its answers.
+                Err(_) => break,
+            },
+        };
+        let Some(json_payload) = frame else {
             // Stdin EOF (editor exited)
             let _ = socket_tx
                 .send(WireMessage::Disconnect {
@@ -3502,12 +3522,13 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
                 }
             }
         }
-        if socket_tx
+        if let Err(err) = socket_tx
             .send(WireMessage::LspPayload(files.to_node(&json_payload)))
             .await
-            .is_err()
         {
-            break;
+            keeper.abort();
+            eprintln!("prod-code lsp: the gateway at {remote} broke the connection: {err}");
+            std::process::exit(1);
         }
     }
 
