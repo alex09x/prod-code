@@ -158,6 +158,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         server_workspace_root: req.client_workspace_root,
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
+                        engine_age_ms: None,
                     }))
                     .await?;
             }
@@ -2006,6 +2007,74 @@ async fn a_file_no_target_compiles_does_not_spend_the_search_for_a_use() {
         "{text}"
     );
     assert!(text.contains("Found 2 reference(s)"), "{text}");
+}
+
+/// An empty `workspace/symbol` from a warm engine is the answer. An engine loaded moments ago is
+/// asked again until it has indexed, and a gateway that does not say when it loaded its engine
+/// gets one retry: a miss used to pay an 800 ms pause in every project it asked (#381).
+#[tokio::test]
+async fn an_empty_symbol_search_is_asked_again_only_of_an_engine_still_loading() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // The engine's age, whether its first answer takes a second, the search from which the
+    // index has the symbol, the searches asked and whether the symbol is found. An engine 29.5 s
+    // old whose first answer takes a second is young when asked, however old when it answers.
+    let cases = [
+        (Some(3_600_000u64), false, usize::MAX, 1usize, false),
+        (Some(0), false, 3, 3, true),
+        (Some(29_500), true, 2, 2, true),
+        (None, false, usize::MAX, 2, false),
+    ];
+    for (age, slow_first, indexed_from, searches, found) in cases {
+        let ws = Workspace::new(&[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+            ),
+            ("src/lib.rs", "pub fn a() {}\n"),
+        ]);
+        let lib = ws.path("src/lib.rs");
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&asked);
+        let remote = scripted_gateway(Arc::new(move |method, _| match method {
+            "prod-code/handshake" => age.map_or(
+                serde_json::Value::Null,
+                |ms| serde_json::json!({ "engine_age_ms": ms }),
+            ),
+            "workspace/symbol" => {
+                let search = counted.fetch_add(1, Ordering::Relaxed) + 1;
+                if slow_first && search == 1 {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                if search >= indexed_from {
+                    serde_json::json!([answers::symbol("missing", 12, &lib, 1, 8)])
+                } else {
+                    serde_json::json!([])
+                }
+            }
+            _ => serde_json::Value::Null,
+        }))
+        .await;
+        let text = text_of(
+            &execute_tool(
+                remote,
+                &ws.root(),
+                "code_symbols",
+                serde_json::json!({ "query": "missing" }),
+            )
+            .await
+            .expect("the search"),
+        );
+        assert_eq!(
+            text.contains("[Function] missing"),
+            found,
+            "engine loaded {age:?} ms ago: {text}"
+        );
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            searches,
+            "engine loaded {age:?} ms ago"
+        );
+    }
 }
 
 /// A name the index lacks but a source file declares is answered with that declaration and why

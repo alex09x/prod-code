@@ -718,6 +718,7 @@ impl RecordingGateway {
                             server_workspace_root: req.client_workspace_root.clone(),
                             detected_engine: "rust".to_string(),
                             stale_paths: Vec::new(),
+                            engine_age_ms: None,
                         }))
                         .await?;
                 }
@@ -1080,6 +1081,7 @@ async fn reconnecting_gateway(first: FirstHover) -> (SocketAddr, Arc<AtomicUsize
                                     server_workspace_root: req.client_workspace_root,
                                     detected_engine: "rust".to_string(),
                                     stale_paths: Vec::new(),
+                                    engine_age_ms: None,
                                 }))
                                 .await;
                         }

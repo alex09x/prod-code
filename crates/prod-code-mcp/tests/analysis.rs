@@ -91,6 +91,7 @@ impl ExecGateway {
                             server_workspace_root: req.client_workspace_root.clone(),
                             detected_engine: "rust".to_string(),
                             stale_paths: Vec::new(),
+                            engine_age_ms: None,
                         }))
                         .await?;
                 }

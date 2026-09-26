@@ -2434,6 +2434,7 @@ pub async fn handle_client(
                             server_workspace_root: server_workspace_str.clone(),
                             detected_engine: engine.to_string(),
                             stale_paths: workspace::stale_paths(&server_workspace),
+                            engine_age_ms: None,
                         }))
                         .await?;
                     let outcome = editor_proxy::run(
@@ -2454,6 +2455,7 @@ pub async fn handle_client(
                     .workspace_manager
                     .get_or_load(&engine_root, engine)
                     .await?;
+                let engine_age_ms = shared_ws.loaded_at.elapsed().as_millis() as u64;
 
                 let mut session_view = state
                     .workspace_manager
@@ -2485,6 +2487,7 @@ pub async fn handle_client(
                         server_workspace_root: server_workspace_str,
                         detected_engine: engine.to_string(),
                         stale_paths: workspace::stale_paths(&server_workspace),
+                        engine_age_ms: Some(engine_age_ms),
                     }))
                     .await?;
 

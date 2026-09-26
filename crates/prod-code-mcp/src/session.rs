@@ -27,7 +27,13 @@ pub struct LspSession {
     next_id: i64,
     /// The engine the gateway chose for this session.
     pub engine: String,
+    /// When the gateway loaded that engine; `None` when it does not say (#381).
+    engine_loaded: Option<std::time::Instant>,
 }
+
+/// How long after its engine was loaded an empty `workspace/symbol` answer may still be early:
+/// a language server indexes after it starts (#381).
+pub const INDEXING_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A hash of a document's text, to tell whether the file still holds what was sent.
 fn text_hash(text: &str) -> u64 {
@@ -51,6 +57,12 @@ fn budget_for(method: &str) -> std::time::Duration {
 }
 
 impl LspSession {
+    /// How long ago the gateway loaded this session's engine; `None` when it does not say
+    /// (#381).
+    pub fn engine_age(&self) -> Option<std::time::Duration> {
+        self.engine_loaded.map(|at| at.elapsed())
+    }
+
     /// Opens a session on `remote` for the checkout at `root`. `hint` selects a nested
     /// project (any path inside it); the root project otherwise.
     pub async fn open(remote: SocketAddr, root: &Path, hint: Option<&Path>) -> Result<Self> {
@@ -125,6 +137,9 @@ impl LspSession {
             opened: HashMap::new(),
             next_id: 1,
             engine: handshake.detected_engine,
+            engine_loaded: handshake.engine_age_ms.and_then(|ms| {
+                std::time::Instant::now().checked_sub(std::time::Duration::from_millis(ms))
+            }),
         };
         // Files the gateway lost from its copy (#262) that the sync above did not carry: the
         // next sync sends them again.
@@ -417,16 +432,9 @@ fn is_connection_error(err: &anyhow::Error) -> bool {
         || text.contains("has exited")
 }
 
-/// Runs one query on the pooled session for `root` (opening it on first use): local
-/// changes are pushed first when the watcher saw any, and a session whose connection died
-/// (gateway restart) is replaced and the query retried once.
-pub async fn pooled_query(
-    remote: SocketAddr,
-    root: &Path,
-    file: &Path,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value> {
+/// The checkout a query about `file` is asked in, and the key of its pooled session: one per
+/// node, checkout and nested project.
+fn pool_key(remote: SocketAddr, root: &Path, file: &Path) -> (PathBuf, String) {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // A local file of another checkout, such as a clone next to this one, is asked about in
     // that checkout's own session: this one's analyzer never loaded it, and a server of another
@@ -438,6 +446,35 @@ pub async fn pooled_query(
         root.display(),
         subpath.unwrap_or_default()
     );
+    (root, key)
+}
+
+/// [`LspSession::engine_age`] of the pooled session that answers about `file` in the checkout
+/// at `root`; `None` when there is none yet or its gateway does not say (#381).
+pub async fn pooled_engine_age(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+) -> Option<std::time::Duration> {
+    let (_, key) = pool_key(remote, root, file);
+    pool()
+        .lock()
+        .await
+        .get(&key)
+        .and_then(LspSession::engine_age)
+}
+
+/// Runs one query on the pooled session for `root` (opening it on first use): local
+/// changes are pushed first when the watcher saw any, and a session whose connection died
+/// (gateway restart) is replaced and the query retried once.
+pub async fn pooled_query(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let (root, key) = pool_key(remote, root, file);
     let mut sessions = pool().lock().await;
     for attempt in 0..2 {
         if !sessions.contains_key(&key) {

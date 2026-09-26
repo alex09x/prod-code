@@ -117,8 +117,9 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
             }
             WireMessage::HandshakeRequest(req) => {
                 // Shown to the script as `prod-code/handshake`, so a test can see which engine
-                // a session asked for (`purpose`); the answer is ignored.
-                let _ = answer(
+                // a session asked for (`purpose`); an answer with `engine_age_ms` says how long
+                // ago the engine was loaded (#381), any other answer leaves it unsaid.
+                let said = answer(
                     "prod-code/handshake",
                     &serde_json::json!({ "purpose": req.purpose.clone() }),
                 );
@@ -132,6 +133,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         server_workspace_root: req.client_workspace_root.clone(),
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
+                        engine_age_ms: said.get("engine_age_ms").and_then(|v| v.as_u64()),
                     }))
                     .await?;
             }

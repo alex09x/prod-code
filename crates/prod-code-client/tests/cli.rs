@@ -110,6 +110,7 @@ async fn handle_client(
                         server_workspace_root: req.client_workspace_root,
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
+                        engine_age_ms: None,
                     }))
                     .await?;
             }
@@ -2558,6 +2559,7 @@ where
                                 server_workspace_root: req.client_workspace_root,
                                 detected_engine: "rust".to_string(),
                                 stale_paths: Vec::new(),
+                                engine_age_ms: None,
                             })),
                         ),
                         WireMessage::ExecRequest(req) => {

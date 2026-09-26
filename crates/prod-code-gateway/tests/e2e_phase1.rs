@@ -102,6 +102,7 @@ async fn handle_test_client(
                         server_workspace_root: server_workspace_str,
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
+                        engine_age_ms: None,
                     }))
                     .await?;
 
