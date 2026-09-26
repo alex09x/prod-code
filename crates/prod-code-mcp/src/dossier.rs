@@ -648,10 +648,13 @@ pub fn parse_assertion_evidence(output: &str) -> Option<AssertionEvidence> {
     }
     let raw: Vec<&str> = output.lines().collect();
     let stripped: Vec<String> = raw.iter().map(|l| strip_ansi(l)).collect();
+    // Each format answers `None` when it is absent and `Some(None)` when it is present but
+    // cannot be bound completely: then no looser format may take part of the same block.
     parse_rust_assertion(&raw, &stripped)
         .or_else(|| parse_node_error_fields(&raw, &stripped))
         .or_else(|| parse_jest_node_assert(&raw, &stripped))
         .or_else(|| parse_node_short_message(&raw, &stripped))
+        .flatten()
 }
 
 /// The raw lines `from..=to`, escape sequences included.
@@ -666,7 +669,7 @@ fn indent_of(line: &str) -> usize {
 /// `assert_eq!` / `assert_ne!` since Rust 1.73:
 /// "assertion `left == right` failed[: message]\n  left: {:?}\n right: {:?}". The operands keep
 /// the macro's names: either one may be the expected value, so no actual/expected is claimed.
-fn parse_rust_assertion(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+fn parse_rust_assertion(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
     let (header, is_ne) = stripped.iter().enumerate().find_map(|(i, line)| {
         let (is_ne, rest) =
             if let Some(rest) = line.strip_prefix("assertion `left == right` failed") {
@@ -676,24 +679,53 @@ fn parse_rust_assertion(raw: &[&str], stripped: &[String]) -> Option<AssertionEv
             };
         (rest.trim_end().is_empty() || rest.starts_with(": ")).then_some((i, is_ne))
     })?;
-    // The panic message ends at the first blank line, the backtrace note or another panic.
-    let end = (header + 1..stripped.len())
-        .find(|&i| {
-            let line = &stripped[i];
-            line.trim().is_empty()
-                || line.starts_with("note: run with ")
-                || line.starts_with("stack backtrace:")
-                || line.starts_with("thread '")
-        })
-        .unwrap_or(stripped.len());
-    // A custom message may hold a "  left: " line of its own; the operands are the last pair.
-    let (left_at, right_at) = (header + 1..end).rev().find_map(|j| {
-        if !stripped[j].starts_with("  left: ") {
-            return None;
+    Some(rust_operands(raw, stripped, header, is_ne))
+}
+
+/// The operands after a Rust assertion header. A `Debug` value may hold blank lines, so only
+/// the panic hook's own trailer (the backtrace note, a backtrace, the next panic, which the
+/// hook starts with a blank line) or the end of the test's libtest block ends the message.
+/// libtest closes a block with one blank line, two before its `failures:` list: a block
+/// without one was cut short, and a third belongs to the value, whose own trailing line breaks
+/// are then unknown.
+fn rust_operands(
+    raw: &[&str],
+    stripped: &[String],
+    header: usize,
+    is_ne: bool,
+) -> Option<AssertionEvidence> {
+    let trailer = |line: &str| {
+        line.starts_with("note: run with ")
+            || line.starts_with("stack backtrace:")
+            || line.starts_with("thread '")
+    };
+    let next_block = |line: &str| {
+        line == "failures:" || (line.starts_with("---- ") && line.ends_with(" stdout ----"))
+    };
+    let stop =
+        (header + 1..stripped.len()).find(|&i| trailer(&stripped[i]) || next_block(&stripped[i]));
+    let end = match stop {
+        Some(at) if stripped[at].starts_with("thread '") && stripped[at - 1].is_empty() => at - 1,
+        Some(at) if trailer(&stripped[at]) => at,
+        stop => {
+            let stop = stop.unwrap_or(stripped.len());
+            let content = (header + 1..stop).rfind(|&i| !stripped[i].trim().is_empty())? + 1;
+            if !(1..=2).contains(&(stop - content)) {
+                return None;
+            }
+            content
         }
-        let k = (j + 1..end).find(|&k| stripped[k].starts_with(" right: "))?;
-        Some((j, k))
-    })?;
+    };
+    // A custom message may hold "  left: " lines of its own: the operands start at the last
+    // one. Two " right: " lines after it leave the split between the operands unknown.
+    let (left_at, right_at) = (header + 1..end)
+        .rev()
+        .filter(|&j| stripped[j].starts_with("  left: "))
+        .find_map(|j| {
+            let mut rights = (j + 1..end).filter(|&k| stripped[k].starts_with(" right: "));
+            let first = rights.next()?;
+            Some(rights.next().is_none().then_some((j, first)))
+        })??;
     let operand = |first: &str, rest: &[String]| {
         std::iter::once(first)
             .chain(rest.iter().map(String::as_str))
@@ -708,12 +740,23 @@ fn parse_rust_assertion(raw: &[&str], stripped: &[String]) -> Option<AssertionEv
         &stripped[right_at][" right: ".len()..],
         &stripped[right_at + 1..end],
     );
-    if left.trim().is_empty() || right.trim().is_empty() {
+    // A block cut after one of a value's blank lines still leaves its brackets open.
+    if [&left, &right]
+        .iter()
+        .any(|v| v.trim().is_empty() || !closes(v, true))
+    {
         return None;
     }
     Some(AssertionEvidence {
         format: if is_ne { "assert_ne" } else { "assert_eq" }.to_string(),
-        expression: Some(if is_ne { "left != right" } else { "left == right" }.to_string()),
+        expression: Some(
+            if is_ne {
+                "left != right"
+            } else {
+                "left == right"
+            }
+            .to_string(),
+        ),
         actual: None,
         expected: None,
         left: Some(left.clone()),
@@ -756,18 +799,28 @@ fn inspect_elided(value: &str) -> bool {
 /// last stack frame opens `{`, top-level fields sit two columns in from the error header, and
 /// `}` at the header's column closes the block. Only those top-level fields are bound, so an
 /// `expected:` or `operator:` key nested in a value, or printed in the diff above, is never
-/// taken for the error's own. Without the closing brace the block is incomplete: `None`.
-fn parse_node_error_fields(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
-    let header = stripped
-        .iter()
-        .position(|l| l.trim_start().starts_with("AssertionError [ERR_ASSERTION]: "))?;
+/// taken for the error's own. Without the closing brace the block is incomplete, and the short
+/// message above it is not taken instead.
+fn parse_node_error_fields(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
+    let header = stripped.iter().position(|l| {
+        l.trim_start()
+            .starts_with("AssertionError [ERR_ASSERTION]: ")
+    })?;
     let base = indent_of(&stripped[header]);
     let open = (header + 1..stripped.len()).find(|&i| {
         let line = stripped[i].trim_end();
-        indent_of(line) == base + 4
-            && line.trim_start().starts_with("at ")
-            && line.ends_with(" {")
+        indent_of(line) == base + 4 && line.trim_start().starts_with("at ") && line.ends_with(" {")
     })?;
+    Some(node_error_fields(raw, stripped, header, base, open))
+}
+
+fn node_error_fields(
+    raw: &[&str],
+    stripped: &[String],
+    header: usize,
+    base: usize,
+    open: usize,
+) -> Option<AssertionEvidence> {
     let mut fields: Vec<(String, Vec<String>)> = Vec::new();
     let mut close = None;
     for (i, line) in stripped.iter().enumerate().skip(open + 1) {
@@ -793,7 +846,10 @@ fn parse_node_error_fields(raw: &[&str], stripped: &[String]) -> Option<Assertio
     }
     let close = close?;
     let value_of = |name: &str| -> Option<String> {
-        let mut found = fields.iter().enumerate().filter(|(_, (key, _))| key == name);
+        let mut found = fields
+            .iter()
+            .enumerate()
+            .filter(|(_, (key, _))| key == name);
         let (at, (_, lines)) = found.next()?;
         if found.next().is_some() {
             return None;
@@ -828,11 +884,9 @@ fn parse_node_error_fields(raw: &[&str], stripped: &[String]) -> Option<Assertio
 
 /// Node's message for two short unequal primitives: "Expected values to be strictly equal:",
 /// then `actual !== expected` on the next non-blank line. Exactly one ` !== ` makes the split
-/// unambiguous; a quoted value that holds that text gives two and is refused.
-fn node_short_pair(
-    stripped: &[String],
-    header: usize,
-) -> Option<(usize, String, String, String)> {
+/// unambiguous; a quoted value that holds that text gives two and is refused. Output that ends
+/// at the pair may have cut it: a line after it shows it was printed whole.
+fn node_short_pair(stripped: &[String], header: usize) -> Option<(usize, String, String, String)> {
     if !stripped[header]
         .trim_end()
         .ends_with("Expected values to be strictly equal:")
@@ -840,6 +894,9 @@ fn node_short_pair(
         return None;
     }
     let at = (header + 1..stripped.len()).find(|&i| !stripped[i].trim().is_empty())?;
+    if at + 1 == stripped.len() {
+        return None;
+    }
     let line = stripped[at].trim();
     if line.matches(" !== ").count() != 1 || inspect_elided(line) {
         return None;
@@ -857,36 +914,40 @@ fn node_short_pair(
 }
 
 /// The short message alone, as vitest prints a Node assertion error.
-fn parse_node_short_message(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+fn parse_node_short_message(
+    raw: &[&str],
+    stripped: &[String],
+) -> Option<Option<AssertionEvidence>> {
     let header = stripped.iter().position(|l| {
         let l = l.trim();
         l.starts_with("AssertionError") && l.ends_with("Expected values to be strictly equal:")
     })?;
-    let (at, line, actual, expected) = node_short_pair(stripped, header)?;
-    Some(node_evidence(
-        "strictEqual",
-        Some(line),
-        actual,
-        expected,
-        raw_excerpt(raw, header, at),
-    ))
+    Some(
+        node_short_pair(stripped, header).map(|(at, line, actual, expected)| {
+            node_evidence(
+                "strictEqual",
+                Some(line),
+                actual,
+                expected,
+                raw_excerpt(raw, header, at),
+            )
+        }),
+    )
 }
 
 /// jest's reprint of a Node assertion error: "assert.strictEqual(received, expected)", then
 /// "Expected value to strictly be equal to:" and "Received:" at the hint's column, each value
 /// two columns further in (further lines of a multi-line string at the hint's column), and a
 /// blank line after the received value. Output cut before that blank line is refused.
-fn parse_jest_node_assert(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+fn parse_jest_node_assert(raw: &[&str], stripped: &[String]) -> Option<Option<AssertionEvidence>> {
     let (hint, format, label) =
         stripped
             .iter()
             .enumerate()
             .find_map(|(i, line)| match line.trim() {
-                "assert.strictEqual(received, expected)" => Some((
-                    i,
-                    "strictEqual",
-                    "Expected value to strictly be equal to:",
-                )),
+                "assert.strictEqual(received, expected)" => {
+                    Some((i, "strictEqual", "Expected value to strictly be equal to:"))
+                }
                 "assert.deepStrictEqual(received, expected)" => Some((
                     i,
                     "deepStrictEqual",
@@ -895,23 +956,28 @@ fn parse_jest_node_assert(raw: &[&str], stripped: &[String]) -> Option<Assertion
                 _ => None,
             })?;
     let base = indent_of(&stripped[hint]);
-    let at_base = |i: usize, text: &str| indent_of(&stripped[i]) == base && stripped[i].trim() == text;
-    let expected_label = (hint + 1..stripped.len()).find(|&i| !stripped[i].trim().is_empty())?;
-    if !at_base(expected_label, label) {
-        return None;
-    }
-    let received_label =
-        (expected_label + 1..stripped.len()).find(|&i| at_base(i, "Received:"))?;
-    let end = (received_label + 1..stripped.len()).find(|&i| stripped[i].trim().is_empty())?;
-    let expected = jest_value(&stripped[expected_label + 1..received_label], base)?;
-    let actual = jest_value(&stripped[received_label + 1..end], base)?;
-    Some(node_evidence(
-        format,
-        None,
-        actual,
-        expected,
-        raw_excerpt(raw, hint, end - 1),
-    ))
+    let at_base =
+        |i: usize, text: &str| indent_of(&stripped[i]) == base && stripped[i].trim() == text;
+    let values = || {
+        let expected_label =
+            (hint + 1..stripped.len()).find(|&i| !stripped[i].trim().is_empty())?;
+        if !at_base(expected_label, label) {
+            return None;
+        }
+        let received_label =
+            (expected_label + 1..stripped.len()).find(|&i| at_base(i, "Received:"))?;
+        let end = (received_label + 1..stripped.len()).find(|&i| stripped[i].trim().is_empty())?;
+        let expected = jest_value(&stripped[expected_label + 1..received_label], base)?;
+        let actual = jest_value(&stripped[received_label + 1..end], base)?;
+        Some(node_evidence(
+            format,
+            None,
+            actual,
+            expected,
+            raw_excerpt(raw, hint, end - 1),
+        ))
+    };
+    Some(values())
 }
 
 /// One value as jest prints it: the first line two columns in from `base`, any further lines
@@ -934,12 +1000,14 @@ fn jest_value(lines: &[String], base: usize) -> Option<String> {
     (!value.contains('…')
         && !value.contains("[Object]")
         && !value.contains("[Array]")
-        && closes(&value))
+        && closes(&value, false))
     .then_some(value)
 }
 
-/// Whether every double-quoted string and every bracket in a printed value closes.
-fn closes(value: &str) -> bool {
+/// Whether every double-quoted string and every bracket in a printed value closes. With
+/// `rust_chars`, Rust `Debug` char literals (`'{'`, `'"'`, `'\''`) are skipped as well; any other
+/// apostrophe is text.
+fn closes(value: &str, rust_chars: bool) -> bool {
     let mut open = Vec::new();
     let mut in_string = false;
     let mut chars = value.chars();
@@ -955,6 +1023,17 @@ fn closes(value: &str) -> bool {
             continue;
         }
         match c {
+            '\'' if rust_chars => {
+                let mut ahead = chars.clone();
+                let literal = match ahead.next() {
+                    Some('\\') => ahead.next().is_some() && ahead.any(|c| c == '\''),
+                    Some(_) => ahead.next() == Some('\''),
+                    None => false,
+                };
+                if literal {
+                    chars = ahead;
+                }
+            }
             '"' => in_string = true,
             '(' | '[' | '{' => open.push(c),
             ')' | ']' | '}' => {
@@ -1080,7 +1159,7 @@ mod tests {
 
     #[test]
     fn parses_rust_assert_ne() {
-        let output = "thread 'main' panicked at src/lib.rs:14:9:\nassertion `left != right` failed\n  left: 4\n right: 4\n";
+        let output = "thread 'main' panicked at src/lib.rs:14:9:\nassertion `left != right` failed\n  left: 4\n right: 4\n\n";
         let ev = parse_assertion_evidence(output).expect("parsed assertion");
         assert_eq!(ev.format, "assert_ne");
         assert_eq!(ev.expression.as_deref(), Some("left != right"));
@@ -1093,7 +1172,7 @@ mod tests {
 
     #[test]
     fn parses_rust_assert_eq_with_custom_message() {
-        let output = "thread 'test_msg' panicked at src/lib.rs:20:9:\nassertion `left == right` failed: expected matching user IDs\n  left: \"usr_1\"\n right: \"usr_2\"\n";
+        let output = "thread 'test_msg' panicked at src/lib.rs:20:9:\nassertion `left == right` failed: expected matching user IDs\n  left: \"usr_1\"\n right: \"usr_2\"\n\n";
         let ev = parse_assertion_evidence(output).expect("parsed assertion");
         assert_eq!(ev.format, "assert_eq");
         assert_eq!(ev.left.as_deref(), Some("\"usr_1\""));
@@ -1102,7 +1181,7 @@ mod tests {
 
     #[test]
     fn a_left_line_inside_a_custom_message_is_not_an_operand() {
-        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed: first line\n  left: from the message\n  left: 7\n right: 8\n";
+        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed: first line\n  left: from the message\n  left: 7\n right: 8\n\n";
         let ev = parse_assertion_evidence(output).expect("parsed assertion");
         assert_eq!(ev.left.as_deref(), Some("7"));
         assert_eq!(ev.right.as_deref(), Some("8"));
@@ -1110,8 +1189,68 @@ mod tests {
 
     #[test]
     fn a_rust_block_without_both_operands_gives_nothing() {
-        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed\n  left: 7\n\n right: 8\n";
+        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed\n  left: 7\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n";
         assert_eq!(parse_assertion_evidence(output), None);
+    }
+
+    #[test]
+    fn rust_operands_keep_their_blank_lines_up_to_the_panic_hooks_trailer() {
+        let head = "\nthread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed\n  left: A {\n\n    x\n}\n right: B {\n\n    y\n}\n";
+        for trailer in [
+            "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n",
+            "stack backtrace:\n   0: rust_begin_unwind\n\n",
+            // The hook starts every panic message with a blank line of its own.
+            "\nthread 'other' panicked at src/lib.rs:9:1:\nboom\n\n",
+            // The end of a libtest block: its separator, then the next block or the list.
+            "\n",
+            "\n\n",
+        ] {
+            let ev = parse_assertion_evidence(&format!("{head}{trailer}"))
+                .unwrap_or_else(|| panic!("no evidence before {trailer:?}"));
+            assert_eq!(ev.left.as_deref(), Some("A {\n\n    x\n}"), "{trailer:?}");
+            assert_eq!(ev.right.as_deref(), Some("B {\n\n    y\n}"), "{trailer:?}");
+            assert!(
+                ev.excerpt.ends_with(" right: B {\n\n    y\n}"),
+                "{trailer:?}"
+            );
+        }
+        // Before the hook's trailer a value's own trailing line break is printed as is.
+        let own = head.replace("    y\n}\n", "    y\n}\n\n")
+            + "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n";
+        let ev = parse_assertion_evidence(&own).expect("evidence");
+        assert_eq!(ev.right.as_deref(), Some("B {\n\n    y\n}\n"));
+    }
+
+    #[test]
+    fn a_rust_block_cut_short_or_split_ambiguously_gives_nothing() {
+        let block = "\nthread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed\n  left: A {\n\n    x\n}\n right: B {\n\n    y\n}\n\n";
+        // Cut at every line: without libtest's separator, or with a value's brackets still
+        // open after one of its blank lines, nothing is claimed.
+        let lines: Vec<&str> = block.split_inclusive('\n').collect();
+        for cut in 1..lines.len() {
+            let prefix = lines[..cut].concat();
+            assert_eq!(parse_assertion_evidence(&prefix), None, "{prefix:?}");
+        }
+        // More blank lines than libtest's separators belong to the value, which then has an
+        // unknown number of trailing line breaks.
+        assert_eq!(parse_assertion_evidence(&format!("{block}\n\n")), None);
+        // A second `right:` after the last `left:` could start either operand.
+        let two_rights = block.replace("    x\n", "    x\n right: inside\n");
+        assert_eq!(parse_assertion_evidence(&two_rights), None);
+        // The Rust header claims the block: a Node message in it is not taken instead.
+        let with_node = block.replace(
+            "}\n\n",
+            "\nAssertionError: Expected values to be strictly equal:\n\n1 !== 2\n\n",
+        );
+        assert_eq!(parse_assertion_evidence(&with_node), None);
+    }
+
+    #[test]
+    fn rust_char_operands_do_not_count_as_brackets() {
+        let output = "assertion `left == right` failed\n  left: '{'\n right: ['\"', '\\'', '\\u{7b}', ')']\n\n";
+        let ev = parse_assertion_evidence(output).expect("evidence");
+        assert_eq!(ev.left.as_deref(), Some("'{'"));
+        assert_eq!(ev.right.as_deref(), Some("['\"', '\\'', '\\u{7b}', ')']"));
     }
 
     #[test]
@@ -1185,22 +1324,38 @@ mod tests {
         let no_operator = NESTED_FIELDS.replace("  },\n  operator: 'deepStrictEqual'\n", "  }\n");
         assert_eq!(parse_assertion_evidence(&no_operator), None);
         // util.inspect elided a nested object or the tail of an array.
-        let depth = NESTED_FIELDS.replace("operator: 'strictEqual'\n  },", "deeper: [Object]\n  },");
+        let depth =
+            NESTED_FIELDS.replace("operator: 'strictEqual'\n  },", "deeper: [Object]\n  },");
         assert_eq!(parse_assertion_evidence(&depth), None);
-        let items = NESTED_FIELDS.replace("expected: 'inner-a',", "list: [ 1, ... 99 more items ],");
+        let items =
+            NESTED_FIELDS.replace("expected: 'inner-a',", "list: [ 1, ... 99 more items ],");
         assert_eq!(parse_assertion_evidence(&items), None);
     }
 
     #[test]
     fn a_node_short_message_splits_only_on_a_single_operator() {
-        let output = "AssertionError: Expected values to be strictly equal:\n\n'a' !== 'b'\n";
+        let output = "AssertionError: Expected values to be strictly equal:\n\n'a' !== 'b'\n\n";
         let ev = parse_assertion_evidence(output).expect("parsed short message");
         assert_eq!(ev.format, "strictEqual");
         assert_eq!(ev.actual.as_deref(), Some("'a'"));
         assert_eq!(ev.expected.as_deref(), Some("'b'"));
         assert_eq!(ev.expression.as_deref(), Some("'a' !== 'b'"));
-        let ambiguous = "AssertionError: Expected values to be strictly equal:\n\n'x !== y' !== 'z'\n";
+        let ambiguous =
+            "AssertionError: Expected values to be strictly equal:\n\n'x !== y' !== 'z'\n\n";
         assert_eq!(parse_assertion_evidence(ambiguous), None);
+        // Output that stops at the pair may have cut its second value.
+        let cut = "AssertionError: Expected values to be strictly equal:\n\n'a' !== 'b";
+        assert_eq!(parse_assertion_evidence(cut), None);
+    }
+
+    #[test]
+    fn a_cut_error_fields_block_is_not_read_from_its_short_message() {
+        let fields = "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n1 !== 2\n\n    at [eval]:1:42 {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: 1,\n  expected: 2,\n  operator: 'strictEqual'\n}\n";
+        assert!(parse_assertion_evidence(fields).is_some());
+        let cut = fields.strip_suffix("}\n").unwrap();
+        assert_eq!(parse_assertion_evidence(cut), None);
+        let cut = &fields[..fields.find("  expected: 2").unwrap()];
+        assert_eq!(parse_assertion_evidence(cut), None);
     }
 
     const JEST_STRICT: &str = "    assert.strictEqual(received, expected)\n\n    Expected value to strictly be equal to:\n      \"line one\n    line 2\"\n    Received:\n      \"line one\n    line two\"\n\n    Difference:\n";
@@ -1213,7 +1368,10 @@ mod tests {
         assert_eq!(ev.actual.as_deref(), Some("\"line one\nline two\""));
         assert_eq!(ev.left, ev.actual);
         assert_eq!(ev.right, ev.expected);
-        assert!(ev.excerpt.starts_with("    assert.strictEqual(received, expected)"));
+        assert!(
+            ev.excerpt
+                .starts_with("    assert.strictEqual(received, expected)")
+        );
         assert!(ev.excerpt.ends_with("    line two\""));
     }
 
@@ -1231,7 +1389,8 @@ mod tests {
         let deep = wide.replace("[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]", "{\"a\": [Object]}");
         assert_eq!(parse_assertion_evidence(&deep), None);
         // A label that does not match the hint's operator.
-        let mismatched = JEST_STRICT.replace("strictly be equal to:", "deeply and strictly equal to:");
+        let mismatched =
+            JEST_STRICT.replace("strictly be equal to:", "deeply and strictly equal to:");
         assert_eq!(parse_assertion_evidence(&mismatched), None);
     }
 

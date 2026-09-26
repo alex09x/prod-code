@@ -1157,7 +1157,12 @@ async fn cli_diagnoses_assertion_failure_and_exposes_additive_fields_in_json() {
     assert_eq!(dossiers.len(), 2);
     // The ordinary panic keeps its raw output and gets no other test's assertion.
     assert_eq!(dossiers[0]["test"], "tests::it_panics");
-    assert!(dossiers[0]["output"].as_str().unwrap().contains("boom without values"));
+    assert!(
+        dossiers[0]["output"]
+            .as_str()
+            .unwrap()
+            .contains("boom without values")
+    );
     assert!(dossiers[0].get("assertion").is_none());
     assert_eq!(dossiers[1]["test"], "tests::it_fails");
     let assertion = &dossiers[1]["assertion"];
@@ -1172,6 +1177,49 @@ async fn cli_diagnoses_assertion_failure_and_exposes_additive_fields_in_json() {
     assert_eq!(
         assertion["excerpt"],
         "assertion `left == right` failed\n  left: 4\n right: 5"
+    );
+}
+
+#[tokio::test]
+async fn cli_diagnose_keeps_blank_lines_inside_rust_debug_operands() {
+    // Real cargo output of hand-written `Debug` values that print blank lines.
+    let captured =
+        include_str!("../../prod-code-mcp/tests/fixtures/assertions/cargo_test_blank_debug.txt");
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    *gw.custom_exec.lock().unwrap() = Some(captured.as_bytes().to_vec());
+
+    let out = run_cli(&ws, gw.addr, &["diagnose"]).await;
+    assert_eq!(out.status.code(), Some(1));
+    let stdout_text = stdout_of(&out);
+    assert!(stdout_text.contains(
+        "assertion [assert_eq (left == right)]: left: Text(flat), right: Text(para one  para two)\n"
+    ));
+    assert!(!stdout_text.contains("actual:"));
+
+    let out_json = run_cli(&ws, gw.addr, &["diagnose", "--json"]).await;
+    assert_eq!(out_json.status.code(), Some(1));
+    let val: serde_json::Value = serde_json::from_slice(&out_json.stdout).expect("valid json");
+    let dossiers = val["dossiers"].as_array().expect("dossiers array");
+    let dossier = |name: &str| {
+        dossiers
+            .iter()
+            .find(|d| d["test"] == name)
+            .unwrap_or_else(|| panic!("no dossier for {name}"))
+    };
+    let assertion = &dossier("tests::b_middle_blank_lines")["assertion"];
+    assert_eq!(assertion["left"], "Doc {\n\n    three\n\n}");
+    assert_eq!(assertion["right"], "Doc {\n\n    four\n\n}");
+    assert!(assertion.get("actual").is_none());
+    assert!(assertion.get("expected").is_none());
+    let assertion = &dossier("tests::d_right_only_blank_lines")["assertion"];
+    assert_eq!(assertion["left"], "Text(flat)");
+    assert_eq!(assertion["right"], "Text(para one\n\npara two)");
+    // A value ending in blank lines of its own is not shortened to fit libtest's separator.
+    assert!(
+        dossier("tests::e_trailing_blank_lines")
+            .get("assertion")
+            .is_none()
     );
 }
 
