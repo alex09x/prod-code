@@ -343,6 +343,7 @@ pub async fn pick_node_with(
         let mut candidates = Vec::new();
         let mut unsupported = Vec::new();
         let mut on_macos = Vec::new();
+        let mut short = Vec::new();
         // Why the first node that did not answer did not (#340): a gateway that is down, or on
         // macOS an app not let onto the local network, reads differently.
         let mut first_failure = None;
@@ -351,6 +352,9 @@ pub async fn pick_node_with(
                 Ok(status) if status_fits(&status, engine, os) => {
                     if runs_os(&status, "macos") {
                         on_macos.push(candidate);
+                    }
+                    if status.host.pressure().is_some() {
+                        short.push(candidate);
                     }
                     candidates.push((candidate, status.load_per_cpu()));
                 }
@@ -370,6 +374,10 @@ pub async fn pick_node_with(
         // no other node can take it, however quiet the Mac is (#308).
         if os.is_none() && candidates.iter().any(|(c, _)| !on_macos.contains(c)) {
             candidates.retain(|(c, _)| !on_macos.contains(c));
+        }
+        // A node short of memory or disk only when every other one is too (#396).
+        if candidates.iter().any(|(c, _)| !short.contains(c)) {
+            candidates.retain(|(c, _)| !short.contains(c));
         }
         if let Some(chosen) = choose_quietest(&candidates) {
             if let Some(path) = placement_file {
@@ -573,6 +581,7 @@ pub async fn node_status(addr: SocketAddr) -> Result<StatusResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prod_code_protocol::HostResources;
 
     #[test]
     fn parses_lists_and_dedups() {
@@ -661,10 +670,22 @@ mod tests {
         engines: &'static [&'static str],
         platform: Option<&'static str>,
     ) -> SocketAddr {
+        node_with(engines, platform, 100, HostResources::default()).await
+    }
+
+    /// A node that answers a status request with the engines it serves, the platform it runs,
+    /// its load average in thousandths over 4 CPUs, and what its host has left.
+    async fn node_with(
+        engines: &'static [&'static str],
+        platform: Option<&'static str>,
+        load_average_millis: u32,
+        host: HostResources,
+    ) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
+                let host = host.clone();
                 tokio::spawn(async move {
                     let mut framed = Framed::new(socket, ProdCodeCodec::new());
                     while let Some(Ok(message)) = framed.next().await {
@@ -678,10 +699,11 @@ mod tests {
                                 memory_rss_bytes: None,
                                 total_queries: 0,
                                 active_queries: 0,
-                                load_average_millis: Some(100),
+                                load_average_millis: Some(load_average_millis),
                                 cpu_count: Some(4),
                                 platform: platform.map(String::from),
                                 running_commands: Vec::new(),
+                                host: host.clone(),
                             };
                             let _ = framed.send(WireMessage::StatusResponse(status)).await;
                         } else {
@@ -692,6 +714,47 @@ mod tests {
             }
         });
         addr
+    }
+
+    /// Without a cluster answer, a node short of memory or disk is passed over for a busier one
+    /// that has room, and taken only when every node is short (#396).
+    #[tokio::test]
+    async fn a_node_short_of_disk_is_passed_over_without_a_cluster_view() {
+        let temp = tempfile::tempdir().unwrap();
+        let placement = temp.path().join("placement.json");
+        let full_disk = HostResources {
+            storage_free_millis: Some(20),
+            ..HostResources::default()
+        };
+        let roomy = HostResources {
+            storage_free_millis: Some(600),
+            ..HostResources::default()
+        };
+        let quiet_but_full =
+            node_with(&["rust"], Some("linux x86_64"), 40, full_disk.clone()).await;
+        let busier = node_with(&["rust"], Some("linux x86_64"), 2000, roomy).await;
+        let chosen = pick_node_with(
+            &[quiet_but_full, busier],
+            "subject",
+            Some("rust"),
+            None,
+            Some(&placement),
+        )
+        .await
+        .unwrap();
+        assert_eq!(chosen, busier);
+
+        let also_full = node_with(&["rust"], Some("linux x86_64"), 2000, full_disk).await;
+        let chosen = pick_node_with(
+            &[quiet_but_full, also_full],
+            "other",
+            Some("rust"),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(chosen, quiet_but_full, "every node is short: the quietest");
     }
 
     /// With a Rust node and a Swift node, a path in the SwiftPM package goes to the Swift node and
@@ -864,6 +927,7 @@ mod tests {
             cpu_count: None,
             platform: None,
             running_commands: Vec::new(),
+            host: Default::default(),
         };
         assert!(supports_engine(&status, "rust"));
         assert!(supports_engine(&status, "swift"));

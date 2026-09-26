@@ -134,6 +134,7 @@ async fn handle_client(
                                 cpu_count: Some(8),
                                 platform: None,
                                 running_commands: Vec::new(),
+                                host: Default::default(),
                             },
                             last_seen_secs: 0,
                             workspaces: vec![],
@@ -161,6 +162,11 @@ async fn handle_client(
                             command: "cargo test --workspace".to_string(),
                             running_seconds: 125,
                         }],
+                        host: prod_code_protocol::HostResources {
+                            memory_available_bytes: Some(3 << 30),
+                            memory_total_bytes: Some(64 << 30),
+                            storage_free_millis: Some(412),
+                        },
                     }))
                     .await?;
             }
@@ -405,8 +411,18 @@ async fn cli_reports_status_and_health_from_gateway() {
     assert!(out.status.success());
     let stdout = stdout_of(&out);
     assert!(stdout.contains("prod-code Remote Code Intelligence Gateway"));
-    assert!(stdout.contains("Status:            HEALTHY"));
     assert!(stdout.contains("Server PID:"));
+    // A host short of memory says so, and why (#396).
+    assert!(
+        stdout.contains("Host Resources:    memory 95% used, disk 41% free"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(
+            "Status:            SHORT (memory 95% used): new workspaces go to other nodes"
+        ),
+        "{stdout}"
+    );
     // A build running on the node is shown, so the node is not taken for idle (#273).
     assert!(stdout.contains("Running Commands:  1"), "{stdout}");
     assert!(
@@ -424,6 +440,10 @@ async fn cli_reports_cluster_membership_and_placement() {
     let stdout = stdout_of(&out);
     assert!(stdout.contains("prod-code cluster"));
     assert!(stdout.contains("UP"));
+    assert!(
+        stdout.contains("host: memory 95% used, disk 41% free — short, takes no new workspaces"),
+        "{stdout}"
+    );
 }
 
 #[tokio::test]

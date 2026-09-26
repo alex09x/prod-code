@@ -3277,7 +3277,16 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
                     resp.total_queries, resp.active_queries
                 );
                 println!("Engines Available: {}", resp.detected_engines.join(", "));
-                println!("Status:            HEALTHY");
+                let host = resp.host.describe();
+                if !host.is_empty() {
+                    println!("Host Resources:    {host}");
+                }
+                match resp.host.pressure() {
+                    Some(why) => println!(
+                        "Status:            SHORT ({why}): new workspaces go to other nodes"
+                    ),
+                    None => println!("Status:            HEALTHY"),
+                }
             }
             other => anyhow::bail!("Unexpected response from gateway: {:?}", other),
         }
@@ -3844,6 +3853,9 @@ async fn run_cluster(
                         ws.join(" ")
                     }
                 );
+                if let Some(why) = peer.status.host.pressure() {
+                    println!("  {:<22} short: {why}", "");
+                }
             }
             println!("────────────────────────────────────────────────────");
             break;
@@ -3876,6 +3888,15 @@ async fn run_cluster(
                     .map(|e| e.split(' ').next().unwrap_or(e))
                     .collect();
                 println!("{:<22} engines: {}", "", engines.join(", "));
+                let host = status.host.describe();
+                if !host.is_empty() {
+                    match status.host.pressure() {
+                        Some(_) => {
+                            println!("{:<22} host: {host} — short, takes no new workspaces", "")
+                        }
+                        None => println!("{:<22} host: {host}", ""),
+                    }
+                }
             }
             Err(e) => println!("{node:<22} DOWN  {e}"),
         }

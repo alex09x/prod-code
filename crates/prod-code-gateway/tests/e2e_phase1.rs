@@ -72,6 +72,7 @@ async fn handle_test_client(
                     cpu_count: None,
                     platform: None,
                     running_commands: Vec::new(),
+                    host: Default::default(),
                 };
                 framed.send(WireMessage::StatusResponse(status)).await?;
             }

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+- **Placement keeps new workspaces off a node short of memory or disk** (#396). A gateway's status
+  and gossip carry what its host has left: memory available and total (`MemAvailable` on Linux,
+  the kernel's free percentage on macOS) and the free share of the workspaces filesystem. A node
+  past 85% of its memory or under 10% of its disk gets no new workspace while a capable node with
+  room is alive, gives up an idle one it holds, and keeps one in use; when every node is short,
+  the quietest still takes it and the placement reason says so. The client's own choice, made
+  when no gateway answers a placement, passes such a node over the same way. The janitor logs
+  when the node becomes short and when it has room again, and while memory is short it unloads
+  engines idle for 5 minutes, even when `--idle-evict-secs` is off. `prod-code status`,
+  `prod-code cluster` and `code_status` show the figures and `SHORT (why)` in place of
+  `HEALTHY`.
+
 ### Fixed
 - **`prod-code lsp` fails loudly when the gateway goes away** (#394). The bridge noticed only on
   the editor's next message, answered nothing until then, and exited 0, which an editor reads as a
