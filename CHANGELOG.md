@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- Go signature permutations through gopls (#448): reorder named parameters of functions
+  and methods, including grouped parameters, while preserving receivers, results and variadic
+  tails. CLI and MCP preview or apply only fully reconciled, type-checked edits. Add/remove,
+  modifier changes, indirect calls and uncertain argument effects remain refused.
+- Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
+  imported aliases and supported calls. Unsupported call/default shapes are refused before
+  writing; validation reports syntax diagnostics, not a JavaScript type-check guarantee.
+
 ### Changed
 - Cold Rust analysis loads share a process-wide CPU budget, including validation engines
   (#408). Half the detected CPUs (at least one) are assigned to concurrent loads, with at most eight
@@ -10,10 +19,41 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust parameter objects preserve destruction order (#441), including types named like
+  primitives. Analyzer evidence distinguishes builtin scalars from shadowing types with `Drop`.
+  Interleaved owned values and async or older-edition capture cases are refused when bundling
+  would change destruction order.
+- Parameter-object refactoring preserves argument evaluation order and refuses uncertain
+  reordering (#436), including JavaScript global getters and Swift/C++ conversions. JavaScript
+  and TypeScript selected constant defaults move into object literals; computed defaults and
+  potentially undefined runtime values are refused before rewriting.
+- Parameter-object rewrites preserve keyword/field evaluation order and refuse calls whose
+  argument reordering cannot be shown safe (#436). Failed reference requests and stale
+  JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes
+  an own computed property.
 - Rust signature changes refuse reordered or removed argument effects and changes to
   parameter destruction order, including user `Deref` calls and types that shadow built-ins
   (#442). Missing, malformed or unreadable references stop planning, even with `force`.
   Confirmed scalar arguments can still be reordered; unproven reference coercions are refused.
+- Path translation rewrites URI and path fields without changing source, edit text or
+  documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
+  compare complete path components, and decode a URI exactly once.
+- New language engines reserve memory before loading (#433), including on a node already
+  holding the checkout. Concurrent loads count against an 85% host-memory limit; idle
+  engines may be reclaimed, while existing sessions remain available. A canceled
+  handshake keeps its load and reservation alive, and a failed load answers its waiters.
+  An invalidated load cannot publish over a newer load of the same workspace.
+  The reservation defaults to 4 GiB for Rust and 1 GiB for other language servers and
+  can be adjusted with `--engine-reserve-mib`. This bounds admission, not later engine growth.
+- Shadow hypotheses reject control characters, duplicate or nested paths and symlinked
+  parents before staging (#440). In-place runs take turns per workspace across requests,
+  restore failed writes, preserve file modes and report restoration failures. Rollback
+  checks symlink containment again before restoring files or removing created directories.
+  Internal overlay variables cannot be overridden by request environment values.
+- Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
+  They enable client-side compilation and refuse settings that disable it or send work
+  to a distributed compiler. Config checks follow the proposed files, deletions and
+  symlink aliases, so a hypothesis cannot silently be checked against the base source.
 - Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
   described as a reporting policy restriction instead of falsely claiming they do not
   exist in the repository.

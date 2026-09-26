@@ -331,11 +331,14 @@ mod tests {
         assert_eq!(sent["params"]["processId"], serde_json::Value::Null);
         assert_eq!(sent["params"]["rootUri"], "file:///srv/workspaces/app");
         assert_eq!(sent["params"]["rootPath"], "/srv/workspaces/app");
-        // Anything else passes as it came, translated.
+        // Other requests keep their JSON values while locations are translated.
         let hover = r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///Users/dev/app/src/lib.rs"}}}"#;
         assert_eq!(
-            to_server(&translator, hover),
-            hover.replace("/Users/dev/app", "/srv/workspaces/app")
+            serde_json::from_str::<serde_json::Value>(&to_server(&translator, hover)).unwrap(),
+            serde_json::from_str::<serde_json::Value>(
+                &hover.replace("/Users/dev/app", "/srv/workspaces/app")
+            )
+            .unwrap()
         );
     }
 

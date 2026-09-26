@@ -1526,6 +1526,7 @@ dependencies = [
  "tokenizers",
  "tokio",
  "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1546,6 +1547,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-util",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "url",
 ]

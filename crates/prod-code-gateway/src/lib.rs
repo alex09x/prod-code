@@ -4,6 +4,7 @@
 //! stands in front of — the workspace manager, the dispatch, the language server backends —
 //! can be exercised directly by tests.
 
+pub mod admission;
 pub mod backend;
 pub mod detect;
 pub mod editor_proxy;
@@ -26,6 +27,7 @@ use prod_code_protocol::{
     HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION, PathTranslator, PeerInfo,
     PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
+    path::{file_uri, uri_or_path},
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -117,6 +119,12 @@ pub struct ServerCli {
     /// Unload a workspace's engine after this many seconds without a session (0 disables).
     #[arg(long, env = "PROD_CODE_IDLE_EVICT_SECS", default_value_t = 1800)]
     pub idle_evict_secs: u64,
+
+    /// Memory a new engine is counted at until it has loaded and settled, in MiB, when deciding
+    /// whether the host can take it without passing 85% in use (#433). 0: by engine, 4 GiB for
+    /// Rust, 1 GiB for the other language servers.
+    #[arg(long, env = "PROD_CODE_ENGINE_RESERVE_MIB", default_value_t = 0)]
+    pub engine_reserve_mib: u64,
 
     /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
@@ -366,8 +374,19 @@ impl ServerState {
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
-            host: memory::host_resources(&self.storage_root),
+            host: self.host_resources(),
         }
+    }
+
+    /// What this host has left, less the memory held for engines still loading: placement on
+    /// the other nodes then sees a load this one has admitted before the load shows (#433).
+    fn host_resources(&self) -> prod_code_protocol::HostResources {
+        let mut host = memory::host_resources(&self.storage_root);
+        let reserved = self.workspace_manager.admission().reserved_bytes();
+        host.memory_available_bytes = host
+            .memory_available_bytes
+            .map(|available| available.saturating_sub(reserved));
+        host
     }
 }
 
@@ -1488,7 +1507,7 @@ async fn rename_with_references_open(
             })
             .unwrap_or_default();
         for uri in uris.into_iter().filter(|u| *u != own_uri).take(MAX_OPENED) {
-            let path = PathBuf::from(uri.trim_start_matches("file://"));
+            let path = uri_or_path(&uri);
             let Ok(text) = tokio::fs::read_to_string(&path).await else {
                 continue;
             };
@@ -1553,7 +1572,7 @@ fn hierarchy_item_json(item: &prod_code_engine_rust::HierarchyItem) -> serde_jso
     serde_json::json!({
         "name": item.name,
         "kind": lsp_symbol_kind(&item.kind),
-        "uri": format!("file://{}", item.path.display()),
+        "uri": file_uri(&item.path),
         "range": lsp_range(item.line, item.col, item.end_line, item.end_col),
         "selectionRange": lsp_range(item.line, item.col, item.line, item.col + item.name.chars().count() as u32),
     })
@@ -1626,7 +1645,7 @@ fn hierarchy_query(
                 .iter()
                 .map(|t| {
                     serde_json::json!({
-                        "uri": format!("file://{}", t.path.display()),
+                        "uri": file_uri(&t.path),
                         "range": lsp_range(t.line, t.col, t.line, t.col),
                     })
                 })
@@ -1645,7 +1664,7 @@ fn hierarchy_query(
 fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
     let mut changes = Vec::new();
     for created in &outcome.created {
-        let uri = format!("file://{}", created.path.display());
+        let uri = file_uri(&created.path);
         changes.push(
             serde_json::json!({ "kind": "create", "uri": uri, "options": { "overwrite": false } }),
         );
@@ -1656,7 +1675,7 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
     }
     for file in &outcome.files {
         changes.push(serde_json::json!({
-            "textDocument": { "uri": format!("file://{}", file.path.display()), "version": null },
+            "textDocument": { "uri": file_uri(&file.path), "version": null },
             "edits": [ {
                 "range": { "start": { "line": 0, "character": 0 }, "end": { "line": file.old_line_count, "character": 0 } },
                 "newText": file.new_text
@@ -1666,8 +1685,8 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
     for mv in &outcome.moves {
         changes.push(serde_json::json!({
             "kind": "rename",
-            "oldUri": format!("file://{}", mv.from.display()),
-            "newUri": format!("file://{}", mv.to.display()),
+            "oldUri": file_uri(&mv.from),
+            "newUri": file_uri(&mv.to),
             "options": { "overwrite": false }
         }));
     }
@@ -2651,8 +2670,9 @@ pub async fn handle_client(
                     // Validation runs on its own engine: that is the one to warm. Loading it
                     // warms the newest files, these among them.
                     let workspace = workspace.clone();
+                    let admission = Arc::clone(state.workspace_manager.admission());
                     tokio::spawn(async move {
-                        let view = loaded.validation_view().await;
+                        let view = loaded.validation_view(&admission).await;
                         if let Some(engine) = view.rust_engine.clone() {
                             priming::warm_in_background(engine, workspace, synced_rust);
                         }
@@ -2780,11 +2800,27 @@ pub async fn handle_client(
                     return outcome;
                 }
 
-                // Attach to shared workspace using leader-follower coalescing
-                let shared_ws = state
+                // Attach to shared workspace using leader-follower coalescing. A load refused
+                // for capacity (#433), or failed, is told to the client, which says why.
+                let shared_ws = match state
                     .workspace_manager
                     .get_or_load(&engine_root, engine)
-                    .await?;
+                    .await
+                {
+                    Ok(shared_ws) => shared_ws,
+                    Err(err) => {
+                        let reason = format!("{err:#}");
+                        tracing::warn!(
+                            client_root = %req.client_workspace_root,
+                            engine,
+                            reason,
+                            "refusing handshake: the engine could not be loaded"
+                        );
+                        state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                        framed.send(WireMessage::Disconnect { reason }).await?;
+                        return Ok(());
+                    }
+                };
                 let engine_age_ms = shared_ws.loaded_at.elapsed().as_millis() as u64;
                 // The in-process Rust engine answers from a complete analysis once loaded; gopls
                 // and the servers whose readiness is known are waited for (#391).
@@ -2802,7 +2838,10 @@ pub async fn handle_client(
                 // A session that only validates proposed texts runs on the workspace's second
                 // engine, so its overlays never invalidate the main one (#73).
                 if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION) {
-                    session_view.workspace = session_view.accounted.validation_view().await;
+                    session_view.workspace = session_view
+                        .accounted
+                        .validation_view(state.workspace_manager.admission())
+                        .await;
                 }
 
                 tracing::info!(
@@ -3093,10 +3132,12 @@ async fn on_client_message(
                         })
                         .and_then(|u| u.as_str())
                         .unwrap_or("");
-                    let file = std::path::Path::new(uri.trim_start_matches("file://"))
+                    let path = uri_or_path(uri);
+                    let file = path
                         .strip_prefix(&meta.engine_root)
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|_| uri.trim_start_matches("file://").to_string());
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
                     let pos = params.and_then(|p| {
                         p.get("position")
                             .or_else(|| p.get("range").and_then(|r| r.get("start")))
@@ -3295,7 +3336,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(uri);
                                 if let Some(text) = params
                                     .get("textDocument")
                                     .and_then(|td| td.get("text"))
@@ -3339,7 +3380,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(uri);
                                 let first = params
                                     .get("contentChanges")
                                     .and_then(|c| c.as_array())
@@ -3385,7 +3426,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(uri);
                                 let mut engine = engine_lock.lock().await;
                                 if let Err(e) =
                                     engine.clear_session_overlay(view.session_id, &file_path)
@@ -3994,7 +4035,7 @@ fn lsp_call_hierarchy(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
     let method_name = hm.to_string();
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -4101,7 +4142,7 @@ fn lsp_safe_delete(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4189,8 +4230,8 @@ fn lsp_structural_replace(
         .get("scope")
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| PathBuf::from(s.trim_start_matches("file://")));
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+        .map(uri_or_path);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4285,7 +4326,7 @@ fn lsp_rename(
         .and_then(|n| n.as_str())
         .unwrap_or("")
         .to_string();
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4393,7 +4434,7 @@ fn lsp_assists(
         .get("subtype")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4520,7 +4561,7 @@ fn lsp_workspace_symbol(
                 "name": s.name,
                 "kind": lsp_symbol_kind(&s.kind),
                 "location": {
-                    "uri": format!("file://{}", s.path.display()),
+                    "uri": file_uri(&s.path),
                     "range": {
                         "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
                         "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
@@ -4549,7 +4590,7 @@ fn lsp_document_symbol(
         .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string();
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4685,7 +4726,7 @@ fn lsp_references(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4759,7 +4800,7 @@ fn lsp_references(
 
         let locations: Vec<_> = refs.into_iter().map(|t| {
             serde_json::json!({
-                "uri": format!("file://{}", t.path.display()),
+                "uri": file_uri(&t.path),
                 "range": {
                     "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
@@ -4800,7 +4841,7 @@ fn lsp_definition(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4874,7 +4915,7 @@ fn lsp_definition(
 
         let locations: Vec<_> = defs.into_iter().map(|t| {
             serde_json::json!({
-                "uri": format!("file://{}", t.path.display()),
+                "uri": file_uri(&t.path),
                 "range": {
                     "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
@@ -4915,7 +4956,7 @@ fn lsp_hover(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -5123,7 +5164,7 @@ fn publish_rust_diagnostics(
                 let note = serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": "textDocument/publishDiagnostics",
-                    "params": { "uri": format!("file://{}", path.display()), "diagnostics": diagnostics }
+                    "params": { "uri": file_uri(&path), "diagnostics": diagnostics }
                 });
                 let client_note = translator_task.translate_lsp_to_client(&note.to_string());
                 let _ = out_tx_task.send(WireMessage::LspPayload(client_note)).await;
@@ -5388,6 +5429,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     );
 
     let mut state = ServerState::new(cli.storage);
+    state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+        admission::Admission::host(cli.engine_reserve_mib),
+    )));
     state.engine_allowlist = cli
         .engines
         .iter()
@@ -5644,6 +5688,65 @@ mod tests {
         assert_eq!(evict_after(1800, true), Some(Duration::from_secs(300)));
         assert_eq!(evict_after(120, true), Some(Duration::from_secs(120)));
         assert_eq!(evict_after(0, true), Some(Duration::from_secs(300)));
+    }
+
+    /// A handshake that needs a new engine on a host without the memory for it is refused with
+    /// capacity as the reason and a way forward, and leaves no session counted (#433).
+    #[tokio::test]
+    async fn a_handshake_without_memory_for_its_engine_is_refused_for_capacity() {
+        const GIB: u64 = 1 << 30;
+        let storage = tempfile::tempdir().expect("tempdir");
+        let mut state = ServerState::new(storage.path().join("workspaces"));
+        state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            admission::Admission::with_probe(
+                admission::scripted_probe(vec![(10 * GIB, 100 * GIB)]),
+                2048,
+                admission::LOAD_SETTLE,
+            ),
+        )));
+        let client_root = "/home/dev/app";
+        let server_root =
+            workspace::resolve_server_workspace(&state.storage_root, client_root, None);
+        std::fs::create_dir_all(&server_root).unwrap();
+        let state = Arc::new(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = Arc::clone(&state);
+        let serve = tokio::spawn(async move {
+            let (socket, peer) = listener.accept().await.unwrap();
+            handle_client(socket, peer, serving).await
+        });
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    client_name: "test".to_string(),
+                    client_pid: 1,
+                    auth_token: None,
+                    client_workspace_root: client_root.to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: None,
+                    engine_subpath: None,
+                    client_agent: None,
+                    client_host: None,
+                    purpose: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let Some(Ok(WireMessage::Disconnect { reason })) = framed.next().await else {
+            panic!("the handshake was not refused");
+        };
+        assert!(reason.starts_with("capacity: "), "{reason}");
+        assert!(reason.contains("memory 90% used"), "{reason}");
+        assert!(reason.contains("Retry in a few minutes"), "{reason}");
+        assert!(reason.contains("another node"), "{reason}");
+        serve.await.unwrap().unwrap();
+        assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0);
+        assert_eq!(state.workspace_manager.loaded_count().await, 0);
     }
 
     /// The first answer `state` gives a connection that opens with `token`, if any, and asks for
