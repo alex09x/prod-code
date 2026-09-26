@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
+  imported aliases and supported calls. Unsupported call/default shapes are refused before
+  writing; validation reports syntax diagnostics, not a JavaScript type-check guarantee.
+
 ### Changed
 - Cold Rust analysis loads share a process-wide CPU budget, including validation engines
   (#408). Half the detected CPUs (at least one) are assigned to concurrent loads, with at most eight
@@ -10,6 +15,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Parameter-object rewrites preserve keyword/field evaluation order and refuse calls whose
+  argument reordering cannot be shown safe (#436). Failed reference requests and stale
+  JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes
+  an own computed property.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,

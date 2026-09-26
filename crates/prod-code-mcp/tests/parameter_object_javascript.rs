@@ -232,9 +232,18 @@ async fn fixture() -> Fixture {
 async fn a_javascript_function_takes_a_plain_object_and_every_caller_passes_a_literal() {
     let f = fixture().await;
     let root = f.ws.root();
-    let done = introduce(f.remote, &root, &f.home, 5, 17, &["width", "height"], "size", false)
-        .await
-        .expect("bundling runs");
+    let done = introduce(
+        f.remote,
+        &root,
+        &f.home,
+        5,
+        17,
+        &["width", "height"],
+        "size",
+        false,
+    )
+    .await
+    .expect("bundling runs");
 
     assert_eq!(done.symbol, "build");
     assert_eq!(done.was, "name, width, height = 2");
@@ -271,7 +280,10 @@ async fn a_javascript_function_takes_a_plain_object_and_every_caller_passes_a_li
     );
     let report = done.render(8000);
     assert!(report.contains("```javascript\n// Size"), "{report}");
-    assert!(report.contains("the function passed as a value"), "{report}");
+    assert!(
+        report.contains("the function passed as a value"),
+        "{report}"
+    );
     assert!(
         report.contains("0 errors (in JavaScript that is the syntax"),
         "{report}"
@@ -318,9 +330,18 @@ async fn a_javascript_change_is_written_only_when_the_server_accepts_all_of_it()
     let f = fixture().await;
     let root = f.ws.root();
     f.broken.store(true, Ordering::SeqCst);
-    let err = introduce(f.remote, &root, &f.home, 5, 17, &["width", "height"], "size", true)
-        .await
-        .expect_err("apply refuses a result the server rejects");
+    let err = introduce(
+        f.remote,
+        &root,
+        &f.home,
+        5,
+        17,
+        &["width", "height"],
+        "size",
+        true,
+    )
+    .await
+    .expect_err("apply refuses a result the server rejects");
     let err = format!("{err:#}");
     assert!(err.contains("nothing was written"), "{err}");
     assert!(err.contains("',' expected."), "{err}");
@@ -329,9 +350,18 @@ async fn a_javascript_change_is_written_only_when_the_server_accepts_all_of_it()
     }
 
     f.broken.store(false, Ordering::SeqCst);
-    let done = introduce(f.remote, &root, &f.home, 5, 17, &["width", "height"], "size", true)
-        .await
-        .expect("a clean result is applied");
+    let done = introduce(
+        f.remote,
+        &root,
+        &f.home,
+        5,
+        17,
+        &["width", "height"],
+        "size",
+        true,
+    )
+    .await
+    .expect("a clean result is applied");
     assert!(done.applied);
     assert_eq!(f.ws.read("src/home.js"), HOME_BUNDLED);
     assert!(
@@ -366,7 +396,10 @@ async fn the_tool_bundles_javascript_with_a_lower_camel_binding() {
     .expect("the tool runs");
     let text = text_of(&result);
     assert!(text.contains("- now: (name, size)"), "{text}");
-    assert!(text.contains("4 call site(s) rewritten, 3 use(s)"), "{text}");
+    assert!(
+        text.contains("4 call site(s) rewritten, 3 use(s)"),
+        "{text}"
+    );
     assert!(text.contains("```javascript"), "{text}");
     assert!(text.contains("nothing was written"), "{text}");
     assert_eq!(f.ws.read("src/home.js"), HOME);
@@ -420,11 +453,7 @@ export function callers(xs, s, n, ch) {
 /// default reads, a spread argument, `apply`, and a variable passed where a default applied.
 #[tokio::test]
 async fn what_javascript_cannot_prove_the_same_is_refused_with_its_reason() {
-    let ws = Workspace::new(&[
-        FILES[0],
-        FILES[1],
-        ("src/refusals.js", REFUSALS),
-    ]);
+    let ws = Workspace::new(&[FILES[0], FILES[1], ("src/refusals.js", REFUSALS)]);
     let file = ws.path("src/refusals.js");
     let r = file.clone();
     let remote = scripted_gateway(Arc::new(move |method, params| {
@@ -534,8 +563,9 @@ async fn table_gateway(
     scripted_gateway(Arc::new(move |method, params| {
         let (_, line, ch) = position(params);
         match method {
-            "textDocument/references" => table((line as u32 + 1, ch as u32 + 1))
-                .unwrap_or_else(|| serde_json::json!([])),
+            "textDocument/references" => {
+                table((line as u32 + 1, ch as u32 + 1)).unwrap_or_else(|| serde_json::json!([]))
+            }
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,
         }
@@ -549,7 +579,10 @@ fn run_script(program: &str, name: &str, text: &str) -> Option<String> {
     let dir = tempfile::tempdir().expect("script dir");
     let path = dir.path().join(name);
     std::fs::write(&path, text).expect("write the script");
-    let out = std::process::Command::new(program).arg(&path).output().ok()?;
+    let out = std::process::Command::new(program)
+        .arg(&path)
+        .output()
+        .ok()?;
     assert!(
         out.status.success(),
         "{program} {name} failed: {}\n{text}",
@@ -647,9 +680,18 @@ async fn javascript_refuses_reordering_stale_references_and_failed_queries() {
 
     // Adjacent, the same arguments are evaluated in the same order, and the change is made.
     *mode.lock().expect("mode") = "";
-    let done = introduce(remote, &root, &file, decl.0, decl.1, &["b", "c"], "opts", false)
-        .await
-        .expect("adjacent arguments are bundled");
+    let done = introduce(
+        remote,
+        &root,
+        &file,
+        decl.0,
+        decl.1,
+        &["b", "c"],
+        "opts",
+        false,
+    )
+    .await
+    .expect("adjacent arguments are bundled");
     assert!(
         rewritten(&done, "order.js")
             .contains("place(mark(\"a\"), { b: mark(\"b\"), c: mark(\"c\") })"),
@@ -714,9 +756,18 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
     .await;
     let root = ws.root();
 
-    let placed = introduce(remote, &root, &file, place.0, place.1, &["a", "c"], "opts", false)
-        .await
-        .expect("literals and plain names may trade places");
+    let placed = introduce(
+        remote,
+        &root,
+        &file,
+        place.0,
+        place.1,
+        &["a", "c"],
+        "opts",
+        false,
+    )
+    .await
+    .expect("literals and plain names may trade places");
     let placed = rewritten(&placed, "run.js");
     assert!(
         placed.contains("function place(opts, b) {\n  return [opts.a, b, opts.c].join(\"\");"),
@@ -744,7 +795,10 @@ async fn rewritten_javascript_prints_what_the_original_printed() {
         tagged.contains("const own = { [\"__proto__\"]: opts.__proto__ };"),
         "{tagged}"
     );
-    assert!(tagged.contains("typeof opts.toString, opts.fill]"), "{tagged}");
+    assert!(
+        tagged.contains("typeof opts.toString, opts.fill]"),
+        "{tagged}"
+    );
     assert!(
         tagged.contains(
             "tag({ [\"__proto__\"]: \"p\", toString: void 0, fill: 0 }), \
@@ -845,7 +899,10 @@ async fn a_real_typescript_server_bundles_the_javascript_fixture() {
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
     eprintln!("{preview}");
-    assert!(preview.contains("4 call site(s) rewritten, 3 use(s)"), "{preview}");
+    assert!(
+        preview.contains("4 call site(s) rewritten, 3 use(s)"),
+        "{preview}"
+    );
     assert!(preview.contains("src/other.js:8:24"), "{preview}");
     assert!(preview.contains("0 errors"), "{preview}");
 

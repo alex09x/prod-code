@@ -2342,7 +2342,9 @@ fn js_alias(text: &str, callee: &str, alias: &str) -> bool {
     let bytes = text.as_bytes();
     let word_at = |at: usize, word: &str| {
         (at == 0 || !is_ident_byte(bytes[at - 1]))
-            && !bytes.get(at + word.len()).is_some_and(|b| is_ident_byte(*b))
+            && !bytes
+                .get(at + word.len())
+                .is_some_and(|b| is_ident_byte(*b))
     };
     for (at, _) in text.match_indices(callee) {
         if !word_at(at, callee) {
@@ -2394,7 +2396,9 @@ fn ident_uses(text: &str, from: usize, to: usize, word: &str) -> Vec<usize> {
         if !is_ident_byte(bytes[at])
             || !text[at..].starts_with(word)
             || (at > 0 && is_ident_byte(bytes[at - 1]))
-            || bytes.get(at + word.len()).is_some_and(|b| is_ident_byte(*b))
+            || bytes
+                .get(at + word.len())
+                .is_some_and(|b| is_ident_byte(*b))
         {
             return false;
         }
@@ -2531,9 +2535,9 @@ async fn introduce_in(
     for p in params {
         // A name a destructuring pattern binds is not a parameter a call passes by position.
         if language == Language::JavaScript
-            && let Some(pattern) = declared.iter().find(|d| {
-                d.name.is_empty() && !ident_uses(&d.raw, 0, d.raw.len(), p).is_empty()
-            })
+            && let Some(pattern) = declared
+                .iter()
+                .find(|d| d.name.is_empty() && !ident_uses(&d.raw, 0, d.raw.len(), p).is_empty())
         {
             anyhow::bail!(
                 "`{p}` is bound by the destructuring pattern `{}` of `{callee}`, not a parameter \
@@ -2688,13 +2692,13 @@ async fn introduce_in(
                 continue;
             }
             let field = format!("{binding}.{}", p.name);
-            let replacement =
-                if language == Language::JavaScript && object_shorthand(&text, body.0, o, p.name.len())
-                {
-                    format!("{}: {field}", js_key(&p.name))
-                } else {
-                    field
-                };
+            let replacement = if language == Language::JavaScript
+                && object_shorthand(&text, body.0, o, p.name.len())
+            {
+                format!("{}: {field}", js_key(&p.name))
+            } else {
+                field
+            };
             uses.push((o, p.name.len(), replacement));
         }
     }
@@ -2715,10 +2719,12 @@ async fn introduce_in(
         }
         // A name the function already has would shadow the object, or be shadowed by it; the
         // analyzer's references are to the parameters, not to the binding that replaces them.
-        let taken = ident_uses(&text, open, body.1, binding).into_iter().find(|at| {
-            !uses.iter().any(|(o, _, _)| o == at)
-                && !bundled.iter().any(|i| open + declared[*i].name_at == *at)
-        });
+        let taken = ident_uses(&text, open, body.1, binding)
+            .into_iter()
+            .find(|at| {
+                !uses.iter().any(|(o, _, _)| o == at)
+                    && !bundled.iter().any(|i| open + declared[*i].name_at == *at)
+            });
         if let Some(at) = taken {
             anyhow::bail!(
                 "`{binding}` is already a name in `{callee}` ({}:{}); the object would shadow \
@@ -2773,7 +2779,11 @@ async fn introduce_in(
         if language == Language::JavaScript {
             let rest = &source[after_name..];
             let method = |m: &str| {
-                rest.starts_with(m) && !rest.as_bytes().get(m.len()).is_some_and(|b| is_ident_byte(*b))
+                rest.starts_with(m)
+                    && !rest
+                        .as_bytes()
+                        .get(m.len())
+                        .is_some_and(|b| is_ident_byte(*b))
             };
             anyhow::ensure!(
                 !method(".apply"),
@@ -3915,11 +3925,21 @@ mod tests {
         );
         assert_eq!(order(&mark, &[0, 1]), None, "adjacent: nothing moves");
         assert_eq!(order(&mark, &[1, 2]), None, "adjacent: nothing moves");
-        assert_eq!(order(&["x", "y", "z"], &[0, 2]), None, "three reads commute");
+        assert_eq!(
+            order(&["x", "y", "z"], &[0, 2]),
+            None,
+            "three reads commute"
+        );
         assert_eq!(order(&["1", "mark(\"b\")", "\"c\""], &[0, 2]), None);
         assert_eq!(order(&["mark(\"a\")", "b", "3"], &[0, 2]), None);
-        assert!(order(&["x", "mark(\"b\")", "z"], &[0, 2]).is_some(), "b may set z");
-        assert!(order(&["x", "b", "next()"], &[0, 2]).is_some(), "next() may set b");
+        assert!(
+            order(&["x", "mark(\"b\")", "z"], &[0, 2]).is_some(),
+            "b may set z"
+        );
+        assert!(
+            order(&["x", "b", "next()"], &[0, 2]).is_some(),
+            "next() may set b"
+        );
         assert!(order(&["x", "b", "1..missing"], &[0, 2]).is_some());
 
         // Rust and the others are positional too; Python's keywords are compared by value.
@@ -4015,7 +4035,10 @@ mod tests {
         assert!(shorthand("{ width, h"), "an object literal after `=`");
         assert!(shorthand("g({ width"), "an object literal argument");
         assert!(shorthand("({ width } = o"), "a destructuring assignment");
-        assert!(shorthand("return { width"), "an object literal after `return`");
+        assert!(
+            shorthand("return { width"),
+            "an object literal after `return`"
+        );
         assert!(!shorthand("(o) { width"), "a block after `)`");
         assert!(!shorthand("=> { width"), "an arrow's block");
         assert!(!shorthand("w={width"), "a JSX attribute");

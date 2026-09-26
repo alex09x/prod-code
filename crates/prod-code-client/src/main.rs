@@ -870,19 +870,20 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Bundle several of a function's parameters into a new type, with body and call sites
-    /// (Rust, TypeScript, Python, Go, C, C++, Swift).
+    /// Bundle parameters into one object, updating the body and call sites
+    /// (Rust, TypeScript, JavaScript, Python, Go, C, C++, Swift).
+    /// JavaScript uses a plain object and syntax diagnostics; unsafe call shapes are refused.
     ParameterObject {
         /// The function, by name (`move_item`, `Session::open_text`, `Canvas.draw`).
         symbol: String,
         /// A parameter to bundle, by the name the declaration gives it. Repeat the flag.
         #[arg(long = "param", required = true)]
         params: Vec<String>,
-        /// The new type's name, UpperCamelCase.
+        /// The new type's name, UpperCamelCase; JavaScript uses it only to derive the binding.
         #[arg(long)]
         name: String,
         /// What the new parameter is called in the body (default: the name in snake_case, or in
-        /// lowerCamelCase in TypeScript, Go and Swift).
+        /// lowerCamelCase in TypeScript, JavaScript, Go and Swift).
         #[arg(long)]
         binding: Option<String>,
         /// The file that declares it, when the name is ambiguous.

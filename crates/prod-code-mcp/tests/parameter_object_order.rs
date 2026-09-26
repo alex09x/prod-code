@@ -101,7 +101,10 @@ async fn bundle(
 #[tokio::test]
 async fn python_keywords_keep_the_order_the_call_evaluates_them_in() {
     let ws = Workspace::new(&[
-        ("pyproject.toml", "[project]\nname = \"po-order\"\nversion = \"0.1.0\"\n"),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"po-order\"\nversion = \"0.1.0\"\n",
+        ),
         ("app/__init__.py", ""),
         ("app/plot.py", PLOT),
     ]);
@@ -129,7 +132,11 @@ async fn python_keywords_keep_the_order_the_call_evaluates_them_in() {
         return;
     };
     assert_eq!(before, "abc\n6\nc,a,b,1,2,3\n");
-    assert_eq!(run_python(&text).as_deref(), Some(before.as_str()), "{text}");
+    assert_eq!(
+        run_python(&text).as_deref(),
+        Some(before.as_str()),
+        "{text}"
+    );
 }
 
 /// `total(mark(1), mark(2), mark(3))` with `a` and `c` bundled would evaluate `mark(3)` before
@@ -138,7 +145,10 @@ async fn python_keywords_keep_the_order_the_call_evaluates_them_in() {
 #[tokio::test]
 async fn python_refuses_a_reordered_call_and_a_failed_reference_query() {
     let ws = Workspace::new(&[
-        ("pyproject.toml", "[project]\nname = \"po-order\"\nversion = \"0.1.0\"\n"),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"po-order\"\nversion = \"0.1.0\"\n",
+        ),
         ("app/__init__.py", ""),
         ("app/plot.py", PLOT),
     ]);
