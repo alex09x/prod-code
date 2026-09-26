@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+- Cold Rust analysis loads share a process-wide CPU budget, including validation engines
+  (#408). Half the detected CPUs (at least one) are assigned to concurrent loads, with at most eight
+  Cargo jobs per load; the permit is returned on failure as well as success. Queries and
+  explicitly requested builds keep their existing behavior. The divergent-worktree benchmark
+  now syncs and loads its origin first and names it as the seed for isolated copies.
+
 ### Fixed
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
