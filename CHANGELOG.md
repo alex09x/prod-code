@@ -10,6 +10,11 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
+  unattributed changes, failed hierarchy queries or a depth limit leave the selection
+  incomplete (#434). It includes directly changed tests, all call-hierarchy items and
+  Git-quoted filenames. Dead-code scans mark failed or malformed analyzer answers as
+  unverified; pruning keeps those symbols and files (#435).
 - MCP sessions serialize queries per workspace instead of holding one process-wide lock
   across network operations (#430). Opening a session has a three-minute deadline; pooled
   queries include queueing, sync and loading in their total budget (three minutes normally,

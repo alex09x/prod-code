@@ -43,12 +43,12 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 7.5 Graphs | Callers, callees, implementations and supertypes. | Traversal is bounded and server-dependent; the advertised sub-5 ms whole-workspace target is not established for arbitrary repositories. |
 | 7.6 Schemas | Analyzer-assisted cross-language rename with text handling for schema formats. | This coordinates known references and schema names; it does not infer every external API consumer. |
 | 7.7 Validation | Analyzer overlays, multi-file proposals and optional compiler verification. | Analyzer acceptance is not full compiler/borrow-checker proof; preexisting derive errors are tracked in #424. |
-| 8.1 Impact | Changed ranges, incoming-call traversal and test selection in `mcp/src/impact.rs`. | Deleted files, mixed-scope edits, direct test edits and incomplete hierarchy queries can produce an unsafe selection (#434). |
+| 8.1 Impact | Changed ranges, incoming-call traversal and test selection in `mcp/src/impact.rs`. | The #434 repair includes direct test edits and falls back to a full suite on deleted/binary files, unreadable symbols, incomplete hierarchy queries or depth truncation. Selection still depends on the language server's semantic reachability. |
 | 8.2 Diagnosis | Failure text, source sites, caller context, diffs and ranked suspects in `mcp/src/dossier.rs`. | No debugger-style runtime capture or structured runtime-values field; assertion output is retained as text. |
 | 8.3 Dependencies | Read-only dependency/SDK source retrieval with gateway root restrictions. | This audit did not rerun every SDK/toolchain combination. |
 | 8.4 Search | Lexical and optional dense ranking in `gateway/src/search.rs` and `embed.rs`. | The measured ranking is imperfect; typed graph fusion and universal sub-10 ms latency are not established. |
 | 8.5 Fixtures | Rust value generation with explicit fallback types in `mcp/src/fixture.rs`. | General mock/builder generation, randomized generation and equivalent other-language tools remain open. |
-| 8.6 Pruning | Reference-count candidates and analyzer safe-delete in `dead_code.rs` and `prune.rs`. | This is not entry-point reachability. Reference errors were treated as no uses (#435); attribute-only references remain a documented limitation. |
+| 8.6 Pruning | Reference-count candidates and analyzer safe-delete in `dead_code.rs` and `prune.rs`. | This is not entry-point reachability. The #435 repair marks failed and malformed reference/symbol queries unverified and keeps them during pruning; attribute-only references remain a documented limitation. |
 | 8.7 Codemods | Rust structural search/replace through the analyzer. | Other-language codemods and the broad sub-second migration target remain open. |
 
 Paths shortened above are under `crates/prod-code-*`. The main integration evidence lives in
