@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Failure dossiers expose printed assertion operands in JSON and text (#445): Rust
+  `assert_eq!`/`assert_ne!` retain left/right order, and supported Node assertion formats
+  retain actual/expected roles. Each failure uses its own output; multiline values and
+  raw evidence are preserved, while ambiguous or incomplete blocks get no structured values.
 - Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
   imported aliases and supported calls. Unsupported call/default shapes are refused before
   writing; validation reports syntax diagnostics, not a JavaScript type-check guarantee.

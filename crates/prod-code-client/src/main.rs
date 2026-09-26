@@ -250,6 +250,10 @@ enum Commands {
         json: bool,
     },
     /// Run the tests and explain every failure: site, code, callers, what changed
+    ///
+    /// Includes printed Rust assert_eq/assert_ne operands and supported Node assert values.
+    /// Rust retains left/right order; no expected/actual role is inferred. Truncated or
+    /// unsupported output remains raw text, and no expression is evaluated.
     Diagnose {
         /// Test filter (as for `prod-code test`)
         filter: Option<String>,
