@@ -15,6 +15,13 @@
   with `--compile`, 3 × E0603 in 10.4 s. The `compile` description now names that case.
 
 ### Fixed
+- **A full disk no longer empties the files a sync writes** (#385). The gateway wrote a synced
+  file with `fs::write`, which truncates first, and ignored a failure: on a node whose disk had
+  filled, 22 files of one checkout were left 0 bytes while the sync reported success and the
+  client's watermark counted them delivered. A synced file now goes to a temporary file next to it
+  and is renamed over it, so a failed write keeps the old text; the path is not recorded as synced,
+  the engine is not told the new text, and the path comes back in `stale_paths` (and at every
+  handshake) until the client has sent it again.
 - **A name declared in a file the analyzer does not load** (#379) was "no symbol named ... in
   the workspace index", the answer for a name that exists nowhere. When the index has no symbol
   by that name, the checkout's source files are searched for its declaration, and the answer
