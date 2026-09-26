@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+- **References across checkouts** (#375). `code_references` takes `also_in` (other checkouts'
+  directories) with `symbol`, and `prod-code refs --symbol NAME --in DIR` (repeatable): the name
+  is resolved in each checkout, each is asked on the node its own workspace is placed on, and
+  every answer comes under its checkout's directory with a total; one that fails says why
+  without hiding the others. A field of a shared dependency's type used by two services: 107 + 93
+  = 200 references in 3.1–7.1 s in one call, where it took two calls from two directories.
+
 ### Fixed
 - **References of a dependency's item asked at its declaration** (#373). `refs --symbol` lands on
   the declaration inside the dependency, where the server finds nothing to search for; an empty

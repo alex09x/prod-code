@@ -100,6 +100,10 @@ enum Commands {
         /// FILE, the one declared or used there (#330).
         #[arg(long, conflicts_with_all = ["line", "col"])]
         symbol: Option<String>,
+        /// Another checkout to search as well, the name resolved there too (repeatable; with
+        /// --symbol) (#375).
+        #[arg(long = "in", value_name = "DIR")]
+        also_in: Vec<PathBuf>,
     },
     /// Who calls the function at a position: prod-code callers <file> <line> <col>, or --symbol NAME
     Callers {
@@ -1287,13 +1291,33 @@ async fn main() -> Result<()> {
             line,
             col,
             symbol,
-        } => match symbol {
-            Some(symbol) => run_by_symbol(remote, "code_references", &symbol, file).await,
-            None => {
-                let (file, line, col) = position(file, line, col)?;
-                run_references(remote, &file, line, col).await
+            also_in,
+        } => {
+            // Answered by the MCP tool in every form: it refuses a position on no name, asks a
+            // dependency's item from its uses (#373) and searches other checkouts (#375).
+            let mut args = match symbol {
+                Some(symbol) => symbol_args(&symbol, file),
+                None => {
+                    let (file, line, col) = position(file, line, col)?;
+                    let file = std::fs::canonicalize(&file).unwrap_or(file);
+                    serde_json::json!({
+                        "path": file.to_string_lossy(),
+                        "line": line,
+                        "character": col,
+                    })
+                }
+            };
+            if !also_in.is_empty() {
+                args["also_in"] = also_in
+                    .into_iter()
+                    .map(|dir| {
+                        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+                        serde_json::json!(dir.to_string_lossy())
+                    })
+                    .collect();
             }
-        },
+            run_tool(remote, "code_references", args).await
+        }
         Commands::Callers {
             file,
             line,
@@ -3076,18 +3100,6 @@ async fn run_implementations(remote: SocketAddr, file: &Path, line: u32, col: u3
         print_locations(&arr);
     }
     Ok(())
-}
-
-/// `refs FILE LINE COL`: answered by the MCP tool, which refuses a position on no name and asks
-/// a dependency's item from its uses in the checkout (#373).
-async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
-    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let args = serde_json::json!({
-        "path": file.to_string_lossy(),
-        "line": line,
-        "character": col,
-    });
-    run_tool(remote, "code_references", args).await
 }
 
 async fn run_symbols(

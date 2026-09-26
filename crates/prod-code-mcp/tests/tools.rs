@@ -2008,6 +2008,88 @@ async fn a_file_no_target_compiles_does_not_spend_the_search_for_a_use() {
     assert!(text.contains("Found 2 reference(s)"), "{text}");
 }
 
+/// `also_in` searches other checkouts too: each resolves the name to its own declaration, every
+/// answer is under its checkout's directory, and one that fails does not hide the others (#375).
+#[tokio::test]
+async fn references_with_also_in_answer_for_every_checkout() {
+    let files = [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn shared() {}\n"),
+    ];
+    let first = Workspace::new(&files);
+    let second = Workspace::new(&files);
+    let (lib_a, lib_b) = (first.path("src/lib.rs"), second.path("src/lib.rs"));
+    let (a, b) = (lib_a.clone(), lib_b.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "workspace/symbol" => serde_json::json!([
+                answers::symbol("shared", 12, &a, 1, 8),
+                answers::symbol("shared", 12, &b, 1, 8)
+            ]),
+            "textDocument/references" if uri == answers::uri(&a) => {
+                answers::locations(&a, &[(3, 5), (7, 9)])
+            }
+            "textDocument/references" if uri == answers::uri(&b) => {
+                answers::locations(&b, &[(4, 1)])
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let second_root = second.root();
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &first.root(),
+            "code_references",
+            serde_json::json!({
+                "symbol": "shared",
+                "also_in": [second_root.to_string_lossy(), "/no/such/checkout"]
+            }),
+        )
+        .await
+        .expect("the references"),
+    );
+    let canonical = |p: &std::path::Path| std::fs::canonicalize(p).unwrap().display().to_string();
+    assert!(
+        text.contains(&format!(
+            "== {} ==\nFound 2 reference(s)",
+            first.root().display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "== {} ==\nFound 1 reference(s)",
+            canonical(&second_root)
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("== /no/such/checkout ==\nnot a directory"),
+        "{text}"
+    );
+    assert!(text.ends_with("3 reference(s) in 3 checkout(s)"), "{text}");
+
+    // A position is a place in one checkout.
+    let err = execute_tool(
+        remote,
+        &first.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8, "also_in": ["/tmp"] }),
+    )
+    .await
+    .expect_err("a position with also_in");
+    assert!(
+        format!("{err:#}").contains("`also_in` goes with `symbol`"),
+        "{err:#}"
+    );
+}
+
 /// A Swift `extension` of a type is listed by the index under the type's name; the type's own
 /// declaration is the answer, not an ambiguity between the two (#358).
 #[tokio::test]

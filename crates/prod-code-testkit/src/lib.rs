@@ -416,7 +416,8 @@ pub mod answers {
         serde_json::json!({ "contents": { "kind": "markdown", "value": markdown } })
     }
 
-    fn uri(path: &Path) -> String {
+    /// The `file://` URI of `path`, as the other answers spell it.
+    pub fn uri(path: &Path) -> String {
         format!("file://{}", path.display())
     }
 }
