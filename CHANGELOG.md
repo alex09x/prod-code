@@ -15,6 +15,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust parameter objects preserve destruction order (#441), including types named like
+  primitives. Analyzer evidence distinguishes builtin scalars from shadowing types with `Drop`.
+  Interleaved owned values and async or older-edition capture cases are refused when bundling
+  would change destruction order.
 - Parameter-object refactoring preserves argument evaluation order and refuses uncertain
   reordering (#436), including JavaScript global getters and Swift/C++ conversions. JavaScript
   and TypeScript selected constant defaults move into object literals; computed defaults and
@@ -23,6 +27,39 @@
   argument reordering cannot be shown safe (#436). Failed reference requests and stale
   JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes
   an own computed property.
+- New language engines reserve memory before loading (#433), including on a node already
+  holding the checkout. Concurrent loads count against an 85% host-memory limit; idle
+  engines may be reclaimed, while existing sessions remain available. A canceled
+  handshake keeps its load and reservation alive, and a failed load answers its waiters.
+  An invalidated load cannot publish over a newer load of the same workspace.
+  The reservation defaults to 4 GiB for Rust and 1 GiB for other language servers and
+  can be adjusted with `--engine-reserve-mib`. This bounds admission, not later engine growth.
+- Shadow hypotheses reject control characters, duplicate or nested paths and symlinked
+  parents before staging (#440). In-place runs take turns per workspace across requests,
+  restore failed writes, preserve file modes and report restoration failures. Rollback
+  checks symlink containment again before restoring files or removing created directories.
+  Internal overlay variables cannot be overridden by request environment values.
+- Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
+  They enable client-side compilation and refuse settings that disable it or send work
+  to a distributed compiler. Config checks follow the proposed files, deletions and
+  symlink aliases, so a hypothesis cannot silently be checked against the base source.
+- Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
+  described as a reporting policy restriction instead of falsely claiming they do not
+  exist in the repository.
+- Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
+  earlier writes and resource operations when a later step fails (#425). Paths are checked
+  again after directory moves, and deleted files do not survive as hidden backup files.
+  Rust module refactors send text changes before file moves, matching LSP ordering.
+- Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
+  unattributed changes, failed hierarchy queries or a depth limit leave the selection
+  incomplete (#434). It includes directly changed tests, all call-hierarchy items and
+  Git-quoted filenames. Dead-code scans mark failed or malformed analyzer answers as
+  unverified; pruning keeps those symbols and files (#435).
+- MCP sessions serialize queries per workspace instead of holding one process-wide lock
+  across network operations (#430). Opening a session has a three-minute deadline; pooled
+  queries include queueing, sync and loading in their total budget (three minutes normally,
+  five for diagnostics, fifteen for structural replacement). Timed-out or cancelled queries
+  discard their connection, and a timeout is not immediately replayed.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,

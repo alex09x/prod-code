@@ -36,10 +36,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
-/// The key of an answer that is sent as a JSON-RPC error; see [`answers::failure`].
-const FAILURE: &str = "prod-code/error";
-
-/// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out.
+/// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out. An
+/// answer made by [`answers::failure`] goes back as the JSON-RPC `error` instead.
 pub type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 
 /// A gateway that syncs nothing, loads nothing, and answers from a script.
@@ -222,14 +220,10 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                // A script that wants the request to fail answers with `answers::failure`,
-                // which goes out as a JSON-RPC error instead of a result.
-                let response = match result.get(FAILURE).and_then(|m| m.as_str()) {
-                    Some(message) => serde_json::json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "error": { "code": -32603, "message": message },
-                    }),
+                let response = match result.get(answers::FAILURE) {
+                    Some(error) => {
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error })
+                    }
                     None => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 };
                 framed
@@ -322,9 +316,13 @@ impl Workspace {
 pub mod answers {
     use super::*;
 
-    /// A request the server failed: the client gets a JSON-RPC error with this message.
+    /// The key of an answer that the gateway sends as a JSON-RPC error.
+    pub const FAILURE: &str = "prod-code/failure";
+
+    /// A request that fails: the gateway answers with a JSON-RPC error carrying `message`, as
+    /// an analyzer does when it crashes, times out or refuses the request.
     pub fn failure(message: &str) -> serde_json::Value {
-        serde_json::json!({ FAILURE: message })
+        serde_json::json!({ FAILURE: { "code": -32603, "message": message } })
     }
 
     /// A clean pull-diagnostics report.

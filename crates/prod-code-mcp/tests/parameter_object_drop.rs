@@ -864,16 +864,14 @@ async fn live_bundle(
 /// `LIVE` against a real gateway and its rust-analyzer: the same spelling `bool` is the
 /// program's type with `Drop` in two places and the builtin in a third, and each bundle compiles
 /// and prints what the original did. It runs when `PROD_CODE_LIVE_GATEWAY` holds the address of
-/// a gateway built from this checkout, and is skipped, saying so, everywhere else.
+/// a running gateway. Invoke this ignored integration test explicitly with that prerequisite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to a running gateway"]
 async fn a_real_rust_analyzer_tells_the_programs_bool_from_the_builtin() {
-    let Some(addr) = std::env::var("PROD_CODE_LIVE_GATEWAY")
-        .ok()
-        .and_then(|a| a.parse::<SocketAddr>().ok())
-    else {
-        eprintln!("skipping: PROD_CODE_LIVE_GATEWAY names no gateway to run against");
-        return;
-    };
+    let addr = std::env::var("PROD_CODE_LIVE_GATEWAY")
+        .expect("set PROD_CODE_LIVE_GATEWAY to run this integration test")
+        .parse::<SocketAddr>()
+        .expect("PROD_CODE_LIVE_GATEWAY must be a socket address");
     assert_eq!(run(LIVE, "2021"), LIVE_PRINTED);
     // Not a dot-directory: some tools pass over hidden ones.
     let dir = tempfile::Builder::new()
