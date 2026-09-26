@@ -14,6 +14,16 @@
   earlier writes and resource operations when a later step fails (#425). Paths are checked
   again after directory moves, and deleted files do not survive as hidden backup files.
   Rust module refactors send text changes before file moves, matching LSP ordering.
+- Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
+  unattributed changes, failed hierarchy queries or a depth limit leave the selection
+  incomplete (#434). It includes directly changed tests, all call-hierarchy items and
+  Git-quoted filenames. Dead-code scans mark failed or malformed analyzer answers as
+  unverified; pruning keeps those symbols and files (#435).
+- MCP sessions serialize queries per workspace instead of holding one process-wide lock
+  across network operations (#430). Opening a session has a three-minute deadline; pooled
+  queries include queueing, sync and loading in their total budget (three minutes normally,
+  five for diagnostics, fifteen for structural replacement). Timed-out or cancelled queries
+  discard their connection, and a timeout is not immediately replayed.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,
