@@ -1,0 +1,123 @@
+[0m[7m[1m[31m FAIL [39m[22m[27m[0m [2mtest/[22m[1ma.test.js[22m
+  [31m✕[39m [2mplain error (4 ms)[22m
+  [31m✕[39m [2mstrict equal numbers (5 ms)[22m
+  [31m✕[39m [2mstrict equal strings (1 ms)[22m
+  [31m✕[39m [2mdeep strict equal (2 ms)[22m
+  [32m✓[39m [2mpasses[22m
+  [31m✕[39m [2mjest matcher (2 ms)[22m
+
+[1m[31m  [1m● [22m[1mplain error[39m[22m
+
+    boom without values
+[2m[22m
+[2m      1 | const assert = require("node:assert");[22m
+[2m    > 2 | test("plain error", () => { throw new Error("boom without values"); });[22m
+[2m        |                                   ^[22m
+[2m      3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });[22m
+[2m      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });[22m
+[2m      5 | test("deep strict equal", () => {[22m
+[2m[22m
+[2m      [2mat Object.<anonymous> ([22m[2m[0m[36mtest/a.test.js[39m[0m[2m:2:35)[22m[2m[22m
+
+[1m[31m  [1m● [22m[1mstrict equal numbers[39m[22m
+
+    [2massert[22m[2m.strictEqual([22m[31mreceived[39m[2m, [22m[32mexpected[39m[2m)[22m
+
+    [0mExpected value to strictly be equal to:[0m
+    [0m[0m  [32m3[39m
+    [0mReceived:[0m
+    [0m[0m  [31m2[39m
+[2m[22m
+[2m      1 | const assert = require("node:assert");[22m
+[2m      2 | test("plain error", () => { throw new Error("boom without values"); });[22m
+[2m    > 3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });[22m
+[2m        |                                             ^[22m
+[2m      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });[22m
+[2m      5 | test("deep strict equal", () => {[22m
+[2m      6 |   assert.deepStrictEqual([22m
+[2m[22m
+[2m      [2mat Object.strictEqual ([22m[2m[0m[36mtest/a.test.js[39m[0m[2m:3:45)[22m[2m[22m
+
+[1m[31m  [1m● [22m[1mstrict equal strings[39m[22m
+
+    [2massert[22m[2m.strictEqual([22m[31mreceived[39m[2m, [22m[32mexpected[39m[2m)[22m
+
+    [0mExpected value to strictly be equal to:[0m
+    [0m[0m  [32m"right side"[39m
+    [0mReceived:[0m
+    [0m[0m  [31m"left side"[39m
+
+    Difference:
+
+    [32m- Expected[39m
+    [31m+ Received[39m
+
+    [32m- right side[39m
+    [31m+ left side[39m
+[2m[22m
+[2m      2 | test("plain error", () => { throw new Error("boom without values"); });[22m
+[2m      3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });[22m
+[2m    > 4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });[22m
+[2m        |                                             ^[22m
+[2m      5 | test("deep strict equal", () => {[22m
+[2m      6 |   assert.deepStrictEqual([22m
+[2m      7 |     { a: 1, b: [2], nested: { expected: "x", operator: "y" } },[22m
+[2m[22m
+[2m      [2mat Object.strictEqual ([22m[2m[0m[36mtest/a.test.js[39m[0m[2m:4:45)[22m[2m[22m
+
+[1m[31m  [1m● [22m[1mdeep strict equal[39m[22m
+
+    [2massert[22m[2m.deepStrictEqual([22m[31mreceived[39m[2m, [22m[32mexpected[39m[2m)[22m
+
+    [0mExpected value to deeply and strictly equal to:[0m
+    [0m[0m  [32m{"a": 1, "b": [3], "nested": {"expected": "x", "operator": "y"}}[39m
+    [0mReceived:[0m
+    [0m[0m  [31m{"a": 1, "b": [2], "nested": {"expected": "x", "operator": "y"}}[39m
+
+    Difference:
+
+    [32m- Expected[39m
+    [31m+ Received[39m
+
+    [33m@@ -1,9 +1,9 @@[39m
+    [2m  Object {[22m
+    [2m    "a": 1,[22m
+    [2m    "b": Array [[22m
+    [32m-     3,[39m
+    [31m+     2,[39m
+    [2m    ],[22m
+    [2m    "nested": Object {[22m
+    [2m      "expected": "x",[22m
+    [2m      "operator": "y",[22m
+    [2m    },[22m
+[2m[22m
+[2m      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });[22m
+[2m      5 | test("deep strict equal", () => {[22m
+[2m    > 6 |   assert.deepStrictEqual([22m
+[2m        |          ^[22m
+[2m      7 |     { a: 1, b: [2], nested: { expected: "x", operator: "y" } },[22m
+[2m      8 |     { a: 1, b: [3], nested: { expected: "x", operator: "y" } });[22m
+[2m      9 | });[22m
+[2m[22m
+[2m      [2mat Object.deepStrictEqual ([22m[2m[0m[36mtest/a.test.js[39m[0m[2m:6:10)[22m[2m[22m
+
+[1m[31m  [1m● [22m[1mjest matcher[39m[22m
+
+    [2mexpect([22m[31mreceived[39m[2m).[22mtoBe[2m([22m[32mexpected[39m[2m) // Object.is equality[22m
+
+    Expected: [32m3[39m
+    Received: [31m2[39m
+[2m[22m
+[2m       9 | });[22m
+[2m      10 | test("passes", () => {});[22m
+[2m    > 11 | test("jest matcher", () => { expect(2).toBe(3); });[22m
+[2m         |                                        ^[22m
+[2m      12 |[22m
+[2m[22m
+[2m      [2mat Object.toBe ([22m[2m[0m[36mtest/a.test.js[39m[0m[2m:11:40)[22m[2m[22m
+
+[1mTest Suites: [22m[1m[31m1 failed[39m[22m, 1 total
+[1mTests:       [22m[1m[31m5 failed[39m[22m, [1m[32m1 passed[39m[22m, 6 total
+[1mSnapshots:   [22m0 total
+[1mTime:[22m        0.298 s, estimated 1 s
+[2mRan all test suites[22m[2m matching [22m/test\/a.test.js/i[2m.[22m

@@ -693,7 +693,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_diagnose_failure".to_string(),
-            description: "Run the tests (optionally one filter) on the gateway and, for every failure, return a dossier: the failure output, the source around each location it mentions, the enclosing function and its callers, and the working-tree diff of that file. One call instead of test → grep → read → blame."
+            description: "Run the tests (optionally one filter) on the gateway and, for every failure, return a dossier: the failure output, the source around each location it mentions, the enclosing function and its callers, and the working-tree diff of that file. Includes structured printed operands for Rust assert_eq/assert_ne and supported Node assert.strictEqual/deepStrictEqual output from Node, Jest and Vitest. Rust keeps left/right names; actual/expected roles are used only when the runner establishes them. Missing, truncated or unsupported evidence remains raw output. Values are extracted from this failure only, never evaluated or captured by a debugger. One call instead of test → grep → read → blame."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",

@@ -1,0 +1,76 @@
+
+running 8 tests
+test tests::a_plain_panic ... FAILED
+test tests::c_reversed_mismatch ... FAILED
+test tests::b_add_mismatch ... FAILED
+test tests::d_struct_mismatch ... FAILED
+test tests::e_ne ... FAILED
+test tests::f_bool ... FAILED
+test tests::g_string_with_newline ... FAILED
+test tests::h_ok ... ok
+
+failures:
+
+---- tests::a_plain_panic stdout ----
+
+thread 'tests::a_plain_panic' (1509876) panicked at src/lib.rs:8:26:
+boom without values
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::c_reversed_mismatch stdout ----
+
+thread 'tests::c_reversed_mismatch' (1509878) panicked at src/lib.rs:12:32:
+assertion `left == right` failed: totals differ
+  left: 20
+ right: 10
+
+---- tests::b_add_mismatch stdout ----
+
+thread 'tests::b_add_mismatch' (1509877) panicked at src/lib.rs:10:27:
+assertion `left == right` failed
+  left: 4
+ right: 5
+
+---- tests::d_struct_mismatch stdout ----
+
+thread 'tests::d_struct_mismatch' (1509879) panicked at src/lib.rs:14:30:
+assertion `left == right` failed
+  left: Foo { x: 1, y: [2] }
+ right: Foo { x: 1, y: [3] }
+
+---- tests::e_ne stdout ----
+
+thread 'tests::e_ne' (1509880) panicked at src/lib.rs:16:17:
+assertion `left != right` failed
+  left: 2
+ right: 2
+
+---- tests::f_bool stdout ----
+
+thread 'tests::f_bool' (1509881) panicked at src/lib.rs:18:19:
+assertion failed: add(1, 1) == 3
+
+---- tests::g_string_with_newline stdout ----
+
+thread 'tests::g_string_with_newline' (1509882) panicked at src/lib.rs:20:34:
+assertion `left == right` failed
+  left: "a\nb"
+ right: "a\nc"
+
+
+failures:
+    tests::a_plain_panic
+    tests::b_add_mismatch
+    tests::c_reversed_mismatch
+    tests::d_struct_mismatch
+    tests::e_ne
+    tests::f_bool
+    tests::g_string_with_newline
+
+test result: FAILED. 1 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

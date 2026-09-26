@@ -1,0 +1,2 @@
+# Raw runner captures: their blank lines and escape bytes are what the parser is tested on.
+*.txt -whitespace
