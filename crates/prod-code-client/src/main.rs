@@ -960,7 +960,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Change a Rust function's parameters with its call sites, refusing changes to argument
+    /// Change what a function takes and its call sites (Rust), refusing changes to argument
     /// evaluation or destruction order (including possible Deref coercions).
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
