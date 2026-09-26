@@ -7,7 +7,9 @@
 //! hypothesis writes lands in its own upper directory, and the workspace copy is never
 //! modified. Hypotheses run in parallel, each in its own mount namespace that disappears with
 //! its process tree. Without user namespaces (macOS, kernels that restrict them) hypotheses run
-//! one after another in place and the touched files are restored afterwards.
+//! one after another in place, across requests too (one lock per canonical workspace path), and
+//! the touched files are restored afterwards; a path that could not be restored is reported in
+//! the hypothesis's `error`, so it never counts as a clean pass.
 //!
 //! Both modes apply a hypothesis the same way or refuse it before anything is staged or
 //! written (#440): every path is relative, free of control characters and proposed once, no
@@ -23,7 +25,7 @@ use prod_code_protocol::{
 };
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
@@ -814,13 +816,107 @@ pub async fn run_overlay(
     result
 }
 
-/// Runs one hypothesis in place: writes its files into the workspace copy, runs the command,
-/// then puts back every path that is still what the hypothesis left there (a file someone
-/// else changed meanwhile is left alone and logged).
+/// Whether a hypothesis ran and left nothing to report: exit 0, in time, and (in place) the
+/// workspace put back.
+fn clean(result: &ShadowHypothesisResult) -> bool {
+    result.exit_code == Some(0) && !result.timed_out && result.error.is_none()
+}
+
+type InPlaceLocks = Mutex<std::collections::HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>;
+
+/// One lock per canonical workspace path, shared by every request: in-place hypotheses write
+/// into the workspace copy itself, so two of them must never overlap. An entry lives as long
+/// as someone holds or waits for its lock.
+fn in_place_locks() -> &'static InPlaceLocks {
+    static LOCKS: OnceLock<InPlaceLocks> = OnceLock::new();
+    LOCKS.get_or_init(Default::default)
+}
+
+fn in_place_key(workspace: &Path) -> PathBuf {
+    std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf())
+}
+
+fn in_place_lock(key: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = in_place_locks().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(lock) = locks.get(key).and_then(Weak::upgrade) {
+        return lock;
+    }
+    // Entries a cancelled waiter left behind go here, so the map holds only live locks.
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(key.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+fn forget_unused_lock(key: &Path) {
+    let mut locks = in_place_locks().lock().unwrap_or_else(|e| e.into_inner());
+    if locks.get(key).is_some_and(|lock| lock.strong_count() == 0) {
+        locks.remove(key);
+    }
+}
+
+/// The right to change one workspace in place; the lock entry goes with the last user.
+struct WorkspaceTurn {
+    key: PathBuf,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl WorkspaceTurn {
+    /// Waits for the workspace's lock, or `None` when the client leaves first.
+    async fn wait(
+        workspace: &Path,
+        cancel: &mut tokio::sync::watch::Receiver<bool>,
+    ) -> Option<Self> {
+        let key = in_place_key(workspace);
+        let lock = in_place_lock(&key);
+        let guard = async {
+            let acquire = lock.lock_owned();
+            tokio::pin!(acquire);
+            loop {
+                if *cancel.borrow_and_update() {
+                    return None;
+                }
+                tokio::select! {
+                    guard = &mut acquire => return Some(guard),
+                    changed = cancel.changed() => if changed.is_err() {
+                        // Nobody can cancel any more.
+                        return Some(acquire.await);
+                    },
+                }
+            }
+        }
+        .await;
+        match guard {
+            Some(guard) => Some(Self {
+                key,
+                guard: Some(guard),
+            }),
+            None => {
+                forget_unused_lock(&key);
+                None
+            }
+        }
+    }
+}
+
+impl Drop for WorkspaceTurn {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        forget_unused_lock(&self.key);
+    }
+}
+
+/// Runs one hypothesis in place: waits until no other in-place hypothesis of any request uses
+/// the workspace, writes its files into the workspace copy, runs the command, then puts back
+/// every path that is still what the hypothesis left there. A path someone else changed
+/// meanwhile is left alone, and the result's `error` says what could not be restored.
 pub async fn run_in_place(
     job: Job,
-    cancel: tokio::sync::watch::Receiver<bool>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> ShadowHypothesisResult {
+    let Some(_turn) = WorkspaceTurn::wait(&job.workspace, &mut cancel).await else {
+        return failed(&job.name, "cancelled: the client left".to_string());
+    };
     let paths = match check_files(&job.workspace, &job.files) {
         Ok(paths) => paths,
         Err(why) => return failed(&job.name, format!("invalid hypothesis: {why}")),
@@ -832,9 +928,9 @@ pub async fn run_in_place(
     };
     for (rel, file) in paths.iter().zip(&job.files) {
         if let Err(e) = applied.apply(rel, file) {
-            applied.restore();
             let path = job.workspace.join(rel);
-            return failed(&job.name, format!("cannot write {}: {e}", path.display()));
+            let error = format!("cannot write {}: {e}", path.display());
+            return failed(&job.name, with_restore_problems(error, applied.restore()));
         }
     }
     let mut cmd = tokio::process::Command::new("sh");
@@ -842,9 +938,29 @@ pub async fn run_in_place(
         .args(&job.argv)
         .envs(job.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(job.workspace.join(&job.subdir));
-    let result = run_child(cmd, &job, cancel).await;
-    applied.restore();
+    let mut result = run_child(cmd, &job, cancel).await;
+    let problems = applied.restore();
+    if !problems.is_empty() {
+        let error = result.error.take().unwrap_or_default();
+        result.error = Some(with_restore_problems(error, problems));
+    }
     result
+}
+
+/// `error` followed by what could not be restored, if anything.
+fn with_restore_problems(error: String, problems: Vec<String>) -> String {
+    if problems.is_empty() {
+        return error;
+    }
+    let note = format!(
+        "the workspace could not be restored: {}",
+        problems.join("; ")
+    );
+    if error.is_empty() {
+        note
+    } else {
+        format!("{error}; {note}")
+    }
 }
 
 /// What was at a path before the in-place mode replaced or deleted it.
@@ -858,11 +974,22 @@ enum Original {
     Link(PathBuf),
 }
 
-/// A path the in-place mode touched, and what the hypothesis left there (None: deleted).
+/// What the hypothesis left at a touched path.
+enum Left {
+    /// Nothing: the path was deleted, or its new file was never created.
+    Nothing,
+    /// A file this run created but did not finish. Its content proves nothing, so the open
+    /// handle identifies it, and keeps its inode number from being reused meanwhile.
+    Partial(std::fs::File),
+    /// The proposed content, complete.
+    File(Vec<u8>),
+}
+
+/// A path the in-place mode touched, and what the hypothesis left there.
 struct Touched {
     path: PathBuf,
     original: Original,
-    written: Option<Vec<u8>>,
+    left: Left,
 }
 
 /// The in-place changes of one hypothesis. An existing file or symlink is removed and a new
@@ -904,10 +1031,12 @@ impl InPlace {
         if !matches!(original, Original::Missing) {
             std::fs::remove_file(&path)?;
         }
+        // Recorded before the new file exists, and updated at each step, so a failure at any
+        // point leaves exactly what this stage owns for `restore`.
         self.touched.push(Touched {
             path: path.clone(),
             original,
-            written: file.content.clone(),
+            left: Left::Nothing,
         });
         if let Some(bytes) = &file.content {
             // The same modes the overlay stages: 0755 when executable, else the umask default.
@@ -918,17 +1047,27 @@ impl InPlace {
             });
             #[cfg(not(unix))]
             let permissions = None;
-            create_file(&path, bytes, permissions, None)?;
+            let mut new = create_new(&path)?;
+            let filled = fill(&mut new, bytes, permissions, None);
+            self.touched.last_mut().expect("pushed above").left = match filled {
+                Ok(()) => Left::File(bytes.clone()),
+                Err(_) => Left::Partial(new),
+            };
+            filled?;
         }
         Ok(())
     }
 
-    fn restore(self) {
+    /// Puts back every touched path, and returns what could not be put back.
+    fn restore(self) -> Vec<String> {
+        let mut problems = Vec::new();
         for touched in self.touched.iter().rev() {
             if let Err(why) = self.restore_one(touched) {
                 tracing::warn!(path = %touched.path.display(), "shadow run: {why}");
+                problems.push(format!("{}: {why}", touched.path.display()));
             }
         }
+        // A directory the command filled is left like the rest of its output.
         for dir in self.created.iter().rev() {
             if let Err(e) = std::fs::remove_dir(dir) {
                 tracing::warn!(
@@ -938,6 +1077,7 @@ impl InPlace {
                 );
             }
         }
+        problems
     }
 
     fn restore_one(&self, touched: &Touched) -> std::result::Result<(), String> {
@@ -946,9 +1086,12 @@ impl InPlace {
             return Err("a parent is no longer a real directory; not restored".to_string());
         }
         let current = std::fs::symlink_metadata(&touched.path);
-        let unchanged = match (&touched.written, &current) {
-            (None, Err(e)) => e.kind() == std::io::ErrorKind::NotFound,
-            (Some(bytes), Ok(meta)) => {
+        let unchanged = match (&touched.left, &current) {
+            (Left::Nothing, Err(e)) => e.kind() == std::io::ErrorKind::NotFound,
+            (Left::Partial(file), Ok(meta)) => {
+                meta.is_file() && file.metadata().is_ok_and(|own| same_file(&own, meta))
+            }
+            (Left::File(bytes), Ok(meta)) => {
                 meta.is_file() && std::fs::read(&touched.path).is_ok_and(|b| &b == bytes)
             }
             _ => false,
@@ -957,7 +1100,7 @@ impl InPlace {
             return Err("file changed while the hypothesis ran; not restored".to_string());
         }
         let restored = (|| -> std::io::Result<()> {
-            if touched.written.is_some() {
+            if !matches!(touched.left, Left::Nothing) {
                 std::fs::remove_file(&touched.path)?;
             }
             match &touched.original {
@@ -993,6 +1136,19 @@ impl InPlace {
     }
 }
 
+/// Whether two metadata describe the same inode.
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+/// Without inode numbers a partly written file cannot be told apart; it is left alone.
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, _: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Creates a new file (failing if anything, a symlink included, is at `path`) with `bytes`,
 /// and optionally the given permissions and modification time.
 fn create_file(
@@ -1001,11 +1157,39 @@ fn create_file(
     permissions: Option<std::fs::Permissions>,
     modified: Option<std::time::SystemTime>,
 ) -> std::io::Result<()> {
-    use std::io::Write;
-    let mut file = std::fs::OpenOptions::new()
+    fill(&mut create_new(path)?, bytes, permissions, modified)
+}
+
+/// Opens a new, empty file, failing if anything, a symlink included, is at `path`.
+fn create_new(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)?;
+        .open(path)
+}
+
+/// A file operation failure a test injects: `fill` calls it in place of its own work, once.
+#[cfg(test)]
+type FillFault = Box<dyn FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()>>;
+
+#[cfg(test)]
+thread_local! {
+    static FILL_FAULT: std::cell::RefCell<Option<FillFault>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Writes `bytes` into a file `create_new` opened, then optionally sets its permissions and
+/// modification time.
+fn fill(
+    file: &mut std::fs::File,
+    bytes: &[u8],
+    permissions: Option<std::fs::Permissions>,
+    modified: Option<std::time::SystemTime>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    #[cfg(test)]
+    if let Some(fault) = FILL_FAULT.take() {
+        return fault(file, bytes);
+    }
     file.write_all(bytes)?;
     if let Some(permissions) = permissions {
         file.set_permissions(permissions)?;
@@ -1197,14 +1381,14 @@ pub async fn run_shadow(
         ev.command = format!("{} [{}]", req.command.join(" "), result.name);
         ev.duration_ms = result.duration_ms;
         ev.exit_code = result.exit_code;
-        ev.ok = result.exit_code == Some(0);
+        ev.ok = clean(result);
         ev.bytes = result.output_len;
         state.metrics.record(ev);
     }
     tracing::info!(
         workspace = %workspace_str,
         hypotheses = count,
-        passed = results.iter().filter(|r| r.exit_code == Some(0)).count(),
+        passed = results.iter().filter(|r| clean(r)).count(),
         duration_ms = start.elapsed().as_millis() as u64,
         "🌓 [SHADOW] finished"
     );
@@ -2622,5 +2806,385 @@ mod tests {
             "the restore wrote through the symlink"
         );
         assert_eq!(sentinel(&outside).as_deref(), Some("keep\n"));
+        // Reported rather than logged only: the command's exit 0 is not a clean pass.
+        let why = r.error.as_deref().unwrap_or_default();
+        assert!(
+            why.contains("the workspace could not be restored")
+                && why.contains("a parent is no longer a real directory"),
+            "{why}"
+        );
+        assert!(!clean(&r));
+    }
+
+    /// Makes the next `fill` on this thread run `fault` instead.
+    fn inject_fill_fault(
+        fault: impl FnOnce(&mut std::fs::File, &[u8]) -> std::io::Result<()> + 'static,
+    ) {
+        FILL_FAULT.set(Some(Box::new(fault)));
+    }
+
+    fn injected(what: &str) -> std::io::Error {
+        std::io::Error::other(format!("injected: {what}"))
+    }
+
+    /// Holders and waiters of a workspace's in-place lock; `None` when it has no entry.
+    fn in_place_lock_users(workspace: &Path) -> Option<usize> {
+        let locks = in_place_locks().lock().unwrap();
+        locks.get(&in_place_key(workspace)).map(Weak::strong_count)
+    }
+
+    /// Waits, up to 30 s, until `done` holds.
+    async fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// A write that fails part-way (disk full, an I/O error, chmod refused) is rolled back like
+    /// a complete one: the file the stage created goes, the original it had already removed
+    /// comes back, and so do the earlier stages and the directories created for the failing
+    /// one. Before, a partial file did not match the proposal and the original was lost.
+    #[tokio::test]
+    async fn a_failed_write_rolls_back_to_the_original() {
+        use std::io::Write;
+        let ws = tempfile::tempdir().unwrap();
+        let w = ws.path();
+        std::fs::write(w.join("a.txt"), "base\n").unwrap();
+        std::fs::write(w.join("b.txt"), "base b\n").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let before = snapshot(w);
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        type File = std::fs::File;
+        let partial: fn() -> FillFault = || {
+            Box::new(|file: &mut File, bytes: &[u8]| {
+                file.write_all(&bytes[..3])?;
+                Err(injected("no space left on device"))
+            })
+        };
+        let executable = FileDelta {
+            relative_path: "a.txt".to_string(),
+            content: Some(b"proposed\n".to_vec()),
+            is_executable: true,
+        };
+        let cases: Vec<(&str, Vec<FileDelta>, FillFault)> = vec![
+            (
+                "partial",
+                vec![delta("a.txt", Some("proposed content\n"))],
+                partial(),
+            ),
+            (
+                "nothing written",
+                vec![delta("a.txt", Some("proposed\n"))],
+                Box::new(|_: &mut File, _: &[u8]| Err(injected("I/O error"))),
+            ),
+            (
+                "chmod",
+                vec![executable],
+                Box::new(|file: &mut File, bytes: &[u8]| {
+                    file.write_all(bytes)?;
+                    Err(injected("chmod refused"))
+                }),
+            ),
+            (
+                "second stage",
+                vec![
+                    delta("b.txt", Some("proposed b\n")),
+                    delta("new dir/sub/a.txt", Some("proposed\n")),
+                ],
+                // The first file is written in full, the second fails part-way.
+                Box::new(move |file: &mut File, bytes: &[u8]| {
+                    inject_fill_fault(partial());
+                    file.write_all(bytes)
+                }),
+            ),
+            (
+                "after a deletion",
+                vec![delta("b.txt", None), delta("a.txt", Some("proposed\n"))],
+                partial(),
+            ),
+        ];
+        for (name, files, fault) in cases {
+            inject_fill_fault(fault);
+            let r = run_in_place(
+                job(w, shadow.path(), name, files, &["sh", "-c", "echo ran"]),
+                rx.clone(),
+            )
+            .await;
+            refused_with(name, &r, "cannot write ");
+            let why = r.error.as_deref().unwrap_or_default();
+            assert!(why.contains("injected: "), "{name}: {why}");
+            assert!(!why.contains("could not be restored"), "{name}: {why}");
+            assert_eq!(snapshot(w), before, "{name}: the base was not restored");
+        }
+        assert!(FILL_FAULT.take().is_none(), "a fault was never used");
+    }
+
+    /// Rolling back a failed write removes only the file that stage created: a file something
+    /// else put at the path meanwhile stays, and the result names the path it could not restore.
+    #[tokio::test]
+    async fn a_failed_write_never_removes_a_file_someone_else_put_there() {
+        use std::io::Write;
+        let ws = tempfile::tempdir().unwrap();
+        let path = ws.path().join("a.txt");
+        std::fs::write(&path, "base\n").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let replaced = path.clone();
+        inject_fill_fault(move |file, bytes| {
+            file.write_all(&bytes[..2])?;
+            std::fs::remove_file(&replaced)?;
+            std::fs::write(&replaced, "concurrent\n")?;
+            Err(injected("interrupted"))
+        });
+        let r = run_in_place(
+            job(
+                ws.path(),
+                shadow.path(),
+                "replaced",
+                vec![delta("a.txt", Some("proposed\n"))],
+                &["sh", "-c", "echo ran"],
+            ),
+            rx,
+        )
+        .await;
+        refused_with("replaced", &r, "cannot write ");
+        let why = r.error.as_deref().unwrap_or_default();
+        assert!(
+            why.contains("the workspace could not be restored")
+                && why.contains(&format!("{}: file changed", path.display())),
+            "{why}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "concurrent\n");
+    }
+
+    /// A proposed file the command changed is not restored over, and the result says so; the
+    /// command's exit 0 alone is not a clean pass.
+    #[tokio::test]
+    async fn restore_problems_are_returned_and_never_count_as_clean() {
+        let ws = tempfile::tempdir().unwrap();
+        let path = ws.path().join("a.txt");
+        std::fs::write(&path, "base\n").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let files = vec![delta("a.txt", Some("proposed\n"))];
+        let edits = job(
+            ws.path(),
+            shadow.path(),
+            "edits",
+            files.clone(),
+            &["sh", "-c", "echo edited > a.txt"],
+        );
+        let r = run_in_place(edits, rx.clone()).await;
+        assert_eq!(r.exit_code, Some(0), "{:?} {}", r.error, output(&r));
+        let why = r.error.as_deref().unwrap_or_default();
+        assert_eq!(
+            why,
+            format!(
+                "the workspace could not be restored: {}: file changed while the hypothesis \
+                 ran; not restored",
+                path.display()
+            )
+        );
+        assert!(!clean(&r));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited\n");
+        let reads = job(ws.path(), shadow.path(), "reads", files, &["cat", "a.txt"]);
+        let r = run_in_place(reads, rx).await;
+        assert!(clean(&r), "{:?}", r.error);
+        assert_eq!(output(&r), "proposed\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "edited\n");
+    }
+
+    /// The timeout and a client leaving still put the workspace back.
+    #[tokio::test]
+    async fn cancel_and_timeout_still_restore_in_place() {
+        let ws = tempfile::tempdir().unwrap();
+        let w = ws.path();
+        std::fs::write(w.join("a.txt"), "base\n").unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let ctl = tempfile::tempdir().unwrap();
+        let before = snapshot(w);
+        let files = vec![
+            delta("a.txt", Some("proposed\n")),
+            delta("new/b.txt", Some("new\n")),
+        ];
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let mut slow = job(w, shadow.path(), "slow", files.clone(), &["sleep", "30"]);
+        slow.timeout = Duration::from_millis(300);
+        let r = run_in_place(slow, rx).await;
+        assert!(r.timed_out && r.error.is_none(), "{:?}", r.error);
+        assert_eq!(snapshot(w), before, "not restored after the timeout");
+
+        let c = ctl.path().to_str().unwrap().to_string();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let left = tokio::spawn(run_in_place(
+            job(
+                w,
+                shadow.path(),
+                "left",
+                files,
+                &["sh", "-c", ": > \"$1/started\"; exec sleep 30", "sh", &c],
+            ),
+            rx,
+        ));
+        wait_until("the command", || ctl.path().join("started").exists()).await;
+        tx.send(true).unwrap();
+        let r = left.await.unwrap();
+        assert_eq!(r.error.as_deref(), Some("cancelled: the client left"));
+        assert_eq!(snapshot(w), before, "not restored after the client left");
+        assert_eq!(in_place_lock_users(w), None);
+    }
+
+    /// Records what `a.txt` holds, says it started, and holds the workspace until the test
+    /// releases it: `$1` is the control directory, `$2` the hypothesis's tag.
+    const HOLD: &str = "cat a.txt > \"$1/$2-before\"; : > \"$1/$2-started\"; i=0; \
+                        while [ ! -e \"$1/release\" ]; do i=$((i+1)); [ $i -lt 3000 ] || exit 9; \
+                        sleep 0.01; done; cat a.txt > \"$1/$2-after\"";
+
+    /// In-place hypotheses of two requests on one workspace, the second naming it through a
+    /// symlink, take turns: the second writes nothing until the first has run and restored.
+    /// Before, `run_shadow` serialized only the hypotheses of one request, so the second
+    /// replaced the first's file under its running command.
+    #[tokio::test]
+    async fn in_place_runs_on_one_workspace_take_turns_across_requests() {
+        let root = tempfile::tempdir().unwrap();
+        let ws = root.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.txt"), "base\n").unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&ws, &alias).unwrap();
+        let ctl = tempfile::tempdir().unwrap();
+        let c = ctl.path().to_str().unwrap().to_string();
+        let seen = |name: &str| std::fs::read_to_string(ctl.path().join(name)).ok();
+        let shadow = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let first = tokio::spawn(run_in_place(
+            job(
+                &ws,
+                shadow.path(),
+                "first",
+                vec![delta("a.txt", Some("one\n"))],
+                &["sh", "-c", HOLD, "sh", &c, "first"],
+            ),
+            rx.clone(),
+        ));
+        wait_until("the first command", || seen("first-started").is_some()).await;
+        let second = tokio::spawn(run_in_place(
+            job(
+                &alias,
+                shadow.path(),
+                "second",
+                vec![delta("a.txt", Some("two\n"))],
+                &["sh", "-c", "cat a.txt > \"$1/second-saw\"", "sh", &c],
+            ),
+            rx,
+        ));
+        // Waiting for the lock the first holds or, unserialized, already running.
+        wait_until("the second hypothesis", || {
+            in_place_lock_users(&ws) == Some(2) || seen("second-saw").is_some()
+        })
+        .await;
+        assert_eq!(
+            seen("second-saw"),
+            None,
+            "the second hypothesis ran while the first held the workspace"
+        );
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "one\n");
+        std::fs::write(ctl.path().join("release"), "").unwrap();
+        let first = first.await.unwrap();
+        let second = second.await.unwrap();
+        assert!(clean(&first), "{:?} {}", first.error, output(&first));
+        assert!(clean(&second), "{:?} {}", second.error, output(&second));
+        assert_eq!(seen("first-before").as_deref(), Some("one\n"));
+        assert_eq!(seen("first-after").as_deref(), Some("one\n"));
+        assert_eq!(seen("second-saw").as_deref(), Some("two\n"));
+        assert_eq!(std::fs::read_to_string(ws.join("a.txt")).unwrap(), "base\n");
+        assert_eq!(
+            in_place_lock_users(&ws),
+            None,
+            "the lock entry outlived its users"
+        );
+    }
+
+    /// A workspace held by an in-place run does not hold up another one, and a hypothesis
+    /// waiting for its turn leaves with its client, having written nothing.
+    #[tokio::test]
+    async fn other_workspaces_proceed_and_a_waiting_hypothesis_can_be_cancelled() {
+        let held = tempfile::tempdir().unwrap();
+        let free = tempfile::tempdir().unwrap();
+        for ws in [held.path(), free.path()] {
+            std::fs::write(ws.join("a.txt"), "base\n").unwrap();
+        }
+        let ctl = tempfile::tempdir().unwrap();
+        let c = ctl.path().to_str().unwrap().to_string();
+        let shadow = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let first = tokio::spawn(run_in_place(
+            job(
+                held.path(),
+                shadow.path(),
+                "first",
+                vec![delta("a.txt", Some("one\n"))],
+                &["sh", "-c", HOLD, "sh", &c, "first"],
+            ),
+            rx.clone(),
+        ));
+        wait_until("the first command", || {
+            ctl.path().join("first-started").exists()
+        })
+        .await;
+
+        let other = tokio::time::timeout(
+            Duration::from_secs(30),
+            run_in_place(
+                job(
+                    free.path(),
+                    shadow.path(),
+                    "other",
+                    vec![delta("a.txt", Some("other\n"))],
+                    &["cat", "a.txt"],
+                ),
+                rx.clone(),
+            ),
+        )
+        .await
+        .expect("another workspace waited for this one's lock");
+        assert!(clean(&other), "{:?}", other.error);
+        assert_eq!(output(&other), "other\n");
+        assert_eq!(in_place_lock_users(free.path()), None);
+
+        let (tx, cancel) = tokio::sync::watch::channel(false);
+        let waiting = tokio::spawn(run_in_place(
+            job(
+                held.path(),
+                shadow.path(),
+                "waiting",
+                vec![delta("a.txt", Some("never\n"))],
+                &["sh", "-c", "echo ran"],
+            ),
+            cancel,
+        ));
+        wait_until("the waiting hypothesis", || {
+            in_place_lock_users(held.path()) == Some(2)
+        })
+        .await;
+        tx.send(true).unwrap();
+        let waiting = waiting.await.unwrap();
+        refused_with("waiting", &waiting, "cancelled: the client left");
+        assert_eq!(in_place_lock_users(held.path()), Some(1));
+        assert_eq!(
+            std::fs::read_to_string(held.path().join("a.txt")).unwrap(),
+            "one\n"
+        );
+
+        std::fs::write(ctl.path().join("release"), "").unwrap();
+        let first = first.await.unwrap();
+        assert!(clean(&first), "{:?} {}", first.error, output(&first));
+        assert_eq!(
+            std::fs::read_to_string(held.path().join("a.txt")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(in_place_lock_users(held.path()), None);
     }
 }
