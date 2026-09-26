@@ -729,7 +729,9 @@ pub async fn move_item(
     };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
-    let refs = crate::signature::references(remote, root, file, line, col).await?;
+    let refs = crate::signature::references(remote, root, file, line, col)
+        .await
+        .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?;
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
@@ -769,10 +771,17 @@ pub async fn move_item(
             continue;
         };
         let prefix = to_module.spelled_from(&module.krate);
-        let current = rewritten
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| std::fs::read_to_string(path).unwrap_or_default());
+        // Taken as empty, the file would be written back as only its new imports (#446).
+        let current = match rewritten.get(path) {
+            Some(text) => text.clone(),
+            None => std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "cannot read {}, where the analyzer reports a use of `{name}`; nothing was \
+                     planned",
+                    path.display()
+                )
+            })?,
+        };
         let (requalified, bare) = requalify(&current, positions, &name, &prefix);
         let (mut text, dropped) = drop_import(&requalified, &name);
         for note in dropped {

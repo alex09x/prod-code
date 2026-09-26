@@ -403,8 +403,9 @@ pub async fn move_module(
         .map_or(0, |i| i + 1);
     let decl_line_no = parent_text[..line_start].matches('\n').count() as u32 + 1;
     let name_col = decl_line.rfind(&format!("mod {name};")).unwrap_or(0) as u32 + 5;
-    let refs =
-        crate::signature::references(remote, root, &old_parent, decl_line_no, name_col).await?;
+    let refs = crate::signature::references(remote, root, &old_parent, decl_line_no, name_col)
+        .await
+        .with_context(|| format!("cannot find the paths to `{name}`; nothing was planned"))?;
 
     // The files that move: the module's own, and everything in its directory.
     let mut moves: Vec<(PathBuf, PathBuf)> = vec![(file.to_path_buf(), new_file.clone())];
@@ -433,9 +434,14 @@ pub async fn move_module(
         by_file.entry(canon(&path)).or_default().push((l, c));
     }
     for (path, mut positions) in by_file {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        // Skipped, its paths would still name the old module (#446).
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "cannot read {}, where the analyzer reports a path to `{name}`; nothing was \
+                 planned",
+                path.display()
+            )
+        })?;
         let Ok((_, module)) = module_of(&path) else {
             notes.push(format!(
                 "{} — outside the ordinary crate layout, not rewritten",

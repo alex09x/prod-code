@@ -219,7 +219,13 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                // [`answers::rpc_error`] is sent as the request's JSON-RPC error, not its result.
+                let response = match result.get(answers::RPC_ERROR) {
+                    Some(error) => {
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error })
+                    }
+                    None => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                };
                 framed
                     .send(WireMessage::LspPayload(response.to_string()))
                     .await?;
@@ -309,6 +315,16 @@ impl Workspace {
 /// The answer shapes the engines really return, so a script does not have to spell them out.
 pub mod answers {
     use super::*;
+
+    /// The key under which [`rpc_error`] carries its error.
+    pub const RPC_ERROR: &str = "prod-code/rpc-error";
+
+    /// A request the server fails, as a JSON-RPC error with `code` and `message`, the way a
+    /// language server answers one it cannot serve (`-32801` content modified, `-32603`
+    /// internal error).
+    pub fn rpc_error(code: i64, message: &str) -> serde_json::Value {
+        serde_json::json!({ RPC_ERROR: { "code": code, "message": message } })
+    }
 
     /// A clean pull-diagnostics report.
     pub fn no_diagnostics() -> serde_json::Value {

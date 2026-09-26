@@ -221,14 +221,11 @@ pub async fn make_static(
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::line_col_at(&text, start);
-    for (path, l, c) in crate::signature::references(remote, root, file, nl, nc)
+    let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default())
-            .clone();
+        .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
             unmatched.push(format!("{site} (the position is not in the file)"));
@@ -336,6 +333,13 @@ pub async fn make_static(
             "{} call site(s) would drop a receiver that does something; nothing was written:\n  {}",
             blocked.len(),
             blocked.join("\n  ")
+        );
+        anyhow::ensure!(
+            unmatched.is_empty() || force,
+            "{} reference(s) to `{name}` were not rewritten, and would still pass a receiver; \
+             nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
         );
         anyhow::ensure!(
             diagnostics.is_empty() || force,

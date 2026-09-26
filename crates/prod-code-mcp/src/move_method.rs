@@ -437,17 +437,17 @@ pub async fn move_associated_function(
     let mut blocked = Vec::new();
     let mut calls = 0;
     let (nl, nc) = crate::signature::line_col_at(&text, name_at);
-    for (path, l, c) in crate::signature::references(remote, root, file, nl, nc).await? {
+    let refs = crate::signature::references(remote, root, file, nl, nc)
+        .await
+        .with_context(|| format!("cannot find the paths to `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
         let path = canon(&path);
-        if !texts.contains_key(&path) {
-            let Ok(t) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            texts.insert(path.clone(), t);
-        }
-        let body = texts[&path].clone();
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
+            blocked.push(format!(
+                "{site}:{c}: the analyzer's position is not in the file"
+            ));
             continue;
         };
         let before = body[..at].trim_end();
@@ -702,14 +702,30 @@ pub async fn move_method(
             })
             .context("the parameter's name is not in the list")?;
     let (pl, pc) = crate::signature::line_col_at(&text, param_at);
-    let mut param_uses: Vec<usize> = crate::signature::references(remote, root, file, pl, pc)
-        .await?
-        .into_iter()
-        .filter(|(path, _, _)| canon(path) == *file)
-        .filter_map(|(_, l, c)| crate::signature::offset_of(&text, l, c))
-        .filter(|at| body_open <= *at && *at <= body_close && text[*at..].starts_with(to_param))
-        .map(|at| at - body_open)
-        .collect();
+    let uses = crate::signature::references(remote, root, file, pl, pc)
+        .await
+        .with_context(|| {
+            format!(
+                "cannot find the uses of `{to_param}`, which become `self`; nothing was planned"
+            )
+        })?;
+    let mut param_uses: Vec<usize> = Vec::new();
+    for (path, l, c) in uses {
+        if canon(&path) != *file {
+            continue;
+        }
+        // A use passed over would name a parameter the method no longer has (#446).
+        let at = crate::signature::offset_of(&text, l, c).with_context(|| {
+            format!(
+                "the analyzer places a use of `{to_param}` at {}:{l}:{c}, which is not in the \
+                 file; nothing was planned",
+                display(root, file)
+            )
+        })?;
+        if body_open <= at && at <= body_close && text[at..].starts_with(to_param) {
+            param_uses.push(at - body_open);
+        }
+    }
     param_uses.sort_unstable();
     param_uses.dedup();
     let map = [
@@ -775,17 +791,17 @@ pub async fn move_method(
     let mut blocked = Vec::new();
     let mut calls = 0;
     let (nl, nc) = crate::signature::line_col_at(&text, name_at);
-    for (path, l, c) in crate::signature::references(remote, root, file, nl, nc).await? {
+    let refs = crate::signature::references(remote, root, file, nl, nc)
+        .await
+        .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
         let path = canon(&path);
-        if !texts.contains_key(&path) {
-            let Ok(t) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            texts.insert(path.clone(), t);
-        }
-        let body = texts[&path].clone();
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
+            blocked.push(format!(
+                "{site}:{c}: the analyzer's position is not in the file"
+            ));
             continue;
         };
         if path == *file && span_start <= at && at < span_end {

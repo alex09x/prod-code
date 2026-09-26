@@ -298,16 +298,23 @@ pub async fn convert_to_method(
             .context("the parameter's name is not in its declaration")?;
     let (bl, bc) = crate::signature::line_col_at(&text, binding_at);
     let mut renamed_uses = 0usize;
-    for (path, l, c) in crate::signature::references(remote, root, file, bl, bc)
+    let uses = crate::signature::references(remote, root, file, bl, bc)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| {
+            format!("cannot find the uses of `{binding}`, which become `self`; nothing was planned")
+        })?;
+    for (path, l, c) in uses {
         if path != file {
             continue;
         }
-        let Some(use_at) = crate::signature::offset_of(&text, l, c) else {
-            continue;
-        };
+        // A use left behind names a parameter that no longer exists (#446).
+        let use_at = crate::signature::offset_of(&text, l, c).with_context(|| {
+            format!(
+                "the analyzer places a use of `{binding}` at {}:{l}:{c}, which is not in the \
+                 file; nothing was planned",
+                display(root, file)
+            )
+        })?;
         if !(body_open < use_at && use_at < body_close) || !text[use_at..].starts_with(&binding) {
             continue;
         }
@@ -329,14 +336,11 @@ pub async fn convert_to_method(
     let mut rewritten_calls = 0usize;
     let mut unchanged = Vec::new();
     let (nl, nc) = crate::signature::line_col_at(&text, start);
-    for (path, l, c) in crate::signature::references(remote, root, file, nl, nc)
+    let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default())
-            .clone();
+        .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
             unchanged.push(format!("{site} (the position is not in the file)"));

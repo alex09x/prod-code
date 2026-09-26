@@ -366,9 +366,10 @@ pub async fn migrate(
     rewritten.insert(file.to_path_buf(), new_text);
 
     // Everything that mentions the symbol is worth checking, not only the file it lives in.
+    // Without them only this file is checked, and a clean report would mean nothing (#446).
     let mut also: Vec<PathBuf> = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default()
+        .context("cannot find what mentions the type, to check it; nothing was planned")?
         .into_iter()
         .map(|(path, _, _)| path)
         .filter(|path| path != file)

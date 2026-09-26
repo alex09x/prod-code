@@ -380,7 +380,9 @@ pub async fn remove_parameter(
         )
         .await?,
     );
-    let refs = crate::signature::references(remote, root, &trait_file, tl, tc).await?;
+    let refs = crate::signature::references(remote, root, &trait_file, tl, tc)
+        .await
+        .with_context(|| format!("cannot find the calls to `{method}`; nothing was planned"))?;
     let mut declarations: Vec<(PathBuf, u32, u32)> = vec![(trait_file.clone(), tl, tc)];
     declarations.extend(impls.into_iter().map(|(p, l, c)| (canon(&p), l, c)));
     for (path, _, _) in &declarations {
@@ -451,15 +453,12 @@ pub async fn remove_parameter(
         {
             continue;
         }
-        if !texts.contains_key(&path) {
-            let Ok(t) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            texts.insert(path.clone(), t);
-        }
-        let text = &texts[&path];
+        let text = &*crate::refactor::referenced_text(&mut texts, &path)?;
         let shown = format!("{}:{line}", display(root, &path));
         let Some(at) = crate::signature::offset_of(text, line, col) else {
+            blocked.push(format!(
+                "{shown}:{col}: the analyzer's position is not in the file"
+            ));
             continue;
         };
         let name_end = at + method.len();

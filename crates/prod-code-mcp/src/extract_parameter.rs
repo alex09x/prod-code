@@ -1003,12 +1003,10 @@ pub async fn extract(
         Vec::new()
     };
     let mut declared: Vec<(PathBuf, usize)> = Vec::new();
+    let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    texts.insert(file.to_path_buf(), text.clone());
     for (path, dl, dc) in declarations {
-        let body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let Some(at) = crate::signature::offset_of(&body, dl, dc) else {
             continue;
         };
@@ -1037,16 +1035,16 @@ pub async fn extract(
 
     // Every call site passes what the body used to say.
     let mut call_sites = 0usize;
-    for (path, rl, rc) in crate::signature::references(remote, root, file, fn_line, fn_col)
+    let refs = crate::signature::references(remote, root, file, fn_line, fn_col)
         .await
-        .unwrap_or_default()
-    {
-        let body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        .with_context(|| format!("cannot find the calls to `{callee}`; nothing was planned"))?;
+    for (path, rl, rc) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
+            unmatched.push(format!(
+                "{}:{rl}:{rc} (the position is not in the file)",
+                display(root, &path)
+            ));
             continue;
         };
         // The declaration's own name is not a call, whatever the answer includes, and an import
@@ -1085,11 +1083,7 @@ pub async fn extract(
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        let mut body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         file_edits.sort_by_key(|(at, _, _)| *at);
         for (at, len, replacement) in file_edits.into_iter().rev() {
             body.replace_range(at..at + len, &replacement);
@@ -1130,6 +1124,13 @@ pub async fn extract(
 
     let mut applied = false;
     if apply {
+        // A call left without the argument may be in a file nothing here checks (#446).
+        anyhow::ensure!(
+            unmatched.is_empty() || force,
+            "{} reference(s) to `{callee}` were not given the argument; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Extract something \

@@ -225,6 +225,28 @@ pub fn text_before_apply(path: &Path) -> String {
     String::from_utf8_lossy(&current).into_owned()
 }
 
+/// The text of a file the analyzer reports a reference in, read once into `texts`. A file that
+/// cannot be read is an error: taken as empty, its references would not be in it, and the plan
+/// would go on as if they did not exist (#446).
+pub(crate) fn referenced_text<'a>(
+    texts: &'a mut std::collections::BTreeMap<std::path::PathBuf, String>,
+    path: &Path,
+) -> Result<&'a mut String> {
+    use std::collections::btree_map::Entry;
+    match texts.entry(path.to_path_buf()) {
+        Entry::Occupied(known) => Ok(known.into_mut()),
+        Entry::Vacant(slot) => {
+            let text = std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "cannot read {}, where the analyzer reports a reference; nothing was planned",
+                    path.display()
+                )
+            })?;
+            Ok(slot.insert(text))
+        }
+    }
+}
+
 /// Every checkout-relative path an edit renames, creates, deletes or rewrites, in the order the
 /// edit names them. Refuses a path outside the checkout, the same as applying would.
 fn paths_touched_by(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
