@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.12 — 2026-09-25
+
 ### Fixed
 - **Swift in a repository rooted in another language** (#358).
   - A name search asks first the nested projects whose sources name the symbol, and walks the
