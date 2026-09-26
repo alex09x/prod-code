@@ -13,7 +13,7 @@ use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, Wire
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 use url::Url;
@@ -37,6 +37,18 @@ pub struct LspSession {
 /// How long after its engine was loaded an empty `workspace/symbol` answer may still be early:
 /// a language server indexes after it starts (#381).
 pub const INDEXING_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+// Includes connection, sync and cold engine loading. A dead gateway must not hold a caller
+// indefinitely before its first LSP request even starts (#430).
+const OPEN_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
+
+fn timeout_error(stage: &str, budget: std::time::Duration) -> anyhow::Error {
+    anyhow!(
+        "timeout {stage} after {} ms; the gateway may be loading or short of capacity. \
+             Run `prod-code cluster` to inspect it, then retry or select another node",
+        budget.as_millis()
+    )
+}
 
 /// A hash of a document's text, to tell whether the file still holds what was sent.
 fn text_hash(text: &str) -> u64 {
@@ -127,6 +139,29 @@ impl LspSession {
         hint: Option<&Path>,
         purpose: Option<&str>,
     ) -> Result<Self> {
+        Self::open_with_budget(remote, root, hint, purpose, OPEN_BUDGET).await
+    }
+
+    async fn open_with_budget(
+        remote: SocketAddr,
+        root: &Path,
+        hint: Option<&Path>,
+        purpose: Option<&str>,
+        budget: std::time::Duration,
+    ) -> Result<Self> {
+        tokio::time::timeout(budget, Self::open_inner(remote, root, hint, purpose))
+            .await
+            .map_err(|_| {
+                timeout_error("opening the session (connect, sync or engine load)", budget)
+            })?
+    }
+
+    async fn open_inner(
+        remote: SocketAddr,
+        root: &Path,
+        hint: Option<&Path>,
+        purpose: Option<&str>,
+    ) -> Result<Self> {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         let identity: WorkspaceIdentity = workspace_identity(&root);
@@ -158,6 +193,9 @@ impl LspSession {
             .await?;
         let handshake = match framed.next().await {
             Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+            Some(Ok(WireMessage::Disconnect { reason })) => {
+                anyhow::bail!("gateway refused the session: {reason}")
+            }
             other => anyhow::bail!("unexpected handshake response: {other:?}"),
         };
         let folder_name = root
@@ -466,9 +504,16 @@ impl LspSession {
 /// Long-lived sessions of this process, one per (gateway, checkout, nested project): the
 /// MCP server keeps them across tool calls so a query costs one round trip instead of a
 /// connection, a sync and a handshake each time.
-fn pool() -> &'static tokio::sync::Mutex<HashMap<String, LspSession>> {
-    static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, LspSession>>> = OnceLock::new();
+type SessionSlot = Arc<tokio::sync::Mutex<Option<LspSession>>>;
+
+fn pool() -> &'static tokio::sync::Mutex<HashMap<String, SessionSlot>> {
+    static POOL: OnceLock<tokio::sync::Mutex<HashMap<String, SessionSlot>>> = OnceLock::new();
     POOL.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+async fn session_slot(key: &str) -> SessionSlot {
+    let mut sessions = pool().lock().await;
+    Arc::clone(sessions.entry(key.to_string()).or_default())
 }
 
 fn is_connection_error(err: &anyhow::Error) -> bool {
@@ -509,22 +554,23 @@ pub async fn pooled_engine_age(
     file: &Path,
 ) -> Option<std::time::Duration> {
     let (_, key) = pool_key(remote, root, file);
-    pool()
-        .lock()
-        .await
-        .get(&key)
-        .and_then(LspSession::engine_age)
+    let slot = pool().lock().await.get(&key).cloned()?;
+    // Metadata is advisory; it must not queue behind a query just to report its age.
+    let session = slot.try_lock().ok()?;
+    session.as_ref().and_then(LspSession::engine_age)
 }
 
 /// [`LspSession::index_gated`] of the pooled session that answers about `file` in the checkout
 /// at `root`; `false` when there is none yet (#391).
 pub async fn pooled_index_gated(remote: SocketAddr, root: &Path, file: &Path) -> bool {
     let (_, key) = pool_key(remote, root, file);
-    pool()
-        .lock()
-        .await
-        .get(&key)
-        .is_some_and(LspSession::index_gated)
+    let Some(slot) = pool().lock().await.get(&key).cloned() else {
+        return false;
+    };
+    slot.try_lock()
+        .ok()
+        .and_then(|session| session.as_ref().map(LspSession::index_gated))
+        .unwrap_or(false)
 }
 
 /// Runs one query on the pooled session for `root` (opening it on first use): local
@@ -537,36 +583,78 @@ pub async fn pooled_query(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    pooled_query_with_budget(
+        remote,
+        root,
+        file,
+        method,
+        params,
+        budget_for(method).max(OPEN_BUDGET),
+    )
+    .await
+}
+
+async fn pooled_query_with_budget(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    method: &str,
+    params: serde_json::Value,
+    budget: std::time::Duration,
+) -> Result<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + budget;
     let (root, key) = pool_key(remote, root, file);
-    let mut sessions = pool().lock().await;
-    for attempt in 0..2 {
-        if !sessions.contains_key(&key) {
-            let session = LspSession::open(remote, &root, Some(file)).await?;
-            crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
-            sessions.insert(key.clone(), session);
-        }
-        let session = sessions.get_mut(&key).expect("just inserted");
-        let generation = crate::watch::current_generation(&root);
-        if crate::watch::sync_due(&root, generation) {
-            match session.refresh().await {
-                Ok(()) => crate::watch::mark_synced(&root, generation),
-                Err(err) if is_connection_error(&err) && attempt == 0 => {
-                    sessions.remove(&key);
-                    continue;
+    let slot = session_slot(&key).await;
+    let mut stored = tokio::time::timeout_at(deadline, slot.lock())
+        .await
+        .map_err(|_| timeout_error("waiting for another query in this workspace", budget))?;
+    // The slot stays empty while the request owns the connection. Cancellation drops the
+    // connection too, rather than caching an interrupted sync or an unread reply (#430).
+    let mut session = stored.take();
+    let result = tokio::time::timeout_at(deadline, async {
+        for attempt in 0..2 {
+            if session.is_none() {
+                session = Some(LspSession::open(remote, &root, Some(file)).await?);
+                crate::watch::mark_synced(&root, crate::watch::current_generation(&root));
+            }
+            let current = session.as_mut().expect("just inserted");
+            let generation = crate::watch::current_generation(&root);
+            let result = async {
+                if crate::watch::sync_due(&root, generation) {
+                    current.refresh().await?;
+                    crate::watch::mark_synced(&root, generation);
+                }
+                current.query(file, method, params.clone()).await
+            }
+            .await;
+            match result {
+                Ok(value) => return Ok(value),
+                Err(err) if is_connection_error(&err) => {
+                    session = None;
+                    // A timeout is already a spent budget; repeating the same analysis
+                    // immediately used to double the wait. The next call may retry it.
+                    let timeout = format!("{err:#}").to_ascii_lowercase().contains("timeout");
+                    if attempt == 0 && !timeout && method != "workspace/executeCommand" {
+                        continue;
+                    }
+                    return Err(err);
                 }
                 Err(err) => return Err(err),
             }
         }
-        match session.query(file, method, params.clone()).await {
-            Ok(value) => return Ok(value),
-            Err(err) if is_connection_error(&err) && attempt == 0 => {
-                sessions.remove(&key);
-                continue;
-            }
-            Err(err) => return Err(err),
+        unreachable!("two attempts always return")
+    })
+    .await;
+    match result {
+        Ok(result) => {
+            *stored = session;
+            result
         }
+        Err(_) => Err(timeout_error(
+            &format!("running {method} (including sync and engine load)"),
+            budget,
+        )),
     }
-    unreachable!("two attempts always return")
 }
 
 #[cfg(test)]
@@ -578,5 +666,138 @@ mod tests {
         assert_eq!(budget_for("textDocument/hover").as_secs(), 60);
         assert_eq!(budget_for("textDocument/diagnostic").as_secs(), 300);
         assert_eq!(budget_for("prodCode/structuralReplace").as_secs(), 900);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn opening_a_silent_gateway_has_a_deadline() {
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hold = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _socket = socket;
+            std::future::pending::<()>().await;
+        });
+        let result = LspSession::open_with_budget(
+            addr,
+            &ws.root(),
+            None,
+            None,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+        let error = result.err().expect("silent peer must time out").to_string();
+        assert!(
+            error.contains("opening the session") && error.contains("prod-code cluster"),
+            "{error}"
+        );
+        hold.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_queued_query_times_out_without_discarding_the_owner() {
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let gateway = prod_code_testkit::ScriptedGateway::start(|_, _| serde_json::json!([])).await;
+        let root = ws.root();
+        let file = ws.path("src/lib.rs");
+        pooled_query(
+            gateway.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        let (_, key) = pool_key(gateway.addr(), &root, &file);
+        let slot = session_slot(&key).await;
+        let held = slot.lock().await;
+        assert!(held.is_some());
+        let error = pooled_query_with_budget(
+            gateway.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+            std::time::Duration::from_millis(40),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("waiting for another query"), "{error}");
+        assert!(
+            held.is_some(),
+            "the queued caller must not invalidate its owner"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_timed_out_query_discards_its_connection_without_replaying_it() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let slow = Arc::new(AtomicBool::new(false));
+        let handshakes = Arc::new(AtomicUsize::new(0));
+        let (delay, counted) = (Arc::clone(&slow), Arc::clone(&handshakes));
+        let gateway = prod_code_testkit::ScriptedGateway::start(move |method, _| {
+            if method == "prod-code/handshake" {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+            if method == "textDocument/documentSymbol" && delay.swap(false, Ordering::SeqCst) {
+                tokio::task::block_in_place(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                });
+            }
+            serde_json::json!([])
+        })
+        .await;
+        let root = ws.root();
+        let file = ws.path("src/lib.rs");
+        pooled_query(
+            gateway.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        slow.store(true, Ordering::SeqCst);
+        let before = gateway.calls();
+        let error = pooled_query_with_budget(
+            gateway.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("timeout running textDocument/documentSymbol"),
+            "{error}"
+        );
+        assert_eq!(
+            gateway.calls(),
+            before + 1,
+            "a timeout must not replay the request"
+        );
+        let (_, key) = pool_key(gateway.addr(), &root, &file);
+        assert!(session_slot(&key).await.lock().await.is_none());
+        pooled_query(
+            gateway.addr(),
+            &root,
+            &file,
+            "textDocument/documentSymbol",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            handshakes.load(Ordering::SeqCst),
+            2,
+            "the next query reconnects"
+        );
     }
 }
