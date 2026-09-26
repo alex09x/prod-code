@@ -15,7 +15,7 @@ members = [
 exclude = ["fixtures"]
 
 [workspace.package]
-version = "0.3.15"
+version = "0.3.16"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"

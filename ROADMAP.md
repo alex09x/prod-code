@@ -2,8 +2,9 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.3.15, 2026-09-25): 56 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift and macOS-only Go, more than 700 tests, and every file held at or above 80% of regions.
+**Where it stands** (v0.3.16, 2026-09-26): 56 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift and macOS-only Go, 907 tests in the coverage run, and every file held at or above 80% of regions.
+A 2026-09-26 audit put a status note on each finished item whose text promised more than was built.
 Editors get the language's own server on the node through `prod-code lsp`, with a Zed extension
 in `editors/zed`.
 The refactoring catalog (7.1) is complete for Rust. Across the other languages it works through
@@ -114,7 +115,7 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Managed `basedpyright` / `pyright` daemon with shared virtual environment stub cache.
   - Accurate cross-file semantic reference discovery (`code_references`) eliminating the false-positive noise and token waste of text-based grep.
   - Deep type inference for Pydantic, FastAPI, PyTorch, and typing annotations.
-- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: a Mac Studio (launchd unit `com.prod-code.gateway`) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
+- [~] **3.7. Swift Engine (`crates/prod-code-engine-swift` / `sourcekit-lsp`)** — shipped 2026-09-19 on a macOS node: a Mac (launchd unit `com.prod-code.gateway`; as of 2026-09-26 a laptop started with `--engines swift,go`, while the developer workstation runs no node) runs Xcode's `sourcekit-lsp`; hover / definition / references / symbols verified on a SwiftPM fixture after `prod-code check` (`swift build`, diagnostics parsed), `prod-code test` parses XCTest and swift-testing output. The Linux gateways do not list `swift`, so the client places Swift checkouts on the Mac node only. Apple-framework code (AppKit/UIKit/SwiftUI, `.xcodeproj`) can only be served there; pure SwiftPM packages could also run on Linux with the swift.org toolchain (not installed). Shared `ModuleCache` still open.
   - Supervised `sourcekit-lsp` daemon with shared `ModuleCache` and SPM package resolution.
   - Native support for Swift 6 concurrency, cross-file symbol indexing, and iOS/macOS frameworks without workstation build lag.
 
