@@ -13,6 +13,9 @@
 - Path translation rewrites URI and path fields without changing source, edit text or
   documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
   compare complete path components, and decode a URI exactly once.
+- Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
+  described as a reporting policy restriction instead of falsely claiming they do not
+  exist in the repository.
 - Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
   earlier writes and resource operations when a later step fails (#425). Paths are checked
   again after directory moves, and deleted files do not survive as hidden backup files.
