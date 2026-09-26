@@ -25,6 +25,29 @@ fn uri_to_relative(root: &Path, uri: &str) -> Result<String> {
     Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
+/// `root/rel`, refused unless it still resolves inside the checkout. Every path was resolved
+/// before the first step, against the checkout as it was; an earlier step can move a directory
+/// that holds a symlink so that a later path runs through it, so each step checks its paths
+/// again right before it acts on them.
+fn contained(root: &Path, rel: &str) -> Result<PathBuf> {
+    let abs = root.join(rel);
+    let real = resolve(&abs)?;
+    anyhow::ensure!(
+        real.starts_with(root),
+        "{rel} leads outside the checkout, to {}, after the earlier steps of the edit",
+        real.display()
+    );
+    Ok(abs)
+}
+
+/// Whether `rel` is `under` or inside it.
+fn is_at_or_under(rel: &str, under: &str) -> bool {
+    rel == under
+        || rel
+            .strip_prefix(under)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 /// `path` with every symlink on it resolved, including those above a part that does not exist
 /// yet: a new file under a symlinked directory lands where the symlink points, and that is what
 /// has to be inside the checkout. A symlink that cannot be resolved is refused, since writing
@@ -183,9 +206,11 @@ fn text_for_edit(abs: &Path) -> Result<(Option<Vec<u8>>, String)> {
 }
 
 /// What every file an edit rewrites would contain, without writing anything: the text edits of
-/// a `WorkspaceEdit` applied in memory to the files as they are. File renames, creations and
-/// deletions are not modelled; the second value says whether the edit had any, so a caller can
-/// say that part was not checked.
+/// a `WorkspaceEdit` applied in memory to the files as they are, each at the path it names. File
+/// renames, creations and deletions are not modelled, so an edit that follows one in the same
+/// batch is read from whatever that path holds now; this is a preview, not the ordered,
+/// transactional check [`apply_workspace_edit`] makes. The second value says whether the edit
+/// had any resource operation, so a caller can say that part was not checked.
 pub(crate) fn planned_texts(
     root: &Path,
     edit: &serde_json::Value,
@@ -322,7 +347,8 @@ fn check(root: &Path, ops: &[Op]) -> Result<()> {
 }
 
 /// Applies a `WorkspaceEdit` (`documentChanges` or `changes`) to the checkout at `root`, its
-/// changes in order. Returns the relative paths written, moved or deleted, in application order.
+/// changes in order, as LSP says: each change names its paths as they are after the changes
+/// before it. Returns the relative paths written, moved or deleted, in application order.
 ///
 /// A multi-file refactor that stops halfway is worse than one that never started: the checkout
 /// is inconsistent and nothing says which half landed. Everything is checked before the first
@@ -420,8 +446,20 @@ impl Journal {
         std::fs::rename(abs, &aside)
             .with_context(|| format!("cannot move {} out of the way", abs.display()))?;
         self.undo.push(Undo::Move(aside.clone(), abs.to_path_buf()));
+        self.moved(abs, &aside);
         self.set_aside.push(aside);
         Ok(())
+    }
+
+    /// `from` was moved to `to`: what was set aside inside it is inside `to` now, and that is
+    /// where it is removed from once the edit lands. The undo steps keep the old paths, which
+    /// are right again by the time they run, the move having been taken back first.
+    fn moved(&mut self, from: &Path, to: &Path) {
+        for aside in &mut self.set_aside {
+            if let Ok(rest) = aside.strip_prefix(from) {
+                *aside = to.join(rest);
+            }
+        }
     }
 
     /// The edit landed: what it set aside goes.
@@ -477,8 +515,8 @@ struct Run {
     also_forget: Vec<String>,
     /// What each file held before the edit first touched it, for [`remember_applied`].
     originals: Vec<(String, Option<Vec<u8>>)>,
-    /// The renames done so far, `(from, to)`.
-    moved: Vec<(String, String)>,
+    /// The paths moved away or deleted so far.
+    vacated: Vec<String>,
 }
 
 impl Run {
@@ -497,7 +535,7 @@ impl Run {
                     overwrite,
                     ignore_if_exists,
                 } => {
-                    let abs = root.join(rel);
+                    let abs = contained(root, rel)?;
                     if std::fs::symlink_metadata(&abs).is_ok() {
                         if *overwrite {
                             self.original(rel, read_existing(&abs).ok().flatten());
@@ -527,7 +565,7 @@ impl Run {
                     if from == to {
                         continue;
                     }
-                    let (from_abs, to_abs) = (root.join(from), root.join(to));
+                    let (from_abs, to_abs) = (contained(root, from)?, contained(root, to)?);
                     anyhow::ensure!(
                         std::fs::symlink_metadata(&from_abs).is_ok(),
                         "rename {from} -> {to}: {from} does not exist"
@@ -550,19 +588,28 @@ impl Run {
                     self.journal.create_parents(&to_abs)?;
                     std::fs::rename(&from_abs, &to_abs)
                         .with_context(|| format!("rename {from} -> {to}"))?;
-                    self.journal.undo.push(Undo::Move(to_abs.clone(), from_abs));
+                    self.journal.undo.push(Undo::Move(to_abs.clone(), from_abs.clone()));
+                    self.journal.moved(&from_abs, &to_abs);
                     if to_abs.is_dir() {
                         for inner in files_under(&to_abs) {
                             self.also_forget.push(format!("{from}/{inner}"));
                             self.also_forget.push(format!("{to}/{inner}"));
                         }
+                        // A file an earlier step rewrote travels with its directory, and so
+                        // does what it held before, for the report.
+                        let prefix = format!("{from}/");
+                        for (rel, _) in &mut self.originals {
+                            if let Some(rest) = rel.strip_prefix(&prefix) {
+                                *rel = format!("{to}/{rest}");
+                            }
+                        }
                     }
-                    self.moved.push((from.clone(), to.clone()));
+                    self.vacated.push(from.clone());
                     self.touched.push(from.clone());
                     self.touched.push(to.clone());
                 }
                 Op::Delete { rel, recursive } => {
-                    let abs = root.join(rel);
+                    let abs = contained(root, rel)?;
                     if std::fs::symlink_metadata(&abs).is_ok() {
                         if abs.is_dir() && !abs.is_symlink() {
                             anyhow::ensure!(
@@ -578,6 +625,7 @@ impl Run {
                         }
                         self.journal.set_aside(&abs)?;
                     }
+                    self.vacated.push(rel.clone());
                     self.touched.push(rel.clone());
                 }
             }
@@ -585,20 +633,23 @@ impl Run {
         Ok(())
     }
 
+    /// A text edit of `rel` as it is now, after the steps before it. Where an earlier step moved
+    /// or deleted it and nothing brought it back, whoever made the edit read the path before
+    /// that step, out of LSP's order: following the move could land the text on another file
+    /// that took the path since, and writing it would bring back a file the edit took away.
     fn text(&mut self, root: &Path, rel: &str, edits: &[serde_json::Value]) -> Result<()> {
-        let mut rel = rel.to_string();
-        // An edit computed against a file this edit has already moved names its old path; it
-        // meant the file, which is at the new one now.
-        if read_existing(&root.join(&rel))?.is_none() {
-            let followed = follow_moves(&rel, &self.moved);
-            if followed != rel && root.join(&followed).is_file() {
-                rel = followed;
-            }
-        }
-        let abs = root.join(&rel);
+        let abs = contained(root, rel)?;
         let (bytes, current) = text_for_edit(&abs)?;
+        if bytes.is_none()
+            && let Some(gone) = self.vacated.iter().find(|v| is_at_or_under(rel, v))
+        {
+            bail!(
+                "edit {rel}: an earlier step of the edit moved or deleted {gone}; the changes of a \
+                 workspace edit apply in order, so an edit after a move names the new path"
+            );
+        }
         let new_text = apply_text_edits(&current, edits).with_context(|| format!("edit {rel}"))?;
-        self.original(&rel, bytes.clone());
+        self.original(rel, bytes.clone());
         match bytes {
             Some(bytes) => self.journal.undo.push(Undo::Write(abs.clone(), bytes)),
             None => {
@@ -607,23 +658,9 @@ impl Run {
             }
         }
         std::fs::write(&abs, new_text).with_context(|| format!("write {rel}"))?;
-        self.touched.push(rel);
+        self.touched.push(rel.to_string());
         Ok(())
     }
-}
-
-/// Where `rel` is after the renames in `moved`, applied in order; a rename of a directory
-/// carries what is under it.
-fn follow_moves(rel: &str, moved: &[(String, String)]) -> String {
-    let mut rel = rel.to_string();
-    for (from, to) in moved {
-        if rel == *from {
-            rel = to.clone();
-        } else if let Some(rest) = rel.strip_prefix(&format!("{from}/")) {
-            rel = format!("{to}/{rest}");
-        }
-    }
-    rel
 }
 
 /// The files under the directory `dir`, relative to it, symlinks not followed.
@@ -1009,26 +1046,197 @@ mod tests {
         crate::sync::clear_sync_cache(&root);
     }
 
-    /// An analyzer that moves a file and rewrites it names the rewrite by the old path. The text
-    /// goes to the file where it now is; the old path is not brought back.
+    /// LSP applies `documentChanges` in order: a text edit names the path as it is at that step.
+    /// After `a -> b` and `c -> a`, an edit of `a` is an edit of the file that was `c`, and one
+    /// of `b` is an edit of the file that was `a`.
     #[test]
-    fn an_edit_naming_a_file_the_batch_moved_follows_it() {
+    fn an_ordered_edit_names_each_path_as_it_is_at_that_step() {
         let temp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         crate::sync::clear_sync_cache(&root);
-        std::fs::write(root.join("old.rs"), "use crate::old;\n").unwrap();
+        std::fs::write(root.join("a.rs"), "was a\n").unwrap();
+        std::fs::write(root.join("c.rs"), "was c\n").unwrap();
         let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
         let edit = serde_json::json!({ "documentChanges": [
-            { "kind": "rename", "oldUri": uri("old.rs"), "newUri": uri("new.rs") },
-            { "textDocument": { "uri": uri("old.rs"), "version": null }, "edits": whole("use crate::new;\n") }
+            { "kind": "rename", "oldUri": uri("a.rs"), "newUri": uri("b.rs") },
+            { "kind": "rename", "oldUri": uri("c.rs"), "newUri": uri("a.rs") },
+            { "textDocument": { "uri": uri("a.rs"), "version": null }, "edits": at(0, 5, 5, ", edited") },
+            { "textDocument": { "uri": uri("b.rs"), "version": null }, "edits": at(0, 5, 5, ", edited") }
         ]});
-        let touched = apply_workspace_edit(&root, &edit).unwrap();
-        assert_eq!(touched, vec!["old.rs", "new.rs", "new.rs"]);
-        assert!(!root.join("old.rs").exists());
+        apply_workspace_edit(&root, &edit).unwrap();
         assert_eq!(
-            std::fs::read_to_string(root.join("new.rs")).unwrap(),
-            "use crate::new;\n"
+            std::fs::read_to_string(root.join("a.rs")).unwrap(),
+            "was c, edited\n"
         );
+        assert_eq!(
+            std::fs::read_to_string(root.join("b.rs")).unwrap(),
+            "was a, edited\n"
+        );
+        assert!(!root.join("c.rs").exists());
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// An edit naming a path an earlier step moved away or deleted, and nothing recreated, was
+    /// computed against the checkout before the edit. Taken in order it names no file; sent to
+    /// wherever the file went, it could land on another one. It is refused and nothing stays.
+    #[test]
+    fn an_edit_naming_a_path_an_earlier_step_vacated_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("old.rs"), "use crate::old;\n").unwrap();
+        std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n").unwrap();
+        let before = tree(&root);
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edits = [
+            serde_json::json!({ "documentChanges": [
+                { "kind": "rename", "oldUri": uri("old.rs"), "newUri": uri("new.rs") },
+                { "textDocument": { "uri": uri("old.rs"), "version": null }, "edits": whole("use crate::new;\n") }
+            ]}),
+            serde_json::json!({ "documentChanges": [
+                { "kind": "rename", "oldUri": uri("src"), "newUri": uri("dst") },
+                { "textDocument": { "uri": uri("src/a.rs"), "version": null }, "edits": whole("pub fn b() {}\n") }
+            ]}),
+            serde_json::json!({ "documentChanges": [
+                { "kind": "delete", "uri": uri("old.rs") },
+                { "textDocument": { "uri": uri("old.rs"), "version": null }, "edits": whole("back\n") }
+            ]}),
+        ];
+        for edit in &edits {
+            let err = apply_workspace_edit(&root, edit).expect_err("the path was vacated");
+            assert!(format!("{err:#}").contains("earlier step"), "{err:#}");
+            assert_eq!(tree(&root), before, "{edit}");
+        }
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A path a move vacated and a later step created again is a new file: its edit lands
+    /// there, and the moved file keeps what it had.
+    #[test]
+    fn an_old_path_created_again_after_a_move_is_a_new_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("a.rs"), "old a\n").unwrap();
+        std::fs::write(root.join("src/x.rs"), "old x\n").unwrap();
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "kind": "rename", "oldUri": uri("a.rs"), "newUri": uri("b.rs") },
+            { "kind": "create", "uri": uri("a.rs") },
+            { "textDocument": { "uri": uri("a.rs"), "version": null }, "edits": at(0, 0, 0, "new a\n") },
+            { "kind": "rename", "oldUri": uri("src"), "newUri": uri("dst") },
+            { "kind": "create", "uri": uri("src/x.rs") },
+            { "textDocument": { "uri": uri("src/x.rs"), "version": null }, "edits": at(0, 0, 0, "new x\n") }
+        ]});
+        apply_workspace_edit(&root, &edit).unwrap();
+        let read = |rel: &str| std::fs::read_to_string(root.join(rel)).unwrap();
+        assert_eq!(read("a.rs"), "new a\n");
+        assert_eq!(read("b.rs"), "old a\n");
+        assert_eq!(read("src/x.rs"), "new x\n");
+        assert_eq!(read("dst/x.rs"), "old x\n");
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A symlink leading out of the checkout is harmless where it is, but a directory move can
+    /// carry it under a path a later step writes to. The paths were resolved before the move;
+    /// each step resolves its own again right before it acts, so nothing outside is touched and
+    /// the move is undone.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_carried_in_by_a_directory_move_is_not_written_through() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let away = std::fs::canonicalize(outside.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod a;\n").unwrap();
+        std::os::unix::fs::symlink(&away, root.join("src/link")).unwrap();
+        std::fs::write(away.join("keep.rs"), "outside\n").unwrap();
+        let (before, away_before) = (tree(&root), tree(&away));
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let moved =
+            serde_json::json!({ "kind": "rename", "oldUri": uri("src"), "newUri": uri("dst") });
+        let edits = [
+            serde_json::json!({ "documentChanges": [ moved,
+                { "textDocument": { "uri": uri("dst/link/new.rs"), "version": null }, "edits": whole("escaped\n") } ] }),
+            serde_json::json!({ "documentChanges": [ moved,
+                { "textDocument": { "uri": uri("dst/link/keep.rs"), "version": null }, "edits": whole("escaped\n") } ] }),
+            serde_json::json!({ "documentChanges": [ moved,
+                { "kind": "create", "uri": uri("dst/link/new.rs") } ] }),
+            serde_json::json!({ "documentChanges": [ moved,
+                { "kind": "rename", "oldUri": uri("a.rs"), "newUri": uri("dst/link/a.rs") } ] }),
+            serde_json::json!({ "documentChanges": [ moved,
+                { "kind": "delete", "uri": uri("dst/link/keep.rs") } ] }),
+        ];
+        for edit in &edits {
+            let err = apply_workspace_edit(&root, edit).expect_err("the path leads outside");
+            assert!(format!("{err:#}").contains("outside the checkout"), "{err:#}");
+            assert_eq!(tree(&root), before, "{edit}");
+            assert_eq!(tree(&away), away_before, "{edit}");
+        }
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A file deleted inside a directory that a later step moves is set aside in that directory
+    /// and travels with it. Once the edit lands it is gone from the new place, and a failure
+    /// puts it back at the old one.
+    #[test]
+    fn a_file_deleted_before_its_directory_moves_does_not_survive_the_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        let seed = || {
+            std::fs::create_dir_all(root.join("src/deep")).unwrap();
+            std::fs::write(root.join("src/a.rs"), "gone\n").unwrap();
+            std::fs::write(root.join("src/deep/d.rs"), "gone too\n").unwrap();
+            std::fs::write(root.join("src/b.rs"), "kept\n").unwrap();
+        };
+        seed();
+        std::fs::write(root.join("blocker"), "not a directory\n").unwrap();
+        let before = tree(&root);
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let steps = [
+            serde_json::json!({ "kind": "delete", "uri": uri("src/a.rs") }),
+            serde_json::json!({ "kind": "delete", "uri": uri("src/deep"), "options": { "recursive": true } }),
+            serde_json::json!({ "kind": "rename", "oldUri": uri("src"), "newUri": uri("dst") }),
+        ];
+        let mut failing = steps.to_vec();
+        failing.push(serde_json::json!(
+            { "textDocument": { "uri": uri("blocker/inner.rs"), "version": null }, "edits": whole("x\n") }));
+        let err = apply_workspace_edit(&root, &serde_json::json!({ "documentChanges": failing }))
+            .expect_err("the last write cannot happen");
+        assert!(format!("{err:#}").contains("put back"), "{err:#}");
+        assert_eq!(tree(&root), before, "every path and byte is back");
+
+        apply_workspace_edit(&root, &serde_json::json!({ "documentChanges": steps })).unwrap();
+        let mut after: Vec<String> = tree(&root).into_keys().collect();
+        after.sort();
+        assert_eq!(after, vec!["blocker", "dst", "dst/b.rs"], "nothing set aside survives");
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// An edit computed before a directory move rewrites the file at its old path, and the move
+    /// carries it: a report rendered afterwards still has the text it had before (#122).
+    #[test]
+    fn the_text_before_an_edit_follows_its_file_through_a_later_directory_move() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src/foo")).unwrap();
+        std::fs::write(root.join("src/foo/a.rs"), "pub fn old() {}\n").unwrap();
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("src/foo/a.rs"), "version": null }, "edits": whole("pub fn new() {}\n") },
+            { "kind": "rename", "oldUri": uri("src/foo"), "newUri": uri("src/bar") }
+        ]});
+        apply_workspace_edit(&root, &edit).unwrap();
+        let moved = root.join("src/bar/a.rs");
+        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "pub fn new() {}\n");
+        assert_eq!(text_before_apply(&moved), "pub fn old() {}\n");
         crate::sync::clear_sync_cache(&root);
     }
 
