@@ -400,8 +400,11 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     #181 (2026-09-23), which reads rust-analyzer's unresolved-reference highlighting. Since
     #63 every write tool also takes `verify: "compile"`, which runs `cargo check` on the proposed files
     in a shadow of the workspace and writes only what the compiler accepts too. The applicator is
-    transactional since #70: every path an edit touches is snapshotted before the first write and
-    put back if any write fails, so a multi-file refactor lands whole or not at all.
+    transactional for text edits since #70. The #425 repair extends rollback across ordered create,
+    rename and delete operations, uses UTF-16 columns, rechecks containment after directory moves,
+    and removes backups from their final paths. Rust outcomes send rewrites before moves. Resource
+    operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
+    a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
     - **Zero-Prompt Agent Automation**: AI coding agents can execute complex multi-file architectural refactors with single RPC calls without hallucinating intermediate edits.

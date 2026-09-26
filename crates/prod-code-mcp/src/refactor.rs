@@ -335,9 +335,7 @@ fn check(root: &Path, ops: &[Op]) -> Result<()> {
                         .next()
                         .is_some()
                 {
-                    bail!(
-                        "deleting the directory {rel} needs `recursive: true`, it is not empty"
-                    );
+                    bail!("deleting the directory {rel} needs `recursive: true`, it is not empty");
                 }
             }
             _ => {}
@@ -437,8 +435,10 @@ impl Journal {
         let name = abs.file_name().unwrap_or_default().to_string_lossy();
         let aside = loop {
             let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            let candidate =
-                abs.with_file_name(format!(".{name}.prod-code-undo-{}-{seq}", std::process::id()));
+            let candidate = abs.with_file_name(format!(
+                ".{name}.prod-code-undo-{}-{seq}",
+                std::process::id()
+            ));
             if std::fs::symlink_metadata(&candidate).is_err() {
                 break candidate;
             }
@@ -588,7 +588,9 @@ impl Run {
                     self.journal.create_parents(&to_abs)?;
                     std::fs::rename(&from_abs, &to_abs)
                         .with_context(|| format!("rename {from} -> {to}"))?;
-                    self.journal.undo.push(Undo::Move(to_abs.clone(), from_abs.clone()));
+                    self.journal
+                        .undo
+                        .push(Undo::Move(to_abs.clone(), from_abs.clone()));
                     self.journal.moved(&from_abs, &to_abs);
                     if to_abs.is_dir() {
                         for inner in files_under(&to_abs) {
@@ -875,7 +877,11 @@ mod tests {
                 let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions());
                 #[cfg(not(unix))]
                 let mode = 0;
-                let rel = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                let rel = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
                 if meta.is_dir() {
                     stack.push(path);
                     out.insert(rel, (None, mode));
@@ -1174,7 +1180,10 @@ mod tests {
         ];
         for edit in &edits {
             let err = apply_workspace_edit(&root, edit).expect_err("the path leads outside");
-            assert!(format!("{err:#}").contains("outside the checkout"), "{err:#}");
+            assert!(
+                format!("{err:#}").contains("outside the checkout"),
+                "{err:#}"
+            );
             assert_eq!(tree(&root), before, "{edit}");
             assert_eq!(tree(&away), away_before, "{edit}");
         }
@@ -1215,7 +1224,11 @@ mod tests {
         apply_workspace_edit(&root, &serde_json::json!({ "documentChanges": steps })).unwrap();
         let mut after: Vec<String> = tree(&root).into_keys().collect();
         after.sort();
-        assert_eq!(after, vec!["blocker", "dst", "dst/b.rs"], "nothing set aside survives");
+        assert_eq!(
+            after,
+            vec!["blocker", "dst", "dst/b.rs"],
+            "nothing set aside survives"
+        );
         crate::sync::clear_sync_cache(&root);
     }
 
@@ -1235,7 +1248,10 @@ mod tests {
         ]});
         apply_workspace_edit(&root, &edit).unwrap();
         let moved = root.join("src/bar/a.rs");
-        assert_eq!(std::fs::read_to_string(&moved).unwrap(), "pub fn new() {}\n");
+        assert_eq!(
+            std::fs::read_to_string(&moved).unwrap(),
+            "pub fn new() {}\n"
+        );
         assert_eq!(text_before_apply(&moved), "pub fn old() {}\n");
         crate::sync::clear_sync_cache(&root);
     }
@@ -1263,7 +1279,10 @@ mod tests {
             { "kind": "chmod", "uri": uri("lib.rs") }
         ]});
         let err = apply_workspace_edit(&root, &unknown).expect_err("chmod is not an LSP operation");
-        assert!(format!("{err:#}").contains("unsupported resource operation"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("unsupported resource operation"),
+            "{err:#}"
+        );
         assert_eq!(tree(&root), before);
         crate::sync::clear_sync_cache(&root);
     }

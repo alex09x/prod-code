@@ -6819,7 +6819,10 @@ mod tests {
         );
         prod_code_mcp::refactor::apply_workspace_edit(&root, &edit).unwrap();
         let read = |rel: &str| std::fs::read_to_string(root.join(rel)).ok();
-        assert_eq!(read("src/lib.rs").as_deref(), Some("mod bar;\nmod b;\nmod a;\n"));
+        assert_eq!(
+            read("src/lib.rs").as_deref(),
+            Some("mod bar;\nmod b;\nmod a;\n")
+        );
         assert_eq!(
             read("src/bar.rs").as_deref(),
             Some("mod inner;\nmod extra;\npub use inner::f;\n")
@@ -6828,7 +6831,10 @@ mod tests {
             read("src/bar/inner.rs").as_deref(),
             Some("pub fn f() -> u8 { crate::bar::X }\n")
         );
-        assert_eq!(read("src/bar/extra.rs").as_deref(), Some("pub fn extra() {}\n"));
+        assert_eq!(
+            read("src/bar/extra.rs").as_deref(),
+            Some("pub fn extra() {}\n")
+        );
         assert_eq!(read("src/b.rs").as_deref(), Some("pub const B: u8 = 1;\n"));
         assert_eq!(read("src/a.rs").as_deref(), Some("pub const A: u8 = 3;\n"));
         for gone in ["src/foo.rs", "src/foo", "src/c.rs"] {

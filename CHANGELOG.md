@@ -10,6 +10,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
+  earlier writes and resource operations when a later step fails (#425). Paths are checked
+  again after directory moves, and deleted files do not survive as hidden backup files.
+  Rust module refactors send text changes before file moves, matching LSP ordering.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,
