@@ -629,6 +629,43 @@ fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(Stri
     }
 }
 
+/// Writes a file a client synced so that a failed write, such as on a full disk, leaves the old
+/// content: the text goes to a temporary file next to it, which then replaces it. `fs::write`
+/// truncated the file first, and a full disk left it empty (#385).
+async fn write_synced_file(
+    target: &std::path::Path,
+    content: &[u8],
+    executable: bool,
+) -> std::io::Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    if let Some(parent) = target.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let temp = target.with_file_name(format!(
+        ".{name}.prod-code-sync-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = async {
+        tokio::fs::write(&temp, content).await?;
+        #[cfg(unix)]
+        if executable {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o755)).await?;
+        }
+        tokio::fs::rename(&temp, target).await
+    }
+    .await;
+    if written.is_err() {
+        let _ = tokio::fs::remove_file(&temp).await;
+    }
+    written
+}
+
 /// Removes `dir` and every parent left empty by that, up to but not including `root`: a directory
 /// whose last file was deleted or moved away locally goes away on the copy too (#124). A
 /// directory that still holds anything stops the climb.
@@ -2159,33 +2196,29 @@ pub async fn apply_sync_with_metrics(
         .collect();
     let mut project_config_changed = false;
     let mut watched = Vec::new();
+    // Files that could not be written: not recorded as synced, and reported stale so that the
+    // client sends them again (#385).
+    let mut failed: Vec<String> = Vec::new();
     for delta in req.files {
         let target_path = server_workspace.join(&delta.relative_path);
         project_config_changed |= is_project_config_file(&delta.relative_path);
         match delta.content {
             Some(content_bytes) => {
-                if let Some(parent) = target_path.parent() {
-                    let _ = tokio::fs::create_dir_all(parent).await;
-                }
                 bytes_transferred += content_bytes.len();
                 let kind = if target_path.exists() {
                     workspace::WatchedChange::Changed
                 } else {
                     workspace::WatchedChange::Created
                 };
-                if tokio::fs::write(&target_path, &content_bytes).await.is_ok() {
-                    files_updated += 1;
-                    watched.push((target_path.clone(), kind));
-                    #[cfg(unix)]
-                    if delta.is_executable {
-                        use std::os::unix::fs::PermissionsExt;
-                        let _ = tokio::fs::set_permissions(
-                            &target_path,
-                            std::fs::Permissions::from_mode(0o755),
-                        )
-                        .await;
-                    }
+                if let Err(e) =
+                    write_synced_file(&target_path, &content_bytes, delta.is_executable).await
+                {
+                    tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
+                    failed.push(delta.relative_path);
+                    continue;
                 }
+                files_updated += 1;
+                watched.push((target_path.clone(), kind));
                 if let Ok(text) = std::str::from_utf8(&content_bytes) {
                     for engine_lock in &loaded_rust {
                         let mut engine = engine_lock.lock().await;
@@ -2210,9 +2243,19 @@ pub async fn apply_sync_with_metrics(
             }
         }
     }
+    let synced: Vec<(String, Option<u64>)> = synced
+        .into_iter()
+        .filter(|(path, _)| !failed.contains(path))
+        .collect();
     workspace::record_synced(&server_workspace, &synced);
-    let stale_paths =
+    let mut stale_paths =
         workspace::clear_stale_paths(&server_workspace, arrived.iter().map(String::as_str));
+    workspace::record_stale_paths(&server_workspace, &failed);
+    for path in failed {
+        if !stale_paths.contains(&path) {
+            stale_paths.push(path);
+        }
+    }
     // gopls does not watch the tree itself: without this it went on answering from the content
     // a file no session had open had when it first read it (#317).
     for loaded in workspace_manager.loaded_under(&server_workspace).await {
@@ -3474,33 +3517,28 @@ async fn on_client_message(
             let mut files_deleted = 0;
             let mut bytes_transferred = 0;
             let mut watched = Vec::new();
+            let mut failed: Vec<String> = Vec::new();
 
             for delta in &req.files {
                 let target_path = view.workspace.root.join(&delta.relative_path);
                 match &delta.content {
                     Some(content_bytes) => {
-                        if let Some(parent) = target_path.parent() {
-                            let _ = tokio::fs::create_dir_all(parent).await;
-                        }
                         bytes_transferred += content_bytes.len();
                         let kind = if target_path.exists() {
                             workspace::WatchedChange::Changed
                         } else {
                             workspace::WatchedChange::Created
                         };
-                        if tokio::fs::write(&target_path, content_bytes).await.is_ok() {
-                            files_updated += 1;
-                            watched.push((target_path.clone(), kind));
-                            #[cfg(unix)]
-                            if delta.is_executable {
-                                use std::os::unix::fs::PermissionsExt;
-                                let _ = tokio::fs::set_permissions(
-                                    &target_path,
-                                    std::fs::Permissions::from_mode(0o755),
-                                )
-                                .await;
-                            }
+                        if let Err(e) =
+                            write_synced_file(&target_path, content_bytes, delta.is_executable)
+                                .await
+                        {
+                            tracing::warn!(error = %e, file = %target_path.display(), "sync write failed; the client sends it again");
+                            failed.push(delta.relative_path.clone());
+                            continue;
                         }
+                        files_updated += 1;
+                        watched.push((target_path.clone(), kind));
                         // The workspace is this worktree's own: synced files are its
                         // new base, visible to every session except one that still
                         // holds an unsaved buffer for the same path.
@@ -3557,10 +3595,16 @@ async fn on_client_message(
                 }
             }
 
-            let stale_paths = workspace::clear_stale_paths(
+            let mut stale_paths = workspace::clear_stale_paths(
                 &view.workspace.root,
                 req.files.iter().map(|delta| delta.relative_path.as_str()),
             );
+            workspace::record_stale_paths(&view.workspace.root, &failed);
+            for path in failed {
+                if !stale_paths.contains(&path) {
+                    stale_paths.push(path);
+                }
+            }
             view.workspace.notify_watched_files(&watched).await;
             let duration_ms = start.elapsed().as_millis() as u64;
             let _ = out_tx
@@ -5654,6 +5698,51 @@ mod tests {
         .await;
         assert!(second.stale_paths.is_empty());
         assert!(!root.join(workspace::STALE_MARKER).exists());
+    }
+
+    /// A file the copy cannot take keeps its old text, is not counted, and comes back stale until
+    /// the client has sent it again. A read-only directory stands in for a full disk, where
+    /// `fs::write` truncated the file and reported nothing (#385).
+    #[tokio::test]
+    async fn a_sync_write_that_fails_keeps_the_old_text_and_asks_for_it_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let storage = tempfile::tempdir().unwrap();
+        let manager = WorkspaceManager::new();
+        let sync = |text: &str| SyncRequest {
+            client_workspace_root: "/tmp/ws".to_string(),
+            files: vec![FileDelta {
+                relative_path: "src/lib.rs".to_string(),
+                content: Some(text.as_bytes().to_vec()),
+                is_executable: false,
+            }],
+            clean_others: false,
+            base_workspace_name: Some("ws".to_string()),
+        };
+        apply_sync(storage.path(), &manager, sync("fn old() {}")).await;
+        let root = storage.path().join("ws");
+        let src = root.join("src");
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let refused = apply_sync(storage.path(), &manager, sync("fn new() {}")).await;
+        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(src.join("lib.rs")).unwrap(),
+            "fn old() {}"
+        );
+        assert_eq!(refused.files_updated, 0);
+        assert_eq!(refused.stale_paths, ["src/lib.rs".to_string()]);
+        assert_eq!(workspace::stale_paths(&root), ["src/lib.rs".to_string()]);
+        assert!(
+            std::fs::read_dir(&src).unwrap().count() == 1,
+            "no temporary file is left behind"
+        );
+
+        let again = apply_sync(storage.path(), &manager, sync("fn new() {}")).await;
+        assert_eq!(again.files_updated, 1);
+        assert!(again.stale_paths.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(src.join("lib.rs")).unwrap(),
+            "fn new() {}"
+        );
     }
 
     #[tokio::test]
