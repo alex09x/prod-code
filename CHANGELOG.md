@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- **An optional cluster token that every connection must open with** (#402). With
+  `PROD_CODE_AUTH_TOKEN` set, or `PROD_CODE_AUTH_TOKEN_FILE` naming a file that holds it,
+  clients and peer gateways send the token as the first frame of every connection. A gateway
+  started with one closes a connection that does not open with it before serving anything,
+  even the status, and tells it which variables to set. The comparison does not stop at the
+  first differing byte. A gateway without a token ignores one that is sent, so clients can get it
+  first. It is off by default: a cluster without a token takes every connection, as before. The
+  gateway removes both variables from the environment of the commands it runs, so a build or a
+  test on a node never sees the secret. The token never appears in a log line or in a message's
+  `Debug`.
 - **Go is linted with golangci-lint** (#400). `lint` and `code_lint` on a Go project run
   `golangci-lint run` when the node has it, which reads the project's `.golangci.yml`. Otherwise
   they run `go vet` as before, with a line on stderr saying golangci-lint is missing. `--path`

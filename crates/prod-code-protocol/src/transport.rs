@@ -35,17 +35,18 @@ pub const AUTH_TOKEN_ENV: &str = "PROD_CODE_AUTH_TOKEN";
 /// The environment variable that names a file holding the cluster's token.
 pub const AUTH_TOKEN_FILE_ENV: &str = "PROD_CODE_AUTH_TOKEN_FILE";
 
+/// Both variables, which a gateway removes from the environment of every command it runs: a
+/// build or a test on a node gets neither the cluster's secret nor a token to send to the mock
+/// gateways of its own tests.
+pub const AUTH_TOKEN_VARS: [&str; 2] = [AUTH_TOKEN_ENV, AUTH_TOKEN_FILE_ENV];
+
 /// The token every connection of this cluster opens with (#402), for clients and gateways
-/// alike: [`AUTH_TOKEN_ENV`], else the first line of the file [`AUTH_TOKEN_FILE_ENV`] names,
-/// else of `~/.config/prod-code/auth-token`. `None` when none is set, which is the default: a
-/// cluster without a token takes every connection.
+/// alike: [`AUTH_TOKEN_ENV`], else the first line of the file [`AUTH_TOKEN_FILE_ENV`] names.
+/// `None` when neither is set, which is the default: a cluster without a token takes every
+/// connection. No file is read unless a variable names it, so a process started without them
+/// (a command a gateway runs) never picks a token up.
 pub fn auth_token() -> Option<String> {
-    let file = std::env::var_os(AUTH_TOKEN_FILE_ENV)
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".config/prod-code/auth-token"))
-        });
+    let file = std::env::var_os(AUTH_TOKEN_FILE_ENV).map(PathBuf::from);
     resolve_token(
         std::env::var(AUTH_TOKEN_ENV).ok().as_deref(),
         file.as_deref(),

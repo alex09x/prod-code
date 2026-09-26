@@ -179,7 +179,7 @@ pub struct ServerState {
 const AUTH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What a connection without the cluster's token is told before it is closed.
-const AUTH_REFUSED: &str = "this gateway requires the cluster's connection token: set PROD_CODE_AUTH_TOKEN, or put the token in the file PROD_CODE_AUTH_TOKEN_FILE names or in ~/.config/prod-code/auth-token";
+const AUTH_REFUSED: &str = "this gateway requires the cluster's connection token: set PROD_CODE_AUTH_TOKEN to it, or PROD_CODE_AUTH_TOKEN_FILE to a file that holds it";
 
 /// Who a session belongs to, for metrics.
 pub struct SessionMeta {
@@ -1926,6 +1926,10 @@ pub async fn run_exec(
     // status (#180); tokio only gets the pipes. The gateway binary starts it through its exec
     // shim, so that the peak memory reported is the command's and not the gateway's (#255).
     let (mut cmd, report) = exec_shim::command(program);
+    // The cluster's token is not the command's to see or send (#402).
+    for var in prod_code_protocol::transport::AUTH_TOKEN_VARS {
+        cmd.env_remove(var);
+    }
     cmd.args(args)
         .current_dir(&run_dir)
         .envs(compiler_cache_env(&workspace, on_path("ccache")))
@@ -5221,11 +5225,11 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     if !state.engine_allowlist.is_empty() {
         tracing::info!(engines = ?state.engine_allowlist, "serving only the listed engines");
     }
-    // The same token the clients send, from the same place; its value is never logged.
+    // The same token the clients send, from the same variables; its value is never logged.
     state.auth_token = prod_code_protocol::transport::auth_token();
     tracing::info!(
         required = state.auth_token.is_some(),
-        "connection token (PROD_CODE_AUTH_TOKEN, PROD_CODE_AUTH_TOKEN_FILE or ~/.config/prod-code/auth-token)"
+        "connection token (PROD_CODE_AUTH_TOKEN or PROD_CODE_AUTH_TOKEN_FILE)"
     );
     if let Some(dir) = cli.shadow_dir.clone() {
         state.shadow_root = dir;
