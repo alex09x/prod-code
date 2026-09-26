@@ -649,7 +649,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_references".to_string(),
-            description: "Find every reference to a symbol across the workspace. Give `symbol` (its name) or a file position (path + 1-based line/column)."
+            description: "Find every reference to a symbol across the workspace. Give `symbol` (its name) or a file position (path + 1-based line/column). With `also_in` and `symbol`, other checkouts are searched too, each resolving the name itself."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -669,6 +669,11 @@ pub fn list_tools() -> Vec<McpTool> {
                     "include_declarations": {
                         "type": "boolean",
                         "description": "Include the declaration site in the reference list (default: false)"
+                    },
+                    "also_in": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Directories of other checkouts to search as well (with `symbol`), e.g. two services that use the same dependency's type"
                     }
                 },
                 "required": ["path", "line", "character"]
@@ -1067,6 +1072,13 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    if tool_name == "code_references"
+        && let Some(dirs) = args.get("also_in").and_then(|v| v.as_array())
+        && !dirs.is_empty()
+    {
+        let dirs = dirs.clone();
+        return references_across(remote, workspace_root, args, &dirs).await;
+    }
     // `symbol` instead of line/character: resolve the name through the workspace symbol
     // index, then run the tool at that position.
     let args = if SYMBOL_ADDRESSABLE.contains(&tool_name)
@@ -2186,6 +2198,83 @@ async fn handle_references(
         out.push_str(&stood_on);
     }
     Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+/// `code_references` in this checkout and in each directory of `also_in`, the name resolved in
+/// each, every answer under its checkout's directory; a checkout that fails says why without
+/// hiding the others (#375).
+async fn references_across(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: serde_json::Value,
+    dirs: &[serde_json::Value],
+) -> Result<McpToolCallResult> {
+    if args
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .is_none_or(|s| s.trim().is_empty())
+    {
+        anyhow::bail!(
+            "`also_in` goes with `symbol`: a position is a place in one checkout, a name is \
+             resolved in each"
+        );
+    }
+    let mut roots = vec![workspace_root.to_path_buf()];
+    for dir in dirs {
+        let dir = dir
+            .as_str()
+            .context("`also_in` lists the directories of other checkouts")?;
+        let dir = resolve_file_path(workspace_root, dir);
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        if !roots.contains(&dir) {
+            roots.push(dir);
+        }
+    }
+    let mut out = String::new();
+    let mut found = 0usize;
+    for (index, root) in roots.iter().enumerate() {
+        let mut asked = args.clone();
+        if let Some(obj) = asked.as_object_mut() {
+            obj.remove("also_in");
+            // A file hint names a file of the first checkout.
+            if index > 0 {
+                obj.remove("path");
+            }
+        }
+        // Each checkout is asked on the node its own workspace is placed on.
+        let node = if index == 0 || !root.is_dir() {
+            Ok(remote)
+        } else {
+            crate::cluster::route_for_checkout(remote, root).await
+        };
+        let text = match node {
+            _ if !root.is_dir() => "not a directory".to_string(),
+            Err(err) => format!("{err:#}"),
+            Ok(node) => match Box::pin(execute_tool(node, root, "code_references", asked)).await {
+                Ok(result) => result
+                    .content
+                    .iter()
+                    .map(|item| {
+                        let crate::protocol::McpContentItem::Text { text } = item;
+                        text.as_str()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(err) => format!("{err:#}"),
+            },
+        };
+        found += text.lines().filter(|l| l.starts_with("  • ")).count();
+        out.push_str(&format!(
+            "== {} ==\n{}\n\n",
+            root.display(),
+            text.trim_end()
+        ));
+    }
+    out.push_str(&format!(
+        "{found} reference(s) in {} checkout(s)",
+        roots.len()
+    ));
+    Ok(McpToolCallResult::text(out))
 }
 
 /// The text of 1-based `line` of `file`: read here, or from the node for a file only the node

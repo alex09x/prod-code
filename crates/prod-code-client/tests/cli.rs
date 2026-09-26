@@ -1695,6 +1695,54 @@ async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
     assert!(ws.read("src/lib.rs").contains("let cap = 64 * 1024;"));
 }
 
+/// `refs --symbol NAME --in DIR` answers for this checkout and the other one; `--in` needs a
+/// name (#375).
+#[tokio::test]
+async fn cli_refs_in_another_checkout_answers_for_both() {
+    let ws = make_workspace();
+    let other = make_workspace();
+    let (hits_p, hits_q) = (ws.path("src/lib.rs"), other.path("src/lib.rs"));
+    let gw = MockGateway::start(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "workspace/symbol" => serde_json::json!([
+                answers::symbol("calculate", 12, &hits_p, 5, 8),
+                answers::symbol("calculate", 12, &hits_q, 5, 8)
+            ]),
+            "textDocument/references" if uri == answers::uri(&hits_q) => {
+                answers::locations(&hits_q, &[(5, 8)])
+            }
+            "textDocument/references" => answers::locations(&hits_p, &[(5, 8), (6, 1)]),
+            _ => serde_json::Value::Null,
+        }
+    })
+    .await;
+
+    let other_root = other.root().to_string_lossy().into_owned();
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["refs", "--symbol", "calculate", "--in", &other_root],
+    )
+    .await;
+    let text = stdout_of(&out);
+    assert!(out.status.success(), "{text}{}", stderr_of(&out));
+    assert!(text.contains("Found 2 reference(s)"), "{text}");
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
+    assert!(
+        text.ends_with("3 reference(s) in 2 checkout(s)\n"),
+        "{text}"
+    );
+
+    let positional = run_cli(
+        &ws,
+        gw.addr,
+        &["refs", "src/lib.rs", "5", "8", "--in", &other_root],
+    )
+    .await;
+    assert!(!positional.status.success(), "--in needs --symbol");
+}
+
 /// The CLI finds a declaration by name, gives a file's outline under its own name, and takes a
 /// name instead of a position — what the MCP tools already did (#93).
 #[tokio::test]

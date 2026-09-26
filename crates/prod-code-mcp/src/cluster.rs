@@ -58,6 +58,42 @@ pub async fn route_for_path(
     .await
 }
 
+/// The node for a query about another whole checkout at `root`: the one its own workspace is
+/// placed on, picked as the CLI picks it when started there, so that checkout's warm analyzer
+/// answers instead of a cold copy on this checkout's node (#375). Without routing set, or for
+/// this checkout itself, `default`.
+pub async fn route_for_checkout(default: SocketAddr, root: &Path) -> Result<SocketAddr> {
+    let Some(routing) = ROUTING.get() else {
+        return Ok(default);
+    };
+    checkout_node_in(
+        &routing.nodes,
+        &routing.workspace,
+        default,
+        root,
+        placement_path().as_deref(),
+    )
+    .await
+}
+
+/// [`route_for_checkout`] over an explicit cluster, remembering placements in `placement_file`.
+pub async fn checkout_node_in(
+    nodes: &[SocketAddr],
+    workspace: &str,
+    default: SocketAddr,
+    root: &Path,
+    placement_file: Option<&Path>,
+) -> Result<SocketAddr> {
+    let identity = crate::sync::workspace_identity(root);
+    let name = identity.base.unwrap_or(identity.name);
+    if name == workspace {
+        return Ok(default);
+    }
+    let (_, engine) = crate::sync::engine_project(root, root);
+    let os = crate::sync::macos_only_cgo(root).map(|_| "macos");
+    pick_node_with(nodes, &name, engine, os, placement_file).await
+}
+
 /// [`route_for_path`] over an explicit cluster, remembering placements in `placement_file`.
 pub async fn route_in(
     nodes: &[SocketAddr],
@@ -701,6 +737,35 @@ mod tests {
         let text = format!("{err:#}");
         assert!(text.contains("is in a swift project"), "{text}");
         assert!(text.contains("serves swift"), "{text}");
+    }
+
+    /// Another checkout is asked on the node its own workspace is placed on, not on this one's;
+    /// this checkout itself stays on the node it was given (#375).
+    #[tokio::test]
+    async fn another_checkout_is_routed_to_its_own_node() {
+        let temp = tempfile::tempdir().unwrap();
+        let other = std::fs::canonicalize(temp.path()).unwrap().join("other");
+        std::fs::create_dir_all(other.join("src")).unwrap();
+        std::fs::write(other.join("Cargo.toml"), "[package]\nname = \"o\"\n").unwrap();
+        std::fs::write(other.join("src/lib.rs"), "").unwrap();
+        let identity = crate::sync::workspace_identity(&other);
+        let name = identity.base.unwrap_or(identity.name);
+        let placement = temp.path().join("placement.json");
+        let here = node_serving(&["rust"]).await;
+        let there = node_serving(&["rust"]).await;
+        let mut remembered = Placement::default();
+        remembered.workspaces.insert(name.clone(), there);
+        save_placement(&placement, &remembered);
+
+        let nodes = [here, there];
+        let routed = checkout_node_in(&nodes, "this", here, &other, Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(routed, there);
+        let itself = checkout_node_in(&nodes, &name, here, &other, Some(&placement))
+            .await
+            .unwrap();
+        assert_eq!(itself, here);
     }
 
     /// A checkout that needs macOS leaves a remembered Linux node for the macOS one, and a node
