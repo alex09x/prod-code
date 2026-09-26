@@ -36,6 +36,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::codec::Framed;
 
+/// The key of an answer that is an error response rather than a result: its value is the
+/// JSON-RPC `error` object.
+pub const LSP_ERROR: &str = "prod-code/lsp-error";
+
 /// Answers one LSP request: the JSON-RPC method and its params, in, the `result` out.
 pub type Answer = Arc<dyn Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync>;
 
@@ -219,7 +223,14 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .await?;
                     }
                 }
-                let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
+                // An answer `{"prod-code/lsp-error": {code, message}}` is the server refusing the
+                // request, sent as a JSON-RPC error as a language server sends it.
+                let response = match result.get(LSP_ERROR) {
+                    Some(error) => {
+                        serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": error.clone() })
+                    }
+                    None => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                };
                 framed
                     .send(WireMessage::LspPayload(response.to_string()))
                     .await?;
