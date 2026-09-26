@@ -469,6 +469,6 @@ pub mod answers {
 
     /// The `file://` URI of `path`, as the other answers spell it.
     pub fn uri(path: &Path) -> String {
-        format!("file://{}", path.display())
+        prod_code_protocol::path::file_uri(path)
     }
 }

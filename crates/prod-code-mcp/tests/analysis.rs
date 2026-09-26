@@ -442,7 +442,7 @@ async fn analyze_walks_the_call_hierarchy_from_a_changed_function_to_the_test_th
         "pub fn helper(x: i32) -> i32 {\n    x + 2\n}\n\npub fn wrapper() -> i32 {\n    helper(41)\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_calls_wrapper() {\n        assert_eq!(wrapper(), 42);\n    }\n}\n",
     );
     let lib = ws.path("src/lib.rs");
-    let uri = format!("file://{}", lib.display());
+    let uri = prod_code_protocol::path::file_uri(lib.as_path());
 
     let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
         "textDocument/documentSymbol" => serde_json::json!([
@@ -602,7 +602,7 @@ fn impact_script(
     lib: &std::path::Path,
     incoming: impl Fn(&str, &str) -> serde_json::Value + Send + Sync + 'static,
 ) -> Answer {
-    let uri = format!("file://{}", lib.display());
+    let uri = prod_code_protocol::path::file_uri(lib);
     Arc::new(move |method, params| match method {
         "textDocument/documentSymbol" => serde_json::json!([
             answers::document_symbol("helper", 12, 1, 3, 8),
@@ -695,7 +695,7 @@ async fn a_module_level_change_beside_a_function_change_runs_the_whole_suite() {
     let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", MIXED_LIB)]);
     let root = ws.root();
     let lib = ws.path("src/lib.rs");
-    let uri = format!("file://{}", lib.display());
+    let uri = prod_code_protocol::path::file_uri(lib.as_path());
     let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
         "textDocument/documentSymbol" => serde_json::json!([
             answers::document_symbol("helper", 12, 3, 5, 8),
@@ -1258,7 +1258,7 @@ async fn the_callers_of_every_call_hierarchy_item_are_walked() {
     let root = ws.root();
     let lib = ws.path("src/lib.rs");
     ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
-    let uri = format!("file://{}", lib.display());
+    let uri = prod_code_protocol::path::file_uri(lib.as_path());
     let items = move |params: &serde_json::Value, second: serde_json::Value| match params
         .pointer("/position/line")
         .and_then(|l| l.as_u64())
