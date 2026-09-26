@@ -159,6 +159,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
                         engine_age_ms: None,
+                        index_gated: false,
                     }))
                     .await?;
             }
@@ -2015,16 +2016,19 @@ async fn a_file_no_target_compiles_does_not_spend_the_search_for_a_use() {
 #[tokio::test]
 async fn an_empty_symbol_search_is_asked_again_only_of_an_engine_still_loading() {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // The engine's age, whether its first answer takes a second, the search from which the
-    // index has the symbol, the searches asked and whether the symbol is found. An engine 29.5 s
-    // old whose first answer takes a second is young when asked, however old when it answers.
+    // The engine's age, whether the gateway holds index questions until the server is ready
+    // (#391), whether its first answer takes a second, the search from which the index has the
+    // symbol, the searches asked and whether the symbol is found. An engine 29.5 s old whose
+    // first answer takes a second is young when asked, however old when it answers; a gated
+    // engine's empty answer is final however young it is.
     let cases = [
-        (Some(3_600_000u64), false, usize::MAX, 1usize, false),
-        (Some(0), false, 3, 3, true),
-        (Some(29_500), true, 2, 2, true),
-        (None, false, usize::MAX, 2, false),
+        (Some(3_600_000u64), false, false, usize::MAX, 1usize, false),
+        (Some(0), false, false, 3, 3, true),
+        (Some(29_500), false, true, 2, 2, true),
+        (None, false, false, usize::MAX, 2, false),
+        (Some(0), true, false, usize::MAX, 1, false),
     ];
-    for (age, slow_first, indexed_from, searches, found) in cases {
+    for (age, gated, slow_first, indexed_from, searches, found) in cases {
         let ws = Workspace::new(&[
             (
                 "Cargo.toml",
@@ -2038,7 +2042,7 @@ async fn an_empty_symbol_search_is_asked_again_only_of_an_engine_still_loading()
         let remote = scripted_gateway(Arc::new(move |method, _| match method {
             "prod-code/handshake" => age.map_or(
                 serde_json::Value::Null,
-                |ms| serde_json::json!({ "engine_age_ms": ms }),
+                |ms| serde_json::json!({ "engine_age_ms": ms, "index_gated": gated }),
             ),
             "workspace/symbol" => {
                 let search = counted.fetch_add(1, Ordering::Relaxed) + 1;
@@ -2075,6 +2079,96 @@ async fn an_empty_symbol_search_is_asked_again_only_of_an_engine_still_loading()
             "engine loaded {age:?} ms ago"
         );
     }
+}
+
+/// A request from the server that reaches the client with the id of its question is not taken
+/// for the answer: gopls's `workspace/configuration`, passed on with id 2, answered a
+/// `workspace/symbol` with nothing (#391).
+#[tokio::test]
+async fn a_server_request_with_the_questions_id_is_not_its_answer() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prod-code/server-request" => serde_json::json!({
+            "jsonrpc": "2.0", "method": "workspace/configuration", "params": { "items": [{ "section": "gopls" }] }
+        }),
+        "textDocument/references" => answers::locations(&lib, &[(1, 8)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
+}
+
+/// An answer the server gave while still indexing says so under the answer, instead of passing
+/// for the whole answer (#391).
+#[tokio::test]
+async fn an_answer_given_while_the_server_indexes_says_so() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "pub fn a() {}\n"),
+    ]);
+    let lib = ws.path("src/lib.rs");
+    let found = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prod-code/busy" => serde_json::json!({
+            "title": "indexing", "message": "1234/5000", "percentage": 25, "for_ms": 3200
+        }),
+        "textDocument/references" => answers::locations(&found, &[(1, 8)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(text.contains("Found 1 reference(s)"), "{text}");
+    assert!(
+        text.contains("(the language server was still indexing (1234/5000, 25%) for 3 s when asked: this answer may be incomplete)"),
+        "{text}"
+    );
+
+    // The next answer, given by a ready server, carries no note left over from this one.
+    let ready = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/references" => answers::locations(&lib, &[(1, 8)]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            ready,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(!text.contains("still"), "{text}");
 }
 
 /// A name the index lacks but a source file declares is answered with that declaration and why

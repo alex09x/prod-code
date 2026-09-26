@@ -162,6 +162,12 @@ pub struct HandshakeResponse {
     /// from a warm engine is the answer (#381).
     #[serde(default)]
     pub engine_age_ms: Option<u64>,
+    /// Whether the gateway holds this engine's index questions (`workspace/symbol`,
+    /// `references`, ...) until its server has loaded and indexed, and otherwise sends a
+    /// `prod-code/indexing` note with the answer: then an empty answer is final. `false` from a
+    /// gateway too old to do so, and for a server whose readiness is not known (#391).
+    #[serde(default)]
+    pub index_gated: bool,
 }
 
 /// Real-time health and session status of the remote gateway.

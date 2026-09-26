@@ -3,6 +3,7 @@
 pub mod codec;
 pub mod messages;
 pub mod path;
+pub mod readiness;
 pub mod transport;
 
 pub use codec::ProdCodeCodec;

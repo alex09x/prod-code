@@ -4,6 +4,9 @@
 //! for high-performance symbol resolution and compilation reuse.
 
 use anyhow::{Context, Result};
+use prod_code_protocol::readiness::{
+    BUSY_MEMBER, Busy, INDEX_WAIT, Readiness, ReadySignal, needs_index,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -77,6 +80,9 @@ pub struct GoEngine {
     broadcast_tx: broadcast::Sender<String>,
     /// False once gopls's output has ended: it exited or crashed (#355).
     is_alive: Arc<AtomicBool>,
+    /// What gopls has said about loading its packages: "Setting up workspace" is begun and
+    /// ended as progress (#391).
+    readiness: Arc<Readiness>,
     _child: Arc<Mutex<Child>>,
 }
 
@@ -147,6 +153,8 @@ impl GoEngine {
         let stdin_writer = stdin_arc.clone();
         let is_alive = Arc::new(AtomicBool::new(true));
         let is_alive_reader = Arc::clone(&is_alive);
+        let readiness = Arc::new(Readiness::new(ReadySignal::Progress));
+        let readiness_reader = Arc::clone(&readiness);
 
         // Background reader loop: decodes LSP frames and routes responses to oneshot channels
         tokio::spawn(async move {
@@ -176,9 +184,14 @@ impl GoEngine {
                                 if let Ok(val) =
                                     serde_json::from_str::<serde_json::Value>(&json_str)
                                 {
+                                    readiness_reader.on_message(&val);
                                     // 1. Check if this is a response to our pending request
                                     if let Some(id_val) = val.get("id") {
-                                        if let Some(id) = id_val.as_u64() {
+                                        // Only an answer is ours: gopls numbers its own requests
+                                        // (`window/workDoneProgress/create`) from 1 too (#391).
+                                        if val.get("method").is_none()
+                                            && let Some(id) = id_val.as_u64()
+                                        {
                                             let mut pending = pending_clone.lock().await;
                                             if let Some(tx) = pending.remove(&id) {
                                                 let _ = tx.send(val.clone());
@@ -244,6 +257,7 @@ impl GoEngine {
             capabilities: Arc::new(RwLock::new(None)),
             broadcast_tx: bcast_tx,
             is_alive,
+            readiness,
             _child: Arc::new(Mutex::new(child)),
         };
 
@@ -285,6 +299,10 @@ impl GoEngine {
                 }
             ],
             "capabilities": {
+                // gopls reports loading its packages as progress to a client that takes it.
+                "window": {
+                    "workDoneProgress": true
+                },
                 "workspace": {
                     "workspaceFolders": true,
                     "configuration": true
@@ -314,8 +332,14 @@ impl GoEngine {
         // Send initialized notification as required by LSP spec
         self.send_notification("initialized", serde_json::json!({}))
             .await?;
+        self.readiness.started();
 
         Ok(resp)
+    }
+
+    /// The package loading gopls is still doing, if any (#391).
+    pub fn busy(&self) -> Option<Busy> {
+        self.readiness.busy()
     }
 
     /// Send a typed JSON-RPC request and wait for the response.
@@ -324,6 +348,12 @@ impl GoEngine {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        // A question answered from the index waits until gopls has loaded its packages (#391).
+        let busy = if needs_index(method) {
+            self.readiness.wait(INDEX_WAIT).await
+        } else {
+            None
+        };
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
 
@@ -343,7 +373,12 @@ impl GoEngine {
 
         // Await response with timeout
         match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
-            Ok(Ok(val)) => Ok(val),
+            Ok(Ok(mut val)) => {
+                if let Some(busy) = busy {
+                    val[BUSY_MEMBER] = serde_json::to_value(busy)?;
+                }
+                Ok(val)
+            }
             Ok(Err(_)) => anyhow::bail!("gopls has exited while answering '{method}'"),
             Err(_) => {
                 let mut pending = self.pending_requests.lock().await;
@@ -565,5 +600,40 @@ func main() {
         let refs = engine.references(&file_uri, 4, 6).await.unwrap();
         assert!(refs.is_array());
         assert!(refs.as_array().unwrap().len() >= 2);
+    }
+
+    /// The first `workspace/symbol` of a fresh gopls waits for its package loading and finds
+    /// the function, however soon it is asked: taken as it came, it was empty (#391).
+    #[tokio::test]
+    async fn the_first_symbol_search_of_a_fresh_gopls_finds_the_function() {
+        if find_gopls_binary(None).is_none() {
+            eprintln!("Skipping: gopls not found");
+            return;
+        }
+        // Not `tempdir()`: its `.tmp` name is a directory Go tools skip, and gopls then finds the
+        // module's symbols in no package, only in the opened file once it has loaded it.
+        let dir = tempfile::Builder::new()
+            .prefix("prod-code-go-")
+            .tempdir()
+            .unwrap();
+        std::fs::write(
+            dir.path().join("go.mod"),
+            "module example.com/subject\n\ngo 1.22\n",
+        )
+        .unwrap();
+        let store = "package subject\n\n// Total sums the quantities.\nfunc Total(all []int) int {\n\tsum := 0\n\tfor _, q := range all {\n\t\tsum += q\n\t}\n\treturn sum\n}\n";
+        std::fs::write(dir.path().join("store.go"), store).unwrap();
+        let engine = GoEngine::load(dir.path(), GoConfig::default())
+            .await
+            .unwrap();
+        let uri = format!("file://{}", dir.path().join("store.go").to_string_lossy());
+        engine.did_open(&uri, store).await.unwrap();
+        let answer = engine
+            .send_request("workspace/symbol", serde_json::json!({ "query": "Total" }))
+            .await
+            .unwrap();
+        let hits = answer["result"].as_array().map(Vec::len).unwrap_or(0);
+        assert!(hits >= 1, "{answer}");
+        assert_eq!(engine.busy(), None);
     }
 }

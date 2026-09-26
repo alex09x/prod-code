@@ -1072,6 +1072,8 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    // Notes left by an earlier call are not this answer's (#391).
+    let _ = crate::session::take_indexing_notes(workspace_root);
     if tool_name == "code_references"
         && let Some(dirs) = args.get("also_in").and_then(|v| v.as_array())
         && !dirs.is_empty()
@@ -1110,7 +1112,7 @@ pub async fn execute_tool(
         args.get("path").and_then(|v| v.as_str()),
     )
     .await?;
-    match tool_name {
+    let result = match tool_name {
         "code_symbols" => handle_symbols(remote, workspace_root, &args).await,
         "code_safe_delete" => handle_safe_delete(remote, workspace_root, &args).await,
         "code_assists" | "code_assist" => {
@@ -1329,7 +1331,27 @@ pub async fn execute_tool(
         "code_sync" => handle_sync(remote, workspace_root, args).await,
 
         unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
+    };
+    with_indexing_notes(result, workspace_root)
+}
+
+/// A tool's answer with a note for every index question the language server answered while it
+/// was still loading or indexing: it may be incomplete, and says so instead of passing for the
+/// whole answer (#391).
+fn with_indexing_notes(
+    result: Result<McpToolCallResult>,
+    root: &Path,
+) -> Result<McpToolCallResult> {
+    let notes = crate::session::take_indexing_notes(root);
+    let mut result = result?;
+    for note in notes {
+        result.content.push(crate::protocol::McpContentItem::Text {
+            text: format!(
+                "(the language server was still {note} when asked: this answer may be incomplete)"
+            ),
+        });
     }
+    Ok(result)
 }
 
 async fn handle_sync(
@@ -5710,7 +5732,11 @@ pub async fn workspace_symbol_search(
     let age = crate::session::pooled_engine_age(remote, root, &anchor)
         .await
         .map(|age| age.saturating_sub(asked.elapsed()));
+    // A gateway that holds index questions until the server is ready has already waited: its
+    // empty answer is final (#391). The age is the guess for the others.
+    let gated = crate::session::pooled_index_gated(remote, root, &anchor).await;
     let retries = match age {
+        _ if gated => 0,
         Some(age) if age >= crate::session::INDEXING_GRACE => 0,
         Some(_) => 3,
         None => 1,

@@ -134,6 +134,10 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
                         engine_age_ms: said.get("engine_age_ms").and_then(|v| v.as_u64()),
+                        index_gated: said
+                            .get("index_gated")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
                     }))
                     .await?;
             }
@@ -185,6 +189,36 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     calls.fetch_add(1, Ordering::Relaxed);
                     answer(method, &params)
                 };
+                // A request of the server's own that the script wants passed on before the
+                // answer (`prod-code/server-request` returns it; it is given the question's id),
+                // as an older gateway passed on gopls's (#391).
+                if prod_code_protocol::readiness::needs_index(method) {
+                    let mut request = answer(
+                        "prod-code/server-request",
+                        &serde_json::json!({ "method": method }),
+                    );
+                    if request.get("method").is_some() {
+                        request["id"] = id.clone();
+                        framed
+                            .send(WireMessage::LspPayload(request.to_string()))
+                            .await?;
+                    }
+                }
+                // An index question the script says the server answered while still indexing
+                // (`prod-code/busy` returns the work) comes with the gateway's note (#391).
+                if prod_code_protocol::readiness::needs_index(method) {
+                    let busy = answer("prod-code/busy", &serde_json::json!({ "method": method }));
+                    if busy.get("title").is_some() {
+                        let note = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "method": prod_code_protocol::readiness::BUSY_NOTIFICATION,
+                            "params": busy
+                        });
+                        framed
+                            .send(WireMessage::LspPayload(note.to_string()))
+                            .await?;
+                    }
+                }
                 let response = serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": result });
                 framed
                     .send(WireMessage::LspPayload(response.to_string()))

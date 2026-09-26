@@ -111,6 +111,7 @@ async fn handle_client(
                         detected_engine: "rust".to_string(),
                         stale_paths: Vec::new(),
                         engine_age_ms: None,
+                        index_gated: false,
                     }))
                     .await?;
             }
@@ -2560,6 +2561,7 @@ where
                                 detected_engine: "rust".to_string(),
                                 stale_paths: Vec::new(),
                                 engine_age_ms: None,
+                                index_gated: false,
                             })),
                         ),
                         WireMessage::ExecRequest(req) => {

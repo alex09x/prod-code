@@ -804,6 +804,13 @@ pub fn sanitize_identifier(s: &str) -> String {
             }
         })
         .collect();
+    // Go tools skip a directory whose name begins with `.` or `_`: a copy named so hid its own
+    // module from gopls, whose first `workspace/symbol` found nothing (#391).
+    let sanitized = match sanitized.chars().next() {
+        Some('.') => format!("dot-{}", sanitized.trim_start_matches('.')),
+        Some('_') => format!("under-{}", sanitized.trim_start_matches('_')),
+        _ => sanitized,
+    };
     if sanitized.is_empty() {
         "workspace".to_string()
     } else {
@@ -1409,6 +1416,16 @@ mod tests {
         assert_eq!(manager.loaded_count().await, 2);
         assert!(manager.is_loaded(Path::new("/srv/ws/busy")).await);
         assert!(!manager.is_loaded(Path::new("/srv/ws/idle")).await);
+    }
+
+    /// A copy's name never begins with `.` or `_`, which Go tools skip as hidden (#391).
+    #[test]
+    fn a_copy_is_never_named_as_a_hidden_directory() {
+        assert_eq!(sanitize_identifier(".tmpZAcUGt"), "dot-tmpZAcUGt");
+        assert_eq!(sanitize_identifier("_scratch"), "under-scratch");
+        assert_eq!(sanitize_identifier("prod.codes"), "prod.codes");
+        assert_eq!(sanitize_identifier("my repo"), "my_repo");
+        assert_eq!(sanitize_identifier(""), "workspace");
     }
 
     /// Low on space, idle worktree copies go oldest first until enough is free, however young;
