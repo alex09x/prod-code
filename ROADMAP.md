@@ -180,6 +180,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - [x] Isolated server workspace and analysis database per git worktree (`<repo>--wt-<hash>`); first contact sends a size/hash manifest probe, the gateway seeds the copy from the origin repository and asks only for missing files (2026-09-19).
   - [x] Binary-safe file transfer: `FileDelta.content` is base64 on the wire (`base64_bytes` in the protocol crate), not a JSON byte array, which cost a four-fold inflation and dominated sync time. Shipped in `c2b36f3`; the round trip and the wire form are covered by tests in `prod-code-protocol`.
   - [x] Persistent MCP session: one long-lived session per checkout for the life of the process (`session::pooled_query`), which pushes local changes only when the file watcher saw any and re-opens the session when the gateway restarts. Shipped in `c2b36f3`. What remains is the CLI, where every invocation is a new process and pays connect + handshake once (~0.75 s measured over the LAN); the MCP server, which is how agents call it, pays it once per process.
+  - MCP sessions use one query lock per gateway/checkout/project (#430), so unrelated workspaces progress independently. Opening is bounded to 180 seconds; pooled query deadlines include waiting for the session, sync and engine loading (180 seconds normally, 300 for diagnostics, 900 for structural replacement). Timeout or cancellation discards the connection; a timeout is not replayed immediately.
 
 ---
 

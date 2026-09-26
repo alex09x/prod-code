@@ -26,7 +26,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 3.6 Python | basedpyright and copied virtual environments with corrected paths. | Copied environments are not shared mutable environments; semantic completeness follows the server. |
 | 3.7 Swift | sourcekit-lsp on the macOS node and per-project build indexing. | Cross-copy module cache remains absent; Linux Swift was not installed or tested. |
 | 4.1 MCP | Native tool discovery and typed dispatch in `mcp/src/tools.rs`. | Public help must describe each tool's actual languages and refusal cases. |
-| 4.2 Sync | Delta transfer, worktree seeding and persistent MCP sessions in `mcp/src/sync.rs` and `session.rs`. | CLI invocations still reconnect; timings depend on checkout size and cache state. |
+| 4.2 Sync | Delta transfer, worktree seeding and persistent MCP sessions in `mcp/src/sync.rs` and `session.rs`. | The #430 repair gives each pooled session its own lock and bounds opening and complete query waits; CLI invocations still reconnect and timings depend on checkout size and cache state. |
 | 5.1 Placement | Gossip-aware placement and remembered repository affinity. | Memory admission must also protect already-affined worktrees (#433). |
 | 5.2 Discovery | Seed-address discovery and cached gossip membership. | This is the documented replacement for DNS/SRV discovery, not an implementation of it. |
 | 5.3 Pressure | Memory/disk thresholds influence placement and idle eviction. | Concurrent resident analysis can still exceed memory; new-load reservations are being repaired (#433). |
