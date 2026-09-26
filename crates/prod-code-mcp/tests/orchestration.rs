@@ -636,6 +636,288 @@ async fn a_parameter_the_body_uses_is_not_dropped() {
     assert!(text.contains('`') && text.contains('b'), "{text}");
 }
 
+/// The functions of #442's reproduction: a reorder of two effectful arguments, of two owned
+/// parameters, a removed parameter whose argument does something, and a reorder and a removal
+/// of simple ones.
+const EFFECTS_LIB: &str = "pub mod other;\n\npub struct Noisy(pub &'static str);\n\nimpl Drop for Noisy {\n    fn drop(&mut self) {}\n}\n\npub fn mark(s: &'static str) -> &'static str {\n    s\n}\n\npub fn pair(first: &str, second: &str) -> usize {\n    first.len() + second.len()\n}\n\npub fn owned(x: Noisy, y: Noisy) -> usize {\n    x.0.len() + y.0.len()\n}\n\npub fn unused(a: u32, _b: &str) -> u32 {\n    a\n}\n\npub fn simple(n: u32, s: &str, r: &u32) -> usize {\n    n as usize + s.len() + *r as usize\n}\n\npub fn demo(k: &u32) -> usize {\n    let (x, y) = (Noisy(\"x\"), Noisy(\"y\"));\n    owned(x, y) + unused(1, mark(\"b\")) as usize + simple(3, \"lit\", k)\n}\n";
+/// A caller in another file, calling through a path.
+const EFFECTS_OTHER: &str =
+    "pub fn run() -> usize {\n    crate::pair(crate::mark(\"a\"), crate::mark(\"b\"))\n}\n";
+
+/// The 1-based line and column where `needle` first occurs in `text`.
+fn position_of(text: &str, needle: &str) -> (u32, u32) {
+    let at = text.find(needle).expect(needle);
+    let line = text[..at].matches('\n').count() as u32 + 1;
+    let col = (at - text[..at].rfind('\n').map_or(0, |i| i + 1)) as u32 + 1;
+    (line, col)
+}
+
+/// A gateway that lists `refs` as the references of anything, answers a structural rewrite with
+/// `rewrite` (a file and its whole new text), and finds no errors.
+async fn effects_gateway(
+    refs: Vec<(PathBuf, u32, u32)>,
+    rewrite: Option<(PathBuf, String)>,
+) -> SocketAddr {
+    scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/references" => serde_json::Value::Array(
+            refs.iter()
+                .flat_map(|(p, l, c)| {
+                    answers::locations(p, &[(*l, *c)])
+                        .as_array()
+                        .unwrap()
+                        .clone()
+                })
+                .collect(),
+        ),
+        "prodCode/structuralReplace" => match &rewrite {
+            Some((p, new_text)) => {
+                answers::whole_file(p, &std::fs::read_to_string(p).unwrap(), new_text)
+            }
+            None => serde_json::Value::Null,
+        },
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await
+}
+
+/// #442. A signature change that type-checks can still change what the program does: the
+/// arguments of `pair(mark("a"), mark("b"))` would run the other way round, `owned`'s two
+/// `Noisy` parameters would be dropped the other way round, and removing `unused`'s second
+/// parameter would remove the `mark("b")` passed for it. Each is refused with the call site
+/// before anything is written, and `force` does not change that. Literals and references are
+/// reordered and removed as before.
+#[tokio::test]
+async fn a_signature_change_that_changes_effects_or_drop_order_is_refused() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", EFFECTS_LIB);
+    let other = write(&ws, "src/other.rs", EFFECTS_OTHER);
+    commit(&ws);
+    let params = |names: &[&str]| -> Vec<prod_code_mcp::signature::Param> {
+        names
+            .iter()
+            .map(|n| prod_code_mcp::signature::parse_param(n).unwrap())
+            .collect()
+    };
+    let at = |text: &str, needle: &str, path: &PathBuf| {
+        let (l, c) = position_of(text, needle);
+        (path.clone(), l, c)
+    };
+    let unchanged = |ws: &Workspace| {
+        assert_eq!(ws.read("src/lib.rs"), EFFECTS_LIB, "nothing was written");
+        assert_eq!(
+            ws.read("src/other.rs"),
+            EFFECTS_OTHER,
+            "nothing was written"
+        );
+    };
+
+    // A cross-file caller whose two arguments both do something.
+    let remote = effects_gateway(vec![at(EFFECTS_OTHER, "pair(", &other)], None).await;
+    let (l, c) = position_of(EFFECTS_LIB, "pair(first");
+    let err = prod_code_mcp::signature::change(
+        remote,
+        &root,
+        &lib,
+        l,
+        c,
+        &params(&["second", "first"]),
+        true,
+        true,
+    )
+    .await
+    .expect_err("the arguments would be evaluated the other way round");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains(
+            "src/other.rs:2:12: `crate::mark(\"a\")` and `crate::mark(\"b\")` would be evaluated \
+             in the opposite order"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("`force` does not override this"), "{text}");
+    unchanged(&ws);
+
+    // Two owned parameters: the callee drops them in reverse order of declaration.
+    let remote = effects_gateway(vec![at(EFFECTS_LIB, "owned(x, y)", &lib)], None).await;
+    let (l, c) = position_of(EFFECTS_LIB, "owned(x: Noisy");
+    let err = prod_code_mcp::signature::change(
+        remote,
+        &root,
+        &lib,
+        l,
+        c,
+        &params(&["y", "x"]),
+        true,
+        true,
+    )
+    .await
+    .expect_err("the parameters would be dropped the other way round");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("`owned` drops `y: Noisy` before `x: Noisy`"),
+        "{text}"
+    );
+    unchanged(&ws);
+
+    // A removed parameter whose argument does something, forced past the body check.
+    let remote = effects_gateway(vec![at(EFFECTS_LIB, "unused(1", &lib)], None).await;
+    let (l, c) = position_of(EFFECTS_LIB, "unused(a: u32");
+    let err =
+        prod_code_mcp::signature::change(remote, &root, &lib, l, c, &params(&["a"]), true, true)
+            .await
+            .expect_err("the removed argument's effect would go with it");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("src/lib.rs:31:19: `mark(\"b\")` is evaluated for `_b`"),
+        "{text}"
+    );
+    unchanged(&ws);
+
+    // A literal, a string and a reference keep their meaning in any order: written as before.
+    let rewritten = EFFECTS_LIB.replace("simple(3, \"lit\", k)", "simple(k, 3, \"lit\")");
+    let remote = effects_gateway(
+        vec![at(EFFECTS_LIB, "simple(3", &lib)],
+        Some((lib.clone(), rewritten)),
+    )
+    .await;
+    let (l, c) = position_of(EFFECTS_LIB, "simple(n: u32");
+    let change = prod_code_mcp::signature::change(
+        remote,
+        &root,
+        &lib,
+        l,
+        c,
+        &params(&["r", "n", "s"]),
+        true,
+        false,
+    )
+    .await
+    .expect("simple arguments are reordered");
+    assert!(change.applied);
+    let now = ws.read("src/lib.rs");
+    assert!(
+        now.contains("pub fn simple(r: &u32, n: u32, s: &str) -> usize {"),
+        "{now}"
+    );
+    assert!(now.contains("simple(k, 3, \"lit\")"), "{now}");
+}
+
+/// #442. A reference list the analyzer could not give is not an empty one. Whether the body
+/// still uses a removed parameter, which calls gain an `.await`, and which call sites the
+/// rewrite reached are all asked of it; a reply that is not a list of locations, or an entry
+/// without a file or position, stops the change before anything is written, forced or not.
+#[tokio::test]
+async fn a_failed_reference_lookup_stops_a_signature_change_even_when_forced() {
+    let ws = workspace();
+    let root = ws.root();
+    let lib = write(&ws, "src/lib.rs", EFFECTS_LIB);
+    write(&ws, "src/other.rs", EFFECTS_OTHER);
+    commit(&ws);
+    let reply = |refs: serde_json::Value| {
+        let l = lib.clone();
+        scripted_gateway(Arc::new(move |method, _| match method {
+            "textDocument/references" => refs.clone(),
+            "prodCode/structuralReplace" => answers::whole_file(&l, EFFECTS_LIB, EFFECTS_LIB),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let not_a_list = serde_json::json!({ "error": "the index is not ready" });
+    let no_position = serde_json::json!([{ "uri": answers::uri(&lib) }]);
+    let keep = |names: &[&str]| -> Vec<prod_code_mcp::signature::Param> {
+        names
+            .iter()
+            .map(|n| prod_code_mcp::signature::parse_param(n).unwrap())
+            .collect()
+    };
+    let (sl, sc) = position_of(EFFECTS_LIB, "simple(n: u32");
+    let (ul, uc) = position_of(EFFECTS_LIB, "unused(a: u32");
+    let (ml, mc) = position_of(EFFECTS_LIB, "mark(s:");
+
+    // The callers of a reordered function, forced.
+    let err = prod_code_mcp::signature::change(
+        reply(not_a_list.clone()).await,
+        &root,
+        &lib,
+        sl,
+        sc,
+        &keep(&["r", "n", "s"]),
+        true,
+        true,
+    )
+    .await
+    .expect_err("no list, no change");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("cannot list the references to `simple`") && text.contains("not a list"),
+        "{text}"
+    );
+    let err = prod_code_mcp::signature::change(
+        reply(no_position).await,
+        &root,
+        &lib,
+        sl,
+        sc,
+        &keep(&["r", "n", "s"]),
+        true,
+        true,
+    )
+    .await
+    .expect_err("an entry without a position is not dropped");
+    assert!(
+        format!("{err:#}").contains("reference 1 of 1 from the analyzer has no file or start"),
+        "{err:#}"
+    );
+
+    // Whether the body still uses a removed parameter.
+    let err = prod_code_mcp::signature::change(
+        reply(not_a_list.clone()).await,
+        &root,
+        &lib,
+        ul,
+        uc,
+        &keep(&["a"]),
+        true,
+        false,
+    )
+    .await
+    .expect_err("an unanswered question is not \"unused\"");
+    assert!(
+        format!("{err:#}").contains("cannot ask whether the body still uses `_b`"),
+        "{err:#}"
+    );
+
+    // The calls that would gain an `.await`, forced.
+    let err = prod_code_mcp::signature::change_with(
+        reply(not_a_list).await,
+        &root,
+        &lib,
+        ml,
+        mc,
+        &keep(&["s"]),
+        &prod_code_mcp::signature::Modifiers {
+            asyncness: Some(true),
+            ..Default::default()
+        },
+        true,
+        true,
+    )
+    .await
+    .expect_err("no callers is not the same as callers unknown");
+    assert!(
+        format!("{err:#}").contains("cannot list the references to `mark`"),
+        "{err:#}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), EFFECTS_LIB, "nothing was written");
+    assert_eq!(
+        ws.read("src/other.rs"),
+        EFFECTS_OTHER,
+        "nothing was written"
+    );
+}
+
 /// A fixture is built from the declaration the analyzer points at, and reported as verified
 /// when the analyzer accepts it.
 #[tokio::test]

@@ -14,7 +14,14 @@
 //!   was not rewritten is named instead of silently missing from a count;
 //! - a parameter that the body still uses is not dropped without saying where it is used;
 //! - the whole change — declaration and call sites together — is type-checked in an overlay
-//!   before anything is written, which is what catches a reorder of two different types.
+//!   before anything is written, which is what catches a reorder of two different types;
+//! - a change that type-checks can still change what the program does: arguments are evaluated
+//!   left to right and parameters are dropped in reverse order of declaration, so a reorder of
+//!   `f(mark(a), mark(b))` or of two owned values, or a removed parameter whose argument does
+//!   something, is refused with the call site, `force` or not (#442).
+//!
+//! A reference list that cannot be had is an error, never an empty list: an empty one reads as
+//! "no callers" and "nothing to reconcile".
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
@@ -771,15 +778,29 @@ pub async fn change_with(
     if !dropped.is_empty() && !force {
         let mut used = Vec::new();
         for gone in &dropped {
-            let Some(d) = declared.iter().find(|d| &d.name == gone) else {
-                continue;
-            };
-            let at = text[open..close].find(&d.raw).map(|i| open + i);
-            let Some(at) = at else { continue };
+            let d = declared
+                .iter()
+                .find(|d| &d.name == gone)
+                .with_context(|| format!("`{gone}` is not a declared parameter"))?;
+            anyhow::ensure!(
+                is_ident(gone),
+                "`{gone}` is a pattern, and whether the body still uses what it binds cannot be \
+                 asked; nothing was written. Pass `force: true` to remove it anyway"
+            );
+            // The name itself, not the start of `mut b: T` or of an attribute before it.
+            let head = split_at_top_level(&d.raw, ':').map_or(d.raw.as_str(), |(h, _)| h);
+            let at = text[open..close]
+                .find(&d.raw)
+                .and_then(|i| head.rfind(gone.as_str()).map(|n| open + i + n))
+                .with_context(|| {
+                    format!("`{gone}` is not where the parameter list says; nothing was written")
+                })?;
             let (l, c) = line_col_at(&text, at);
             let refs = references(remote, root, file, l, c)
                 .await
-                .unwrap_or_default();
+                .with_context(|| {
+                    format!("cannot ask whether the body still uses `{gone}`; nothing was written")
+                })?;
             let inside: Vec<String> = refs
                 .into_iter()
                 .filter(|(p, rl, _)| p == file && *rl != l)
@@ -811,6 +832,38 @@ pub async fn change_with(
         .collect();
     let order_changed =
         args.len() != declared.len() || args.iter().enumerate().any(|(i, a)| *a != Some(i));
+    let head_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let was_async = text[head_start..offset]
+        .split_whitespace()
+        .any(|w| w == "async");
+    let async_wanted = modifiers.asyncness.filter(|w| *w != was_async);
+    anyhow::ensure!(
+        async_wanted.is_none() || !order_changed,
+        "change `async` and the parameter list in two steps"
+    );
+
+    // Every reference to the function, asked once and before anything is rewritten: the
+    // effects check, the `.await`s and the reconciliation all stand on it. A question that
+    // fails stops the change, forced or not — an empty list would read as "no callers".
+    let refs = references(remote, root, file, line, col)
+        .await
+        .with_context(|| format!("cannot list the references to `{name}`; nothing was written"))?;
+
+    // What the call sites will do, not only how they are written. `force` writes a change that
+    // does not compile, which the author then sees; it does not write one that compiles and
+    // quietly runs differently.
+    if order_changed {
+        let calls = call_sites(root, &refs)?;
+        let hazards = effect_hazards(&name, &declared, receiver.is_some(), &args, &calls);
+        anyhow::ensure!(
+            hazards.is_empty(),
+            "the new parameter list would change what the program does, not only how the calls \
+             are written; nothing was written, and `force` does not override this:\n  {}\nbind \
+             such an argument to a local before the call (`let v = …;`) and pass the local, or \
+             keep owned parameters in their order",
+            hazards.join("\n  ")
+        );
+    }
 
     // Call sites first, while the declaration still has the arity the rule matches.
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -824,26 +877,15 @@ pub async fn change_with(
     }
 
     // `async` in or out: every call the analyzer knows gains or loses its `.await`.
-    let head_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
-    let was_async = text[head_start..offset]
-        .split_whitespace()
-        .any(|w| w == "async");
     let mut asyncness_change = None;
     let mut not_async = Vec::new();
-    if let Some(want) = modifiers.asyncness.filter(|w| *w != was_async) {
-        anyhow::ensure!(
-            !order_changed,
-            "change `async` and the parameter list in two steps"
-        );
+    if let Some(want) = async_wanted {
         asyncness_change = Some((was_async, want));
-        let refs = references(remote, root, file, line, col)
-            .await
-            .unwrap_or_default();
         let mut edits: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
         for (path, rl, rc) in &refs {
             let t = match rewritten.get(path) {
                 Some(t) => t.clone(),
-                None => std::fs::read_to_string(path).unwrap_or_default(),
+                None => read_caller(path)?,
             };
             let Some(end) = offset_of(&t, *rl, *rc)
                 .and_then(|at| param_span(&t, at))
@@ -861,7 +903,7 @@ pub async fn change_with(
         for (path, mut ends) in edits {
             let mut t = match rewritten.get(&path) {
                 Some(t) => t.clone(),
-                None => std::fs::read_to_string(&path).unwrap_or_default(),
+                None => read_caller(&path)?,
             };
             ends.sort_unstable();
             for end in ends.into_iter().rev() {
@@ -935,15 +977,12 @@ pub async fn change_with(
     // Line proximity is not good enough — a reference on the line above a rewritten one looks
     // rewritten and is not — so each reference is matched against the lines of its own call,
     // from the callee's name to the closing parenthesis.
-    let refs = references(remote, root, file, line, col)
-        .await
-        .unwrap_or_default();
     let mut unmatched = Vec::new();
     let mut unexpected = Vec::new();
     let mut originals: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut touched: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
     for (path, new_text) in &rewritten {
-        let old = std::fs::read_to_string(path).unwrap_or_default();
+        let old = read_caller(path)?;
         touched.insert(path.clone(), changed_lines(&old, new_text));
         originals.insert(path.clone(), old);
     }
@@ -1191,25 +1230,453 @@ pub(crate) async fn references(
             res = ask().await?;
         }
     }
-    let mut out = Vec::new();
-    for loc in res.as_array().into_iter().flatten() {
-        let Some(uri) = loc.get("uri").and_then(|u| u.as_str()) else {
-            continue;
+    parse_locations(&res)
+}
+
+/// The locations of a `textDocument/references` answer, 1-based. `null` is the protocol's "none";
+/// any other answer that is not a list of locations, and any entry without a file or a start, is
+/// an error: a planner that dropped it would rewrite every call site but that one.
+fn parse_locations(res: &serde_json::Value) -> Result<Vec<Reference>> {
+    if res.is_null() {
+        return Ok(Vec::new());
+    }
+    let entries = res
+        .as_array()
+        .with_context(|| format!("the analyzer's references are not a list: {}", brief(res)))?;
+    let mut out = Vec::with_capacity(entries.len());
+    for (n, loc) in entries.iter().enumerate() {
+        let position = |key: &str| {
+            loc.pointer(&format!("/range/start/{key}"))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+        };
+        let (Some(uri), Some(l), Some(c)) = (
+            loc.get("uri").and_then(|u| u.as_str()),
+            position("line"),
+            position("character"),
+        ) else {
+            anyhow::bail!(
+                "reference {} of {} from the analyzer has no file or start position: {}",
+                n + 1,
+                entries.len(),
+                brief(loc)
+            );
         };
         let path = PathBuf::from(crate::remote_fs::uri_to_path(uri));
-        let l = loc
-            .pointer("/range/start/line")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32
-            + 1;
-        let c = loc
-            .pointer("/range/start/character")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32
-            + 1;
-        out.push((path, l, c));
+        out.push((path, l + 1, c + 1));
     }
     Ok(out)
+}
+
+/// An answer, cut short for an error message.
+fn brief(value: &serde_json::Value) -> String {
+    let text = value.to_string();
+    match text.char_indices().nth(200) {
+        Some((at, _)) => format!("{}…", &text[..at]),
+        None => text,
+    }
+}
+
+/// The text of a file the change reads, a caller or one it rewrites. A file that cannot be read
+/// stops the change: read as empty, its calls would be neither checked nor rewritten.
+fn read_caller(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}; nothing was written", path.display()))
+}
+
+/// A call of the function: where, for the report, and its arguments as written.
+#[derive(Debug)]
+struct CallSite {
+    at: String,
+    args: Vec<String>,
+}
+
+/// The references that are calls, with their arguments. A reference that does not call the
+/// function (a use as a value, an import) has none and is left to the reconciliation, which
+/// names it; a reference whose position does not hold a name, or whose argument list does not
+/// close, stops the change.
+fn call_sites(root: &Path, refs: &[Reference]) -> Result<Vec<CallSite>> {
+    let mut texts: BTreeMap<&Path, String> = BTreeMap::new();
+    let mut out = Vec::new();
+    for (path, l, c) in refs {
+        if !texts.contains_key(path.as_path()) {
+            texts.insert(path.as_path(), read_caller(path)?);
+        }
+        let text = &texts[path.as_path()];
+        let at = format!("{}:{l}:{c}", display(root, path));
+        let offset = offset_of(text, *l, *c)
+            .filter(|o| text[*o..].starts_with(|ch: char| ch.is_alphanumeric() || ch == '_'))
+            .with_context(|| {
+                format!(
+                    "the analyzer's reference {at} does not point at a name; the file may have \
+                     changed since it was read. Nothing was written"
+                )
+            })?;
+        if let Some(args) = call_arguments(text, offset).with_context(|| {
+            format!("the arguments of the call at {at} could not be read; nothing was written")
+        })? {
+            out.push(CallSite { at, args });
+        }
+    }
+    Ok(out)
+}
+
+/// The arguments of the call whose callee's name starts at `at` (`f(…)`, `recv.f(…)`,
+/// `Type::f::<T>(…)`), split at their top-level commas. `Ok(None)` when the name is not called
+/// there; an error when the argument list does not close.
+fn call_arguments(text: &str, at: usize) -> Result<Option<Vec<String>>> {
+    let bytes = text.as_bytes();
+    let skip_ws = |i: usize| i + (text[i..].len() - text[i..].trim_start().len());
+    let mut i = at;
+    while i < bytes.len()
+        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] >= 0x80)
+    {
+        i += 1;
+    }
+    i = skip_ws(i);
+    if text[i..].starts_with("::") {
+        let open = skip_ws(i + 2);
+        if !text[open..].starts_with('<') {
+            return Ok(None);
+        }
+        let mut depth = 0i32;
+        let mut close = None;
+        for (k, c) in text[open..].char_indices() {
+            match c {
+                '<' => depth += 1,
+                '>' if !text[..open + k].ends_with('-') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(open + k + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i = skip_ws(close.context("the turbofish does not close")?);
+    }
+    if !text[i..].starts_with('(') {
+        return Ok(None);
+    }
+    split_arguments(text, i)
+        .map(Some)
+        .context("the argument list does not close")
+}
+
+/// The arguments between the `(` at `open` and its `)`. Commas count only outside brackets,
+/// string and character literals, comments and turbofish generics (`Vec::<(u8, u8)>::new()`).
+fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
+    let s = text.as_bytes();
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let mut args = Vec::new();
+    let (mut depth, mut angle) = (0i32, 0i32);
+    let mut start = open + 1;
+    let mut i = open + 1;
+    while i < s.len() {
+        let c = s[i];
+        let prev = if i > open + 1 { s[i - 1] } else { b' ' };
+        match c {
+            // A raw string (`r"…"`, `r#"…"#`, `br"…"`): no escapes, closed by `"` and its hashes.
+            b'r' if !ident(prev)
+                || (matches!(prev, b'b' | b'c') && (i < 2 || !ident(s[i - 2]))) =>
+            {
+                let mut j = i + 1;
+                while s.get(j) == Some(&b'#') {
+                    j += 1;
+                }
+                if s.get(j) == Some(&b'"') {
+                    let close = format!("\"{}", "#".repeat(j - i - 1));
+                    i = text[j + 1..].find(&close)? + j + 1 + close.len();
+                    continue;
+                }
+            }
+            b'"' => {
+                let mut j = i + 1;
+                loop {
+                    match s.get(j)? {
+                        b'\\' => j += 2,
+                        b'"' => break,
+                        _ => j += 1,
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            // A character literal; a lifetime has no closing quote and is read on.
+            b'\'' => {
+                if s.get(i + 1) == Some(&b'\\') {
+                    i = text.get(i + 3..)?.find('\'')? + i + 4;
+                    continue;
+                }
+                let len = text[i + 1..].chars().next()?.len_utf8();
+                if s.get(i + 1 + len) == Some(&b'\'') {
+                    i += 2 + len;
+                    continue;
+                }
+            }
+            b'/' if s.get(i + 1) == Some(&b'/') => {
+                i = text[i..].find('\n').map_or(s.len(), |n| i + n);
+                continue;
+            }
+            b'/' if s.get(i + 1) == Some(&b'*') => {
+                i = text[i + 2..].find("*/")? + i + 4;
+                continue;
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' if depth > 0 => depth -= 1,
+            b')' => {
+                let last = text[start..i].trim();
+                if !last.is_empty() {
+                    args.push(last.to_string());
+                }
+                return Some(args);
+            }
+            b']' | b'}' => return None,
+            b'<' if angle > 0 || text[..i].trim_end().ends_with("::") => angle += 1,
+            b'>' if angle > 0 && prev != b'-' => angle -= 1,
+            b',' if depth == 0 && angle == 0 => {
+                args.push(text[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// What evaluating an argument can do, as far as its text shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArgKind {
+    /// A literal: nothing to evaluate, and nothing another argument does changes it.
+    Literal,
+    /// A read of a place (`x`, `a.b`, `&mut x`, `x as u64`): no effect of its own, but another
+    /// argument's effect can change what it reads.
+    Place,
+    /// Anything else: a call, a macro, an operator, an index, `?`, a block — it may do
+    /// something, or panic.
+    Effectful,
+}
+
+fn classify_arg(expr: &str) -> ArgKind {
+    let e = expr.trim();
+    if let Some(rest) = e.strip_prefix('&') {
+        let rest = rest.trim_start();
+        let rest = match rest.strip_prefix("mut") {
+            Some(r) if r.starts_with(char::is_whitespace) => r,
+            _ => rest,
+        };
+        return classify_arg(rest);
+    }
+    if let Some((value, ty)) = e.rsplit_once(" as ")
+        && is_path(ty.trim())
+    {
+        return classify_arg(value);
+    }
+    if is_literal(e) {
+        ArgKind::Literal
+    } else if is_place(e) {
+        ArgKind::Place
+    } else {
+        ArgKind::Effectful
+    }
+}
+
+fn is_literal(e: &str) -> bool {
+    if matches!(e, "true" | "false" | "()") {
+        return true;
+    }
+    let number = e.strip_prefix('-').unwrap_or(e);
+    if number.starts_with(|c: char| c.is_ascii_digit()) {
+        return !number.contains("..")
+            && number
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    }
+    is_string_literal(e) || is_char_literal(e)
+}
+
+fn is_string_literal(e: &str) -> bool {
+    let Some(quote) = e.find('"') else {
+        return false;
+    };
+    let prefix = &e[..quote];
+    let body = &e[quote + 1..];
+    if matches!(prefix, "" | "b" | "c") {
+        let mut escaped = false;
+        for (i, c) in body.char_indices() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => return i + 1 == body.len(),
+                _ => {}
+            }
+        }
+        return false;
+    }
+    let raw = prefix.strip_prefix(['b', 'c']).unwrap_or(prefix);
+    let Some(hashes) = raw.strip_prefix('r') else {
+        return false;
+    };
+    if !hashes.chars().all(|c| c == '#') {
+        return false;
+    }
+    let close = format!("\"{hashes}");
+    body.find(&close) == Some(body.len().wrapping_sub(close.len()))
+}
+
+fn is_char_literal(e: &str) -> bool {
+    let inner = e
+        .strip_prefix("b'")
+        .or_else(|| e.strip_prefix('\''))
+        .and_then(|r| r.strip_suffix('\''));
+    match inner {
+        Some("\\'") => true,
+        Some(i) if i.starts_with('\\') => i.len() > 1 && !i[1..].contains('\''),
+        Some(i) => i.chars().count() == 1,
+        None => false,
+    }
+}
+
+/// `x`, `a::B`, `self.field.0`: a path, then fields (`.await` is not one).
+fn is_place(e: &str) -> bool {
+    let mut parts = e.split('.');
+    parts.next().is_some_and(is_path)
+        && parts.all(|p| {
+            (is_ident(p) && p != "await")
+                || (!p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+        })
+}
+
+fn is_path(e: &str) -> bool {
+    let e = e.strip_prefix("::").unwrap_or(e);
+    !e.is_empty() && e.split("::").all(is_ident)
+}
+
+/// Whether a value of this type is dropped without running any code: references, raw and
+/// function pointers, the primitive scalars, and tuples, arrays and options of those. Anything
+/// else — `String`, a generic `T`, a type of the crate's own — may have a `Drop` whose order
+/// shows.
+fn drop_free(ty: &str) -> bool {
+    const SCALARS: [&str; 17] = [
+        "bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+        "i128", "isize", "f32", "f64", "()",
+    ];
+    let ty = ty.trim();
+    if SCALARS.contains(&ty)
+        || ty.starts_with('&')
+        || ty.starts_with("*const ")
+        || ty.starts_with("*mut ")
+        || ty.starts_with("fn(")
+        || ty.starts_with("fn (")
+        || ty.starts_with("unsafe fn")
+        || ty.starts_with("extern ")
+    {
+        return true;
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        return split_at_top_level(inner, ';').is_some_and(|(elem, _)| drop_free(elem));
+    }
+    if let Some(inner) = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        return split_params(inner).iter().all(|t| drop_free(t));
+    }
+    if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
+        return drop_free(inner);
+    }
+    false
+}
+
+/// The type a parameter is declared with, empty when it has none written.
+fn declared_type(d: &Declared) -> &str {
+    split_at_top_level(&d.raw, ':').map_or("", |(_, ty)| ty.trim())
+}
+
+/// What the new argument order `args` and the parameters it leaves out would change at run time,
+/// one line per place: two arguments that would be evaluated the other way round when either
+/// can have an effect the other sees, two owned parameters that would be dropped the other way
+/// round, and a removed argument that does something or is an owned value the function drops.
+/// The receiver is evaluated first before and after, so it is not an argument here; a call
+/// written `Type::f(recv, …)` passes it first and it is skipped.
+fn effect_hazards(
+    name: &str,
+    declared: &[Declared],
+    has_receiver: bool,
+    args: &[Option<usize>],
+    calls: &[CallSite],
+) -> Vec<String> {
+    let kept: Vec<usize> = args.iter().flatten().copied().collect();
+    // (i, j), declared i before j, that the new order passes j before i.
+    let mut swapped = Vec::new();
+    for (p, &later) in kept.iter().enumerate() {
+        for &earlier in &kept[p + 1..] {
+            if earlier < later {
+                swapped.push((earlier, later));
+            }
+        }
+    }
+    let removed: Vec<usize> = (0..declared.len()).filter(|i| !kept.contains(i)).collect();
+    let mut out = Vec::new();
+    for &(i, j) in &swapped {
+        let (a, b) = (&declared[i], &declared[j]);
+        if !drop_free(declared_type(a)) && !drop_free(declared_type(b)) {
+            out.push(format!(
+                "`{name}` drops `{}` before `{}` when it returns (parameters are dropped in \
+                 reverse order of declaration); the new order drops `{}` first",
+                b.raw.trim(),
+                a.raw.trim(),
+                a.name
+            ));
+        }
+    }
+    for call in calls {
+        let own = if has_receiver && call.args.len() == declared.len() + 1 {
+            &call.args[1..]
+        } else {
+            &call.args[..]
+        };
+        if own.len() != declared.len() {
+            out.push(format!(
+                "{}: the call passes {} argument(s) and `{name}` declares {}, so what the \
+                 rewrite does to it cannot be checked",
+                call.at,
+                own.len(),
+                declared.len()
+            ));
+            continue;
+        }
+        let kinds: Vec<ArgKind> = own.iter().map(|a| classify_arg(a)).collect();
+        for &d in &removed {
+            let param = &declared[d];
+            if kinds[d] == ArgKind::Effectful {
+                out.push(format!(
+                    "{}: `{}` is evaluated for `{}`, and removing the parameter removes what it \
+                     does",
+                    call.at, own[d], param.name
+                ));
+            } else if !drop_free(declared_type(param)) {
+                out.push(format!(
+                    "{}: `{}` is moved into `{}` and dropped when `{name}` returns; without the \
+                     parameter it is dropped at another time, or not at all",
+                    call.at,
+                    own[d],
+                    param.raw.trim()
+                ));
+            }
+        }
+        for &(i, j) in &swapped {
+            let independent = kinds[i] == ArgKind::Literal
+                || kinds[j] == ArgKind::Literal
+                || (kinds[i] == ArgKind::Place && kinds[j] == ArgKind::Place);
+            if !independent {
+                out.push(format!(
+                    "{}: `{}` and `{}` would be evaluated in the opposite order",
+                    call.at, own[i], own[j]
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// How many files [`unreported_callers`] names at most: each one is opened and checked with the
@@ -1395,6 +1862,252 @@ mod tests {
             .unwrap();
         assert!(refs.is_empty());
         assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// #442: a reply that is not a list of locations, or an entry without a file or a start, is
+    /// an error rather than a caller that silently is not there; `null` is the protocol's "none".
+    #[test]
+    fn a_malformed_reference_answer_is_an_error_not_a_missing_caller() {
+        assert!(
+            parse_locations(&serde_json::Value::Null)
+                .unwrap()
+                .is_empty()
+        );
+        let good = serde_json::json!([
+            { "uri": "file:///w/a.rs", "range": { "start": { "line": 1, "character": 4 } } }
+        ]);
+        assert_eq!(
+            parse_locations(&good).unwrap(),
+            [(PathBuf::from("/w/a.rs"), 2, 5)]
+        );
+        let cases = [
+            (serde_json::json!({ "error": "busy" }), "not a list"),
+            (
+                serde_json::json!([good[0].clone(), { "range": good[0]["range"].clone() }]),
+                "reference 2 of 2",
+            ),
+            (
+                serde_json::json!([{ "uri": "file:///w/a.rs" }]),
+                "reference 1 of 1",
+            ),
+            (
+                serde_json::json!([{ "uri": "file:///w/a.rs",
+                    "range": { "start": { "line": -1, "character": 0 } } }]),
+                "no file or start position",
+            ),
+        ];
+        for (reply, why) in cases {
+            let err = parse_locations(&reply).unwrap_err().to_string();
+            assert!(err.contains(why), "{reply}: {err}");
+        }
+    }
+
+    /// #442: what the text of an argument says about evaluating it.
+    #[test]
+    fn arguments_are_told_apart_by_what_evaluating_them_can_do() {
+        for literal in [
+            "1", "-2", "0x1F_u8", "1.5f32", "true", "\"a, b\"", "b\"x\"", "r#\"q\"#", "'c'",
+            "'\\n'", "b'x'", "&5", "&\"lit\"",
+        ] {
+            assert_eq!(classify_arg(literal), ArgKind::Literal, "{literal}");
+        }
+        for place in [
+            "x",
+            "self.a.0",
+            "crate::LIMIT",
+            "&k",
+            "&mut buf",
+            "& mut buf",
+            "n as u64",
+            "&self.items",
+        ] {
+            assert_eq!(classify_arg(place), ArgKind::Place, "{place}");
+        }
+        for effect in [
+            "mark(\"a\")",
+            "x.len()",
+            "v[0]",
+            "a + 1",
+            "*r",
+            "f()?",
+            "fut.await",
+            "vec![1]",
+            "{ x }",
+            "\"a\" \"b\"",
+            "1..2",
+            "\"a\".len()",
+            "Noisy(\"x\")",
+            "|x| x",
+            "&mut make()",
+        ] {
+            assert_eq!(classify_arg(effect), ArgKind::Effectful, "{effect}");
+        }
+    }
+
+    #[test]
+    fn call_arguments_are_split_at_their_own_commas_only() {
+        let text = "let n = join(\"a, (b\", ',', Vec::<(u8, u8)>::new(), f(x, y), r#\"q\"#, 'a', /* c, */ z);\n";
+        assert_eq!(
+            call_arguments(text, text.find("join").unwrap())
+                .unwrap()
+                .unwrap(),
+            [
+                "\"a, (b\"",
+                "','",
+                "Vec::<(u8, u8)>::new()",
+                "f(x, y)",
+                "r#\"q\"#",
+                "'a'",
+                "/* c, */ z"
+            ]
+        );
+        let method = "    make().send::<u8>(a, b)\n";
+        assert_eq!(
+            call_arguments(method, method.find("send").unwrap())
+                .unwrap()
+                .unwrap(),
+            ["a", "b"]
+        );
+        // A use as a value and an import are not calls.
+        let value = "let g = join;\nmap(join)\n";
+        assert_eq!(
+            call_arguments(value, value.find("join").unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            call_arguments(value, value.rfind("join").unwrap()).unwrap(),
+            None
+        );
+        assert_eq!(
+            call_arguments("join(\n    a,\n    b,\n)", 0)
+                .unwrap()
+                .unwrap(),
+            ["a", "b"]
+        );
+        assert!(call_arguments("join()", 0).unwrap().unwrap().is_empty());
+        assert!(call_arguments("join(a, b", 0).is_err());
+    }
+
+    #[test]
+    fn only_types_without_drop_code_are_drop_free() {
+        for free in [
+            "u32",
+            "&str",
+            "&mut Vec<String>",
+            "*const u8",
+            "fn(u32) -> u32",
+            "(u8, bool)",
+            "[u8; 4]",
+            "Option<&T>",
+            "()",
+        ] {
+            assert!(drop_free(free), "{free}");
+        }
+        for owned in [
+            "String",
+            "Vec<u8>",
+            "T",
+            "impl Fn()",
+            "Noisy",
+            "(u8, String)",
+            "[String; 2]",
+            "Option<String>",
+            "Box<u8>",
+        ] {
+            assert!(!drop_free(owned), "{owned}");
+        }
+    }
+
+    /// The calls to `name` in `text`, each reported by its line.
+    fn sites(text: &str, name: &str) -> Vec<CallSite> {
+        text.match_indices(name)
+            .filter_map(|(at, _)| {
+                call_arguments(text, at).unwrap().map(|args| CallSite {
+                    at: line_col_at(text, at).0.to_string(),
+                    args,
+                })
+            })
+            .collect()
+    }
+
+    /// #442, the reproduction: a reorder of `f(mark("a"), mark("b"))` runs the marks the other
+    /// way round, a reorder of two owned parameters drops them the other way round, and removing
+    /// a parameter removes what its argument did. A literal, a string and a reference do not.
+    #[test]
+    fn a_reorder_or_removal_that_changes_effects_or_drops_is_named() {
+        const DEMO: &str = "pub fn demo(k: &u32) {\n    eff_pair(mark(\"a\"), mark(\"b\"));\n    eff_owned(x, y);\n    eff_unused(1, mark(\"b\"));\n    eff_simple(3, \"lit\", k);\n    eff_pair(\"a\", mark(\"b\"));\n}\n";
+        let swap = [Some(1), Some(0)];
+        let pair = parse_declared("first: &str, second: &str").1;
+        assert_eq!(
+            effect_hazards("eff_pair", &pair, false, &swap, &sites(DEMO, "eff_pair")),
+            ["2: `mark(\"a\")` and `mark(\"b\")` would be evaluated in the opposite order"],
+            "a literal and a call on line 6 are independent"
+        );
+        let owned = parse_declared("x: Noisy, y: Noisy").1;
+        let hazards = effect_hazards("eff_owned", &owned, false, &swap, &sites(DEMO, "eff_owned"));
+        assert_eq!(hazards.len(), 1, "{hazards:?}");
+        assert!(
+            hazards[0].contains("`eff_owned` drops `y: Noisy` before `x: Noisy`"),
+            "{hazards:?}"
+        );
+        let unused = parse_declared("a: u32, _b: &str").1;
+        assert_eq!(
+            effect_hazards(
+                "eff_unused",
+                &unused,
+                false,
+                &[Some(0)],
+                &sites(DEMO, "eff_unused")
+            ),
+            [
+                "4: `mark(\"b\")` is evaluated for `_b`, and removing the parameter removes what \
+              it does"
+            ]
+        );
+        let simple = parse_declared("n: u32, s: &str, r: &u32").1;
+        let calls = sites(DEMO, "eff_simple");
+        assert!(
+            effect_hazards("s", &simple, false, &[Some(2), Some(0), Some(1)], &calls).is_empty()
+        );
+        assert!(effect_hazards("s", &simple, false, &[Some(1), Some(0)], &calls).is_empty());
+        // An owned value that is removed is dropped somewhere else, or never.
+        let guard = parse_declared("a: u32, g: Guard").1;
+        let hazards = effect_hazards("f", &guard, false, &[Some(0)], &sites("f(1, g)", "f"));
+        assert!(
+            hazards[0].contains("`g` is moved into `g: Guard`"),
+            "{hazards:?}"
+        );
+        // A call that does not pass what the declaration takes cannot be judged.
+        let hazards = effect_hazards(
+            "eff_pair",
+            &pair,
+            false,
+            &swap,
+            &sites("eff_pair(a)", "eff_pair"),
+        );
+        assert!(hazards[0].contains("passes 1 argument(s)"), "{hazards:?}");
+    }
+
+    /// The receiver is evaluated first before and after a reorder, so it is not an argument; a
+    /// call written with the type's path passes it first, and it is skipped.
+    #[test]
+    fn a_method_receiver_keeps_its_place_and_a_path_call_is_read_past_it() {
+        let (receiver, declared) = parse_declared("&self, a: &str, b: &str");
+        let calls = "fn f(s: S, x: &str) {\n    make().m(x, \"lit\");\n    s.m(mark(\"a\"), \"b\");\n    s.m(x, mark(\"b\"));\n    S::m(&s, mark(\"a\"), mark(\"b\"));\n}\n";
+        let hazards = effect_hazards(
+            "m",
+            &declared,
+            receiver.is_some(),
+            &[Some(1), Some(0)],
+            &sites(calls, "m("),
+        );
+        assert_eq!(
+            hazards,
+            [
+                "4: `x` and `mark(\"b\")` would be evaluated in the opposite order",
+                "5: `mark(\"a\")` and `mark(\"b\")` would be evaluated in the opposite order"
+            ]
+        );
     }
 
     #[test]
