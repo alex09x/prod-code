@@ -32,6 +32,12 @@
   goes through the same code as `code_references`.
 
 ### Changed
+- **A symbol lookup that finds nothing answers in a fraction of the time** (#381). Every empty
+  `workspace/symbol` answer was followed by an 800 ms pause and a retry, in the checkout's project
+  and in each nested project a miss goes on to ask. The handshake now carries the engine's age
+  (`engine_age_ms`): a warm engine's empty answer is final, one loaded less than 30 s ago is
+  asked again up to three times (0.8, 1.6, 3.2 s) while it indexes, and a gateway that does not
+  say keeps the single retry.
 - **`impact` runs Go tests in their packages** (#371): `go test ./internal/push -run ...` instead
   of `go test ./... -run ...`, which built every package's tests to run a filter most of them never
   match. One package of a large module: 0.7 s instead of 24.8 s; `impact --run` 2.1 s in all.

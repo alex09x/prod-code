@@ -1205,6 +1205,67 @@ async fn the_gateway_answers_the_protocol_directly() {
     }
 }
 
+/// The handshake says how long ago the engine a session attaches to was loaded: a second session
+/// on the same checkout attaches to the same engine, older by the time between them. A client
+/// asks an empty symbol search again only of a young engine (#381).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_handshake_says_how_old_the_engine_is() {
+    use futures_util::{SinkExt, StreamExt};
+    use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+    use tokio_util::codec::Framed;
+
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"aged\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").expect("lib.rs");
+    commit_in(&root);
+
+    let age = |root: PathBuf| async move {
+        let stream = tokio::net::TcpStream::connect(gateway.addr)
+            .await
+            .expect("connect");
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        let identity = prod_code_mcp::sync::workspace_identity(&root);
+        prod_code_mcp::sync::push_workspace_sync(&mut framed, &root, &identity, None)
+            .await
+            .expect("sync");
+        framed
+            .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                client_name: "age-test".to_string(),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: root.to_string_lossy().to_string(),
+                preferred_engine: None,
+                base_workspace_name: Some(identity.name.clone()),
+                engine_subpath: None,
+                client_agent: None,
+                client_host: None,
+                purpose: None,
+            }))
+            .await
+            .expect("handshake");
+        match framed.next().await {
+            Some(Ok(WireMessage::HandshakeResponse(resp))) => resp.engine_age_ms,
+            other => panic!("no handshake response: {other:?}"),
+        }
+    };
+    let first = age(root.clone()).await.expect("the gateway says the age");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let second = age(root.clone()).await.expect("the gateway says the age");
+    assert!(first < 30_000, "loaded for this session: {first} ms");
+    assert!(
+        second >= first + 300,
+        "the same engine, older: {first} ms, then {second} ms"
+    );
+}
+
 /// The daemon puts the user's toolchain directories first on PATH before it looks for a
 /// language server, so a test that looks for one has to do the same — otherwise it decides a
 /// server is missing on a machine that has it, and passes by skipping.

@@ -26,6 +26,9 @@ pub struct SharedWorkspace {
     pub active_sessions: AtomicUsize,
     /// Unix seconds of the last session registration or retirement, for idle eviction.
     pub last_used: AtomicU64,
+    /// When the engine was loaded: a session is told its age, so that an empty answer from an
+    /// engine still indexing is asked again and one from a warm engine is not (#381).
+    pub loaded_at: std::time::Instant,
     pub direct_edit_eligible: AtomicBool,
     pub rust_engine: Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>,
     pub go_engine: Option<Arc<prod_code_engine_go::GoEngine>>,
@@ -57,6 +60,7 @@ impl SharedWorkspace {
             engine,
             active_sessions: AtomicUsize::new(0),
             last_used: AtomicU64::new(unix_now()),
+            loaded_at: std::time::Instant::now(),
             direct_edit_eligible: AtomicBool::new(true),
             rust_engine,
             go_engine,
@@ -136,6 +140,7 @@ impl SharedWorkspace {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
+            loaded_at: self.loaded_at,
             key: self.key.clone(),
             root: self.root.clone(),
             engine: self.engine.clone(),
@@ -190,6 +195,7 @@ impl SharedWorkspace {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
+            loaded_at: self.loaded_at,
             key: self.key.clone(),
             root: self.root.clone(),
             engine: self.engine.clone(),

@@ -5698,12 +5698,31 @@ pub async fn workspace_symbol_search(
         None => representative_source_file(root).unwrap_or_else(|| root.to_path_buf()),
     };
     let params = serde_json::json!({ "query": query, "limit": limit.max(1) });
+    let asked = std::time::Instant::now();
     let mut res =
         execute_lsp_query(remote, root, &anchor, "workspace/symbol", params.clone()).await?;
-    if res.as_array().is_none_or(|a| a.is_empty()) {
-        // A project that has just been opened may still be loading: one short retry.
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        res = execute_lsp_query(remote, root, &anchor, "workspace/symbol", params).await?;
+    // How patient to be with an empty answer depends on how long before the question the engine
+    // was loaded (#381). A warm engine's empty answer is the answer: a miss used to sleep 800 ms
+    // in every project it asked. One loaded moments before may still be indexing and is asked
+    // again a few times, longer each time; a gateway that does not say gets the one retry it
+    // always had. The age is taken at the question: a fresh gopls on a busy node took a minute
+    // to give its first answer, and was no warmer for it.
+    let age = crate::session::pooled_engine_age(remote, root, &anchor)
+        .await
+        .map(|age| age.saturating_sub(asked.elapsed()));
+    let retries = match age {
+        Some(age) if age >= crate::session::INDEXING_GRACE => 0,
+        Some(_) => 3,
+        None => 1,
+    };
+    let mut pause = std::time::Duration::from_millis(800);
+    for _ in 0..retries {
+        if res.as_array().is_some_and(|a| !a.is_empty()) {
+            break;
+        }
+        tokio::time::sleep(pause).await;
+        pause *= 2;
+        res = execute_lsp_query(remote, root, &anchor, "workspace/symbol", params.clone()).await?;
     }
     let mut hits = Vec::new();
     for sym in res.as_array().into_iter().flatten() {

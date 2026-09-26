@@ -156,6 +156,12 @@ pub struct HandshakeResponse {
     /// from its sync watermark for this node, so that its next sync sends them again.
     #[serde(default)]
     pub stale_paths: Vec<String>,
+    /// How long ago, in milliseconds, the gateway loaded the engine this session attaches to.
+    /// `None` from a gateway too old to say, and for an editor's own server. An empty
+    /// `workspace/symbol` from an engine loaded moments ago may be early and is asked again; one
+    /// from a warm engine is the answer (#381).
+    #[serde(default)]
+    pub engine_age_ms: Option<u64>,
 }
 
 /// Real-time health and session status of the remote gateway.

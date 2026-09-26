@@ -2600,6 +2600,7 @@ mod tests {
             ]
             .map(str::to_string)
             .to_vec(),
+            engine_age_ms: None,
         };
         resend_lost_files(root, "", &handshake.stale_paths);
 
