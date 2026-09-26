@@ -9,6 +9,12 @@
   explicitly requested builds keep their existing behavior. The divergent-worktree benchmark
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
+### Fixed
+- The coverage gate rejects empty or malformed reports, invalid percentages and requested
+  files missing from the measurements (#427). A source file is reported as having no code
+  only when the report explicitly records zero regions. Files outside the repository,
+  including those reached through a symlink, are excluded.
+
 ## v0.3.18 — 2026-09-26
 
 ### Changed
