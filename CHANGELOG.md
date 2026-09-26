@@ -11,6 +11,16 @@
   `cp -a`, so the symlinks of `.bin` and of pnpm's layout stay symlinks. It happens only when the
   disk has room for twice their size. The trees are the worktree's own afterwards.
 
+### Fixed
+- **Seeding a worktree copy no longer doubles a Python virtual environment** (#414). The copy
+  resolved every symlink. `.venv/lib64 -> lib` became a second full copy of site-packages,
+  `bin/python` a copy of the interpreter, and the venv's scripts still started the main copy's
+  interpreter. A virtual environment (a directory with `pyvenv.cfg`) is now seeded like
+  `node_modules` (#412), with `cp -a`, and the scripts in its `bin` that name the main copy's venv,
+  console-script shebangs and `activate`, are rewritten to name the new one. A directory symlink
+  in the tree is copied as a symlink, where it used to be walked (and one pointing at a parent
+  recursed until the path was too long).
+
 ## v0.3.16 — 2026-09-26
 
 ### Added
