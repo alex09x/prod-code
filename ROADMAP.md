@@ -23,6 +23,12 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Session handshake with protocol version negotiation, client capabilities, and authentication tokens.
   - Streaming transport support: 10 GbE TCP stream with TCP_NODELAY and socket buffer tuning.
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
+  - Status (audited 2026-09-26):
+    - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). The length ends the frame, so there are no NUL markers.
+    - Both sides send `PROTOCOL_VERSION`. Compatibility comes from fields that default when absent, not from negotiation: in the handshake, status, sync and exec messages, only the first fields are required and every field added later is `#[serde(default)]`.
+    - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. A gateway with one closes a connection without it before serving anything, and the commands it runs never see it. Off by default.
+    - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers are left to the kernel's autotuning.
+    - No Unix-socket or named-pipe transport: a gateway on the same machine is reached over loopback TCP.
 - [x] **1.2. Bi-directional Path Translation**
   - Canonical URI/path rewriting between client workspace roots (`file:///Users/me/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
@@ -31,10 +37,12 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
   - Non-blocking watchdog and auto-reconnect logic on transient network disconnects.
   - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death).
+  - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
   - Session registry tracking active client IDs, workspace paths, and leased resources.
   - Non-blocking status reporting endpoint (`prod-code status`) returning instant JSON health snapshots.
+  - Status (audited 2026-09-26): `prod-code status --json` and `prod-code cluster --json` followed on 2026-09-26 (#398). The status carries engines, sessions, running commands, the host's memory and disk, `healthy` and `pressure`; the cluster snapshot carries the gossip view and each node's snapshot or error.
 
 
 ---
@@ -52,6 +60,10 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Apply unsaved document edits (`didChange`) directly into base Salsa file inputs.
   - Bypass overlay crate cones and global database invalidation locks for unshared workspaces.
   - Target: Maintain sub-15s p95 query latency under 15 concurrent agent worktrees.
+  - Measured 2026-09-26 with `divergent-bench --worktrees 16` (#406): 16 diverged worktrees of a 1,284-file Rust repository, 64 persistent workers, 1,280 hovers, on one 128-core node.
+    - First run, twelve of the copies new: p50 8.4 ms, p95 614 ms, p99 27.7 s, and 32 first hovers past the bench's 30 s limit. The copies loaded all at once, the new ones in about 2 min 25 s (#408).
+    - With the engines loaded: p50 47 ms, p95 90 ms, p99 137 ms, 0 errors, 569.5 QPS.
+    - No cross-worktree bleed in either run. The p95 target holds cold and warm.
 - [x] **2.3. Safe FileId & Edition Handling**
   - Comply with `EditionedFileId` 24-bit mask (`0x007F_FFFF`) to prevent Rust Edition bit corruption.
   - Path-normalized FileId deduplication and reuse across concurrent sessions.
@@ -60,6 +72,10 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - Complete request execution timing and in-flight tracking with `[LSP START]`, `[LSP DONE]`, and `[LSP SLOW >200ms]` warnings.
   - Native `tracing-subscriber` integration with structured log filtering (`RUST_LOG=info,prod_code=debug`).
   - Memory watchdog: monitor server RSS, alert at memory thresholds, dynamic metrics in `StatusResponse`.
+  - Status (audited 2026-09-26): the status reported only the gateway's own RSS until #396. Since then:
+    - It carries the host's available and total memory and the free share of the workspaces filesystem.
+    - The janitor logs when the node goes past 85% of its memory or under 10% of its disk, and when it has room again.
+    - While memory is short, the janitor unloads engines that have been idle for 5 minutes.
 
 ---
 
@@ -76,6 +92,7 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
     - `pyproject.toml` / `requirements.txt` / `setup.py` / `Pipfile` -> Python Engine (`basedpyright`)
     - `Package.swift` / `*.xcodeproj` / `project.yml` -> Swift Engine (`sourcekit-lsp`)
   - Typed `EngineKind` enum, preference resolution, and monorepo detection.
+  - `Makefile` and `project.yml` followed on 2026-09-26 (#404). A Makefile next to C or C++ sources marks C/C++, below every other manifest. A `project.yml` with top-level `targets:` (XcodeGen) marks Swift. `.xcworkspace`, `meson.build`, `.clangd`, `setup.cfg`, `jsconfig.json` and `deno.json` are recognised as well.
   - Monorepo (2026-09-20): a nested project of another language (a SwiftPM package or Xcode project inside a Rust or Go repository) gets its own engine rooted at that directory; the client names it in the handshake (`engine_subpath`), placement follows that project's engine (Swift → macOS node), and `exec` / `check` / `test` run in the nested directory with its tooling. Nested crates of one Cargo workspace stay with the workspace. Verified on tako (Rust root, `swift/` package).
 - [x] **3.2. Managed Go Engine (`crates/prod-code-engine-go`)**
   - Supervised `gopls` worker pool running in daemon mode.
@@ -84,6 +101,7 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
 - [x] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
+  - Status (audited 2026-09-26): there is no periodic ping. Liveness is read from the server's output instead: when it ends, the server has exited, and the next load of the workspace starts it afresh (#355). Every request has a timeout, which catches a server that hangs without exiting. Idle engines are unloaded after `--idle-evict-secs` (30 minutes by default; 5 minutes while memory is short, #396), and the process is killed with its engine.
 - [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on two Linux nodes; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. A compiler cache shared across worktrees followed on 2026-09-24 (#243): ccache with `CCACHE_BASEDIR` set to each workspace; a second worktree of the fmt library built in 1.0 s against 24.0 s. Shared PCH / clangd index across worktrees still open.
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
   - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
@@ -130,17 +148,18 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
 
 **Objective**: Scale `prod-code` across multiple physical servers on the 10G LAN to support massive agent fleets (50+ concurrent workers) with dynamic load balancing, repository affinity, and zero-configuration service discovery.
 
-- [x] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19 (`--remote a:9400,b:9400`, rendezvous hashing, remembered placement, failover, engine-aware placement). Server-side dispatch 2026-09-20: the client asks any node `PlaceRequest {workspace, engine}` and the node answers from its gossip view — the node that already holds the workspace, otherwise the quietest live node that serves the engine; the client goes there directly (no mid-handshake redirect needed, so sync never happens on the wrong node). Five nodes: three Linux, two macOS.
+- [x] **5.1. Cluster Gateway & L4/L7 Dispatcher** — client-side placement shipped 2026-09-19 (`--remote a:9400,b:9400`, rendezvous hashing, remembered placement, failover, engine-aware placement). Server-side dispatch 2026-09-20: the client asks any node `PlaceRequest {workspace, engine}` and the node answers from its gossip view — the node that already holds the workspace, otherwise the quietest live node that serves the engine; the client goes there directly (no mid-handshake redirect needed, so sync never happens on the wrong node). Four nodes as of 2026-09-26: three Linux (x86_64 and aarch64) and one macOS node that serves Swift and macOS-only Go; the developer workstation runs no node.
   - Distributed router dispatching incoming agent connections to the least-loaded server node.
   - Consistent hashing based on repository identity (`sha256(repo_common_dir)`) so sessions for the same codebase share warm Salsa, gopls, and clangd in-memory caches.
   - Transparent TCP redirection: if a client connects to Node A but the workspace is warm on Node B, Node A issues a `WireMessage::Redirect { target_addr }` allowing sub-millisecond client hop without repeating initialization.
 - [x] **5.2. Smart DNS & Service Discovery (`*.code.internal`)** — done 2026-09-20 without DNS: one seed address is enough (`PROD_CODE_REMOTE=192.0.2.10:9400`); the client asks it for the gossip view (`ClusterRequest`), adds every live member and caches the list in `~/.local/share/prod_code/cluster.json` for when the seed is down. Gateways learn peers transitively from gossip, so a node needs only one live `--peers` entry. mDNS/SRV publication judged unnecessary on a static LAN.
-  - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `btcr.code.internal` -> `192.0.2.10:9400`, `codehaus.code.internal` -> `192.0.2.11:9400`).
+  - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `shop.code.internal` -> `192.0.2.10:9400`, `billing.code.internal` -> `192.0.2.11:9400`).
   - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
   - Dynamic SRV record publication for active daemon instances across the LAN.
 - [x] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing** — 2026-09-20: every gateway heartbeats its peers every 5 s (`Gossip`: load average, CPU count, RSS, engines, loaded workspaces with session counts, known peers); a peer silent for 30 s counts as stale. Placement answers move an idle workspace (0 sessions) off a node above 1.0 load/CPU to a node below half that; active sessions are never moved. `prod-code cluster` prints the gossip view of the whole cluster from one node.
   - Background gossip heartbeat between daemon nodes reporting CPU load, available RAM, active engine count, and in-flight builds.
-  - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. 128-core `rama` with 250 GB RAM).
+  - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. a 128-core node with 250 GB RAM).
+  - Status (audited 2026-09-26): heavy test suites show in the load average, which placement already used. Memory and disk followed on 2026-09-26 (#396): the status and gossip carry each host's available memory and free disk share. A node past 85% of its memory or under 10% of its disk gets no new workspace while a capable node with room is alive, and it gives up an idle workspace it holds. The client's own fallback choice follows the same rule.
   - [x] Idle LRU eviction: workspaces untouched for > 30 minutes are unloaded (`--idle-evict-secs`) and stale `<repo>--wt-*` copies pruned after 7 days (`--prune-worktree-days`); done 2026-09-19.
 - [x] **5.4. Isolated Proc-Macro Worker Farm** — 2026-09-20: the Rust engine runs build scripts on load (`cargo check` in the warm per-workspace target dir) and expands proc macros through rust-analyzer's out-of-process proc-macro server (`ProcMacroServerChoice::Sysroot`, up to 8 processes per workspace), so derives and attribute macros resolve (serde files: 0 false errors; prod-code loads in ~7 s with build scripts). `prod-code.toml [rust] build_scripts = false` switches it off for repositories whose build scripts cannot run on the gateway.
   - Offload compilation and execution of heavy Rust procedural macros into a sandboxed worker pool.
@@ -199,7 +218,7 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
   - **Client CLI Commands**:
     - `prod-code check`: remote compilation check across any language with instant terminal diagnostics.
     - `prod-code test [FILTER]`: remote test runner with real-time test output streaming.
-    - `prod-code lint`: remote linter (`clippy`, `golangci-lint`, `eslint`, `ruff`).
+    - `prod-code lint`: remote linter (`clippy`, `golangci-lint`, `eslint`, `ruff`). golangci-lint followed on 2026-09-26 (#400): Go ran only `go vet` before. It now runs golangci-lint when the node has it (installed on every node that serves Go), otherwise `go vet` with a note saying so. `--fix` runs its fix mode for a project with a golangci config. C and C++ lint with clang-tidy, and biome stands in for eslint where it is configured.
     - `prod-code bench [FILTER]`: remote benchmark runner on quiet, dedicated server cores without workstation thermal noise.
   - **Agent MCP Tools (`crates/prod-code-mcp`)**:
     - `code_check(path)`: returns structured compiler errors and warnings directly into agent context.
@@ -352,7 +371,7 @@ clangd index, `node_modules`, Python stubs and Swift's `ModuleCache` (3.4–3.7,
     - `code_slice(path, symbol)`: extracts a minimal, self-contained semantic slice (e.g. 60 lines instead of 4,000 lines) representing 100% of data and control flow.
     - Reduces LLM context consumption by 85–95%, drastically lowering inference costs and model reasoning errors.
 
-- [x] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)** — second step shipped 2026-09-21: `code_shadow_run` / `prod-code shadow-run` run a command per named hypothesis in overlay shadows of the workspace copy (user namespace + overlayfs mounted at the workspace path, warm caches valid, hypotheses in parallel; in-place sequential fallback), rank the outcomes and return only the winner's diff. First step 2026-09-20: `code_validate_edits` places several proposed file contents in one private analyzer overlay and reports diagnostics per file (plus `also_check` for unchanged callers), so a multi-file refactor is judged before anything is written. Remaining: named shadow branches, remote test runs per hypothesis, winning diff.
+- [x] **7.4. Speculative In-Memory Shadow Workspaces (Parallel Multi-Hypothesis Execution)** — second step shipped 2026-09-21: `code_shadow_run` / `prod-code shadow-run` run a command per named hypothesis in overlay shadows of the workspace copy (user namespace + overlayfs mounted at the workspace path, warm caches valid, hypotheses in parallel; in-place sequential fallback), rank the outcomes and return only the winner's diff. First step 2026-09-20: `code_validate_edits` places several proposed file contents in one private analyzer overlay and reports diagnostics per file (plus `also_check` for unchanged callers), so a multi-file refactor is judged before anything is written. Each hypothesis is named and runs its own command (a test suite included) on the node, and only the winner's diff comes back, so nothing of the earlier "remaining" list is left. The overlays live under `shadow` next to the storage directory; `--shadow-dir /dev/shm/prod-code-shadow` puts them in RAM.
   - When an AI agent explores multiple competing architectural solutions or bug-fix hypotheses:
     - Server creates lightweight in-memory VFS overlays (`shadow-branch-1`, `shadow-branch-2`, `shadow-branch-3`) in RAM (`/dev/shm`).
     - Remote execution engine (Phase 6) runs full test suites against all hypotheses simultaneously across 128 server cores.

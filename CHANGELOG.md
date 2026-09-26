@@ -1586,12 +1586,12 @@ than a fast LSP. Since v0.1.0:
 - Per-repository Rust analysis options in `prod-code.toml` (`[rust] features = "all" | [..]`,
   `no_default_features`, `all_targets`, `sysroot`), with rust-analyzer-like defaults: all
   targets analysed and the standard library loaded from `rust-src`. Repositories that compile
-  one module tree into several crates behind feature flags (BTCR's `src/strategy2`) need
-  `features = "all"`, otherwise those modules resolve to nothing.
+  one module tree into several crates behind feature flags need `features = "all"`, otherwise
+  those modules resolve to nothing.
 - Sync ships `rustc-wrapper` scripts and `*.sh`, and the gateway keeps the executable bit, so
   `cargo metadata` works on a workspace whose `.cargo/config.toml` sets `build.rustc-wrapper`.
-  Verified on BTCR: 109 implementations of `StrategyInterface`, 235 references, callers with
-  call sites, where before only syntax-level queries answered.
+  Verified on a private 1,200-file Rust repository: 109 implementations of its central trait,
+  235 references, callers with call sites, where before only syntax-level queries answered.
 
 - Call hierarchy and implementations (Phase 7.5): `prod-code callers | callees | impls` and MCP
   `code_callers` / `code_callees` / `code_implementations` for every engine (rust-analyzer
@@ -1689,7 +1689,8 @@ each running its own language server and build on a laptop.
   diagnostic).
 - First contact sends a manifest (path, size, FNV-1a hash) instead of the tree: the gateway
   seeds a new worktree from the origin repository's copy, deletes what the client does not
-  have and asks only for missing files. A fresh BTCR worktree: 0.4 s instead of ~7 s.
+  have and asks only for missing files. A fresh worktree of a 1,200-file Rust repository: 0.4 s
+  instead of ~7 s.
 
 ### Sync
 - Watermark-based incremental sync per worktree: commits since the last sync
@@ -1725,7 +1726,8 @@ each running its own language server and build on a laptop.
 - `divergent-bench`: forks four worktrees of a real repository (signature change, manifest
   change, untracked file with a new symbol), runs 10+ concurrent workers and asserts zero
   cross-worktree bleed; `--persistent` reuses one session per worker like an agent process.
-  Isolated mode passes on BTCR (Rust) and CodeHaus (Go) with zero errors.
+  Isolated mode passes on a private Rust repository and a private Go repository with zero
+  errors.
 
 ### Known limitations
 - Shared (coalesced) workspaces are diagnostic only; production isolates worktrees.
