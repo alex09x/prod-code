@@ -56,14 +56,14 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_lint".to_string(),
-            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings / go vet) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again."
+            description: "Lint the whole workspace on the remote gateway (cargo clippy -D warnings; golangci-lint, or go vet on a node without it; ruff; eslint / biome; clang-tidy) and return structured findings with file:line:col. `fix: true` (Rust) applies every fix clippy and rustc mark machine-applicable, then lints again."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Environment variables for the command, e.g. {\"RUST_BACKTRACE\": \"1\"}" },
                     "timeout_secs": { "type": "integer", "description": "Kill after this many seconds (default 3600)" },
-                    "fix": { "type": "boolean", "description": "Apply the fixes, then lint again (default false): Rust takes clippy's machine-applicable suggestions; Python, TypeScript and C++ run the linter's own fix mode (`ruff check --fix`, `eslint --fix` / `biome lint --write`, `clang-tidy -fix`) on the node and bring the rewritten files back; Go's `go vet` has none" },
+                    "fix": { "type": "boolean", "description": "Apply the fixes, then lint again (default false): Rust takes clippy's machine-applicable suggestions; Python, TypeScript and C++ run the linter's own fix mode (`ruff check --fix`, `eslint --fix` / `biome lint --write`, `clang-tidy -fix`) on the node and bring the rewritten files back; Go runs `golangci-lint run --fix` when the project has a golangci config, and has no fix mode otherwise" },
                     "path": { "type": "string", "description": "Narrow the run: a file or directory inside the project (runs only its Cargo crate / Go package tree / pytest path), a crate name (`prod-code-gateway`), or a nested project of another language (a SwiftPM package in a Rust repo)" }
                 }
             }),
