@@ -2,7 +2,7 @@
 
 This document outlines the architectural milestones and engineering phases for building **prod-code** as a distributed, polyglot remote code-intelligence engine optimized for AI agent fleets and 10 GbE local network execution.
 
-**Where it stands** (v0.3.12, 2026-09-25): 56 MCP tools, a cluster of three Linux nodes and a
+**Where it stands** (v0.3.13, 2026-09-25): 56 MCP tools, a cluster of three Linux nodes and a
 macOS node for Swift and macOS-only Go, more than 700 tests, and every file held at or above 80% of regions.
 Editors get the language's own server on the node through `prod-code lsp`, with a Zed extension
 in `editors/zed`.

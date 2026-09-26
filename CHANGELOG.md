@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.13 — 2026-09-25
+
 ### Added
 - **A package's outline that fits** (#368). `code_outline` / `prod-code outline` take `kinds`
   (`--kinds function,struct`), `exported_only` (`--exported`: Go's capitalised names, a method
