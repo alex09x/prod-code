@@ -1781,6 +1781,36 @@ async fn cli_outline_of_a_file_no_server_serves_is_an_error() {
     assert!(!stdout_of(&out).contains("null"), "{}", stdout_of(&out));
 }
 
+/// The command line takes the outline's filters and budget (#368).
+#[tokio::test]
+async fn cli_outline_takes_kinds_and_a_budget() {
+    let ws = make_workspace();
+    ws.write("src/other.rs", "pub fn other() {}\n");
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("calculate", 12, 5, 7, 8),
+            answers::document_symbol("Holder", 23, 9, 9, 12),
+        ]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["outline", "src", "--kinds", "function", "--max-bytes", "60"],
+    )
+    .await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("[Function] calculate (line 5)"), "{stdout}");
+    assert!(!stdout.contains("Holder"), "{stdout}");
+    assert!(
+        stdout.contains("The listing stops at the budget of 60 bytes"),
+        "{stdout}"
+    );
+}
+
 #[tokio::test]
 async fn cli_outlines_a_directory_and_exits_zero() {
     let ws = make_workspace();

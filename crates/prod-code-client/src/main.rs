@@ -169,6 +169,18 @@ enum Commands {
         /// Also list the local variables inside functions and methods.
         #[arg(long, default_value_t = false)]
         locals: bool,
+        /// Only these kinds, comma-separated: function, method, struct, class, field, ...
+        #[arg(long, value_delimiter = ',')]
+        kinds: Vec<String>,
+        /// Only what the language exports (Go capitals, Rust `pub`, Swift `public`, TS `export`).
+        #[arg(long, default_value_t = false)]
+        exported: bool,
+        /// Most bytes listed (a directory's default is 40000; 0 = no budget).
+        #[arg(long)]
+        max_bytes: Option<usize>,
+        /// Most symbols listed.
+        #[arg(long)]
+        max_items: Option<usize>,
     },
     /// Blast radius of the uncommitted changes: changed functions, their callers and the affected tests
     Impact {
@@ -1328,7 +1340,12 @@ async fn main() -> Result<()> {
         },
         Commands::Symbols { target } => {
             if Path::new(&target).is_file() {
-                run_symbols(remote, Path::new(&target), false).await
+                run_symbols(
+                    remote,
+                    Path::new(&target),
+                    &prod_code_mcp::tools::OutlineOptions::all(usize::MAX, false, "pass --locals"),
+                )
+                .await
             } else {
                 run_tool(
                     remote,
@@ -1338,7 +1355,30 @@ async fn main() -> Result<()> {
                 .await
             }
         }
-        Commands::Outline { file, locals } => run_symbols(remote, &file, locals).await,
+        Commands::Outline {
+            file,
+            locals,
+            kinds,
+            exported,
+            max_bytes,
+            max_items,
+        } => {
+            let is_dir = file.is_dir();
+            let options = prod_code_mcp::tools::OutlineOptions {
+                max_depth: usize::MAX,
+                include_locals: locals,
+                hint: "pass --locals".to_string(),
+                kinds: (!kinds.is_empty()).then_some(kinds),
+                exported_only: exported,
+                max_bytes: match max_bytes {
+                    Some(0) => None,
+                    Some(bytes) => Some(bytes),
+                    None => is_dir.then_some(prod_code_mcp::tools::DIRECTORY_OUTLINE_BYTES),
+                },
+                max_items: max_items.filter(|n| *n > 0),
+            };
+            run_symbols(remote, &file, &options).await
+        }
         Commands::Source {
             path,
             line,
@@ -3086,21 +3126,18 @@ async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) ->
     Ok(())
 }
 
-async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()> {
+async fn run_symbols(
+    remote: SocketAddr,
+    file: &Path,
+    options: &prod_code_mcp::tools::OutlineOptions,
+) -> Result<()> {
     let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     if abs_path.is_dir() {
         let cwd = env::current_dir().context("Failed to determine current working directory")?;
         let ws_root = find_workspace_root(&abs_path).unwrap_or_else(|| cwd.clone());
-        let text = prod_code_mcp::tools::outline_directory(
-            remote,
-            &ws_root,
-            &abs_path,
-            file,
-            usize::MAX,
-            locals,
-            "pass --locals",
-        )
-        .await?;
+        let text =
+            prod_code_mcp::tools::outline_directory(remote, &ws_root, &abs_path, file, options)
+                .await?;
         println!("{text}");
         return Ok(());
     }
@@ -3114,9 +3151,7 @@ async fn run_symbols(remote: SocketAddr, file: &Path, locals: bool) -> Result<()
         &ws_root,
         &abs_path,
         &file.display().to_string(),
-        usize::MAX,
-        locals,
-        "pass --locals",
+        options,
     )
     .await?;
     println!("{text}");
