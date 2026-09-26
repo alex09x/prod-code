@@ -10,6 +10,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
+  They enable client-side compilation and refuse settings that disable it or send work
+  to a distributed compiler. Config checks follow the proposed files, deletions and
+  symlink aliases, so a hypothesis cannot silently be checked against the base source.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,

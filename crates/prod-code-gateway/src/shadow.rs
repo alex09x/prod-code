@@ -468,7 +468,8 @@ fn sccache_config_content(
     workspace: &Path,
     files: &[FileDelta],
 ) -> std::result::Result<Option<Vec<u8>>, String> {
-    let unreadable = |why: &str| format!("cannot read the sccache config {}: {why}", path.display());
+    let unreadable =
+        |why: &str| format!("cannot read the sccache config {}: {why}", path.display());
     let view = HypothesisView::new(workspace, files);
     let (physical, node) = view.resolve(path, true).map_err(|why| unreadable(&why))?;
     match node {
@@ -1903,7 +1904,11 @@ mod tests {
             ),
         ];
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let argv = ["sh", "-c", "cat \"$SCCACHE_CONF\" 2>/dev/null || echo missing"];
+        let argv = [
+            "sh",
+            "-c",
+            "cat \"$SCCACHE_CONF\" 2>/dev/null || echo missing",
+        ];
         for (i, (conf, files)) in cases.into_iter().enumerate() {
             let expected = match sccache_config_content(&conf, w, &files).unwrap() {
                 Some(bytes) => String::from_utf8(bytes).unwrap(),
@@ -1911,7 +1916,10 @@ mod tests {
             };
             let what = format!("case {i}: {}", conf.display());
             let mut j = job(w, shadow.path(), &format!("alias-{i}"), files, &argv);
-            j.env = vec![("SCCACHE_CONF".to_string(), conf.to_str().unwrap().to_string())];
+            j.env = vec![(
+                "SCCACHE_CONF".to_string(),
+                conf.to_str().unwrap().to_string(),
+            )];
             let r = run_overlay(j, rx.clone()).await;
             assert_eq!(r.exit_code, Some(0), "{what}: {:?}", r.error);
             assert_eq!(output(&r), expected, "{what}");
