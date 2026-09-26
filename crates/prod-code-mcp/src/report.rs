@@ -475,6 +475,7 @@ mod tests {
             cpu_count: None,
             platform: Some("linux x86_64".into()),
             running_commands: Vec::new(),
+            host: Default::default(),
         };
         let draft = draft(
             "  code_references misses a field  ",

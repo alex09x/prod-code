@@ -36,6 +36,7 @@ fn sample_status() -> StatusResponse {
         cpu_count: Some(8),
         platform: None,
         running_commands: Vec::new(),
+        host: Default::default(),
     }
 }
 
@@ -1280,6 +1281,7 @@ async fn placement_server() -> SocketAddr {
                                 cpu_count: Some(4),
                                 platform: None,
                                 running_commands: Vec::new(),
+                                host: Default::default(),
                             }))
                             .await;
                     }

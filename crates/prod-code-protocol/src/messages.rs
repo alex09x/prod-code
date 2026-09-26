@@ -198,6 +198,90 @@ pub struct StatusResponse {
     /// one running is not idle, whatever the session count says (#273).
     #[serde(default)]
     pub running_commands: Vec<RunningCommand>,
+    /// What the host has left: memory and space for workspaces (#396). Empty from older
+    /// gateways.
+    #[serde(default)]
+    pub host: HostResources,
+}
+
+/// Past this share of physical memory in use, a node takes no new workspace while another can
+/// (ROADMAP 5.3: 85%).
+pub const MEMORY_PRESSURE_USED: f64 = 0.85;
+
+/// Under this share of its workspaces filesystem free, a node takes no new workspace while
+/// another can: a full disk truncates synced files (#385).
+pub const STORAGE_PRESSURE_FREE: f64 = 0.10;
+
+/// Memory and disk space a gateway's host has left, those it could read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HostResources {
+    /// Memory the host can still give out without swapping (`MemAvailable` on Linux, the
+    /// kernel's free percentage on macOS), in bytes.
+    #[serde(default)]
+    pub memory_available_bytes: Option<u64>,
+    /// The host's physical memory, in bytes.
+    #[serde(default)]
+    pub memory_total_bytes: Option<u64>,
+    /// The free share of the filesystem holding the workspaces, in thousandths (150 = 15%).
+    #[serde(default)]
+    pub storage_free_millis: Option<u32>,
+}
+
+impl HostResources {
+    /// The share of physical memory in use (0.0 to 1.0), when both numbers are known.
+    pub fn memory_used_share(&self) -> Option<f64> {
+        let total = self.memory_total_bytes.filter(|t| *t > 0)?;
+        let available = self.memory_available_bytes?.min(total);
+        Some(1.0 - available as f64 / total as f64)
+    }
+
+    /// The free share of the workspaces filesystem (0.0 to 1.0), when known.
+    pub fn storage_free_share(&self) -> Option<f64> {
+        self.storage_free_millis.map(|m| m as f64 / 1000.0)
+    }
+
+    /// Why the host should take no new workspace (`memory 91% used`, `disk 4% free`), or `None`
+    /// when it is not known to be short of either.
+    pub fn pressure(&self) -> Option<String> {
+        let mut why = Vec::new();
+        if let Some(used) = self.memory_used_share()
+            && used > MEMORY_PRESSURE_USED
+        {
+            why.push(memory_text(used));
+        }
+        if let Some(free) = self.storage_free_share()
+            && free < STORAGE_PRESSURE_FREE
+        {
+            why.push(disk_text(free));
+        }
+        (!why.is_empty()).then(|| why.join(", "))
+    }
+
+    /// `memory 41% used, disk 62% free`, the parts that are known; empty when none is.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(used) = self.memory_used_share() {
+            parts.push(memory_text(used));
+        }
+        if let Some(free) = self.storage_free_share() {
+            parts.push(disk_text(free));
+        }
+        parts.join(", ")
+    }
+}
+
+/// Whole percent, rounded down from the nearest tenth: a disk 9.9% free reads `9%`, under the
+/// 10% it is short of, not `10%`.
+fn whole_percent(share: f64) -> u32 {
+    ((share * 1000.0).round() as u32) / 10
+}
+
+fn memory_text(used: f64) -> String {
+    format!("memory {}% used", whole_percent(used))
+}
+
+fn disk_text(free: f64) -> String {
+    format!("disk {}% free", whole_percent(free))
 }
 
 /// A remote command the gateway is running.
@@ -898,6 +982,51 @@ mod wire_tests {
         );
         assert!(lines[0].ends_with('…'), "{}", lines[0]);
         assert_eq!(lines[1], "shop  0m 5s  cargo check");
+    }
+
+    /// A host past 85% of its memory or under 10% of its disk is under pressure, and says which;
+    /// one that reports neither, as an older gateway does, is not (#396).
+    #[test]
+    fn a_host_short_of_memory_or_disk_says_so() {
+        let old = r#"{"server_pid":1,"uptime_seconds":2,"active_sessions":0,"loaded_workspaces":0,"detected_engines":[]}"#;
+        let status: StatusResponse = serde_json::from_str(old).expect("an older gateway's status");
+        assert_eq!(status.host, HostResources::default());
+        assert_eq!(status.host.pressure(), None);
+        assert_eq!(status.host.describe(), "");
+
+        let gib = 1 << 30;
+        let roomy = HostResources {
+            memory_available_bytes: Some(20 * gib),
+            memory_total_bytes: Some(100 * gib),
+            storage_free_millis: Some(620),
+        };
+        assert_eq!(roomy.pressure(), None);
+        assert_eq!(roomy.describe(), "memory 80% used, disk 62% free");
+
+        let short_of_memory = HostResources {
+            memory_available_bytes: Some(9 * gib),
+            ..roomy.clone()
+        };
+        assert_eq!(
+            short_of_memory.pressure().as_deref(),
+            Some("memory 91% used")
+        );
+
+        let short_of_both = HostResources {
+            storage_free_millis: Some(40),
+            ..short_of_memory
+        };
+        assert_eq!(
+            short_of_both.pressure().as_deref(),
+            Some("memory 91% used, disk 4% free")
+        );
+
+        let disk_only = HostResources {
+            storage_free_millis: Some(99),
+            ..HostResources::default()
+        };
+        assert_eq!(disk_only.pressure().as_deref(), Some("disk 9% free"));
+        assert_eq!(disk_only.describe(), "disk 9% free");
     }
 
     #[test]

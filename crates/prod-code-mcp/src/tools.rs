@@ -1417,19 +1417,27 @@ async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {
                 let minutes = (resp.uptime_seconds % 3600) / 60;
                 let seconds = resp.uptime_seconds % 60;
                 let mem = resp.memory_rss_mb().unwrap_or(0.0);
+                let host = match resp.host.describe() {
+                    described if described.is_empty() => String::new(),
+                    described => format!("\n• Host: {described}"),
+                };
+                let health = match resp.host.pressure() {
+                    Some(why) => format!("SHORT ({why}): new workspaces go to other nodes"),
+                    None => "HEALTHY".to_string(),
+                };
 
                 let info = format!(
                     "⚡ prod-code Gateway Status\n\
                              • Address: {remote} ({rtt:.2?} RTT)\n\
                              • Server PID: {}\n\
                              • Uptime: {hours}h {minutes}m {seconds}s\n\
-                             • Memory RSS: {mem:.2} MB\n\
+                             • Memory RSS: {mem:.2} MB{host}\n\
                              • Active Sessions: {}\n\
                              • Running Commands: {}{}\n\
                              • Loaded Workspaces: {}\n\
                              • Queries Handled: {} (in-flight: {})\n\
                              • Engines: {}\n\
-                             • Status: HEALTHY",
+                             • Status: {health}",
                     resp.server_pid,
                     resp.active_sessions,
                     resp.running_commands.len(),

@@ -357,15 +357,17 @@ impl ServerState {
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
+            host: memory::host_resources(&self.storage_root),
         }
     }
 }
 
 /// The node `req` should be placed on, given the cluster `view`: the one that already holds it,
-/// otherwise the quietest live node that can serve it. A macOS node takes only work that needs
-/// macOS, or that no other live node can serve (#308): it is a developer's Mac, running Swift
-/// and Go with macOS-only cgo, and plain Go or Rust is placed on the Linux nodes even when the
-/// Mac is quieter.
+/// otherwise the quietest live node that can serve it and is not short of memory or disk. A
+/// holder short of either gives up an idle workspace the way an overloaded one does. A macOS
+/// node takes only work that needs macOS, or that no other live node can serve (#308): it is a
+/// developer's Mac, running Swift and Go with macOS-only cgo, and plain Go or Rust is placed on
+/// the Linux nodes even when the Mac is quieter.
 fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
     let engine = req.engine.as_deref();
     // A node started with `--engines swift` advertises one engine and serves nothing
@@ -401,11 +403,20 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
             .iter()
             .any(|n| n.alive && capable(n) && !on_macos(n));
     let capable = |n: &PeerInfo| capable(n) && !(other_than_macos && on_macos(n));
+    // A node short of memory or disk takes no new workspace while a capable one that is not can
+    // (#396): a full disk truncates the files synced to it (#385), and an engine loaded into a
+    // host out of memory pushes it into swap.
+    let pressure = |n: &PeerInfo| n.status.host.pressure();
+    let roomy_exists = view
+        .nodes
+        .iter()
+        .any(|n| n.alive && capable(n) && pressure(n).is_none());
+    let takes_new = |n: &PeerInfo| !(roomy_exists && pressure(n).is_some());
     let load = |n: &PeerInfo| n.status.load_per_cpu().unwrap_or(f64::MAX);
     let quietest = view
         .nodes
         .iter()
-        .filter(|n| n.alive && capable(n))
+        .filter(|n| n.alive && capable(n) && takes_new(n))
         .min_by(|a, b| {
             load(a)
                 .partial_cmp(&load(b))
@@ -424,19 +435,32 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
         if let Some(q) = quietest
             && idle
             && q.addr != h.addr
-            && load(h) > 1.0
-            && load(q) < load(h) * 0.5
         {
-            return PlaceResponse {
-                node: Some(q.addr.clone()),
-                reason: format!(
-                    "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
-                    h.addr,
-                    load(h),
-                    q.addr,
-                    load(q)
-                ),
-            };
+            if let Some(why) = pressure(h)
+                && roomy_exists
+            {
+                return PlaceResponse {
+                    node: Some(q.addr.clone()),
+                    reason: format!(
+                        "moved from {} ({why}, idle) to {} ({:.2}/cpu)",
+                        h.addr,
+                        q.addr,
+                        load(q)
+                    ),
+                };
+            }
+            if load(h) > 1.0 && load(q) < load(h) * 0.5 {
+                return PlaceResponse {
+                    node: Some(q.addr.clone()),
+                    reason: format!(
+                        "moved from {} (load {:.2}/cpu, idle) to the quieter {} ({:.2}/cpu)",
+                        h.addr,
+                        load(h),
+                        q.addr,
+                        load(q)
+                    ),
+                };
+            }
         }
         return PlaceResponse {
             node: Some(h.addr.clone()),
@@ -444,14 +468,31 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
         };
     }
     match quietest {
-        Some(q) => PlaceResponse {
-            node: Some(q.addr.clone()),
-            reason: format!(
+        Some(q) => {
+            let mut reason = format!(
                 "quietest node serving {} ({:.2}/cpu)",
                 engine.unwrap_or("any engine"),
                 load(q)
-            ),
-        },
+            );
+            let passed_over: Vec<String> = view
+                .nodes
+                .iter()
+                .filter(|n| n.alive && capable(n) && !takes_new(n))
+                .filter_map(|n| pressure(n).map(|why| format!("{} ({why})", n.addr)))
+                .collect();
+            if !passed_over.is_empty() {
+                reason.push_str(&format!("; passed over {}", passed_over.join(", ")));
+            }
+            if let Some(why) = pressure(q) {
+                reason.push_str(&format!(
+                    "; it is short too ({why}), as is every node serving it"
+                ));
+            }
+            PlaceResponse {
+                node: Some(q.addr.clone()),
+                reason,
+            }
+        }
         None => PlaceResponse {
             node: None,
             reason: match req.os.as_deref() {
@@ -3691,6 +3732,7 @@ async fn on_client_message(
                     cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
                     platform: Some(prod_code_protocol::platform()),
                     running_commands: running_commands(),
+                    host: memory::host_resources(&view.worktree_root),
                 }))
                 .await;
         }
@@ -5041,6 +5083,21 @@ async fn gossip_loop(state: Arc<ServerState>) {
     }
 }
 
+/// How long an engine may sit idle on a host short of memory before it is unloaded, however
+/// long `--idle-evict-secs` lets it stay otherwise (#396).
+const PRESSURE_EVICT_IDLE: Duration = Duration::from_secs(300);
+
+/// After how long idle engines are unloaded: `--idle-evict-secs` (0 keeps them), cut to
+/// [`PRESSURE_EVICT_IDLE`] while the host is short of memory, even when eviction is off.
+fn evict_after(idle_evict_secs: u64, memory_short: bool) -> Option<Duration> {
+    let configured = (idle_evict_secs > 0).then(|| Duration::from_secs(idle_evict_secs));
+    if memory_short {
+        Some(configured.map_or(PRESSURE_EVICT_IDLE, |c| c.min(PRESSURE_EVICT_IDLE)))
+    } else {
+        configured
+    }
+}
+
 async fn janitor(
     state: Arc<ServerState>,
     idle_evict_secs: u64,
@@ -5049,18 +5106,34 @@ async fn janitor(
 ) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
     ticker.tick().await;
+    let mut was_short: Option<String> = None;
     loop {
         ticker.tick().await;
         // An engine installed while the daemon runs is picked up here, on a thread that is
         // allowed to block, instead of by the next request that needs the list.
         let _ = tokio::task::spawn_blocking(refresh_available_engines).await;
-        if idle_evict_secs > 0 {
-            let evicted = state
-                .workspace_manager
-                .evict_idle(std::time::Duration::from_secs(idle_evict_secs))
-                .await;
+        // The memory and disk watchdog (#396): placement already keeps new workspaces off a
+        // node that is short; the log says when it starts and stops being short.
+        let host = memory::host_resources(&state.storage_root);
+        let short = host.pressure();
+        match (&was_short, &short) {
+            (None, Some(why)) => tracing::warn!(
+                %why,
+                "⚠️ [PRESSURE] this node is short: new workspaces go to other nodes"
+            ),
+            (Some(_), None) => {
+                tracing::info!(now = %host.describe(), "✅ [PRESSURE] this node has room again")
+            }
+            _ => {}
+        }
+        was_short = short;
+        let memory_short = host
+            .memory_used_share()
+            .is_some_and(|used| used > prod_code_protocol::MEMORY_PRESSURE_USED);
+        if let Some(after) = evict_after(idle_evict_secs, memory_short) {
+            let evicted = state.workspace_manager.evict_idle(after).await;
             for root in evicted {
-                tracing::info!(workspace = %root.display(), idle_secs = idle_evict_secs, "💤 [EVICT] unloaded idle workspace engine");
+                tracing::info!(workspace = %root.display(), idle_secs = after.as_secs(), memory_short, "💤 [EVICT] unloaded idle workspace engine");
             }
         }
         if prune_worktree_days > 0 {
@@ -5207,6 +5280,7 @@ mod tests {
     }
 
     use super::*;
+    use prod_code_protocol::HostResources;
 
     fn peer(addr: &str, platform: &str, engines: &[&str], load_per_cpu: f64) -> PeerInfo {
         let cpus = 8usize;
@@ -5225,11 +5299,127 @@ mod tests {
                 cpu_count: Some(cpus),
                 platform: Some(platform.to_string()),
                 running_commands: Vec::new(),
+                host: Default::default(),
             },
             workspaces: Vec::new(),
             last_seen_secs: 0,
             alive: true,
         }
+    }
+
+    /// A node past 85% of its memory or under 10% of its disk gets no new workspace while
+    /// another capable node has room, however quiet it is, and gives up an idle one it holds;
+    /// one with a session stays, and when every node is short the quietest still takes it
+    /// (#396).
+    #[test]
+    fn a_node_short_of_memory_or_disk_takes_no_new_workspace() {
+        let gib = 1 << 30;
+        let short_of_disk = HostResources {
+            memory_available_bytes: Some(50 * gib),
+            memory_total_bytes: Some(100 * gib),
+            storage_free_millis: Some(30),
+        };
+        let short_of_memory = HostResources {
+            memory_available_bytes: Some(5 * gib),
+            storage_free_millis: Some(500),
+            ..short_of_disk.clone()
+        };
+        let roomy = HostResources {
+            storage_free_millis: Some(500),
+            ..short_of_disk.clone()
+        };
+        let mut quiet_but_full = peer("full:9400", "linux x86_64", &["rust (ra_ap_ide)"], 0.05);
+        quiet_but_full.status.host = short_of_disk;
+        let mut busier = peer("busy:9400", "linux x86_64", &["rust (ra_ap_ide)"], 0.6);
+        busier.status.host = roomy;
+        let view = ClusterResponse {
+            this_node: "full:9400".to_string(),
+            nodes: vec![quiet_but_full, busier],
+        };
+        let place = |view: &ClusterResponse| {
+            place_in(
+                &PlaceRequest {
+                    workspace_name: "subject".to_string(),
+                    engine: Some("rust".to_string()),
+                    os: None,
+                },
+                view.clone(),
+            )
+        };
+
+        let answer = place(&view);
+        assert_eq!(
+            answer.node.as_deref(),
+            Some("busy:9400"),
+            "{}",
+            answer.reason
+        );
+        assert!(
+            answer
+                .reason
+                .contains("passed over full:9400 (disk 3% free)"),
+            "{}",
+            answer.reason
+        );
+
+        let mut held = view.clone();
+        held.nodes[0].workspaces.push(LoadedWorkspaceInfo {
+            name: "subject".to_string(),
+            engine: "rust".to_string(),
+            sessions: 0,
+        });
+        let answer = place(&held);
+        assert_eq!(
+            answer.node.as_deref(),
+            Some("busy:9400"),
+            "{}",
+            answer.reason
+        );
+        assert!(
+            answer
+                .reason
+                .starts_with("moved from full:9400 (disk 3% free, idle)"),
+            "{}",
+            answer.reason
+        );
+
+        held.nodes[0].workspaces[0].sessions = 1;
+        assert_eq!(
+            place(&held).node.as_deref(),
+            Some("full:9400"),
+            "a workspace in use is not moved"
+        );
+
+        let mut all_short = view.clone();
+        all_short.nodes[1].status.host = short_of_memory;
+        let answer = place(&all_short);
+        assert_eq!(
+            answer.node.as_deref(),
+            Some("full:9400"),
+            "{}",
+            answer.reason
+        );
+        assert!(
+            answer.reason.contains("it is short too (disk 3% free)"),
+            "{}",
+            answer.reason
+        );
+
+        // A gateway too old to report its host is not taken for one that is short.
+        let mut old = view.clone();
+        old.nodes[1].status.host = HostResources::default();
+        assert_eq!(place(&old).node.as_deref(), Some("busy:9400"));
+    }
+
+    /// Idle engines go after `--idle-evict-secs`, or after five minutes while memory is short,
+    /// even when eviction is switched off (#396).
+    #[test]
+    fn a_host_short_of_memory_unloads_idle_engines_sooner() {
+        assert_eq!(evict_after(1800, false), Some(Duration::from_secs(1800)));
+        assert_eq!(evict_after(0, false), None);
+        assert_eq!(evict_after(1800, true), Some(Duration::from_secs(300)));
+        assert_eq!(evict_after(120, true), Some(Duration::from_secs(120)));
+        assert_eq!(evict_after(0, true), Some(Duration::from_secs(300)));
     }
 
     /// An editor is offered what the language server on the node offers, but always asked for
