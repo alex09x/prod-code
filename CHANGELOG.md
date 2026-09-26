@@ -26,6 +26,10 @@
   They enable client-side compilation and refuse settings that disable it or send work
   to a distributed compiler. Config checks follow the proposed files, deletions and
   symlink aliases, so a hypothesis cannot silently be checked against the base source.
+- Rust signature changes refuse reordered or removed argument effects and changes to
+  parameter destruction order, including user `Deref` calls and types that shadow built-ins
+  (#442). Missing, malformed or unreadable references stop planning, even with `force`.
+  Confirmed scalar arguments can still be reordered; unproven reference coercions are refused.
 - Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
   described as a reporting policy restriction instead of falsely claiming they do not
   exist in the repository.

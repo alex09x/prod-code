@@ -18,7 +18,11 @@
 //! - a change that type-checks can still change what the program does: arguments are evaluated
 //!   left to right and parameters are dropped in reverse order of declaration, so a reorder of
 //!   `f(mark(a), mark(b))` or of two owned values, or a removed parameter whose argument does
-//!   something, is refused with the call site, `force` or not (#442).
+//!   something, is refused with the call site, `force` or not (#442). What looks inert is not
+//!   taken on its spelling: a field read `a.n` can call a user `Deref`, an argument for a
+//!   reference parameter can be converted by one, and `u32` or `Option<u32>` can name a type of
+//!   the crate's own with a `Drop`. The analyzer is asked what each parameter's type names, and
+//!   what it does not confirm counts as able to run code.
 //!
 //! A reference list that cannot be had is an error, never an empty list: an empty one reads as
 //! "no callers" and "nothing to reconcile".
@@ -747,6 +751,10 @@ pub(crate) fn in_async_fn(text: &str, at: usize) -> bool {
 }
 
 /// [`change`], with the return type and the visibility changed in the same edit.
+///
+/// A `.go` file goes to [`crate::signature_go::change_with`], which reorders named parameters
+/// through gopls and refuses everything else; it uses this module's helpers but never this
+/// function, so the dispatch is one step deep.
 #[allow(clippy::too_many_arguments)]
 pub async fn change_with(
     remote: SocketAddr,
@@ -759,6 +767,12 @@ pub async fn change_with(
     apply: bool,
     force: bool,
 ) -> Result<SignatureChange> {
+    if file.extension().is_some_and(|e| e == "go") {
+        return crate::signature_go::change_with(
+            remote, root, file, line, col, request, modifiers, apply, force,
+        )
+        .await;
+    }
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let offset =
@@ -854,13 +868,15 @@ pub async fn change_with(
     // quietly runs differently.
     if order_changed {
         let calls = call_sites(root, &refs)?;
-        let hazards = effect_hazards(&name, &declared, receiver.is_some(), &args, &calls);
+        let facts = param_facts(remote, root, file, &text, open, close, &declared).await;
+        let hazards = effect_hazards(&name, &declared, &facts, receiver.is_some(), &args, &calls);
         anyhow::ensure!(
             hazards.is_empty(),
-            "the new parameter list would change what the program does, not only how the calls \
-             are written; nothing was written, and `force` does not override this:\n  {}\nbind \
-             such an argument to a local before the call (`let v = …;`) and pass the local, or \
-             keep owned parameters in their order",
+            "the new parameter list would change what the program does, or it cannot be shown \
+             that it does not; nothing was written, and `force` does not override this:\n  {}\n\
+             bind such an argument to a local of the parameter's own type before the call \
+             (`let v: T = …;`) and pass the local, keep owned parameters and references in their \
+             order, or remove them in a step of their own",
             hazards.join("\n  ")
         );
     }
@@ -1262,10 +1278,38 @@ fn parse_locations(res: &serde_json::Value) -> Result<Vec<Reference>> {
                 brief(loc)
             );
         };
-        let path = PathBuf::from(crate::remote_fs::uri_to_path(uri));
-        out.push((path, l + 1, c + 1));
+        // 1-based, and a position one past the last `u32` is in no file: an error, not a wrap.
+        let (Some(line), Some(col)) = (l.checked_add(1), c.checked_add(1)) else {
+            anyhow::bail!(
+                "reference {} of {} from the analyzer is at line {l}, character {c} (0-based), \
+                 which no file has: {}",
+                n + 1,
+                entries.len(),
+                brief(loc)
+            );
+        };
+        let path = local_file(uri).with_context(|| {
+            format!(
+                "reference {} of {} from the analyzer, `{uri}`, is not a local file URI",
+                n + 1,
+                entries.len()
+            )
+        })?;
+        out.push((path, line, col));
     }
     Ok(out)
+}
+
+/// The path of a `file:` URI with no host other than `localhost`, percent-decoded; `None` for
+/// any other scheme, a remote host, or a relative path. A reference the change cannot open is
+/// a call site it can neither check nor rewrite.
+fn local_file(uri: &str) -> Option<PathBuf> {
+    let url = url::Url::parse(uri).ok()?;
+    if url.scheme() != "file" {
+        return None;
+    }
+    let path = url.to_file_path().ok()?;
+    path.is_absolute().then_some(path)
 }
 
 /// An answer, cut short for an error message.
@@ -1364,65 +1408,113 @@ fn call_arguments(text: &str, at: usize) -> Result<Option<Vec<String>>> {
         .context("the argument list does not close")
 }
 
-/// The arguments between the `(` at `open` and its `)`. Commas count only outside brackets,
-/// string and character literals, comments and turbofish generics (`Vec::<(u8, u8)>::new()`).
-fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
+/// What starts at byte `i` of `text` and hides commas, brackets and comment markers inside it: a
+/// string, raw string or character literal, or a comment. `Ok(Some((end, is_comment)))` with the
+/// offset just past it, `Ok(None)` when none starts there (a lifetime has no closing quote), and
+/// `Err(())` when one starts and does not close. Block comments nest, as Rust's do: the first
+/// `*/` in `/* a /* b */ c */` does not end it. `from` is where the scan began.
+fn opaque_at(text: &str, i: usize, from: usize) -> Result<Option<(usize, bool)>, ()> {
     let s = text.as_bytes();
     let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let prev = if i > from { s[i - 1] } else { b' ' };
+    match s[i] {
+        // A raw string (`r"…"`, `r#"…"#`, `br"…"`): no escapes, closed by `"` and its hashes.
+        b'r' if !ident(prev) || (matches!(prev, b'b' | b'c') && (i < 2 || !ident(s[i - 2]))) => {
+            let mut j = i + 1;
+            while s.get(j) == Some(&b'#') {
+                j += 1;
+            }
+            if s.get(j) != Some(&b'"') {
+                return Ok(None);
+            }
+            let close = format!("\"{}", "#".repeat(j - i - 1));
+            let end = text[j + 1..].find(&close).ok_or(())? + j + 1 + close.len();
+            Ok(Some((end, false)))
+        }
+        b'"' => {
+            let mut j = i + 1;
+            loop {
+                match s.get(j).ok_or(())? {
+                    b'\\' => j += 2,
+                    b'"' => break,
+                    _ => j += 1,
+                }
+            }
+            Ok(Some((j + 1, false)))
+        }
+        b'\'' => {
+            if s.get(i + 1) == Some(&b'\\') {
+                let end = text.get(i + 3..).ok_or(())?.find('\'').ok_or(())? + i + 4;
+                return Ok(Some((end, false)));
+            }
+            let len = text[i + 1..].chars().next().ok_or(())?.len_utf8();
+            Ok((s.get(i + 1 + len) == Some(&b'\'')).then_some((i + 2 + len, false)))
+        }
+        b'/' if s.get(i + 1) == Some(&b'/') => Ok(Some((
+            text[i..].find('\n').map_or(s.len(), |n| i + n),
+            true,
+        ))),
+        b'/' if s.get(i + 1) == Some(&b'*') => {
+            let mut depth = 0usize;
+            let mut j = i;
+            while j + 1 < s.len() {
+                match (s[j], s[j + 1]) {
+                    (b'/', b'*') => {
+                        depth += 1;
+                        j += 2;
+                    }
+                    (b'*', b'/') => {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            return Ok(Some((j, true)));
+                        }
+                    }
+                    _ => j += 1,
+                }
+            }
+            Err(())
+        }
+        _ => Ok(None),
+    }
+}
+
+/// `expr` with each comment replaced by as many spaces as it has bytes, so that what is left is
+/// code and offsets stay where they were; `None` when a literal or a comment does not close.
+fn blank_comments(expr: &str) -> Option<String> {
+    let mut out = expr.as_bytes().to_vec();
+    let mut i = 0;
+    while i < expr.len() {
+        match opaque_at(expr, i, 0).ok()? {
+            Some((end, comment)) => {
+                if comment {
+                    out[i..end].fill(b' ');
+                }
+                i = end;
+            }
+            None => i += 1,
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// The arguments between the `(` at `open` and its `)`. Commas count only outside brackets,
+/// string and character literals, comments (nested ones too) and turbofish generics
+/// (`Vec::<(u8, u8)>::new()`).
+fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
+    let s = text.as_bytes();
     let mut args = Vec::new();
     let (mut depth, mut angle) = (0i32, 0i32);
     let mut start = open + 1;
     let mut i = open + 1;
     while i < s.len() {
+        if let Some((end, _)) = opaque_at(text, i, open + 1).ok()? {
+            i = end;
+            continue;
+        }
         let c = s[i];
         let prev = if i > open + 1 { s[i - 1] } else { b' ' };
         match c {
-            // A raw string (`r"…"`, `r#"…"#`, `br"…"`): no escapes, closed by `"` and its hashes.
-            b'r' if !ident(prev)
-                || (matches!(prev, b'b' | b'c') && (i < 2 || !ident(s[i - 2]))) =>
-            {
-                let mut j = i + 1;
-                while s.get(j) == Some(&b'#') {
-                    j += 1;
-                }
-                if s.get(j) == Some(&b'"') {
-                    let close = format!("\"{}", "#".repeat(j - i - 1));
-                    i = text[j + 1..].find(&close)? + j + 1 + close.len();
-                    continue;
-                }
-            }
-            b'"' => {
-                let mut j = i + 1;
-                loop {
-                    match s.get(j)? {
-                        b'\\' => j += 2,
-                        b'"' => break,
-                        _ => j += 1,
-                    }
-                }
-                i = j + 1;
-                continue;
-            }
-            // A character literal; a lifetime has no closing quote and is read on.
-            b'\'' => {
-                if s.get(i + 1) == Some(&b'\\') {
-                    i = text.get(i + 3..)?.find('\'')? + i + 4;
-                    continue;
-                }
-                let len = text[i + 1..].chars().next()?.len_utf8();
-                if s.get(i + 1 + len) == Some(&b'\'') {
-                    i += 2 + len;
-                    continue;
-                }
-            }
-            b'/' if s.get(i + 1) == Some(&b'/') => {
-                i = text[i..].find('\n').map_or(s.len(), |n| i + n);
-                continue;
-            }
-            b'/' if s.get(i + 1) == Some(&b'*') => {
-                i = text[i + 2..].find("*/")? + i + 4;
-                continue;
-            }
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' if depth > 0 => depth -= 1,
             b')' => {
@@ -1446,38 +1538,77 @@ fn split_arguments(text: &str, open: usize) -> Option<Vec<String>> {
     None
 }
 
-/// What evaluating an argument can do, as far as its text shows.
+/// What evaluating an argument can do, as far as its text and the analyzer show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArgKind {
     /// A literal: nothing to evaluate, and nothing another argument does changes it.
     Literal,
-    /// A read of a place (`x`, `a.b`, `&mut x`, `x as u64`): no effect of its own, but another
-    /// argument's effect can change what it reads.
+    /// A read of a local, a constant or a static (`x`, `a::B`, `&mut x`, `x as u64`) passed where
+    /// no conversion can run code: no effect of its own, but another argument's effect can change
+    /// what it reads.
     Place,
     /// Anything else: a call, a macro, an operator, an index, `?`, a block — it may do
     /// something, or panic.
     Effectful,
+    /// It looks like a read, but it can run code the text does not show, and nothing rules that
+    /// out; the reason.
+    Unproven(&'static str),
 }
 
-fn classify_arg(expr: &str) -> ArgKind {
-    let e = expr.trim();
+/// Why a field read is not a plain read.
+const FIELD_DEREF: &str = "reading a field calls a user `Deref` when the value's own type does \
+                           not have that field";
+/// Why an argument for a reference parameter is not a plain read.
+const REF_COERCION: &str = "an argument for a reference parameter can be converted by a user \
+                            `Deref` (`&Wrapper` passed for `&Inner`)";
+/// Why an argument for a parameter whose type is not known is not a plain read.
+const UNCONFIRMED_TYPE: &str = "the analyzer does not confirm that the parameter's type is a \
+                                built-in scalar, a struct, an enum or a union, which no conversion \
+                                into runs code";
+
+/// What evaluating `expr`, passed for a parameter with `facts`, can do. Comments are not code:
+/// they are blanked first, nested ones whole.
+fn classify_arg(expr: &str, facts: &ParamFacts) -> ArgKind {
+    let conversion = if facts.coercion_free {
+        None
+    } else if facts.reference {
+        Some(REF_COERCION)
+    } else {
+        Some(UNCONFIRMED_TYPE)
+    };
+    match blank_comments(expr) {
+        Some(code) => classify(code.trim(), conversion),
+        None => ArgKind::Effectful,
+    }
+}
+
+/// `conversion` is why converting the value to the parameter's type may run code, `None` when it
+/// cannot.
+fn classify(e: &str, conversion: Option<&'static str>) -> ArgKind {
     if let Some(rest) = e.strip_prefix('&') {
         let rest = rest.trim_start();
         let rest = match rest.strip_prefix("mut") {
             Some(r) if r.starts_with(char::is_whitespace) => r,
             _ => rest,
         };
-        return classify_arg(rest);
+        // Taking a reference runs nothing; converting it to the parameter's type may.
+        return match (classify(rest.trim(), None), conversion) {
+            (ArgKind::Place, Some(why)) => ArgKind::Unproven(why),
+            (kind, _) => kind,
+        };
     }
+    // A cast is between built-in types, and what it makes is not converted by a `Deref`.
     if let Some((value, ty)) = e.rsplit_once(" as ")
         && is_path(ty.trim())
     {
-        return classify_arg(value);
+        return classify(value.trim(), None);
     }
     if is_literal(e) {
         ArgKind::Literal
+    } else if is_path(e) {
+        conversion.map_or(ArgKind::Place, ArgKind::Unproven)
     } else if is_place(e) {
-        ArgKind::Place
+        ArgKind::Unproven(FIELD_DEREF)
     } else {
         ArgKind::Effectful
     }
@@ -1554,57 +1685,268 @@ fn is_path(e: &str) -> bool {
     !e.is_empty() && e.split("::").all(is_ident)
 }
 
-/// Whether a value of this type is dropped without running any code: references, raw and
-/// function pointers, the primitive scalars, and tuples, arrays and options of those. Anything
-/// else — `String`, a generic `T`, a type of the crate's own — may have a `Drop` whose order
-/// shows.
-fn drop_free(ty: &str) -> bool {
-    const SCALARS: [&str; 17] = [
-        "bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
-        "i128", "isize", "f32", "f64", "()",
-    ];
-    let ty = ty.trim();
-    if SCALARS.contains(&ty)
-        || ty.starts_with('&')
+/// The built-in scalar types, by the names that usually mean them.
+const SCALARS: [&str; 16] = [
+    "bool", "char", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128",
+    "isize", "f32", "f64",
+];
+
+/// Types written with syntax rather than a name, which no declaration can shadow and which are
+/// dropped without running code: references, raw and function pointers.
+fn is_pointer(ty: &str) -> bool {
+    ty.starts_with('&')
         || ty.starts_with("*const ")
         || ty.starts_with("*mut ")
         || ty.starts_with("fn(")
         || ty.starts_with("fn (")
         || ty.starts_with("unsafe fn")
+        || ty.starts_with("unsafe extern ")
         || ty.starts_with("extern ")
-    {
+}
+
+/// The names in `ty` that have to be the built-in types they are spelled as for a value of it to
+/// be dropped without running code, with their offsets in `ty`; `None` when it may run code
+/// whatever the names are (`String`, a generic `T`, a type of the crate's own). References, raw
+/// and function pointers never do, and scalars, `()`, and tuples, arrays and options of those do
+/// not — if the names are the built-in ones: `enum Option<T>` with a `Drop`, or a `struct u32`,
+/// is spelled the same.
+fn drop_free_names(ty: &str) -> Option<Vec<(usize, String)>> {
+    let mut names = Vec::new();
+    drop_free_at(ty, 0, &mut names).then_some(names)
+}
+
+fn drop_free_at(ty: &str, base: usize, names: &mut Vec<(usize, String)>) -> bool {
+    let base = base + (ty.len() - ty.trim_start().len());
+    let ty = ty.trim();
+    if ty == "()" || is_pointer(ty) {
+        return true;
+    }
+    if SCALARS.contains(&ty) {
+        names.push((base, ty.to_string()));
         return true;
     }
     if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
-        return split_at_top_level(inner, ';').is_some_and(|(elem, _)| drop_free(elem));
+        return split_at_top_level(inner, ';')
+            .is_some_and(|(elem, _)| drop_free_at(elem, base + 1, names));
     }
     if let Some(inner) = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
-        return split_params(inner).iter().all(|t| drop_free(t));
+        let (mut rest, mut at) = (inner, base + 1);
+        loop {
+            let (elem, tail) = match split_at_top_level(rest, ',') {
+                Some((elem, tail)) => (elem, Some(tail)),
+                None => (rest, None),
+            };
+            // `(T,)` ends with an empty element; nothing else may be empty.
+            let trailing = tail.is_none() && elem.trim().is_empty();
+            if !trailing && !drop_free_at(elem, at, names) {
+                return false;
+            }
+            match tail {
+                Some(tail) => {
+                    at += elem.len() + 1;
+                    rest = tail;
+                }
+                None => return true,
+            }
+        }
     }
     if let Some(inner) = ty.strip_prefix("Option<").and_then(|t| t.strip_suffix('>')) {
-        return drop_free(inner);
+        names.push((base, "Option".to_string()));
+        return drop_free_at(inner, base + "Option<".len(), names);
     }
     false
 }
 
-/// The type a parameter is declared with, empty when it has none written.
-fn declared_type(d: &Declared) -> &str {
-    split_at_top_level(&d.raw, ':').map_or("", |(_, ty)| ty.trim())
+/// Whether converting an argument to `ty` can run code, and if that turns on a name, which one.
+/// `Some(None)`: it cannot, whatever the names (a raw or function pointer, a tuple, an array,
+/// `()`: no `Deref` makes one). `Some(Some((offset, name)))`: it cannot if `name`, at `offset` in
+/// `ty`, is a built-in scalar or a struct, enum or union rather than an alias that may stand for
+/// a reference. `None`: it can — a reference is the target of `Deref` coercion, and `impl` or
+/// `dyn` are not a type the analyzer can be asked about by name.
+fn coercion_name(ty: &str) -> Option<Option<(usize, String)>> {
+    let base = ty.len() - ty.trim_start().len();
+    let ty = ty.trim();
+    if ty.starts_with('&') {
+        return None;
+    }
+    if ty == "()" || is_pointer(ty) || ty.starts_with('(') || ty.starts_with('[') {
+        return Some(None);
+    }
+    let path = &ty[..ty.find('<').unwrap_or(ty.len())];
+    if !is_path(path) || (path.len() < ty.len() && !ty.ends_with('>')) {
+        return None;
+    }
+    let at = path.rfind("::").map_or(0, |i| i + 2);
+    Some(Some((base + at, path[at..].to_string())))
+}
+
+/// The code blocks of a hover before its documentation, without their language tags.
+fn hover_blocks(markdown: &str) -> Vec<&str> {
+    let head = markdown.split("\n---").next().unwrap_or("");
+    head.split("```")
+        .skip(1)
+        .step_by(2)
+        .map(|block| block.split_once('\n').map_or("", |(_, body)| body).trim())
+        .collect()
+}
+
+/// Whether a hover over `name` says it is the built-in scalar, or the standard library's
+/// `Option`, that the name usually means. rust-analyzer describes a built-in type by its name
+/// alone, and a declared one by the module it is in and then the declaration: a `struct u32` or
+/// an `enum Option<T>` of the crate's own reads `crate_name` and `struct u32`.
+fn hover_is_builtin(markdown: &str, name: &str) -> bool {
+    let blocks = hover_blocks(markdown);
+    if name == "Option" {
+        return blocks.len() == 2
+            && matches!(blocks[0], "core::option" | "std::option")
+            && blocks[1].starts_with("pub enum Option<");
+    }
+    SCALARS.contains(&name) && blocks == [name]
+}
+
+/// Whether a hover over `name` says it is a struct, an enum or a union, as opposed to a type
+/// alias or a generic parameter, either of which may stand for a reference.
+fn hover_is_adt(markdown: &str, name: &str) -> bool {
+    let blocks = hover_blocks(markdown);
+    let [_, item] = blocks[..] else {
+        return false;
+    };
+    let item = match item.strip_prefix("pub(") {
+        Some(rest) => rest.split_once(')').map_or("", |(_, r)| r).trim_start(),
+        None => item.strip_prefix("pub ").unwrap_or(item),
+    };
+    ["struct ", "enum ", "union "].iter().any(|kw| {
+        item.strip_prefix(kw).is_some_and(|rest| {
+            rest.strip_prefix(name)
+                .is_some_and(|after| !after.starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+        })
+    })
+}
+
+/// What the analyzer confirmed about a parameter's type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ParamFacts {
+    /// Dropping a value of it runs no code.
+    drop_free: bool,
+    /// No conversion of an argument into it runs code.
+    coercion_free: bool,
+    /// It is written as a reference, the type `Deref` coercion converts to.
+    reference: bool,
+    /// Names the type would be drop-free by if they were the built-in types, which the analyzer
+    /// did not confirm they are.
+    unconfirmed: Vec<String>,
+}
+
+/// The hover's markdown at byte `at` of `file`, asked once per place; `None` when it fails or
+/// has none, which confirms nothing.
+async fn hover_markdown(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    at: usize,
+    asked: &mut BTreeMap<usize, Option<String>>,
+) -> Option<String> {
+    if let Some(known) = asked.get(&at) {
+        return known.clone();
+    }
+    let (line, col) = line_col_at(text, at);
+    let uri = url::Url::from_file_path(file).ok()?.to_string();
+    let hover = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line - 1, "character": col - 1 },
+        }),
+    )
+    .await
+    .ok();
+    let markdown = hover
+        .as_ref()
+        .and_then(|h| h.get("contents"))
+        .and_then(|c| {
+            c.as_str()
+                .or_else(|| c.get("value").and_then(|v| v.as_str()))
+        })
+        .map(str::to_string);
+    asked.insert(at, markdown.clone());
+    markdown
+}
+
+/// What the analyzer confirms about the type of each declared parameter, asked by hovering the
+/// names in the declaration's own text (its parameter list is `text[open..close]`). A name the
+/// analyzer does not describe as expected is not taken on trust.
+async fn param_facts(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    open: usize,
+    close: usize,
+    declared: &[Declared],
+) -> Vec<ParamFacts> {
+    let mut asked = BTreeMap::new();
+    let mut out = Vec::with_capacity(declared.len());
+    // In order, each after the one before: `a: u32` is also the end of `aa: u32`.
+    let mut from = open;
+    for d in declared {
+        let mut facts = ParamFacts::default();
+        let found = text[from..close].find(&d.raw).map(|i| from + i);
+        let typed = found.and_then(|at| {
+            from = at + d.raw.len();
+            split_at_top_level(&d.raw, ':').map(|(head, ty)| (at + head.len() + 1, ty))
+        });
+        let Some((ty_at, ty)) = typed else {
+            out.push(facts);
+            continue;
+        };
+        facts.reference = ty.trim_start().starts_with('&');
+        if let Some(names) = drop_free_names(ty) {
+            facts.drop_free = true;
+            for (offset, name) in names {
+                let hover = hover_markdown(remote, root, file, text, ty_at + offset, &mut asked);
+                if !hover.await.is_some_and(|h| hover_is_builtin(&h, &name)) {
+                    facts.drop_free = false;
+                    if !facts.unconfirmed.contains(&name) {
+                        facts.unconfirmed.push(name);
+                    }
+                }
+            }
+        }
+        facts.coercion_free = match coercion_name(ty) {
+            None => false,
+            Some(None) => true,
+            Some(Some((offset, name))) => {
+                hover_markdown(remote, root, file, text, ty_at + offset, &mut asked)
+                    .await
+                    .is_some_and(|h| hover_is_builtin(&h, &name) || hover_is_adt(&h, &name))
+            }
+        };
+        out.push(facts);
+    }
+    out
 }
 
 /// What the new argument order `args` and the parameters it leaves out would change at run time,
 /// one line per place: two arguments that would be evaluated the other way round when either
 /// can have an effect the other sees, two owned parameters that would be dropped the other way
 /// round, and a removed argument that does something or is an owned value the function drops.
-/// The receiver is evaluated first before and after, so it is not an argument here; a call
-/// written `Type::f(recv, …)` passes it first and it is skipped.
+/// `facts` is what the analyzer confirmed about each parameter's type; what it did not confirm
+/// counts as able to run code. The receiver is evaluated first before and after, so it is not an
+/// argument here; a call written `Type::f(recv, …)` passes it first and it is skipped.
 fn effect_hazards(
     name: &str,
     declared: &[Declared],
+    facts: &[ParamFacts],
     has_receiver: bool,
     args: &[Option<usize>],
     calls: &[CallSite],
 ) -> Vec<String> {
+    let unknown = ParamFacts::default();
+    let fact = |i: usize| facts.get(i).unwrap_or(&unknown);
     let kept: Vec<usize> = args.iter().flatten().copied().collect();
     // (i, j), declared i before j, that the new order passes j before i.
     let mut swapped = Vec::new();
@@ -1619,14 +1961,29 @@ fn effect_hazards(
     let mut out = Vec::new();
     for &(i, j) in &swapped {
         let (a, b) = (&declared[i], &declared[j]);
-        if !drop_free(declared_type(a)) && !drop_free(declared_type(b)) {
-            out.push(format!(
+        if !fact(i).drop_free && !fact(j).drop_free {
+            let mut line = format!(
                 "`{name}` drops `{}` before `{}` when it returns (parameters are dropped in \
                  reverse order of declaration); the new order drops `{}` first",
                 b.raw.trim(),
                 a.raw.trim(),
                 a.name
-            ));
+            );
+            let mut unconfirmed: Vec<&str> = Vec::new();
+            for n in fact(i).unconfirmed.iter().chain(&fact(j).unconfirmed) {
+                if !unconfirmed.contains(&n.as_str()) {
+                    unconfirmed.push(n);
+                }
+            }
+            if !unconfirmed.is_empty() {
+                line.push_str(&format!(
+                    " (the analyzer does not confirm that `{}` is the built-in or standard \
+                     library type the name usually means, and a type of that name may have a \
+                     `Drop`)",
+                    unconfirmed.join("`, `")
+                ));
+            }
+            out.push(line);
         }
     }
     for call in calls {
@@ -1645,23 +2002,32 @@ fn effect_hazards(
             ));
             continue;
         }
-        let kinds: Vec<ArgKind> = own.iter().map(|a| classify_arg(a)).collect();
+        let kinds: Vec<ArgKind> = own
+            .iter()
+            .enumerate()
+            .map(|(i, a)| classify_arg(a, fact(i)))
+            .collect();
         for &d in &removed {
             let param = &declared[d];
-            if kinds[d] == ArgKind::Effectful {
-                out.push(format!(
+            match kinds[d] {
+                ArgKind::Effectful => out.push(format!(
                     "{}: `{}` is evaluated for `{}`, and removing the parameter removes what it \
                      does",
                     call.at, own[d], param.name
-                ));
-            } else if !drop_free(declared_type(param)) {
-                out.push(format!(
+                )),
+                ArgKind::Unproven(why) => out.push(format!(
+                    "{}: `{}` is evaluated for `{}`, and removing the parameter may remove what \
+                     it does: {why}",
+                    call.at, own[d], param.name
+                )),
+                _ if !fact(d).drop_free => out.push(format!(
                     "{}: `{}` is moved into `{}` and dropped when `{name}` returns; without the \
                      parameter it is dropped at another time, or not at all",
                     call.at,
                     own[d],
                     param.raw.trim()
-                ));
+                )),
+                _ => {}
             }
         }
         for &(i, j) in &swapped {
@@ -1669,10 +2035,22 @@ fn effect_hazards(
                 || kinds[j] == ArgKind::Literal
                 || (kinds[i] == ArgKind::Place && kinds[j] == ArgKind::Place);
             if !independent {
-                out.push(format!(
+                let mut line = format!(
                     "{}: `{}` and `{}` would be evaluated in the opposite order",
                     call.at, own[i], own[j]
-                ));
+                );
+                let mut why: Vec<&str> = Vec::new();
+                for kind in [kinds[i], kinds[j]] {
+                    if let ArgKind::Unproven(reason) = kind
+                        && !why.contains(&reason)
+                    {
+                        why.push(reason);
+                    }
+                }
+                if !why.is_empty() {
+                    line.push_str(&format!(" ({})", why.join("; ")));
+                }
+                out.push(line);
             }
         }
     }
@@ -1895,35 +2273,147 @@ mod tests {
                     "range": { "start": { "line": -1, "character": 0 } } }]),
                 "no file or start position",
             ),
+            (
+                serde_json::json!([{ "uri": "file:///w/a.rs",
+                    "range": { "start": { "line": u32::MAX, "character": 0 } } }]),
+                "which no file has",
+            ),
+            (
+                serde_json::json!([{ "uri": "file:///w/a.rs",
+                    "range": { "start": { "line": 0, "character": u32::MAX } } }]),
+                "which no file has",
+            ),
+            (
+                serde_json::json!([{ "uri": "file:///w/a.rs",
+                    "range": { "start": { "line": u64::from(u32::MAX) + 1, "character": 0 } } }]),
+                "no file or start position",
+            ),
         ];
+        for uri in [
+            "untitled:Untitled-1",
+            "https://example.com/a.rs",
+            "file://build-host/w/a.rs",
+            "/w/a.rs",
+            "a.rs",
+        ] {
+            let reply = serde_json::json!([{ "uri": uri,
+                "range": { "start": { "line": 0, "character": 0 } } }]);
+            let err = parse_locations(&reply).unwrap_err().to_string();
+            assert!(err.contains("is not a local file URI"), "{uri}: {err}");
+        }
+        // Percent-encoded and `localhost` spellings are the same local file.
+        let spelled = serde_json::json!([
+            { "uri": "file:///w/a%20b.rs", "range": { "start": { "line": 0, "character": 0 } } },
+            { "uri": "file://localhost/w/a.rs", "range": { "start": { "line": 0, "character": 0 } } }
+        ]);
+        assert_eq!(
+            parse_locations(&spelled).unwrap(),
+            [
+                (PathBuf::from("/w/a b.rs"), 1, 1),
+                (PathBuf::from("/w/a.rs"), 1, 1)
+            ]
+        );
         for (reply, why) in cases {
             let err = parse_locations(&reply).unwrap_err().to_string();
             assert!(err.contains(why), "{reply}: {err}");
         }
     }
 
-    /// #442: what the text of an argument says about evaluating it.
+    /// Facts for parameters the analyzer described as expected: every name in their types is the
+    /// built-in type, or a struct or an enum, it is spelled as.
+    fn confirmed(declared: &[Declared]) -> Vec<ParamFacts> {
+        declared
+            .iter()
+            .map(|d| {
+                let ty = split_at_top_level(&d.raw, ':').map_or("", |(_, ty)| ty);
+                ParamFacts {
+                    drop_free: drop_free_names(ty).is_some(),
+                    coercion_free: coercion_name(ty).is_some(),
+                    reference: ty.trim_start().starts_with('&'),
+                    unconfirmed: Vec::new(),
+                }
+            })
+            .collect()
+    }
+
+    /// #442: what the text of an argument, and what the analyzer confirmed about the parameter's
+    /// type, say about evaluating it.
     #[test]
     fn arguments_are_told_apart_by_what_evaluating_them_can_do() {
+        let free = ParamFacts {
+            drop_free: true,
+            coercion_free: true,
+            ..Default::default()
+        };
+        let reference = ParamFacts {
+            drop_free: true,
+            reference: true,
+            ..Default::default()
+        };
+        let unknown = ParamFacts::default();
         for literal in [
-            "1", "-2", "0x1F_u8", "1.5f32", "true", "\"a, b\"", "b\"x\"", "r#\"q\"#", "'c'",
-            "'\\n'", "b'x'", "&5", "&\"lit\"",
+            "1",
+            "-2",
+            "0x1F_u8",
+            "1.5f32",
+            "true",
+            "\"a, b\"",
+            "b\"x\"",
+            "r#\"q\"#",
+            "'c'",
+            "'\\n'",
+            "b'x'",
+            "&5",
+            "&\"lit\"",
+            "/* c */ 7",
+            "\"/* not a comment */\"",
         ] {
-            assert_eq!(classify_arg(literal), ArgKind::Literal, "{literal}");
+            for facts in [&free, &reference, &unknown] {
+                assert_eq!(classify_arg(literal, facts), ArgKind::Literal, "{literal}");
+            }
         }
         for place in [
             "x",
-            "self.a.0",
             "crate::LIMIT",
             "&k",
             "&mut buf",
             "& mut buf",
             "n as u64",
-            "&self.items",
+            "x /* a, /* b, */ c */",
+            "/* a */ x // b\n",
         ] {
-            assert_eq!(classify_arg(place), ArgKind::Place, "{place}");
+            assert_eq!(classify_arg(place, &free), ArgKind::Place, "{place}");
+        }
+        // A cast makes a built-in value that no `Deref` converts.
+        assert_eq!(classify_arg("n as u64", &unknown), ArgKind::Place);
+        // A field read can go through `Deref`, whatever the parameter.
+        for field in ["self.a.0", "&self.items", "a.n", "&mut w.buf", "a /* */ .n"] {
+            let kind = classify_arg(field, &free);
+            assert!(
+                kind == ArgKind::Unproven(FIELD_DEREF) || kind == ArgKind::Effectful,
+                "{field}: {kind:?}"
+            );
+        }
+        assert_eq!(classify_arg("a.n", &free), ArgKind::Unproven(FIELD_DEREF));
+        // Passed for a reference, a value or a reference to it can be converted by `Deref`; for
+        // a type the analyzer did not describe, by whatever that type turns out to be.
+        for arg in ["k", "&owned", "&mut buf", "crate::LIMIT"] {
+            assert_eq!(
+                classify_arg(arg, &reference),
+                ArgKind::Unproven(REF_COERCION),
+                "{arg}"
+            );
+            assert_eq!(
+                classify_arg(arg, &unknown),
+                ArgKind::Unproven(UNCONFIRMED_TYPE),
+                "{arg}"
+            );
         }
         for effect in [
+            "x /* /* */",
+            "/* unclosed x",
+            "mark() /* /* */ */",
+            "/* x, /* y */ */ mark()",
             "mark(\"a\")",
             "x.len()",
             "v[0]",
@@ -1940,8 +2430,69 @@ mod tests {
             "|x| x",
             "&mut make()",
         ] {
-            assert_eq!(classify_arg(effect), ArgKind::Effectful, "{effect}");
+            assert_eq!(classify_arg(effect, &free), ArgKind::Effectful, "{effect}");
         }
+    }
+
+    /// #442: a comment ends where its nesting does, so a comma, a quote or a call inside a
+    /// nested comment is not an argument, and an argument after it is not hidden in it.
+    #[test]
+    fn nested_block_comments_are_one_comment() {
+        let text = "join(/* a, /* b, \" */ c, */ x, /* ' */ mark(\"y\"))";
+        assert_eq!(
+            call_arguments(text, 0).unwrap().unwrap(),
+            ["/* a, /* b, \" */ c, */ x", "/* ' */ mark(\"y\")"]
+        );
+        let blanked = blank_comments("/* a /* b */ c */ x").unwrap();
+        assert_eq!(blanked.trim(), "x");
+        assert_eq!(blanked.len(), "/* a /* b */ c */ x".len());
+        assert_eq!(
+            blank_comments("\"/*\" /* é */ y").unwrap(),
+            format!("\"/*\" {}y", " ".repeat("/* é */ ".len()))
+        );
+        assert!(call_arguments("join(x /* /* */, y)", 0).is_err());
+        assert!(blank_comments("x /* /* */").is_none());
+    }
+
+    /// #442: rust-analyzer's hovers, verbatim in shape: a built-in type is described by its name
+    /// alone, a declared one by its module and then its declaration.
+    #[test]
+    fn a_hover_confirms_a_builtin_or_a_declared_type_only_as_it_is_written() {
+        let builtin = "\n```rust\nu32\n```\n\n---\n\nThe 32-bit unsigned integer type.";
+        let option = "\n```rust\ncore::option\n```\n\n```rust\npub enum Option<T> {\n    None,\n    Some( /* … */ ),\n}\n```\n\n---\n\nThe `Option` type.";
+        let own_option = "```rust\nfixture\n```\n\n```rust\npub enum Option<T> {\n    None,\n    Some( /* … */ ),\n}\n```";
+        let own_u32 = "```rust\nfixture\n```\n\n```rust\npub(crate) struct u32\n```";
+        let alias = "```rust\nfixture\n```\n\n```rust\npub type Inner = &'static Wrap\n```";
+        let generic = "```rust\nT\n```";
+        assert!(hover_is_builtin(builtin, "u32"));
+        assert!(hover_is_builtin(option, "Option"));
+        assert!(!hover_is_builtin(own_option, "Option"));
+        assert!(!hover_is_builtin(own_u32, "u32"));
+        assert!(!hover_is_builtin(builtin, "u64"));
+        assert!(!hover_is_builtin(generic, "T"));
+        assert!(hover_is_adt(option, "Option"));
+        assert!(hover_is_adt(own_option, "Option"));
+        assert!(hover_is_adt(own_u32, "u32"));
+        assert!(!hover_is_adt(alias, "Inner"));
+        assert!(!hover_is_adt(generic, "T"));
+        assert!(!hover_is_adt(own_u32, "u3"));
+    }
+
+    #[test]
+    fn a_conversion_into_a_type_is_ruled_out_by_its_shape_or_its_name() {
+        assert_eq!(coercion_name("&Inner"), None);
+        assert_eq!(coercion_name(" &'a mut [u8]"), None);
+        assert_eq!(coercion_name("impl AsRef<str>"), None);
+        assert_eq!(coercion_name("dyn Fn()"), None);
+        for free in ["*const u8", "fn(u32) -> u32", "(u8, &str)", "[u8; 4]", "()"] {
+            assert_eq!(coercion_name(free), Some(None), "{free}");
+        }
+        assert_eq!(coercion_name(" u32"), Some(Some((1, "u32".into()))));
+        assert_eq!(
+            coercion_name("std::option::Option<&T>"),
+            Some(Some((13, "Option".into())))
+        );
+        assert_eq!(coercion_name("Vec<u8"), None);
     }
 
     #[test]
@@ -1988,20 +2539,36 @@ mod tests {
         assert!(call_arguments("join(a, b", 0).is_err());
     }
 
+    /// A type is drop-free by its shape, and by names the analyzer then has to confirm; each
+    /// name comes with where it is, which is where the analyzer is asked.
     #[test]
     fn only_types_without_drop_code_are_drop_free() {
-        for free in [
-            "u32",
-            "&str",
-            "&mut Vec<String>",
-            "*const u8",
-            "fn(u32) -> u32",
-            "(u8, bool)",
-            "[u8; 4]",
-            "Option<&T>",
-            "()",
+        let names = |ty: &str| {
+            drop_free_names(ty).map(|n| {
+                n.into_iter()
+                    .map(|(at, name)| {
+                        assert_eq!(&ty[at..at + name.len()], name, "{ty}");
+                        name
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        for (free, expected) in [
+            ("u32", vec!["u32"]),
+            (" u32", vec!["u32"]),
+            ("&str", vec![]),
+            ("&mut Vec<String>", vec![]),
+            ("*const u8", vec![]),
+            ("fn(u32) -> u32", vec![]),
+            ("(u8, bool)", vec!["u8", "bool"]),
+            ("( u8 ,bool, )", vec!["u8", "bool"]),
+            ("[u8; 4]", vec!["u8"]),
+            ("Option<&T>", vec!["Option"]),
+            ("Option<(u32, [i8; 2])>", vec!["Option", "u32", "i8"]),
+            ("()", vec![]),
         ] {
-            assert!(drop_free(free), "{free}");
+            let expected: Vec<String> = expected.into_iter().map(String::from).collect();
+            assert_eq!(names(free), Some(expected), "{free}");
         }
         for owned in [
             "String",
@@ -2013,8 +2580,10 @@ mod tests {
             "[String; 2]",
             "Option<String>",
             "Box<u8>",
+            "core::primitive::u32",
+            "(u8,,u8)",
         ] {
-            assert!(!drop_free(owned), "{owned}");
+            assert_eq!(names(owned), None, "{owned}");
         }
     }
 
@@ -2039,12 +2608,26 @@ mod tests {
         let swap = [Some(1), Some(0)];
         let pair = parse_declared("first: &str, second: &str").1;
         assert_eq!(
-            effect_hazards("eff_pair", &pair, false, &swap, &sites(DEMO, "eff_pair")),
+            effect_hazards(
+                "eff_pair",
+                &pair,
+                &confirmed(&pair),
+                false,
+                &swap,
+                &sites(DEMO, "eff_pair")
+            ),
             ["2: `mark(\"a\")` and `mark(\"b\")` would be evaluated in the opposite order"],
             "a literal and a call on line 6 are independent"
         );
         let owned = parse_declared("x: Noisy, y: Noisy").1;
-        let hazards = effect_hazards("eff_owned", &owned, false, &swap, &sites(DEMO, "eff_owned"));
+        let hazards = effect_hazards(
+            "eff_owned",
+            &owned,
+            &confirmed(&owned),
+            false,
+            &swap,
+            &sites(DEMO, "eff_owned"),
+        );
         assert_eq!(hazards.len(), 1, "{hazards:?}");
         assert!(
             hazards[0].contains("`eff_owned` drops `y: Noisy` before `x: Noisy`"),
@@ -2055,6 +2638,7 @@ mod tests {
             effect_hazards(
                 "eff_unused",
                 &unused,
+                &confirmed(&unused),
                 false,
                 &[Some(0)],
                 &sites(DEMO, "eff_unused")
@@ -2065,14 +2649,64 @@ mod tests {
             ]
         );
         let simple = parse_declared("n: u32, s: &str, r: &u32").1;
+        let facts = confirmed(&simple);
         let calls = sites(DEMO, "eff_simple");
         assert!(
-            effect_hazards("s", &simple, false, &[Some(2), Some(0), Some(1)], &calls).is_empty()
+            effect_hazards(
+                "s",
+                &simple,
+                &facts,
+                false,
+                &[Some(2), Some(0), Some(1)],
+                &calls
+            )
+            .is_empty(),
+            "a reference moved past literals keeps its meaning"
         );
-        assert!(effect_hazards("s", &simple, false, &[Some(1), Some(0)], &calls).is_empty());
+        // `k` passed for `&u32` may be a `&Wrapper` that `Deref` converts: removing it may
+        // remove that call.
+        assert_eq!(
+            effect_hazards("s", &simple, &facts, false, &[Some(1), Some(0)], &calls),
+            [format!(
+                "5: `k` is evaluated for `r`, and removing the parameter may remove what it \
+                 does: {REF_COERCION}"
+            )]
+        );
+        // Two scalars the analyzer confirmed are reordered and removed freely; unconfirmed, the
+        // same names may be a `struct u32` with a `Drop`.
+        let scalars = parse_declared("a: u32, b: u32").1;
+        let calls = sites("f(p, /* /* */ q */ q)", "f");
+        let facts = confirmed(&scalars);
+        assert!(effect_hazards("f", &scalars, &facts, false, &swap, &calls).is_empty());
+        assert!(effect_hazards("f", &scalars, &facts, false, &[Some(0)], &calls).is_empty());
+        let unconfirmed = vec![
+            ParamFacts {
+                unconfirmed: vec!["u32".into()],
+                ..Default::default()
+            };
+            2
+        ];
+        let hazards = effect_hazards("f", &scalars, &unconfirmed, false, &swap, &calls);
+        assert_eq!(hazards.len(), 2, "{hazards:?}");
+        assert!(
+            hazards[0].contains("drops `b: u32` before `a: u32`")
+                && hazards[0].contains("does not confirm that `u32` is the built-in"),
+            "{hazards:?}"
+        );
+        assert!(
+            hazards[1].ends_with(&format!("in the opposite order ({UNCONFIRMED_TYPE})")),
+            "{hazards:?}"
+        );
         // An owned value that is removed is dropped somewhere else, or never.
         let guard = parse_declared("a: u32, g: Guard").1;
-        let hazards = effect_hazards("f", &guard, false, &[Some(0)], &sites("f(1, g)", "f"));
+        let hazards = effect_hazards(
+            "f",
+            &guard,
+            &confirmed(&guard),
+            false,
+            &[Some(0)],
+            &sites("f(1, g)", "f"),
+        );
         assert!(
             hazards[0].contains("`g` is moved into `g: Guard`"),
             "{hazards:?}"
@@ -2081,6 +2715,7 @@ mod tests {
         let hazards = effect_hazards(
             "eff_pair",
             &pair,
+            &confirmed(&pair),
             false,
             &swap,
             &sites("eff_pair(a)", "eff_pair"),
@@ -2097,6 +2732,7 @@ mod tests {
         let hazards = effect_hazards(
             "m",
             &declared,
+            &confirmed(&declared),
             receiver.is_some(),
             &[Some(1), Some(0)],
             &sites(calls, "m("),
@@ -2104,8 +2740,12 @@ mod tests {
         assert_eq!(
             hazards,
             [
-                "4: `x` and `mark(\"b\")` would be evaluated in the opposite order",
+                format!(
+                    "4: `x` and `mark(\"b\")` would be evaluated in the opposite order \
+                     ({REF_COERCION})"
+                ),
                 "5: `mark(\"a\")` and `mark(\"b\")` would be evaluated in the opposite order"
+                    .to_string()
             ]
         );
     }

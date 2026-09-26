@@ -597,7 +597,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_change_signature".to_string(),
-            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust only; re-run your formatter afterwards."
+            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust: re-run your formatter afterwards. Reorders and removals are refused when argument evaluation or parameter destruction can change; field reads and reference coercions may invoke user Deref code, and primitive-looking names must be confirmed by the analyzer. Missing references and these semantic refusals cannot be overridden by force. Go (a `.go` file, through gopls v0.23.0) supports exactly one change: a permutation of the named parameters of a declared function or method, where `params` lists every declared parameter by name exactly once in the new order. Grouped parameters (`a, b int`) move one by one, a method keeps its receiver, named or unnamed results stay as declared, and a variadic parameter must stay last, its arguments staying at the end of every call. gopls rewrites the declaration and the calls; its edit is refused unless every call and the declaration come back as exactly the requested permutation with nothing else changed, and the whole result is type-checked before it is written. Refused for Go, with nothing written and `force` overriding none of it: adding (`name: Type = expression`) or removing a parameter, `returns`, `visibility`, `async`, `verify`, unnamed or blank `_` parameters, a generic function that has calls (gopls refuses it), a function or method used as a value instead of called, a call that gopls leaves in the old order (such as one through an interface), and any reorder of two arguments where either can have an effect the other sees (a call, receive, index, conversion or operator beside anything but a number, string, rune or function literal; `true`, `false` and `nil` count as variables because Go lets a scope redeclare them)."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -608,14 +608,14 @@ pub fn list_tools() -> Vec<McpTool> {
                     "params": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The whole new parameter list, in order: `name` to keep, `name: Type = expression` to add; omit one to remove it. The receiver (`&self`) is never listed."
+                        "description": "The whole new parameter list, in order: `name` to keep, `name: Type = expression` to add; omit one to remove it. The receiver (`&self`, a Go method's receiver) is never listed. Go: every declared parameter by name, exactly once, reordered; nothing added or removed."
                     },
-                    "returns": { "type": "string", "description": "The return type the function should have (`()` removes it). Every file that calls the function is type-checked against it" },
-                    "visibility": { "type": "string", "description": "`pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove the visibility" },
-                    "async": { "type": "boolean", "description": "`true` makes the function `async` and appends `.await` to every call; `false` removes both. A call that would await from a function that is not `async` blocks the write unless `force`. Not together with a change of the parameter order" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path" },
+                    "returns": { "type": "string", "description": "Rust only. The return type the function should have (`()` removes it). Every file that calls the function is type-checked against it" },
+                    "visibility": { "type": "string", "description": "Rust only. `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or `private` to remove the visibility" },
+                    "async": { "type": "boolean", "description": "Rust only. `true` makes the function `async` and appends `.await` to every call; `false` removes both. A call that would await from a function that is not `async` blocks the write unless `force`. Not together with a change of the parameter order" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "Rust only. `compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds) and it is the compiler — the analyzer's own check does not see an unresolved type or module path. Refused for a Go file before anything is planned or written" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Drop a parameter the body still uses, and write even when the result does not compile" }
+                    "force": { "type": "boolean", "description": "Rust: drop a parameter the body still uses, and write even when the result does not compile. Overrides no Go refusal" }
                 },
                 "required": ["params"]
             }),
@@ -2548,6 +2548,19 @@ async fn handle_change_signature(
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    // The compile gate runs `cargo check` on a preview and writes it on the compiler's word
+    // alone, past the Go adapter's own refusals of a gopls edit that is not the permutation
+    // asked for. Go gets no such gate: `verify` is refused before anything is planned.
+    if file_path.extension().is_some_and(|e| e == "go")
+        && let Some(asked) = args.get("verify").filter(|v| !v.is_null())
+    {
+        anyhow::bail!(
+            "`verify: {asked}` is not supported for Go: it runs `cargo check`, which does not \
+             build Go, and nothing was written. A Go reorder is already type-checked with every \
+             package that uses it and refused unless gopls's edit is exactly the requested \
+             permutation; omit `verify`"
+        );
+    }
     let modifiers = crate::signature::Modifiers {
         returns: args
             .get("returns")
