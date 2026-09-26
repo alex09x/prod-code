@@ -15,6 +15,33 @@
 //! a literal of the new type is spelled, where a string or a comment starts — and that is
 //! chosen by the declaring file's language. Rust keeps its own path, which predates the others.
 //!
+//! JavaScript takes TypeScript's path without the type: the parameter is a plain object, the
+//! calls pass an object literal, and nothing is declared, annotated or imported for it. What a
+//! type checker would catch in TypeScript nothing catches there, so what cannot be shown to mean
+//! the same afterwards — a spread, `arguments`, a default that is not a constant, a name the
+//! object would shadow, a reference the file no longer has — is refused with the reason instead
+//! of being written.
+//!
+//! In every language the literal keeps the arguments in the order the call evaluated them, and
+//! a call whose bundled arguments are not next to each other is refused unless the arguments
+//! that would trade places cannot affect each other (#436). A literal whose conversion runs no
+//! code of the program's cannot; nor can two plain names in Rust or Go. Anywhere else a plain
+//! name is no proof — a getter, a computed property, a macro or a copy constructor may run when
+//! it is read — and the call is refused.
+//!
+//! A Rust function drops its parameters last to first and a struct its fields first to last, so
+//! when two or more of the bundled parameters may have a destructor the struct declares them in
+//! reverse (#441). The literal names its fields and is evaluated in the order it is written, so
+//! the calls do not change. What no order of the fields keeps is refused before anything is
+//! written: an owned parameter left between bundled ones, an `async` function, whose future
+//! drops its parameters first to last when it is dropped before it is polled, and a closure or an
+//! `async` block in a crate before edition 2021, which captures the whole struct.
+//!
+//! TypeScript bundles a defaulted parameter the way JavaScript does: only a constant default,
+//! which the callers then write into the literal where they passed `void 0` or nothing. A
+//! default computed in the callee is refused, since at the callers it would run at another time
+//! and in another scope.
+//!
 //! Swift takes the same path, with a `struct` of `let` properties whose memberwise initialiser
 //! is the literal, and argument labels that bind the arguments to the parameters. C and C++
 //! take one of their own, because a function there is usually declared more than once — a
@@ -129,7 +156,13 @@ impl ParameterObject {
             &self.unreported,
             &self.file,
         ));
-        if self.diagnostics.is_empty() {
+        if self.diagnostics.is_empty() && self.language == "javascript" {
+            // Without types the server checks the syntax; the arguments were bound here.
+            out.push_str(
+                "\nthe analyzer accepts the result: 0 errors (in JavaScript that is the syntax; \
+                 nothing checks a call's arguments against the object)\n",
+            );
+        } else if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
             out.push_str("\nthe analyzer rejects the result:\n");
@@ -422,6 +455,467 @@ fn display(root: &Path, path: &Path) -> String {
         .into_owned()
 }
 
+/// Why nothing is rewritten when the analyzer cannot list the references to `name`: with some
+/// of them missing, a call or a use would be left behind that the check afterwards may not see
+/// (#436).
+fn unlisted(name: &str, root: &Path, file: &Path, line: u32, col: u32) -> String {
+    format!(
+        "the references to `{name}` at {}:{line}:{col} could not be listed, so nothing was \
+         rewritten",
+        display(root, file)
+    )
+}
+
+/// The refusal for a call whose arguments bundling would evaluate in another order; see
+/// [`reordered_arguments`].
+fn reordered(
+    callee: &str,
+    place: &str,
+    moved: &str,
+    passed: &str,
+    language: Language,
+) -> anyhow::Error {
+    let (why, advice) = match opaque_reads(language) {
+        Some(why) => (
+            format!(" (in {}, {why})", language.label()),
+            "Bundle adjacent parameters",
+        ),
+        None => (
+            String::new(),
+            "Bundle adjacent parameters, or give the arguments names first",
+        ),
+    };
+    anyhow::anyhow!(
+        "`{callee}` at {place} passes `{passed}` between the bundled arguments; in the object \
+         `{moved}` would be evaluated before it, and either may change what the other \
+         sees{why}. {advice}; nothing was rewritten"
+    )
+}
+
+/// What the spelling of a Rust type shows about whether a value of it may run a destructor
+/// (#441). A tuple or an array is what its most doubtful element is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Spelled {
+    /// A reference, a pointer, a function pointer, `!`, `()`, or a tuple or an array of those:
+    /// nothing a program declares changes what these are.
+    Inert,
+    /// Inert if every primitive name in it (`bool`, `u32`) is the builtin type. A program may
+    /// declare or import its own type of that name, with `Drop`, so only the analyzer can tell.
+    Primitive,
+    /// Any other type the program or a library names, or a generic one.
+    MayDrop,
+}
+
+fn spelled(ty: &str) -> Spelled {
+    let ty = ty.trim();
+    if ty.starts_with(['&', '*']) || ty.starts_with("fn(") || ty == "!" {
+        return Spelled::Inert;
+    }
+    if let Some(inner) = ty.strip_prefix('(').and_then(|t| t.strip_suffix(')')) {
+        return split_args(inner)
+            .iter()
+            .map(|t| spelled(t))
+            .max()
+            .unwrap_or(Spelled::Inert);
+    }
+    if let Some(inner) = ty.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        return spelled(inner.rsplit_once(';').map_or(inner, |(element, _)| element));
+    }
+    if matches!(
+        ty,
+        "bool"
+            | "char"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+    ) {
+        Spelled::Primitive
+    } else {
+        Spelled::MayDrop
+    }
+}
+
+/// Where the parameter `name` is written in `raw`, its declaration (`mut n: u32`): the last
+/// place before the colon where it stands as a whole name.
+fn name_in(raw: &str, name: &str) -> Option<usize> {
+    let head = &raw[..raw.find(':')?];
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    head.match_indices(name)
+        .map(|(at, _)| at)
+        .filter(|at| {
+            !head[..*at].chars().next_back().is_some_and(ident)
+                && !head[at + name.len()..].chars().next().is_some_and(ident)
+        })
+        .last()
+}
+
+/// Whether rust-analyzer's hover on the parameter `name` vouches that its type has no drop glue
+/// (#441): `Ok` for `no Drop` on a type it resolved, otherwise why the type may have a
+/// destructor for all the hover shows. A type it cannot resolve is `{unknown}`, and has
+/// `no Drop` as well, which proves nothing.
+fn no_drop_glue(hover: &str, name: &str) -> Result<(), String> {
+    let mut lines = hover.lines().map(str::trim);
+    let declared = lines
+        .by_ref()
+        .skip_while(|l| *l != "```rust")
+        .nth(1)
+        .ok_or_else(|| "the analyzer's hover does not show its type".to_string())?;
+    let ty = declared
+        .strip_prefix("mut ")
+        .unwrap_or(declared)
+        .strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix(':'))
+        .map(str::trim)
+        .ok_or_else(|| format!("the analyzer's hover is about `{declared}`, not it"))?;
+    if ty.contains("{unknown}") {
+        return Err(format!("the analyzer does not resolve its type (`{ty}`)"));
+    }
+    match lines.find(|l| {
+        matches!(
+            *l,
+            "no Drop" | "needs Drop" | "impl Drop" | "type param may need Drop"
+        )
+    }) {
+        Some("no Drop") => Ok(()),
+        Some(glue) => Err(format!("the analyzer reports `{glue}` for it")),
+        None => Err("the analyzer's hover does not say whether its type has drop glue".into()),
+    }
+}
+
+/// Asks the analyzer about the parameter `name` of `file`, written at byte `at` of `text`; see
+/// [`no_drop_glue`]. A failed query or no hover vouches for nothing.
+async fn drop_glue(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    at: usize,
+    name: &str,
+) -> Result<(), String> {
+    let (line, col) = crate::signature::line_col_at(text, at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|()| format!("{} has no file URI", file.display()))?
+        .to_string();
+    let res = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/hover",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+        }),
+    )
+    .await
+    .map_err(|e| format!("the hover query failed: {e:#}"))?;
+    let hover = res
+        .pointer("/contents/value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "the analyzer gave no hover for it".to_string())?;
+    no_drop_glue(hover, name)
+}
+
+/// The parameters that may run a destructor (`owned`), in the order a Rust function drops them
+/// before bundling and after (#441). A function drops its parameters last to first, and the
+/// struct, where the first bundled parameter was, drops its fields in the order `fields` declares
+/// them. With `forward` it is the order a future of an `async` function drops them in when it is
+/// dropped before it is polled: first to last, as the fields of the future.
+fn drop_order(
+    count: usize,
+    bundled: &[usize],
+    fields: &[usize],
+    owned: &[bool],
+    forward: bool,
+) -> (Vec<usize>, Vec<usize>) {
+    let first = bundled.first().copied().unwrap_or(0);
+    let mut was: Vec<usize> = (0..count).collect();
+    let mut units: Vec<Vec<usize>> = (0..count)
+        .filter(|i| *i == first || !bundled.contains(i))
+        .map(|i| if i == first { fields.to_vec() } else { vec![i] })
+        .collect();
+    if !forward {
+        was.reverse();
+        units.reverse();
+    }
+    let owned_only =
+        |order: Vec<usize>| -> Vec<usize> { order.into_iter().filter(|i| owned[*i]).collect() };
+    (owned_only(was), owned_only(units.concat()))
+}
+
+/// The refusal for a bundle that would drop the parameters in another order; see
+/// [`drop_order`]. The names are listed already quoted; `unsure` says why each parameter
+/// spelled as a primitive was taken for one that may have a destructor.
+fn dropped_differently(
+    callee: &str,
+    name: &str,
+    bundled: &str,
+    was: &str,
+    now: &str,
+    forward: bool,
+    unsure: &[String],
+) -> anyhow::Error {
+    let unsure: String = unsure.iter().map(|u| format!("; {u}")).collect();
+    let (who, then, advice) = if forward {
+        (
+            format!("`{callee}` is `async`: a future dropped before it is polled drops"),
+            ", and one that has run drops them the other way round, which the same fields \
+             cannot keep as well",
+            "Bundle at most one parameter whose type may have a destructor",
+        )
+    } else {
+        (
+            format!("`{callee}` drops"),
+            "",
+            "Bundle parameters that are next to each other, or apart only by references and \
+             primitives",
+        )
+    };
+    anyhow::anyhow!(
+        "{who} the parameters that may have a destructor in the order {was}; with {bundled} in \
+         `{name}` it would drop them in the order {now}{then}{unsure} (#441). {advice}; nothing \
+         was rewritten"
+    )
+}
+
+/// `code` (Rust source) with every comment and the inside of every string and character literal
+/// made spaces, so that what is left is code at the same offsets. A string keeps its quotes.
+/// Block comments nest, as in Rust, and `'a` is a lifetime rather than a character.
+fn rust_code(code: &str) -> Vec<u8> {
+    let mut out = code.as_bytes().to_vec();
+    let bytes = code.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let mut blank = |from: usize, to: usize| out[from..to].fill(b' ');
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"//") {
+            let end = line_end(bytes, i);
+            blank(i, end);
+            i = end;
+        } else if rest.starts_with(b"/*") {
+            let (mut j, mut depth) = (i + 2, 1);
+            while j < bytes.len() && depth > 0 {
+                if bytes[j..].starts_with(b"/*") {
+                    depth += 1;
+                    j += 2;
+                } else if bytes[j..].starts_with(b"*/") {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            let j = j.min(bytes.len());
+            blank(i, j);
+            i = j;
+        } else if bytes[i] == b'r'
+            && (i == 0
+                || !word(bytes[i - 1])
+                || (matches!(bytes[i - 1], b'b' | b'c') && (i == 1 || !word(bytes[i - 2]))))
+            && rest[1..].iter().find(|b| **b != b'#') == Some(&b'"')
+        {
+            // A raw string: no escapes, and it ends at a quote with as many `#` as it began.
+            let hashes = rest[1..].iter().take_while(|b| **b == b'#').count();
+            let open = i + 1 + hashes;
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', hashes))
+                .collect();
+            let end = find_bytes(&bytes[open + 1..], &close).map_or(bytes.len(), |n| open + 1 + n);
+            blank(i + 1, open);
+            blank(open + 1, end);
+            if end < bytes.len() {
+                blank(end + 1, end + close.len());
+            }
+            i = (end + close.len()).min(bytes.len());
+        } else if bytes[i] == b'"' || (bytes[i] == b'\'' && char_literal(code, i)) {
+            let quote = bytes[i];
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != quote {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            let j = j.min(bytes.len());
+            blank(i + 1, j);
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether the quote at byte `at` of `code` opens a character literal (`'a'`, `'\n'`, `'ä'`)
+/// rather than a lifetime or a label (`'a`, `'ä`), whose name may be in any script: a literal is
+/// an escape, or one character and a quote.
+fn char_literal(code: &str, at: usize) -> bool {
+    let rest = &code[at + 1..];
+    match rest.chars().next() {
+        Some('\\') => true,
+        Some(c) => rest[c.len_utf8()..].starts_with('\'') || !(c == '_' || c.is_alphabetic()),
+        None => false,
+    }
+}
+
+/// The token of `code` (blanked by [`rust_code`]) that ends at `*end`, whitespace skipped: a
+/// name, a string, or one other character; `*end` moves to its start.
+fn token_before<'a>(code: &'a [u8], end: &mut usize) -> Option<&'a [u8]> {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    while *end > 0 && code[*end - 1].is_ascii_whitespace() {
+        *end -= 1;
+    }
+    let stop = *end;
+    match code[..stop].last()? {
+        b if word(*b) => {
+            while *end > 0 && word(code[*end - 1]) {
+                *end -= 1;
+            }
+        }
+        // The ABI of `extern "C"`, whose inside is blank.
+        b'"' => *end = code[..stop - 1].iter().rposition(|b| *b == b'"')?,
+        _ => *end -= 1,
+    }
+    Some(&code[*end..stop])
+}
+
+/// Whether the Rust function whose name starts at `name` is declared `async`: its qualifiers are
+/// read back from `fn` over line breaks and comments (`pub(crate)\nasync /* … */ fn`), and an
+/// `async` in a comment or a string is not one. `None` where no `fn` comes before the name.
+fn declared_async(text: &str, name: usize) -> Option<bool> {
+    let code = rust_code(&text[..name]);
+    let mut end = code.len();
+    if token_before(&code, &mut end)? != b"fn" {
+        return None;
+    }
+    while let Some(token) = token_before(&code, &mut end) {
+        match token {
+            b"async" => return Some(true),
+            b"const" | b"unsafe" | b"safe" | b"extern" | b"default" => {}
+            t if t.first() == Some(&b'"') => {}
+            _ => break,
+        }
+    }
+    Some(false)
+}
+
+/// The manifest in `dir`, parsed; `None` where there is none.
+fn manifest_in(dir: &Path) -> Option<Result<toml::Table, String>> {
+    let path = dir.join("Cargo.toml");
+    if !path.is_file() {
+        return None;
+    }
+    Some(
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))
+            .and_then(|text| {
+                text.parse::<toml::Table>()
+                    .map_err(|e| format!("{} is not valid TOML: {}", path.display(), e.message()))
+            }),
+    )
+}
+
+/// The edition of the crate `file` belongs to, as Cargo reads it: the `package.edition` of the
+/// nearest manifest, 2015 where it has none, and with `edition.workspace = true` the
+/// `workspace.package.edition` of the workspace that `package.workspace` names or, without it,
+/// of the nearest manifest from the crate's directory up that has a `[workspace]`.
+///
+/// Where that cannot be told — no manifest, one that is not valid TOML or has no `[package]`,
+/// a workspace that does not say, an edition this check does not know — the error says why,
+/// and the caller must not assume one.
+fn rust_edition(file: &Path) -> Result<u32, String> {
+    let (dir, manifest) = file
+        .ancestors()
+        .skip(1)
+        .find_map(|dir| Some((dir, manifest_in(dir)?)))
+        .ok_or_else(|| format!("no Cargo.toml in a directory above {}", file.display()))?;
+    let path = dir.join("Cargo.toml");
+    let manifest = manifest?;
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{} has no [package]", path.display()))?;
+    let (edition, from) = match package.get("edition") {
+        None => return Ok(2015),
+        Some(toml::Value::Table(inherit)) => {
+            if inherit.len() != 1
+                || inherit.get("workspace").and_then(toml::Value::as_bool) != Some(true)
+            {
+                return Err(format!(
+                    "`package.edition` in {} is neither a string nor `{{ workspace = true }}`",
+                    path.display()
+                ));
+            }
+            let root = match package.get("workspace") {
+                Some(toml::Value::String(to)) => dir.join(to),
+                Some(_) => {
+                    return Err(format!(
+                        "`package.workspace` in {} is not a path",
+                        path.display()
+                    ));
+                }
+                None => {
+                    let mut found = None;
+                    for up in dir.ancestors() {
+                        match manifest_in(up) {
+                            Some(Ok(m))
+                                if m.get("workspace").is_some_and(toml::Value::is_table) =>
+                            {
+                                found = Some(up.to_path_buf());
+                                break;
+                            }
+                            Some(Err(e)) => return Err(e),
+                            _ => {}
+                        }
+                    }
+                    found.ok_or_else(|| {
+                        format!(
+                            "{} inherits `edition` from its workspace, and no Cargo.toml from its \
+                             directory up has a [workspace]",
+                            path.display()
+                        )
+                    })?
+                }
+            };
+            let root_path = root.join("Cargo.toml");
+            let workspace = manifest_in(&root)
+                .unwrap_or_else(|| Err(format!("there is no {}", root_path.display())))?;
+            let edition = workspace
+                .get("workspace")
+                .and_then(|w| w.get("package"))
+                .and_then(|p| p.get("edition"))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "{} inherits `edition` from {}, which has no `workspace.package.edition`",
+                        path.display(),
+                        root_path.display()
+                    )
+                })?;
+            (edition, root_path)
+        }
+        Some(edition) => (edition.clone(), path),
+    };
+    match edition.as_str() {
+        Some("2015") => Ok(2015),
+        Some("2018") => Ok(2018),
+        Some("2021") => Ok(2021),
+        Some("2024") => Ok(2024),
+        _ => Err(format!(
+            "the edition {edition} in {} is not one this check knows",
+            from.display()
+        )),
+    }
+}
+
 /// Bundles `params` of the function at `file:line:col` into a struct called `name`.
 #[allow(clippy::too_many_arguments)]
 pub async fn introduce(
@@ -439,7 +933,8 @@ pub async fn introduce(
     anyhow::ensure!(params.len() >= 2, "bundling one parameter is not a bundle");
     let language = Language::of(file).with_context(|| {
         format!(
-            "bundling parameters works in Rust, TypeScript, Python, Go, C, C++ and Swift files; \
+            "bundling parameters works in Rust, TypeScript, JavaScript, Python, Go, C, C++ and \
+             Swift files; \
              {} is none of them",
             file.display()
         )
@@ -497,11 +992,129 @@ pub async fn introduce(
             (d.name.clone(), type_of(&d.raw).unwrap_or("()").to_string())
         })
         .collect();
-    let struct_text = struct_text(
-        name,
-        &fields,
-        &format!("The parameters `{callee}` takes together."),
-    );
+
+    // A function drops its parameters last to first and a struct its fields first to last, so
+    // with two or more that may have a destructor the fields are declared the other way round
+    // (#441). The literal names them and is evaluated in the order it writes them.
+    //
+    // The spelling proves that a reference or a pointer has no destructor, but not that a
+    // primitive's name means the builtin: the program may declare or import a `struct bool` with
+    // `Drop`. For those the analyzer resolves the parameter's type, and anything short of its
+    // word that a resolved type has no drop glue — a failed query included — counts as a type
+    // that may have a destructor.
+    let mut owned = Vec::with_capacity(declared.len());
+    let mut unsure = Vec::new();
+    let mut from = open;
+    for d in &declared {
+        let at = text[from..close].find(&d.raw).map(|o| from + o);
+        if let Some(at) = at {
+            from = at + d.raw.len();
+        }
+        let ty = type_of(&d.raw);
+        owned.push(match ty.map_or(Spelled::MayDrop, spelled) {
+            Spelled::Inert => false,
+            Spelled::MayDrop => true,
+            Spelled::Primitive => {
+                let glue = match at.and_then(|at| Some(at + name_in(&d.raw, &d.name)?)) {
+                    Some(at) => drop_glue(remote, root, file, &text, at, &d.name).await,
+                    None => Err("its name was not found in the declaration".to_string()),
+                };
+                if let Err(why) = &glue {
+                    unsure.push(format!(
+                        "`{}` is spelled `{}`, but {why}",
+                        d.name,
+                        ty.unwrap_or_default()
+                    ));
+                }
+                glue.is_err()
+            }
+        });
+    }
+    let owned_bundled: Vec<&str> = bundled
+        .iter()
+        .filter(|i| owned[**i])
+        .map(|i| declared[*i].name.as_str())
+        .collect();
+    let reverse = owned_bundled.len() >= 2;
+    let order: Vec<usize> = if reverse {
+        bundled.iter().rev().copied().collect()
+    } else {
+        bundled.clone()
+    };
+    // Where the qualifiers cannot be read, the function is taken to be `async`: that only
+    // refuses more.
+    let is_async = declared_async(&text, offset).unwrap_or(true);
+    let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let quoted = |list: &[usize]| -> String {
+        list.iter()
+            .map(|i| format!("`{}`", declared[*i].name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    for forward in [false, true] {
+        if forward && !is_async {
+            continue;
+        }
+        let (was, now) = drop_order(declared.len(), &bundled, &order, &owned, forward);
+        if was != now {
+            return Err(dropped_differently(
+                &callee,
+                name,
+                &quoted(&bundled),
+                &quoted(&was),
+                &quoted(&now),
+                forward,
+                &unsure,
+            ));
+        }
+    }
+    // Before edition 2021 a closure or an `async` block that uses `binding.a` captures all of
+    // `binding`, and keeps every field alive for as long as it lives.
+    let body = text[close..]
+        .find(['{', ';'])
+        .filter(|b| text.as_bytes()[close + b] == b'{')
+        .and_then(|b| matching_bracket(&text, close + b))
+        .map_or("", |end| &text[close..end]);
+    if !owned_bundled.is_empty() && (body.contains('|') || body.contains("async")) {
+        let kept = owned_bundled
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match rust_edition(file) {
+            Ok(edition) => anyhow::ensure!(
+                edition >= 2021,
+                "`{callee}` is in a crate of edition {edition}, where a closure or an `async` \
+                 block that uses a field of `{binding}` captures all of it, and would keep {kept} \
+                 (whose types may have a destructor) until it is dropped rather than drop them \
+                 when `{callee}` returns (#441). Bundle them in edition 2021 or later, or from a \
+                 body without closures; nothing was rewritten"
+            ),
+            Err(why) => anyhow::bail!(
+                "cannot tell which edition the crate of `{callee}` is in ({why}); before edition \
+                 2021 a closure or an `async` block that uses a field of `{binding}` captures all \
+                 of it, and would keep {kept} (whose types may have a destructor) until it is \
+                 dropped rather than drop them when `{callee}` returns (#441). Give the crate's \
+                 Cargo.toml an `edition` Cargo accepts, or bundle from a body without closures; \
+                 nothing was rewritten"
+            ),
+        }
+    }
+
+    let laid_out: Vec<(String, String)> = if reverse {
+        fields.iter().rev().cloned().collect()
+    } else {
+        fields.clone()
+    };
+    let doc = if reverse {
+        format!(
+            "The parameters `{callee}` takes together, last to first: a struct drops its fields \
+             first to last, and `{callee}` dropped them last to first."
+        )
+    } else {
+        format!("The parameters `{callee}` takes together.")
+    };
+    let struct_text = struct_text(name, &laid_out, &doc);
 
     // Every edit is computed against the file as it is now and applied from the last offset
     // backwards, so no edit has to know what the ones before it did to the offsets.
@@ -539,10 +1152,10 @@ pub async fn introduce(
         }
     };
 
-    for (path, rl, rc) in crate::signature::references(remote, root, file, line, col)
+    let callers = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
+    for (path, rl, rc) in callers {
         let body = texts(&path);
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
             continue;
@@ -567,6 +1180,12 @@ pub async fn introduce(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         }
+        let bound: Vec<Option<usize>> = (0..args.len()).map(Some).collect();
+        // A Rust literal converts to nothing of the program's, so no parameter types are needed.
+        if let Some((moved, passed)) = reordered_arguments(&args, &bound, &bundled, &[], language) {
+            let place = format!("{}:{rl}:{rc}", display(root, &path));
+            return Err(reordered(&callee, &place, moved, passed, language));
+        }
         let (spelling, _) = spelling_in(&path);
         edits.entry(path).or_default().push((
             args_start,
@@ -585,10 +1204,10 @@ pub async fn introduce(
             continue;
         };
         let (l, c) = crate::signature::line_col_at(&text, at);
-        for (path, rl, rc) in crate::signature::references(remote, root, file, l, c)
+        let refs = crate::signature::references(remote, root, file, l, c)
             .await
-            .unwrap_or_default()
-        {
+            .with_context(|| unlisted(&d.name, root, file, l, c))?;
+        for (path, rl, rc) in refs {
             if path != file || rl == l {
                 continue;
             }
@@ -625,7 +1244,6 @@ pub async fn introduce(
     };
     let declaring = edits.entry(file.to_path_buf()).or_default();
     declaring.push((open, close - open, now.clone()));
-    let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let item_start = text[..item_line_start]
         .rfind("\n\n")
         .map(|i| i + 2)
@@ -737,6 +1355,7 @@ async fn check_and_apply(
 pub enum Language {
     Rust,
     TypeScript,
+    JavaScript,
     Python,
     Go,
     C,
@@ -746,13 +1365,14 @@ pub enum Language {
 
 impl Language {
     /// The language a file is written in, or `None` for one parameters cannot be bundled in.
-    /// JavaScript is not TypeScript here: it has no interfaces to declare the new type with.
-    /// A `.h` header is C by its name alone; [`introduce_c`] treats it as C++ when the
-    /// definition or a caller is.
+    /// JavaScript is not TypeScript here: it has no interfaces to declare the new type with, so
+    /// its object is a plain one. A `.h` header is C by its name alone; [`introduce_c`] treats it
+    /// as C++ when the definition or a caller is.
     pub fn of(path: &Path) -> Option<Language> {
         match crate::lang::language_id_for_path(path) {
             "rust" => Some(Language::Rust),
             "typescript" | "typescriptreact" => Some(Language::TypeScript),
+            "javascript" | "javascriptreact" => Some(Language::JavaScript),
             "python" => Some(Language::Python),
             "go" => Some(Language::Go),
             "c" => Some(Language::C),
@@ -767,6 +1387,7 @@ impl Language {
         match self {
             Language::Rust => "rust",
             Language::TypeScript => "typescript",
+            Language::JavaScript => "javascript",
             Language::Python => "python",
             Language::Go => "go",
             Language::C => "c",
@@ -779,6 +1400,7 @@ impl Language {
         match self {
             Language::Rust => "Rust",
             Language::TypeScript => "TypeScript",
+            Language::JavaScript => "JavaScript",
             Language::Python => "Python",
             Language::Go => "Go",
             Language::C => "C",
@@ -790,10 +1412,12 @@ impl Language {
 
 /// What the new parameter is called when the request does not say: the type's name in the casing
 /// the language gives a parameter — `render_options` in Rust, Python, C and C++,
-/// `renderOptions` in TypeScript, Go and Swift.
+/// `renderOptions` in TypeScript, JavaScript, Go and Swift.
 pub fn default_binding(file: &Path, name: &str) -> String {
     match Language::of(file) {
-        Some(Language::TypeScript | Language::Go | Language::Swift) => lower_camel(name),
+        Some(Language::TypeScript | Language::JavaScript | Language::Go | Language::Swift) => {
+            lower_camel(name)
+        }
         _ => crate::fixture::snake_case(name),
     }
 }
@@ -1098,6 +1722,11 @@ fn parse_param(entry: &str, at: usize, language: Language) -> Param {
                 head += 3;
             }
         }
+        // A destructuring pattern (`{ a, b }`, `[a, b]`) starts with no name and keeps none.
+        Language::JavaScript if entry.starts_with("...") => {
+            param.kind = Kind::Variadic;
+            head = 3;
+        }
         _ => {}
     }
     param.name = leading_ident(&entry[head..]).to_string();
@@ -1315,7 +1944,7 @@ fn indent_unit(text: &str, language: Language) -> String {
         return unit;
     }
     match language {
-        Language::TypeScript => "  ".to_string(),
+        Language::TypeScript | Language::JavaScript => "  ".to_string(),
         _ => "    ".to_string(),
     }
 }
@@ -1372,6 +2001,21 @@ pub fn type_text(
                 out.push_str(&format!("{indent}{}{optional}: {ty};\n", f.name));
             }
             out.push_str("}\n");
+        }
+        Language::JavaScript => {
+            // Only the report shows this: JavaScript has no type to declare, and a class written
+            // just to name the shape would be one more thing every caller has to construct.
+            out.push_str(&format!(
+                "// {name}: the plain object `{callee}` takes; nothing is declared for it\n"
+            ));
+            let shape: Vec<String> = fields
+                .iter()
+                .map(|f| match &f.default {
+                    Some(d) => format!("{} = {d}", f.name),
+                    None => f.name.clone(),
+                })
+                .collect();
+            out.push_str(&format!("{{ {} }}\n", shape.join(", ")));
         }
         Language::Python => {
             // A field without a default after one with a default is an error in a dataclass and
@@ -1475,9 +2119,10 @@ pub fn type_text(
 
 /// How the bundled parameter is declared: `opts: Opts` in TypeScript, Python and Swift,
 /// `opts Opts` in Go, `Opts opts` in C++, and `struct Opts opts` in C, where a struct's name is
-/// only a type together with the keyword.
+/// only a type together with the keyword. JavaScript's is the bare name.
 fn parameter_in(language: Language, binding: &str, name: &str) -> String {
     match language {
+        Language::JavaScript => binding.to_string(),
         Language::Go => format!("{binding} {name}"),
         Language::Cpp => format!("{name} {binding}"),
         Language::C => format!("struct {name} {binding}"),
@@ -1486,16 +2131,23 @@ fn parameter_in(language: Language, binding: &str, name: &str) -> String {
 }
 
 /// A literal of the new type from (field, value) pairs: `{ a: x, b: y }` in TypeScript, whose
-/// interfaces are structural and need no name; `Opts(a=x, b=y)` in Python; `Opts{a: x, b: y}`
+/// interfaces are structural and need no name, and in JavaScript, which has no type to name;
+/// `Opts(a=x, b=y)` in Python; `Opts{a: x, b: y}`
 /// in Go; `Opts(a: x, b: y)`, the memberwise initialiser, in Swift. C needs a compound literal,
 /// `(struct Opts){.a = x, .b = y}`, since a braced list alone is not an expression there; C++
 /// converts a braced list to the parameter's type, and its designators are C++20's — see
 /// [`aggregate_text`] for the standards before it.
+///
+/// A TypeScript or JavaScript field called `__proto__` is written as a computed key: written
+/// plainly, `__proto__: x` sets the object's prototype instead of giving it that field.
 pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String)]) -> String {
     let join = |sep: &str| {
         pairs
             .iter()
-            .map(|(f, v)| format!("{f}{sep}{v}"))
+            .map(|(f, v)| match language {
+                Language::TypeScript | Language::JavaScript => format!("{}{sep}{v}", js_key(f)),
+                _ => format!("{f}{sep}{v}"),
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -1507,13 +2159,24 @@ pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String
             .join(", ")
     };
     match language {
-        Language::TypeScript => format!("{{ {} }}", join(": ")),
+        Language::JavaScript if pairs.is_empty() => "{}".to_string(),
+        Language::TypeScript | Language::JavaScript => format!("{{ {} }}", join(": ")),
         Language::Python => format!("{spelling}({})", join("=")),
         Language::Go => format!("{spelling}{{{}}}", join(": ")),
         Language::Rust => format!("{spelling} {{ {} }}", join(": ")),
         Language::C => format!("(struct {spelling}){{{}}}", designated()),
         Language::Cpp => format!("{{{}}}", designated()),
         Language::Swift => format!("{spelling}({})", join(": ")),
+    }
+}
+
+/// The key an object literal gives the field `name`: the name itself, except `__proto__`, which
+/// only a computed key makes an own property.
+fn js_key(name: &str) -> String {
+    if name == "__proto__" {
+        "[\"__proto__\"]".to_string()
+    } else {
+        name.to_string()
     }
 }
 
@@ -1575,7 +2238,8 @@ fn keyword_arg(arg: &str) -> Option<(&str, &str)> {
 /// declaration with the right arity. An argument bound to no parameter (`None` in the list) is
 /// one Python's `*args` or `**kwargs` takes, and it stays as it was.
 ///
-/// TypeScript and Go pass every argument by position, so the count has to match, as in Rust.
+/// Go passes every argument by position, so the count has to match, as in Rust. TypeScript does
+/// too, but a call may leave off trailing parameters that are optional or have defaults.
 /// Python binds positional arguments in order and keyword arguments by name; a parameter no
 /// argument binds has to have a default. A call that spreads (`*xs`, `**kw`) cannot be mapped
 /// without running it.
@@ -1591,6 +2255,18 @@ pub fn bind_arguments(
     match language {
         Language::Python => {}
         Language::Swift => return bind_swift_arguments(args, params),
+        Language::JavaScript => return bind_js_arguments(args, params),
+        // A parameter left off at the end is `undefined`, which an optional or a defaulted one
+        // (or a rest one, as none) accepts. A spread has no position until the call runs.
+        Language::TypeScript => {
+            let short = params[args.len().min(params.len())..]
+                .iter()
+                .any(|p| p.default.is_none() && !p.optional && p.kind != Kind::Variadic);
+            if args.len() > params.len() || short || args.iter().any(|a| a.starts_with("...")) {
+                return None;
+            }
+            return Some((0..args.len()).map(Some).collect());
+        }
         Language::C | Language::Cpp => {
             let variadic = params.last().is_some_and(|p| p.kind == Kind::Variadic);
             let fixed = params.len() - usize::from(variadic);
@@ -1702,6 +2378,273 @@ fn bind_swift_arguments(args: &[String], params: &[Param]) -> Option<Vec<Option<
     (!missing).then_some(bound)
 }
 
+/// JavaScript's binding: by position, with no count to match. A parameter no argument reaches
+/// is `undefined` (or its default), and an argument past the last one binds to nothing — a rest
+/// parameter takes it, or nothing does — and stays where it is. A spread argument has no
+/// position until the call runs, so a call with one is not bound.
+fn bind_js_arguments(args: &[String], params: &[Param]) -> Option<Vec<Option<usize>>> {
+    if args.iter().any(|a| a.starts_with("...")) {
+        return None;
+    }
+    let fixed = params
+        .iter()
+        .take_while(|p| p.kind != Kind::Variadic)
+        .count();
+    Some((0..args.len()).map(|a| (a < fixed).then_some(a)).collect())
+}
+
+/// Whether a JavaScript expression is a constant, the same value wherever and whenever it is
+/// evaluated: a number, a string with no substitution, `true`, `false`, `null`, `void 0`, or an
+/// empty `[]` or `{}` (a new one either way). A default like that can be written at the call
+/// instead of in the function without meaning anything else.
+///
+/// `undefined` is not one: it is a name, which a parameter or a variable can shadow. Nor is
+/// `1..x`, which reads a property of a number and is `undefined` when there is none.
+pub fn js_constant(expr: &str) -> bool {
+    let e = expr.trim();
+    if matches!(e, "true" | "false" | "null" | "void 0" | "[]" | "{}") {
+        return true;
+    }
+    number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
+        || (string_literal(e) && !(e.starts_with('`') && e.contains("${")))
+}
+
+/// Whether `e` is one number literal and nothing after it: digits with a fraction, an exponent,
+/// separators, a radix prefix or a type suffix (`1.5e-3`, `0xff`, `1_000`, `10n`, `2u8`). A point
+/// is followed by a digit, an exponent or nothing; a name after it (`1..x`, `1.e`) is a property.
+fn number_literal(e: &str) -> bool {
+    let b = e.as_bytes();
+    let starts = b.first().is_some_and(u8::is_ascii_digit)
+        || (b.first() == Some(&b'.') && b.get(1).is_some_and(u8::is_ascii_digit));
+    if !starts {
+        return false;
+    }
+    let radix = b.len() > 1 && b[0] == b'0' && b[1].is_ascii_alphabetic();
+    let exponent = |at: usize| {
+        matches!(b.get(at), Some(b'e' | b'E'))
+            && b.get(at + 1)
+                .is_some_and(|n| n.is_ascii_digit() || matches!(n, b'+' | b'-'))
+    };
+    let mut points = 0;
+    for (i, &c) in b.iter().enumerate() {
+        match c {
+            b'.' => {
+                points += 1;
+                let fraction = b.get(i + 1).is_none_or(u8::is_ascii_digit) || exponent(i + 1);
+                if points > 1 || radix || !fraction {
+                    return false;
+                }
+            }
+            // A sign only in a decimal exponent: in `0xe+1` it is an addition.
+            b'+' | b'-' if !radix && i > 0 && matches!(b[i - 1], b'e' | b'E') => {}
+            c if c.is_ascii_alphanumeric() || c == b'_' => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// Whether `e` is one quoted literal: it starts and ends with the same quote, and has no
+/// unescaped quote of its kind inside, which would make it two joined. What it may substitute
+/// (`${…}`, `\(…)`) is the caller's to rule out.
+fn string_literal(e: &str) -> bool {
+    let bytes = e.as_bytes();
+    let Some(&quote) = bytes.first().filter(|q| matches!(**q, b'"' | b'\'' | b'`')) else {
+        return false;
+    };
+    if bytes.len() < 2 || bytes[bytes.len() - 1] != quote {
+        return false;
+    }
+    let inner = &bytes[1..bytes.len() - 1];
+    let mut escaped = false;
+    for &b in inner {
+        if escaped {
+            escaped = false;
+        } else if b == b'\\' {
+            escaped = true;
+        } else if b == quote {
+            return false;
+        }
+    }
+    !escaped
+}
+
+/// What evaluating an argument may do, as far as its text and the language show.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Effect {
+    /// A literal converted by the language alone: it reads and writes nothing.
+    Nothing,
+    /// A plain name in a language where reading one runs nothing: it reads a variable and
+    /// writes nothing.
+    Reads,
+    /// A call, an assignment, a property that may be a getter: anything.
+    Unknown,
+}
+
+/// Why a plain name does not show that reading it runs nothing, in the languages where it does
+/// not (#436); `None` in Rust and Go, where a name is a variable, a constant or a function, and
+/// reading one runs no code of the program's.
+///
+/// In JavaScript `Object.defineProperty(globalThis, "b", { get() { … } })` makes `b` a getter,
+/// so `f(a, b, c)` reads `a`, `b`, `c` where `f({ a: a, c: c }, b)` reads `a`, `c`, `b`.
+fn opaque_reads(language: Language) -> Option<&'static str> {
+    match language {
+        Language::Rust | Language::Go => None,
+        Language::TypeScript | Language::JavaScript => Some(
+            "a plain name may be an accessor of `globalThis`, whose getter runs when it is read",
+        ),
+        Language::Swift => Some(
+            "a plain name may be a computed property, whose getter runs when it is read, and a \
+             literal runs the `init(…Literal:)` of a type the program declares",
+        ),
+        Language::Cpp => Some(
+            "a plain name may be a macro, a value passed by copy runs a constructor, and a \
+             literal may run a converting constructor or a literal operator",
+        ),
+        Language::C => Some("a plain name may be a macro"),
+        Language::Python => Some(
+            "a global or class-level name is looked up through a mapping that may run code, and \
+             an unbound one raises for whichever is read first",
+        ),
+    }
+}
+
+/// What evaluating `arg`, passed as `param`, may do.
+///
+/// A literal is inert only where its conversion to the parameter's type is the language's own:
+/// a Swift literal passed as a type the program declares runs that type's `init(…Literal:)`, a
+/// C++ one passed as a class runs a converting constructor, and a C++ number or string with a
+/// suffix of the program's (`12_km`, `"x"_s`) calls its `operator""`. So in those two languages
+/// a literal counts only when the parameter's declared type is a standard one; a parameter the
+/// call binds to nothing has none.
+fn effect_of(arg: &str, param: Option<&Param>, language: Language) -> Effect {
+    let e = arg.trim();
+    let literal = match language {
+        Language::TypeScript | Language::JavaScript => js_constant(e),
+        _ => {
+            let word = match language {
+                Language::Python => matches!(e, "True" | "False" | "None"),
+                Language::Rust => matches!(e, "true" | "false"),
+                Language::Swift => matches!(e, "true" | "false" | "nil"),
+                Language::Cpp => matches!(e, "true" | "false" | "nullptr"),
+                _ => false,
+            };
+            // C++ separates digits with `'`, so an `_` in a number starts a user-defined suffix.
+            let number = number_literal(e.strip_prefix('-').map_or(e, str::trim_start))
+                && !(language == Language::Cpp && e.contains('_'));
+            word || number || (string_literal(e) && !e.contains("\\(") && !e.starts_with('`'))
+        }
+    };
+    if literal {
+        let ty = param.and_then(|p| p.ty.as_deref());
+        let inert = match language {
+            Language::Swift => ty.is_some_and(swift_literal_type),
+            Language::Cpp => param.is_some_and(|p| ty.is_some_and(|t| cpp_builtin(t, &p.name))),
+            _ => true,
+        };
+        return if inert {
+            Effect::Nothing
+        } else {
+            Effect::Unknown
+        };
+    }
+    let name = leading_ident(e);
+    if !name.is_empty()
+        && name.len() == e.len()
+        && !name.as_bytes()[0].is_ascii_digit()
+        && !matches!(name, "yield" | "await")
+        && opaque_reads(language).is_none()
+    {
+        return Effect::Reads;
+    }
+    Effect::Unknown
+}
+
+/// Whether a Swift parameter type is one the standard library initialises a literal of,
+/// optional or not: a number, `Bool`, `String` or `Character`.
+fn swift_literal_type(ty: &str) -> bool {
+    let ty = ty.trim().trim_end_matches(['?', '!']);
+    let ty = ty.strip_prefix("Swift.").unwrap_or(ty);
+    matches!(
+        ty,
+        "Int"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Double"
+            | "Float"
+            | "Bool"
+            | "String"
+            | "Character"
+    )
+}
+
+/// Whether a C++ parameter, declared as `ty` (its name `name` included), has a built-in type —
+/// arithmetic, `bool`, a character, or a pointer or reference to one — which a literal
+/// converts to without a constructor.
+fn cpp_builtin(ty: &str, name: &str) -> bool {
+    const BUILTIN: &[&str] = &[
+        "const", "volatile", "signed", "unsigned", "short", "long", "int", "char", "char8_t",
+        "char16_t", "char32_t", "wchar_t", "bool", "float", "double",
+    ];
+    let spaced = ty.replace(['*', '&'], " ");
+    let words: Vec<&str> = spaced.split_whitespace().filter(|w| *w != name).collect();
+    !words.is_empty() && words.iter().all(|w| BUILTIN.contains(w))
+}
+
+/// The value an argument passes, without the keyword (Python) or the label (Swift) it is
+/// passed under.
+fn argument_value(arg: &str, language: Language) -> &str {
+    match language {
+        Language::Python => keyword_arg(arg).map_or(arg, |(_, v)| v),
+        Language::Swift => swift_label(arg).map_or(arg, |(_, v)| v),
+        _ => arg,
+    }
+}
+
+/// Two arguments of a call whose order of evaluation bundling would change, the bundled one
+/// first, when nothing shows that it does not matter (#436). The literal is written where the
+/// first bundled argument was, holding the bundled arguments in the order the call wrote them,
+/// so a bundled argument after one that is not bundled is evaluated before it afterwards. That
+/// is the same program when either of the two is a literal the language converts by itself, or
+/// when both are plain names in a language where reading a variable runs nothing — Rust and Go
+/// (see [`opaque_reads`]). Anything else is refused: the spelling of a name is no proof.
+///
+/// `params` are the declared parameters `bound` indexes, whose types say how a literal is
+/// converted; Rust's path, whose literals need no type, passes none.
+pub fn reordered_arguments<'a>(
+    args: &'a [String],
+    bound: &[Option<usize>],
+    bundled: &[usize],
+    params: &[Param],
+    language: Language,
+) -> Option<(&'a str, &'a str)> {
+    let in_bundle = |a: usize| bound[a].is_some_and(|p| bundled.contains(&p));
+    let first = (0..args.len()).find(|a| in_bundle(*a))?;
+    let effect = |a: usize| {
+        let param = bound[a].and_then(|p| params.get(p));
+        effect_of(argument_value(&args[a], language), param, language)
+    };
+    for passed in (first..args.len()).filter(|a| !in_bundle(*a)) {
+        for moved in (passed + 1..args.len()).filter(|a| in_bundle(*a)) {
+            let commute = matches!(
+                (effect(moved), effect(passed)),
+                (Effect::Nothing, _) | (_, Effect::Nothing) | (Effect::Reads, Effect::Reads)
+            );
+            if !commute {
+                return Some((args[moved].trim(), args[passed].trim()));
+            }
+        }
+    }
+    None
+}
+
 /// The argument list a call ends up with: the bundled arguments collected into one literal where
 /// the first of them was, every other argument where it was.
 ///
@@ -1738,20 +2681,36 @@ fn rewritten_call_with(
     binding: &str,
     literal: impl Fn(&[(String, String)]) -> String,
 ) -> String {
-    let value_of = |arg: &str| -> String {
-        match language {
-            Language::Python => keyword_arg(arg).map_or(arg, |(_, v)| v).to_string(),
-            Language::Swift => swift_label(arg).map_or(arg, |(_, v)| v).to_string(),
-            _ => arg.to_string(),
-        }
-    };
-    let pairs: Vec<(String, String)> = bundled
+    // TypeScript applies a default when the argument is `undefined` the way JavaScript does, and
+    // only a constant one gets this far in either.
+    let js = matches!(language, Language::JavaScript | Language::TypeScript);
+    // In the order the call wrote them, which is the order they are evaluated in: a Python
+    // call may pass keywords in any order (#436). A field the call left out goes after them.
+    let mut pairs: Vec<(usize, (String, String))> = bundled
         .iter()
         .filter_map(|p| {
-            let a = bound.iter().position(|b| *b == Some(*p))?;
-            Some((params[*p].name.clone(), value_of(&args[a])))
+            let name = params[*p].name.clone();
+            // A JavaScript default stands in for `undefined`, passed or left out; the object
+            // carries it now, since the field has none. Only a constant gets this far.
+            let default = params[*p].default.clone().filter(|_| js);
+            match bound.iter().position(|b| *b == Some(*p)) {
+                Some(a) if default.is_some() && args[a].trim() == "void 0" => {
+                    Some((a, (name, default?)))
+                }
+                Some(a) => Some((a, (name, argument_value(&args[a], language).to_string()))),
+                // Left out, a JavaScript parameter was `undefined`, and the field is too — an own
+                // one, so that `toString` does not read the one every object inherits. `void 0`
+                // is `undefined` wherever it is written; the name can be shadowed.
+                None if js => Some((
+                    usize::MAX,
+                    (name, default.unwrap_or_else(|| "void 0".to_string())),
+                )),
+                None => None,
+            }
         })
         .collect();
+    pairs.sort_by_key(|(at, _)| *at);
+    let pairs: Vec<(String, String)> = pairs.into_iter().map(|(_, pair)| pair).collect();
     let literal = literal(&pairs);
     let first = bound
         .iter()
@@ -1774,6 +2733,15 @@ fn rewritten_call_with(
     }
     if first.is_none() && language == Language::Python {
         out.push(format!("{binding}={literal}"));
+    }
+    // A JavaScript call that stopped short of the bundled parameters still has to pass the
+    // object, which the body reads fields of; what it left out before it was `undefined`.
+    if first.is_none() && js {
+        let at = bundled.first().copied().unwrap_or(0);
+        while out.len() < at {
+            out.push("void 0".to_string());
+        }
+        out.push(literal);
     }
     out.join(", ")
 }
@@ -1916,6 +2884,14 @@ fn qualifier_before(text: &str, at: usize) -> &str {
 fn in_import(text: &str, at: usize, language: Language) -> bool {
     let starts = |l: &str| match language {
         Language::Python => l.starts_with("from ") || l.starts_with("import "),
+        // CommonJS imports with `require` and exports by assigning to `module.exports`.
+        Language::JavaScript => {
+            l.starts_with("import ")
+                || l.starts_with("export {")
+                || l.contains("require(")
+                || l.starts_with("module.exports")
+                || l.starts_with("exports.")
+        }
         _ => {
             l.starts_with("import ") || l.starts_with("export {") || l.starts_with("export type {")
         }
@@ -2031,8 +3007,180 @@ fn dataclass_import(text: &str) -> Option<(usize, String)> {
     Some((0, format!("{LINE}\n\n")))
 }
 
-/// Bundling in a TypeScript, Python, Go or Swift file: the same three edits as in Rust, with the
-/// text each language writes them in.
+/// How long the name at a reference the analyzer reported is: the function's own, or in
+/// JavaScript one an import gave it (`import { build as make }`, `const { build: make } =
+/// require(…)`, a default import). `None` when neither is written there: the file changed since
+/// the analyzer read it, and the position is not trusted (#75).
+fn called_name(text: &str, at: usize, callee: &str, language: Language) -> Option<usize> {
+    let rest = &text[at..];
+    if language != Language::JavaScript {
+        return rest.starts_with(callee).then_some(callee.len());
+    }
+    let name = leading_ident(rest);
+    (!name.is_empty() && (name == callee || js_alias(text, callee, name))).then_some(name.len())
+}
+
+/// Whether a JavaScript file gives `callee` the local name `alias`: renamed in an import or a
+/// destructured `require`, or bound by a default import or a whole-module `require`.
+fn js_alias(text: &str, callee: &str, alias: &str) -> bool {
+    let bytes = text.as_bytes();
+    let word_at = |at: usize, word: &str| {
+        (at == 0 || !is_ident_byte(bytes[at - 1]))
+            && !bytes
+                .get(at + word.len())
+                .is_some_and(|b| is_ident_byte(*b))
+    };
+    for (at, _) in text.match_indices(callee) {
+        if !word_at(at, callee) {
+            continue;
+        }
+        let after = text[at + callee.len()..].trim_start();
+        let renamed = after
+            .strip_prefix("as")
+            .filter(|r| r.starts_with(char::is_whitespace))
+            .or_else(|| after.strip_prefix(':').filter(|r| !r.starts_with(':')));
+        if renamed.is_some_and(|r| leading_ident(r.trim_start()) == alias) {
+            return true;
+        }
+    }
+    for (at, _) in text.match_indices(alias) {
+        if !word_at(at, alias) {
+            continue;
+        }
+        let before = text[..at].trim_end();
+        let after = text[at + alias.len()..].trim_start();
+        let keyword = |k: &str| {
+            before.ends_with(k)
+                && !before[..before.len() - k.len()]
+                    .bytes()
+                    .next_back()
+                    .is_some_and(is_ident_byte)
+        };
+        if keyword("import") && (after.starts_with("from") || after.starts_with(',')) {
+            return true;
+        }
+        if (keyword("const") || keyword("let") || keyword("var"))
+            && after
+                .strip_prefix('=')
+                .is_some_and(|r| r.trim_start().starts_with("require("))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Where `word` is written as a name between `from` and `to` of a JavaScript text: in code and
+/// in the `${…}` of a template literal, not in a string or a comment, not as a property after a
+/// `.` and not as the key of an object literal.
+fn ident_uses(text: &str, from: usize, to: usize, word: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let is_use = |at: usize| {
+        // An ASCII byte is where a character starts, so the slices below are safe.
+        if !is_ident_byte(bytes[at])
+            || !text[at..].starts_with(word)
+            || (at > 0 && is_ident_byte(bytes[at - 1]))
+            || bytes
+                .get(at + word.len())
+                .is_some_and(|b| is_ident_byte(*b))
+        {
+            return false;
+        }
+        let before = text[..at].trim_end();
+        let after = text[at + word.len()..].trim_start();
+        let property = before.ends_with('.') && !before.ends_with("...");
+        let key = (before.ends_with('{') || before.ends_with(','))
+            && after.starts_with(':')
+            && !after.starts_with("::");
+        !property && !key
+    };
+    let mut out = Vec::new();
+    let mut template: Option<usize> = None;
+    walk_code(text, from, Language::JavaScript, |i, c| {
+        if i >= to {
+            return false;
+        }
+        if c == b'`' {
+            let Some(open) = template.take() else {
+                template = Some(i);
+                return true;
+            };
+            let mut at = open + 1;
+            while let Some(n) = text[at..i].find("${") {
+                let start = at + n + 1;
+                let end = close_in(text, start, Language::JavaScript).map_or(i, |e| e.min(i));
+                out.extend((start + 1..end).filter(|o| is_use(*o)));
+                at = end;
+            }
+            return true;
+        }
+        if is_ident_byte(c) && is_use(i) {
+            out.push(i);
+        }
+        true
+    });
+    out
+}
+
+/// Whether the name at `at` is a shorthand property of an object literal (`{ width }`) or of a
+/// destructuring assignment (`({ width } = o)`), which becomes `width: size.width` — a bare
+/// `size.width` there does not parse. The braces around it tell an object from a block and from
+/// a JSX expression: an object follows an operator, an opening bracket or `return`; a block
+/// follows `)`, `=>` or a keyword, and a JSX expression an attribute's `=` or a tag's `>`.
+fn object_shorthand(text: &str, from: usize, at: usize, len: usize) -> bool {
+    let before = text[..at].trim_end();
+    let after = text[at + len..].trim_start();
+    let ends_an_entry = after.starts_with([',', '}'])
+        || (after.starts_with('=') && !after.starts_with("==") && !after.starts_with("=>"));
+    if !(before.ends_with('{') || before.ends_with(',')) || !ends_an_entry {
+        return false;
+    }
+    let mut open: Vec<usize> = Vec::new();
+    let mut in_string = false;
+    walk_code(text, from, Language::JavaScript, |i, c| {
+        if i >= at {
+            return false;
+        }
+        match c {
+            b'"' | b'\'' | b'`' => in_string = !in_string,
+            b'(' | b'[' | b'{' => open.push(i),
+            b')' | b']' | b'}' => {
+                open.pop();
+            }
+            _ => {}
+        }
+        true
+    });
+    let Some(&brace) = open.last() else {
+        return false;
+    };
+    if in_string || text.as_bytes()[brace] != b'{' {
+        return false;
+    }
+    let lead = text[..brace].trim_end();
+    let keyword = |k: &str| {
+        lead.ends_with(k)
+            && !lead[..lead.len() - k.len()]
+                .bytes()
+                .next_back()
+                .is_some_and(is_ident_byte)
+    };
+    match lead.bytes().next_back() {
+        Some(b'(' | b'[' | b',' | b':' | b'?' | b'{' | b'!' | b'&' | b'|') => true,
+        // `x = {` is an assignment; `width={` with nothing around the `=` is a JSX attribute.
+        Some(b'=') => {
+            lead.len() < brace
+                || lead[..lead.len() - 1]
+                    .bytes()
+                    .next_back()
+                    .is_some_and(|b| b.is_ascii_whitespace())
+        }
+        _ => keyword("return") || keyword("yield") || keyword("await"),
+    }
+}
+
+/// Bundling in a TypeScript, JavaScript, Python, Go or Swift file: the same three edits as in
+/// Rust, with the text each language writes them in.
 #[allow(clippy::too_many_arguments)]
 async fn introduce_in(
     language: Language,
@@ -2051,9 +3199,11 @@ async fn introduce_in(
         !name.is_empty() && name.bytes().all(is_ident_byte) && !name.as_bytes()[0].is_ascii_digit(),
         "`{name}` is not a type name"
     );
-    // A Go type in lower case is an unexported one, which is a choice, not a mistake.
+    // A Go type in lower case is an unexported one, which is a choice, not a mistake. A
+    // JavaScript name only names the shape; nothing is declared under it.
     anyhow::ensure!(
-        language == Language::Go || name.starts_with(|c: char| c.is_ascii_uppercase()),
+        matches!(language, Language::Go | Language::JavaScript)
+            || name.starts_with(|c: char| c.is_ascii_uppercase()),
         "`{name}` is not a type name; {} types are UpperCamelCase",
         language.label()
     );
@@ -2067,6 +3217,18 @@ async fn introduce_in(
     let (receiver, declared) = parse_params(&old_inner, language);
 
     for p in params {
+        // A name a destructuring pattern binds is not a parameter a call passes by position.
+        if language == Language::JavaScript
+            && let Some(pattern) = declared
+                .iter()
+                .find(|d| d.name.is_empty() && !ident_uses(&d.raw, 0, d.raw.len(), p).is_empty())
+        {
+            anyhow::bail!(
+                "`{p}` is bound by the destructuring pattern `{}` of `{callee}`, not a parameter \
+                 of its own; the call passes the pattern one value, so it is not bundled",
+                pattern.raw
+            );
+        }
         anyhow::ensure!(
             declared
                 .iter()
@@ -2104,6 +3266,20 @@ async fn introduce_in(
             "`{}` is `inout`, and a field of the new type would be a copy of it",
             declared[*i].name
         );
+        // The callers write a JavaScript or TypeScript default into the object now. A constant
+        // means the same there; anything else runs in the function's scope, on every call,
+        // after the parameters before it are bound.
+        if matches!(language, Language::JavaScript | Language::TypeScript)
+            && let Some(default) = &declared[*i].default
+        {
+            anyhow::ensure!(
+                js_constant(default),
+                "`{}` defaults to `{default}`, which is evaluated in `{callee}` on every call; \
+                 written at the callers it could mean something else, so only a constant \
+                 default is bundled",
+                declared[*i].name
+            );
+        }
     }
 
     let mut fields = Vec::with_capacity(bundled.len());
@@ -2111,16 +3287,20 @@ async fn introduce_in(
         let p = &declared[*i];
         let ty = match &p.ty {
             Some(ty) => Some(ty.clone()),
+            // No type is written in JavaScript, so none is asked for.
+            None if language == Language::JavaScript => None,
             None => hover_type(remote, root, file, &text, open + p.name_at, &p.name).await,
         };
         fields.push(Field {
             name: p.name.clone(),
             ty,
             // A TypeScript interface has no defaults; the field keeps the parameter's type.
-            default: p
-                .default
-                .clone()
-                .filter(|_| matches!(language, Language::Python | Language::Swift)),
+            default: p.default.clone().filter(|_| {
+                matches!(
+                    language,
+                    Language::Python | Language::Swift | Language::JavaScript
+                )
+            }),
             optional: p.optional,
         });
     }
@@ -2155,17 +3335,38 @@ async fn introduce_in(
     for i in &bundled {
         let p = &declared[*i];
         let (l, c) = crate::signature::line_col_at(&text, open + p.name_at);
-        for (path, rl, rc) in crate::signature::references(remote, root, file, l, c)
+        let refs = crate::signature::references(remote, root, file, l, c)
             .await
-            .unwrap_or_default()
-        {
+            .with_context(|| unlisted(&p.name, root, file, l, c))?;
+        for (path, rl, rc) in refs {
             if path != file {
                 continue;
             }
-            let Some(o) = crate::signature::offset_of(&text, rl, rc) else {
+            // A use the analyzer places where the file has something else was not rewritten,
+            // and in JavaScript no check afterwards would say so: the body would read a name
+            // that is gone.
+            let o = crate::signature::offset_of(&text, rl, rc)
+                .filter(|o| text[*o..].starts_with(&p.name));
+            anyhow::ensure!(
+                o.is_some() || language != Language::JavaScript,
+                "the analyzer places a use of `{}` at {}:{rl}:{rc}, but the file says otherwise; \
+                 it changed since the analyzer read it, so nothing was rewritten",
+                p.name,
+                display(root, file)
+            );
+            let Some(o) = o else {
                 continue;
             };
-            if o <= body.0 || o >= body.1 || !text[o..].starts_with(&p.name) {
+            if o <= body.0 || o >= body.1 {
+                // Another parameter's default reads this one, and would lose it. TypeScript's
+                // checker says so after the rewrite; in JavaScript nothing would.
+                anyhow::ensure!(
+                    language != Language::JavaScript || o == open + p.name_at,
+                    "`{}` is read at {}:{rl}:{rc}, outside the body of `{callee}` (another \
+                     parameter's default); it would not be in scope as a field",
+                    p.name,
+                    display(root, file)
+                );
                 continue;
             }
             // basedpyright counts the name of a keyword argument (`height=…`) as a reference;
@@ -2174,12 +3375,49 @@ async fn introduce_in(
             if language == Language::Python && after.starts_with('=') && !after.starts_with("==") {
                 continue;
             }
-            uses.push((o, p.name.len(), format!("{binding}.{}", p.name)));
+            let field = format!("{binding}.{}", p.name);
+            let replacement = if language == Language::JavaScript
+                && object_shorthand(&text, body.0, o, p.name.len())
+            {
+                format!("{}: {field}", js_key(&p.name))
+            } else {
+                field
+            };
+            uses.push((o, p.name.len(), replacement));
         }
     }
     uses.sort();
     uses.dedup();
     let body_uses = uses.len();
+    if language == Language::JavaScript {
+        let line_of = |at: usize| crate::signature::line_col_at(&text, at).0;
+        // `arguments` still counts and orders the arguments the call passed, which bundling
+        // changes. A nested function has its own, but it is refused too rather than told apart.
+        if let Some(at) = ident_uses(&text, body.0, body.1, "arguments").first() {
+            anyhow::bail!(
+                "`{callee}` reads `arguments` ({}:{}), whose length and order bundling changes; \
+                 it is not bundled",
+                display(root, file),
+                line_of(*at)
+            );
+        }
+        // A name the function already has would shadow the object, or be shadowed by it; the
+        // analyzer's references are to the parameters, not to the binding that replaces them.
+        let taken = ident_uses(&text, open, body.1, binding)
+            .into_iter()
+            .find(|at| {
+                !uses.iter().any(|(o, _, _)| o == at)
+                    && !bundled.iter().any(|i| open + declared[*i].name_at == *at)
+            });
+        if let Some(at) = taken {
+            anyhow::bail!(
+                "`{binding}` is already a name in `{callee}` ({}:{}); the object would shadow \
+                 it or be shadowed by it. Pass another `binding`",
+                display(root, file),
+                line_of(at)
+            );
+        }
+    }
 
     let texts = |path: &Path| -> String {
         if path == file {
@@ -2194,24 +3432,54 @@ async fn introduce_in(
     let mut call_sites = 0usize;
     let mut consumed = vec![false; uses.len()];
     let mut bare_callers: Vec<PathBuf> = Vec::new();
-    for (path, rl, rc) in crate::signature::references(remote, root, file, line, col)
+    let callers = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
+    for (path, rl, rc) in callers {
         let source = texts(&path);
-        let Some(at) = crate::signature::offset_of(&source, rl, rc) else {
+        let place = format!("{}:{rl}:{rc}", display(root, &path));
+        // As in Rust (#75): the position is trusted only when the name is there. A JavaScript
+        // call left as it was would pass the old arguments to the new parameter, and only a
+        // type checker would see that, so there it stops the whole change.
+        let called = crate::signature::offset_of(&source, rl, rc)
+            .and_then(|at| Some((at, called_name(&source, at, &callee, language)?)));
+        anyhow::ensure!(
+            called.is_some() || language != Language::JavaScript,
+            "the analyzer places `{callee}` at {place}, but the file says otherwise; it changed \
+             since the analyzer read it, so nothing was rewritten"
+        );
+        let Some((at, called)) = called else {
+            if crate::signature::offset_of(&source, rl, rc).is_some() {
+                unmatched.push(format!(
+                    "{place} (the analyzer places `{callee}` here, but the file says otherwise)"
+                ));
+            }
             continue;
         };
-        // As in Rust (#75): the position is trusted only when the name is there.
-        if !source[at..].starts_with(callee.as_str()) {
-            unmatched.push(format!(
-                "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
-                display(root, &path)
-            ));
-            continue;
+        // `build.call(receiver, …)` passes the receiver first and the arguments after it;
+        // `apply` passes them in an array that only the running call can take apart.
+        let mut after_name = at + called;
+        let mut through_call = false;
+        if language == Language::JavaScript {
+            let rest = &source[after_name..];
+            let method = |m: &str| {
+                rest.starts_with(m)
+                    && !rest
+                        .as_bytes()
+                        .get(m.len())
+                        .is_some_and(|b| is_ident_byte(*b))
+            };
+            anyhow::ensure!(
+                !method(".apply"),
+                "`{callee}` is called through `apply` at {place}, with its arguments in an array; \
+                 which of them are bundled is known only when it runs"
+            );
+            if method(".call") {
+                after_name += ".call".len();
+                through_call = true;
+            }
         }
-        let Some((args_start, args_end)) = call_args_in(&source, at + callee.len(), language)
-        else {
+        let Some((args_start, args_end)) = call_args_in(&source, after_name, language) else {
             if !in_import(&source, at, language) {
                 unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             }
@@ -2230,25 +3498,77 @@ async fn introduce_in(
                 }
             }
         }
-        let args: Vec<String> = entries(&inner, language)
+        let mut args: Vec<String> = entries(&inner, language)
             .into_iter()
             .map(|(_, a)| a.to_string())
             .collect();
+        let receiver_arg = if through_call {
+            // Left as it was, the call would give the body no object to read fields of.
+            anyhow::ensure!(
+                !args.is_empty(),
+                "`{callee}` is called through `call` with no arguments at {place}; there is no \
+                 receiver to keep in front of the object, so nothing was rewritten"
+            );
+            Some(args.remove(0))
+        } else {
+            None
+        };
+        if language == Language::JavaScript {
+            if let Some(spread) = args.iter().find(|a| a.starts_with("...")) {
+                anyhow::bail!(
+                    "`{callee}` is called with `{spread}` at {place}; which parameters a spread \
+                     reaches is known only when the call runs, so it is not bundled"
+                );
+            }
+        }
+        if matches!(language, Language::JavaScript | Language::TypeScript) {
+            // The object carries a default where the call left the parameter out or passed
+            // `undefined`, but a value that is `undefined` only at run time would get the
+            // default before and not after.
+            // A bundled parameter is never a rest one, so the argument at its position is its.
+            for p in &bundled {
+                let (Some(default), Some(value)) = (&declared[*p].default, args.get(*p)) else {
+                    continue;
+                };
+                anyhow::ensure!(
+                    js_constant(value),
+                    "`{callee}` at {place} passes `{value}` as `{}`, which defaults to \
+                     `{default}`: if it is `undefined` when the call runs the default applies, \
+                     and in the object it would not. Pass a constant there (`void 0` for the \
+                     default), or leave `{}` out of the bundle",
+                    declared[*p].name,
+                    declared[*p].name
+                );
+            }
+        }
         let Some(bound) = bind_arguments(&args, &declared, language) else {
-            unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
+            unmatched.push(place);
             continue;
         };
+        if let Some((moved, passed)) =
+            reordered_arguments(&args, &bound, &bundled, &declared, language)
+        {
+            return Err(reordered(&callee, &place, moved, passed, language));
+        }
         // A method's qualifier is the object it is called on, not where the type lives, and a
-        // TypeScript literal names no type at all.
-        let qualifier = if is_method || language == Language::TypeScript {
-            ""
-        } else {
-            qualifier_before(&source, at)
-        };
+        // TypeScript or JavaScript literal names no type at all.
+        let qualifier =
+            if is_method || matches!(language, Language::TypeScript | Language::JavaScript) {
+                ""
+            } else {
+                qualifier_before(&source, at)
+            };
         let spelling = format!("{qualifier}{name}");
-        let new_args = rewritten_call(
+        let mut new_args = rewritten_call(
             &args, &bound, &bundled, &declared, language, &spelling, binding,
         );
+        if let Some(receiver) = receiver_arg {
+            new_args = if new_args.is_empty() {
+                receiver
+            } else {
+                format!("{receiver}, {new_args}")
+            };
+        }
         for n in inside {
             consumed[n] = true;
         }
@@ -2329,7 +3649,10 @@ async fn introduce_in(
     } else {
         "\n"
     };
-    declaring.push((item_start, 0, format!("{type_decl}{gap}")));
+    // A JavaScript object has no type to declare; the text is only the report's.
+    if language != Language::JavaScript {
+        declaring.push((item_start, 0, format!("{type_decl}{gap}")));
+    }
 
     // A Python caller in another module names the type bare, so it has to import it, from the
     // module it already imports the function (or the class) from.
@@ -2649,10 +3972,10 @@ async fn introduce_c(
 
     let calls = crate::signature::references(remote, root, file, line, col)
         .await
-        .unwrap_or_default();
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
     let everything = references_with_declarations(remote, root, file, line, col)
         .await
-        .unwrap_or_default();
+        .with_context(|| unlisted(&callee, root, file, line, col))?;
     let mut spots = vec![(file.to_path_buf(), line, col)];
     spots.extend(everything.into_iter().filter(|r| !calls.contains(r)));
 
@@ -2793,10 +4116,10 @@ async fn introduce_c(
         for i in &bundled {
             let p = &declared[*i];
             let (l, c) = crate::signature::line_col_at(&def.text, def.open + p.name_at);
-            for (path, rl, rc) in crate::signature::references(remote, root, &def.path, l, c)
+            let refs = crate::signature::references(remote, root, &def.path, l, c)
                 .await
-                .unwrap_or_default()
-            {
+                .with_context(|| unlisted(&p.name, root, &def.path, l, c))?;
+            for (path, rl, rc) in refs {
                 if path != def.path {
                     continue;
                 }
@@ -2867,6 +4190,12 @@ async fn introduce_c(
             unmatched.push(format!("{}:{rl}:{rc}", display(root, &path)));
             continue;
         };
+        if let Some((moved, passed)) =
+            reordered_arguments(&args, &bound, &bundled, &declared, language)
+        {
+            let place = format!("{}:{rl}:{rc}", display(root, &path));
+            return Err(reordered(&callee, &place, moved, passed, language));
+        }
         let new_args = rewritten_call_with(
             &args, &bound, &bundled, &declared, language, binding, literal,
         );
@@ -3078,7 +4407,7 @@ mod tests {
     }
 
     #[test]
-    fn the_language_is_the_files_and_javascript_is_not_typescript() {
+    fn the_language_is_the_files_and_javascript_is_its_own() {
         assert_eq!(Language::of(Path::new("a/b.rs")), Some(Language::Rust));
         assert_eq!(
             Language::of(Path::new("src/home.ts")),
@@ -3096,7 +4425,24 @@ mod tests {
             Language::of(Path::new("shapes/home.go")),
             Some(Language::Go)
         );
-        assert_eq!(Language::of(Path::new("src/home.js")), None);
+        assert_eq!(
+            Language::of(Path::new("src/home.js")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            Language::of(Path::new("src/view.jsx")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(
+            Language::of(Path::new("lib/home.cjs")),
+            Some(Language::JavaScript)
+        );
+        assert_eq!(Language::of(Path::new("notes.txt")), None);
+        assert_eq!(Language::JavaScript.fence(), "javascript");
+        assert_eq!(
+            default_binding(Path::new("a.mjs"), "SyncRequest"),
+            "syncRequest"
+        );
         assert_eq!(
             default_binding(Path::new("a.rs"), "SyncRequest"),
             "sync_request"
@@ -3134,6 +4480,453 @@ mod tests {
         assert_eq!(params[3].default, None, "`=>` is not a default");
         assert_eq!(&list[params[4].name_at..params[4].name_at + 2], "id");
         assert_eq!(params[5].kind, Kind::Variadic);
+    }
+
+    #[test]
+    fn a_javascript_list_has_no_types_a_pattern_has_no_name_and_rest_is_variadic() {
+        let list = "label, { x, y } = {}, width = 2, ...rest";
+        let (receiver, params) = parse_params(list, Language::JavaScript);
+        assert_eq!(receiver, None, "JavaScript has no `this` parameter");
+        let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["label", "", "width", "rest"]);
+        assert!(params.iter().all(|p| p.ty.is_none()), "{params:?}");
+        assert_eq!(params[1].default.as_deref(), Some("{}"));
+        assert_eq!(params[2].default.as_deref(), Some("2"));
+        assert_eq!(params[3].kind, Kind::Variadic);
+        assert_eq!(&list[params[3].name_at..params[3].name_at + 4], "rest");
+    }
+
+    #[test]
+    fn a_javascript_call_binds_by_position_and_the_object_carries_constant_defaults() {
+        let (_, params) = parse_params("name, width, height = 2", Language::JavaScript);
+        let call = |args: &[&str]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, Language::JavaScript)?;
+            Some(rewritten_call(
+                &args,
+                &bound,
+                &[1, 2],
+                &params,
+                Language::JavaScript,
+                "Size",
+                "size",
+            ))
+        };
+        assert_eq!(
+            call(&["\"a\"", "3", "4"]).as_deref(),
+            Some("\"a\", { width: 3, height: 4 }")
+        );
+        // Left out or `undefined`, the parameter had its default; the object says so.
+        assert_eq!(
+            call(&["\"a\"", "3"]).as_deref(),
+            Some("\"a\", { width: 3, height: 2 }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "void 0"]).as_deref(),
+            Some("\"a\", { width: 3, height: 2 }")
+        );
+        // `undefined` is a name a scope may give another value; it is passed on as written.
+        assert_eq!(
+            call(&["\"a\"", "3", "undefined"]).as_deref(),
+            Some("\"a\", { width: 3, height: undefined }")
+        );
+        // A call that stopped before the bundle still passes the object the body reads, with
+        // what it left out as own fields.
+        assert_eq!(
+            call(&["\"a\""]).as_deref(),
+            Some("\"a\", { width: void 0, height: 2 }")
+        );
+        assert_eq!(
+            call(&[]).as_deref(),
+            Some("void 0, { width: void 0, height: 2 }")
+        );
+        // An argument past the last parameter is evaluated as before, and still goes nowhere.
+        assert_eq!(
+            call(&["\"a\"", "3", "4", "log()"]).as_deref(),
+            Some("\"a\", { width: 3, height: 4 }, log()")
+        );
+        assert_eq!(call(&["...pair"]), None, "a spread has no position");
+
+        let (_, params) = parse_params("a, b, ...more", Language::JavaScript);
+        let args = strings(&["1", "2", "3", "4"]);
+        let bound = bind_arguments(&args, &params, Language::JavaScript).expect("bound");
+        assert_eq!(
+            rewritten_call(
+                &args,
+                &bound,
+                &[0, 1],
+                &params,
+                Language::JavaScript,
+                "Pair",
+                "pair"
+            ),
+            "{ a: 1, b: 2 }, 3, 4",
+            "what the rest parameter took stays after the object"
+        );
+    }
+
+    #[test]
+    fn only_a_constant_javascript_default_moves_to_the_callers() {
+        for constant in [
+            "2", "-1.5", ".5", "1.", "1.5e-3", "1.e5", "0xff", "1_000", "10n", "\"a, b\"",
+            "'it\\'s'", "`plain`", "true", "null", "void 0", "[]", "{}",
+        ] {
+            assert!(js_constant(constant), "{constant}");
+        }
+        for expr in [
+            "Date.now()",
+            "x",
+            "-x",
+            "\"a\" + \"b\"",
+            "`${x}`",
+            "[1]",
+            "{ a: 1 }",
+            "new Map()",
+            // A name, which a parameter or a variable can shadow.
+            "undefined",
+            "void x",
+            // A property of a number, `undefined` when there is none.
+            "1..missing",
+            "1.x",
+            "1.e",
+            "0xe+1",
+            "1.5.x",
+            // The closing quote is escaped: the literal does not end there.
+            "\"a\\\"",
+        ] {
+            assert!(!js_constant(expr), "{expr}");
+        }
+    }
+
+    #[test]
+    fn a_bundled_argument_is_not_moved_past_one_that_may_change_it() {
+        let (_, params) = parse_params("a, b, c", Language::JavaScript);
+        let order = |args: &[&str], bundled: &[usize]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, Language::JavaScript).expect("bound");
+            reordered_arguments(&args, &bound, bundled, &params, Language::JavaScript)
+                .map(|(m, p)| (m.to_string(), p.to_string()))
+        };
+        let mark = ["mark(\"a\")", "mark(\"b\")", "mark(\"c\")"];
+        assert_eq!(
+            order(&mark, &[0, 2]),
+            Some(("mark(\"c\")".to_string(), "mark(\"b\")".to_string())),
+            "the object would evaluate `c` before `b`"
+        );
+        assert_eq!(order(&mark, &[0, 1]), None, "adjacent: nothing moves");
+        assert_eq!(order(&mark, &[1, 2]), None, "adjacent: nothing moves");
+        // Each may be a getter on `globalThis`: the spelling of a name proves nothing (#436).
+        assert_eq!(
+            order(&["x", "y", "z"], &[0, 2]),
+            Some(("z".to_string(), "y".to_string())),
+            "a JavaScript name may run a getter"
+        );
+        assert_eq!(order(&["x", "y", "z"], &[1, 2]), None, "adjacent names");
+        assert_eq!(order(&["1", "mark(\"b\")", "\"c\""], &[0, 2]), None);
+        assert_eq!(order(&["mark(\"a\")", "b", "3"], &[0, 2]), None);
+        assert!(
+            order(&["x", "mark(\"b\")", "z"], &[0, 2]).is_some(),
+            "b may set z"
+        );
+        assert!(
+            order(&["x", "b", "next()"], &[0, 2]).is_some(),
+            "next() may set b"
+        );
+        assert!(order(&["x", "b", "1..missing"], &[0, 2]).is_some());
+
+        // Rust and the others are positional too; Python's keywords are compared by value.
+        let (_, py) = parse_params("a, b, c", Language::Python);
+        let args = strings(&["mark(1)", "c=mark(3)", "b=2"]);
+        let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
+        assert_eq!(
+            reordered_arguments(&args, &bound, &[0, 1], &py, Language::Python),
+            None,
+            "a keyword argument whose value is a literal"
+        );
+        let args = strings(&["mark(1)", "b=mark(2)", "c=mark(3)"]);
+        let bound = bind_arguments(&args, &py, Language::Python).expect("bound");
+        assert!(reordered_arguments(&args, &bound, &[0, 2], &py, Language::Python).is_some());
+        let rust = strings(&["a()", "b()", "c()"]);
+        let bound: Vec<Option<usize>> = (0..3).map(Some).collect();
+        assert!(reordered_arguments(&rust, &bound, &[0, 2], &[], Language::Rust).is_some());
+        assert_eq!(
+            reordered_arguments(&rust, &bound, &[1, 2], &[], Language::Rust),
+            None
+        );
+
+        // Reading a name runs nothing in Rust and Go; anywhere else it may.
+        let names = strings(&["x", "y", "z"]);
+        for language in [Language::Rust, Language::Go] {
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[0, 2], &[], language),
+                None,
+                "{language:?}"
+            );
+        }
+        for (language, list) in [
+            (Language::Python, "a, b, c"),
+            (Language::TypeScript, "a: number, b: number, c: number"),
+            (Language::Swift, "_ a: Int, _ b: Int, _ c: Int"),
+            (Language::C, "int a, int b, int c"),
+            (Language::Cpp, "int a, int b, int c"),
+        ] {
+            let (_, params) = parse_params(list, language);
+            let bound = bind_arguments(&names, &params, language).expect("bound");
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[0, 2], &params, language),
+                Some(("z", "y")),
+                "{language:?}: a plain name is no proof"
+            );
+            assert_eq!(
+                reordered_arguments(&names, &bound, &[1, 2], &params, language),
+                None,
+                "{language:?}: adjacent arguments keep their order"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_counts_as_inert_only_where_the_language_converts_it() {
+        let moved = |list: &str, language: Language, args: &[&str]| {
+            let (_, params) = parse_params(list, language);
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, language).expect("bound");
+            reordered_arguments(&args, &bound, &[0, 2], &params, language)
+                .map(|(m, _)| m.to_string())
+        };
+        // C++: a built-in parameter type takes a literal as it is; a class runs a converting
+        // constructor, and a suffix of the program's calls its `operator""`.
+        let cpp = Language::Cpp;
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, const char *c", cpp, &["a()", "b()", "\"c\""]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, unsigned long &c", cpp, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "12_km"]),
+            Some("12_km".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, Meters c", cpp, &["a()", "b()", "3"]),
+            Some("3".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, std::string c", cpp, &["a()", "b()", "\"c\""]),
+            Some("\"c\"".to_string())
+        );
+        assert_eq!(
+            moved("int a, int b, int c", cpp, &["a()", "b()", "\"c\"_s"]),
+            Some("\"c\"_s".to_string())
+        );
+        // C has no literal operators or constructors, and a `_` separates nothing there either.
+        assert_eq!(
+            moved("int a, int b, int c", Language::C, &["a()", "b()", "3u"]),
+            None
+        );
+
+        // Swift: the standard library's own literal types, optional or not; a type of the
+        // program's runs its `init(…Literal:)`, and a substitution is code.
+        let swift = Language::Swift;
+        assert_eq!(
+            moved("_ a: Int, _ b: Int, _ c: Int", swift, &["a()", "b()", "3"]),
+            None
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, c: String?",
+                swift,
+                &["a()", "b()", "c: \"x\""]
+            ),
+            None
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, _ c: Meters",
+                swift,
+                &["a()", "b()", "3"]
+            ),
+            Some("3".to_string())
+        );
+        assert_eq!(
+            moved(
+                "_ a: Int, _ b: Int, _ c: String",
+                swift,
+                &["a()", "b()", "\"\\(b)\""]
+            ),
+            Some("\"\\(b)\"".to_string())
+        );
+
+        // JavaScript and Python: a substitution or a prefix makes a string code.
+        assert_eq!(
+            moved("a, b, c", Language::JavaScript, &["a()", "b()", "`${x}`"]),
+            Some("`${x}`".to_string())
+        );
+        assert_eq!(
+            moved("a, b, c", Language::Python, &["a()", "b()", "f\"{x}\""]),
+            Some("f\"{x}\"".to_string())
+        );
+        assert_eq!(
+            moved("a, b, c", Language::Python, &["a()", "b()", "\"{x}\""]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_typescript_call_may_leave_off_a_defaulted_parameter_and_the_literal_carries_it() {
+        let ts = Language::TypeScript;
+        let (_, params) = parse_params("text: string, width: number, fill: string = \" \"", ts);
+        let call = |args: &[&str]| {
+            let args = strings(args);
+            let bound = bind_arguments(&args, &params, ts)?;
+            Some(rewritten_call(
+                &args,
+                &bound,
+                &[1, 2],
+                &params,
+                ts,
+                "Pad",
+                "pad",
+            ))
+        };
+        assert_eq!(
+            call(&["\"a\"", "3"]).as_deref(),
+            Some("\"a\", { width: 3, fill: \" \" }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "void 0"]).as_deref(),
+            Some("\"a\", { width: 3, fill: \" \" }")
+        );
+        assert_eq!(
+            call(&["\"a\"", "3", "\"*\""]).as_deref(),
+            Some("\"a\", { width: 3, fill: \"*\" }")
+        );
+        assert_eq!(call(&["\"a\""]), None, "`width` has no default");
+        assert_eq!(call(&["\"a\"", "3", "\"*\"", "4"]), None, "one too many");
+        assert_eq!(call(&["\"a\"", "...rest"]), None, "a spread");
+
+        // An optional parameter may be left off too, and a rest one given nothing.
+        let (_, params) = parse_params("a: number, b?: number, ...more: number[]", ts);
+        assert_eq!(
+            bind_arguments(&strings(&["1"]), &params, ts),
+            Some(vec![Some(0)])
+        );
+    }
+
+    #[test]
+    fn python_keywords_go_into_the_literal_in_the_order_the_call_wrote_them() {
+        let (_, params) = parse_params("a, b, c", Language::Python);
+        let args = strings(&["c=mark(\"c\")", "a=mark(\"a\")", "b=mark(\"b\")"]);
+        let bound = bind_arguments(&args, &params, Language::Python).expect("bound");
+        assert_eq!(
+            rewritten_call(
+                &args,
+                &bound,
+                &[0, 2],
+                &params,
+                Language::Python,
+                "Pair",
+                "pair"
+            ),
+            "pair=Pair(c=mark(\"c\"), a=mark(\"a\")), b=mark(\"b\")"
+        );
+    }
+
+    #[test]
+    fn a_proto_field_is_an_own_property_in_the_literal_and_the_body() {
+        assert_eq!(
+            literal_text(
+                Language::JavaScript,
+                "Tag",
+                &[
+                    ("__proto__".to_string(), "p".to_string()),
+                    ("name".to_string(), "n".to_string())
+                ]
+            ),
+            "{ [\"__proto__\"]: p, name: n }"
+        );
+        assert_eq!(
+            literal_text(
+                Language::TypeScript,
+                "Tag",
+                &[("__proto__".to_string(), "p".to_string())]
+            ),
+            "{ [\"__proto__\"]: p }"
+        );
+        assert_eq!(js_key("proto"), "proto");
+    }
+
+    #[test]
+    fn a_javascript_object_is_written_nowhere_and_its_literal_names_no_type() {
+        let fields = [field("width", None, None), field("height", None, Some("2"))];
+        let text = type_text(Language::JavaScript, "Size", "build", &fields, "  ", true);
+        assert_eq!(
+            text,
+            "// Size: the plain object `build` takes; nothing is declared for it\n{ width, height = 2 }\n"
+        );
+        assert_eq!(parameter_in(Language::JavaScript, "size", "Size"), "size");
+        assert_eq!(literal_text(Language::JavaScript, "Size", &[]), "{}");
+        assert_eq!(
+            literal_text(
+                Language::JavaScript,
+                "Size",
+                &[("width".to_string(), "3".to_string())]
+            ),
+            "{ width: 3 }"
+        );
+    }
+
+    #[test]
+    fn a_shorthand_property_is_told_from_a_block_and_a_jsx_expression() {
+        let text = "function f(width) {\n  const o = { width, h: 1 };\n  g({ width });\n  ({ width } = o);\n  if (o) { width }\n  const k = () => { width };\n  const v = <p w={width}>{width}</p>;\n  return { width };\n}\n";
+        let from = text.find(')').expect("the list closes");
+        let at = |needle: &str| text.find(needle).expect(needle) + needle.find("width").unwrap();
+        let shorthand = |needle: &str| object_shorthand(text, from, at(needle), "width".len());
+        assert!(shorthand("{ width, h"), "an object literal after `=`");
+        assert!(shorthand("g({ width"), "an object literal argument");
+        assert!(shorthand("({ width } = o"), "a destructuring assignment");
+        assert!(
+            shorthand("return { width"),
+            "an object literal after `return`"
+        );
+        assert!(!shorthand("(o) { width"), "a block after `)`");
+        assert!(!shorthand("=> { width"), "an arrow's block");
+        assert!(!shorthand("w={width"), "a JSX attribute");
+        assert!(!shorthand(">{width"), "a JSX child");
+    }
+
+    #[test]
+    fn a_name_is_found_in_code_and_substitutions_not_in_strings_keys_or_properties() {
+        let text = "{ const s = `${size} x`; return a.size + size + { size: 1 }.size; /* size */ \"size\"; }";
+        let found = ident_uses(text, 0, text.len(), "size");
+        let expected = [
+            text.find("${size}").unwrap() + 2,
+            text.find("+ size +").unwrap() + 2,
+        ];
+        assert_eq!(found, expected, "{text}");
+        assert!(ident_uses(text, 0, text.len(), "siz").is_empty());
+    }
+
+    #[test]
+    fn a_javascript_call_may_use_the_name_an_import_gave_the_function() {
+        let text = "import { build as make } from \"./home\";\nconst { build: other } = require(\"./home\");\nimport dflt from \"./home\";\nconst whole = require(\"./home\");\nmake(1); other(2); dflt(3); whole(4); stranger(5); build(6); builder(7);\n";
+        let at = |needle: &str| text.find(needle).expect(needle);
+        let js = |needle: &str| called_name(text, at(needle), "build", Language::JavaScript);
+        assert_eq!(js("make(1"), Some(4));
+        assert_eq!(js("other(2"), Some(5));
+        assert_eq!(js("dflt(3"), Some(4));
+        assert_eq!(js("whole(4"), Some(5));
+        assert_eq!(js("build(6"), Some(5));
+        assert_eq!(js("stranger(5"), None, "a name nothing aliases");
+        assert_eq!(js("builder(7"), None, "a longer name is another name");
+        assert!(in_import(text, at("other }"), Language::JavaScript));
+        assert!(!in_import(text, at("make(1"), Language::JavaScript));
     }
 
     #[test]
@@ -3301,8 +5094,9 @@ mod tests {
         );
         assert_eq!(
             rewrite(&["name", "height=3", "width=1"]).as_deref(),
-            Some("name, size=Size(width=1, height=3)"),
-            "after a keyword argument the literal is passed by keyword"
+            Some("name, size=Size(height=3, width=1)"),
+            "after a keyword argument the literal is passed by keyword, its keywords in the \
+             order they are evaluated (#436)"
         );
         assert_eq!(
             rewrite(&["width=1", "name=n"]).as_deref(),
@@ -3635,5 +5429,284 @@ mod tests {
         assert_eq!(outermost_container(symbols, 11), Some(9));
         assert_eq!(outermost_container(symbols, 7), Some(7));
         assert_eq!(outermost_container(symbols, 2), None);
+    }
+
+    /// Only what the spelling shows cannot run a destructor is taken for that, and a primitive's
+    /// name only for a type the analyzer has to resolve (#441).
+    #[test]
+    fn a_type_may_drop_unless_its_spelling_shows_it_cannot() {
+        for inert in [
+            "&str",
+            "&mut Guard",
+            "&'a [u8]",
+            "*const Guard",
+            "fn(u32) -> u32",
+            "()",
+            "!",
+            "(&bool, *mut u8)",
+        ] {
+            assert_eq!(spelled(inert), Spelled::Inert, "{inert}");
+        }
+        for primitive in ["u32", "bool", "(u8, &str)", "[[u8; 4]; 2]", "[bool; 2]"] {
+            assert_eq!(spelled(primitive), Spelled::Primitive, "{primitive}");
+        }
+        for owned in [
+            "Guard",
+            "String",
+            "T",
+            "impl Drop",
+            "(u8, Guard)",
+            "[Guard; 2]",
+            "core::primitive::bool",
+        ] {
+            assert_eq!(spelled(owned), Spelled::MayDrop, "{owned}");
+        }
+        assert_eq!(name_in("mut m: u32", "m"), Some(4));
+        assert_eq!(name_in("t: (u8, u8)", "t"), Some(0));
+        assert_eq!(name_in("n: u32", "m"), None);
+    }
+
+    /// The hovers are rust-analyzer's on parameters, asked with `prod-code hover` on a build
+    /// node: `bool` there was the program's own struct with `Drop`, declared or imported.
+    #[test]
+    fn only_a_resolved_type_without_drop_glue_is_vouched_for() {
+        for (hover, name) in [
+            ("```rust\nn: u32\n```\n\n---\n\nno Drop", "n"),
+            ("\n```rust\nmut m: u32\n```\n\n---\n\nno Drop", "m"),
+            ("```rust\nt: (bool, &str)\n```\n\n---\n\nno Drop", "t"),
+            ("```rust\nr: [u8; 2]\n```\n\n---\n\nno Drop", "r"),
+        ] {
+            assert_eq!(no_drop_glue(hover, name), Ok(()), "{hover}");
+        }
+        for (hover, name, why) in [
+            (
+                "```rust\na: bool\n```\n\n---\n\nneeds Drop",
+                "a",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\nt: (bool, u32)\n```\n\n---\n\nneeds Drop",
+                "t",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\nr: [bool; 2]\n```\n\n---\n\nneeds Drop",
+                "r",
+                "the analyzer reports `needs Drop` for it",
+            ),
+            (
+                "```rust\na: bool\n```\n\n---\n\ntype param may need Drop",
+                "a",
+                "the analyzer reports `type param may need Drop` for it",
+            ),
+            (
+                "```rust\nu: {unknown}\n```\n\n---\n\nno Drop",
+                "u",
+                "the analyzer does not resolve its type (`{unknown}`)",
+            ),
+            (
+                "```rust\nu32\n```\n\n---\n\nThe 32-bit unsigned integer type.",
+                "n",
+                "the analyzer's hover is about `u32`, not it",
+            ),
+            (
+                "```rust\nn: u32\n```",
+                "n",
+                "the analyzer's hover does not say whether its type has drop glue",
+            ),
+            (
+                "no Drop",
+                "n",
+                "the analyzer's hover does not show its type",
+            ),
+        ] {
+            assert_eq!(no_drop_glue(hover, name), Err(why.to_string()), "{hover}");
+        }
+    }
+
+    /// `f(a, x, b, y)` with `a`, `b` bundled: `x` is dropped before the struct rather than
+    /// between its fields, and an `async` future dropped unpolled drops first to last.
+    #[test]
+    fn the_drop_order_is_compared_before_and_after_bundling() {
+        let owned = [true, true, true, true];
+        assert_eq!(
+            drop_order(4, &[1, 2], &[2, 1], &owned, false),
+            (vec![3, 2, 1, 0], vec![3, 2, 1, 0])
+        );
+        assert_eq!(
+            drop_order(3, &[0, 2], &[2, 0], &owned, false),
+            (vec![2, 1, 0], vec![1, 2, 0])
+        );
+        assert_eq!(
+            drop_order(3, &[0, 2], &[2, 0], &[true, false, true], false),
+            (vec![2, 0], vec![2, 0])
+        );
+        assert_eq!(
+            drop_order(2, &[0, 1], &[1, 0], &owned, true),
+            (vec![0, 1], vec![1, 0])
+        );
+    }
+
+    #[test]
+    fn the_edition_is_the_crates_or_the_workspaces_it_inherits() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let at = |rel: &str, text: &str| {
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+            std::fs::write(&path, text).expect("write");
+            path
+        };
+        at(
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"a\", \"b\"]\n\n[workspace.package]\nedition = \"2024\"\n",
+        );
+        at(
+            "a/Cargo.toml",
+            "[package]\nname = \"a\"\nedition.workspace = true\n",
+        );
+        at(
+            "b/Cargo.toml",
+            "[package]\nname = \"b\"\nedition = \"2018\"\n",
+        );
+        at(
+            "c/Cargo.toml",
+            "[package]\nname = \"c\"\n\n[dependencies]\n",
+        );
+        // Spellings TOML allows: an inline table, quoted keys, literal strings, comments.
+        at(
+            "d/Cargo.toml",
+            "package = { name = 'd', edition = '2021' } # [package] edition = \"2015\"\n",
+        );
+        at(
+            "e/Cargo.toml",
+            "[package]\n\"name\" = \"e\"\n'edition' = \"2018\" # old\n",
+        );
+        // An explicit workspace outside the crate's directories wins over the ancestor's 2024.
+        at(
+            "f/Cargo.toml",
+            "[package]\nname = \"f\"\nworkspace = \"../g/ws\"\nedition = { workspace = true }\n",
+        );
+        at(
+            "g/ws/Cargo.toml",
+            "[workspace.package]\nedition = \"2021\"\n\n[workspace]\nmembers = [\"../../f\"]\n",
+        );
+        // Text that only looks like an edition: in a string, another table, another key.
+        at(
+            "h/Cargo.toml",
+            "[package]\nname = \"h\"\ndescription = '''\n[package]\nedition = \"2024\"\n'''\n\
+             editions = \"2021\"\n\n[package.metadata.x]\nedition = \"2024\"\n",
+        );
+        assert_eq!(rust_edition(&at("a/src/lib.rs", "")), Ok(2024));
+        assert_eq!(rust_edition(&at("b/src/lib.rs", "")), Ok(2018));
+        assert_eq!(rust_edition(&at("c/src/lib.rs", "")), Ok(2015));
+        assert_eq!(rust_edition(&at("d/src/lib.rs", "")), Ok(2021));
+        assert_eq!(rust_edition(&at("e/src/bin/x.rs", "")), Ok(2018));
+        assert_eq!(rust_edition(&at("f/src/lib.rs", "")), Ok(2021));
+        assert_eq!(rust_edition(&at("h/src/lib.rs", "")), Ok(2015));
+
+        // What Cargo would reject, or what does not say, is not an edition.
+        let unknown = [
+            (
+                "i",
+                "[package]\nname = \"i\"\nedition = \"2027\"\n",
+                "not one this check knows",
+            ),
+            (
+                "j",
+                "[package]\nname = \"j\"\nedition = 2021\n",
+                "not one this check knows",
+            ),
+            ("k", "[package\nedition = \"2021\"\n", "is not valid TOML"),
+            (
+                "l",
+                "[package]\nedition = \"2021\"\nedition = \"2021\"\n",
+                "is not valid TOML",
+            ),
+            ("m", "[workspace]\nmembers = []\n", "has no [package]"),
+            (
+                "n",
+                "[package]\nname = \"n\"\nedition = { workspace = false }\n",
+                "neither a string nor",
+            ),
+            (
+                "o",
+                "[package]\nname = \"o\"\nworkspace = \"../c\"\nedition.workspace = true\n",
+                "which has no `workspace.package.edition`",
+            ),
+            (
+                "p",
+                "[package]\nname = \"p\"\nworkspace = \"../missing\"\nedition.workspace = true\n",
+                "there is no",
+            ),
+        ];
+        for (krate, manifest, why) in unknown {
+            at(&format!("{krate}/Cargo.toml"), manifest);
+            let err = rust_edition(&at(&format!("{krate}/src/lib.rs"), ""))
+                .expect_err(&format!("{krate}: {manifest}"));
+            assert!(err.contains(why), "{krate}: {err}");
+        }
+
+        // A member whose workspace has no `[workspace.package]` edition to give.
+        let bare = tempfile::tempdir().expect("a directory");
+        std::fs::write(bare.path().join("Cargo.toml"), "[workspace]\n").expect("write");
+        std::fs::create_dir_all(bare.path().join("q/src")).expect("mkdir");
+        std::fs::write(
+            bare.path().join("q/Cargo.toml"),
+            "[package]\nname = \"q\"\nedition.workspace = true\n",
+        )
+        .expect("write");
+        let err = rust_edition(&bare.path().join("q/src/lib.rs")).expect_err("nothing to inherit");
+        assert!(
+            err.contains("which has no `workspace.package.edition`"),
+            "{err}"
+        );
+    }
+
+    /// `async` is read from the qualifiers before `fn`, over line breaks and comments; in a
+    /// comment, a string or another item it does not count.
+    #[test]
+    fn a_function_is_async_by_its_qualifiers_not_by_its_comments() {
+        let at = |text: &str| declared_async(text, text.find("f(").expect("a name"));
+        for text in [
+            "async fn f(a: A) {}",
+            "pub(crate)\nasync\nfn f(a: A) {}",
+            "async /* the future\nowns both */ fn f(a: A) {}",
+            "pub async unsafe extern \"C\" fn f(a: A) {}",
+            "const async // why\nunsafe fn f(a: A) {}",
+            "impl T {\n    async\n    fn f(a: A) {}\n}",
+            "'a: loop {}\nlet c = '\"';\npub async fn f(a: A) {}",
+            // A lifetime named in another script is not a character literal running on to the
+            // next quote, and takes neither the comment nor the `async` with it.
+            "fn g<'ä>(x: &'ä u8, y: &'ä u8) {}\npub async /* it's */ fn f(a: A) {}",
+            "impl<'ä> S<'ä> {\n    fn g(&'ä self) -> char { 'é' }\n}\nasync fn f(a: A) {}",
+        ] {
+            assert_eq!(at(text), Some(true), "{text}");
+        }
+        for text in [
+            "fn f(a: A) {}",
+            "/* async */ fn f(a: A) {}",
+            "pub(crate) // async once\n/* not async */ fn f(a: A) {}",
+            "// async\nfn f(a: A) {}",
+            "/* async /* nested */ async */ fn f(a: A) {}",
+            "#[doc = \"async\"]\nfn f(a: A) {}",
+            "const S: &str = r#\"\" async \"#;\nfn f(a: A) {}",
+            "async fn g() {}\nfn f(a: A) {}",
+            "unsafe extern \"C\" fn f(a: A) {}",
+            "fn g<'ä>(x: &'ä u8, y: &'ä u8) {}\n/* it's not async */ fn f(a: A) {}",
+        ] {
+            assert_eq!(at(text), Some(false), "{text}");
+        }
+        assert_eq!(at("x f(a: A)"), None);
+    }
+
+    /// A lifetime or a label is code in any script; a character literal's inside is blanked.
+    #[test]
+    fn a_lifetime_in_any_script_is_not_a_character_literal() {
+        let code = "fn g<'ä>(s: &'ä str) -> [char; 3] { 'l: loop { break 'l ['é', '\\'', '\"'] } }";
+        let blanked = String::from_utf8(rust_code(code)).expect("still UTF-8");
+        assert_eq!(
+            blanked,
+            "fn g<'ä>(s: &'ä str) -> [char; 3] { 'l: loop { break 'l ['  ', '  ', ' '] } }"
+        );
     }
 }

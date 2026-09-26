@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
+  imported aliases and supported calls. Unsupported call/default shapes are refused before
+  writing; validation reports syntax diagnostics, not a JavaScript type-check guarantee.
+
 ### Changed
 - Cold Rust analysis loads share a process-wide CPU budget, including validation engines
   (#408). Half the detected CPUs (at least one) are assigned to concurrent loads, with at most eight
@@ -10,6 +15,18 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust parameter objects preserve destruction order (#441), including types named like
+  primitives. Analyzer evidence distinguishes builtin scalars from shadowing types with `Drop`.
+  Interleaved owned values and async or older-edition capture cases are refused when bundling
+  would change destruction order.
+- Parameter-object refactoring preserves argument evaluation order and refuses uncertain
+  reordering (#436), including JavaScript global getters and Swift/C++ conversions. JavaScript
+  and TypeScript selected constant defaults move into object literals; computed defaults and
+  potentially undefined runtime values are refused before rewriting.
+- Parameter-object rewrites preserve keyword/field evaluation order and refuse calls whose
+  argument reordering cannot be shown safe (#436). Failed reference requests and stale
+  JavaScript positions stop the rewrite; omitted fields use `void 0`, and `__proto__` becomes
+  an own computed property.
 - Rust signature changes refuse reordered or removed argument effects and changes to
   parameter destruction order, including user `Deref` calls and types that shadow built-ins
   (#442). Missing, malformed or unreadable references stop planning, even with `force`.
