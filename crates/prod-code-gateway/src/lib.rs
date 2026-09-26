@@ -570,6 +570,82 @@ fn seed_build_cache_within(
     Ok(Some(size))
 }
 
+/// The `node_modules` trees of the copy at `root`, relative to it: at the root and in the
+/// workspace packages below it, never one inside another (that is part of its parent), nor any
+/// under `.git` or `target`.
+fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, found: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            match entry.file_name().to_str() {
+                Some("node_modules") => {
+                    if let Ok(rel) = path.strip_prefix(root) {
+                        found.push(rel.to_path_buf());
+                    }
+                }
+                Some(".git" | "target") => {}
+                _ => walk(root, &path, found),
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, root, &mut found);
+    found.sort();
+    found
+}
+
+/// Copies the seed copy's `node_modules` trees into the new copy at `to`, when there are any and
+/// at least as much free disk as their size remains afterwards (#412). Without them every import
+/// from a dependency resolves to nothing in the new worktree until something installs the
+/// packages again. `cp -a` keeps the symlinks of `.bin` and of pnpm's layout; the trees are the
+/// worktree's own afterwards, so an install in one worktree never changes another's.
+fn seed_dependency_trees(
+    from: &std::path::Path,
+    to: &std::path::Path,
+) -> std::io::Result<Option<u64>> {
+    seed_dependency_trees_within(from, to, free_disk_bytes(to))
+}
+
+fn seed_dependency_trees_within(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    free_bytes: Option<u64>,
+) -> std::io::Result<Option<u64>> {
+    let trees = dependency_trees(from);
+    if trees.is_empty() {
+        return Ok(None);
+    }
+    let size: u64 = trees.iter().map(|rel| tree_size(&from.join(rel))).sum();
+    if free_bytes.is_none_or(|free| free < size.saturating_mul(2)) {
+        return Ok(None);
+    }
+    for rel in trees {
+        let dest = to.join(&rel);
+        let Some(parent) = dest.parent() else {
+            continue;
+        };
+        std::fs::create_dir_all(parent)?;
+        let status = std::process::Command::new("cp")
+            .arg("-a")
+            .arg(from.join(&rel))
+            .arg(parent)
+            .status()?;
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
+                "copying {} failed: {status}",
+                from.join(&rel).display()
+            )));
+        }
+    }
+    Ok(Some(size))
+}
+
 /// Bytes of every regular file under `dir`.
 fn tree_size(dir: &std::path::Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -859,11 +935,17 @@ pub async fn apply_sync_probe(
                     tracing::warn!(error = %e, "seeding the build cache failed");
                     None
                 });
-                Ok::<_, std::io::Error>((files, cache, started.elapsed()))
+                let cache_took = started.elapsed();
+                let started = Instant::now();
+                let packages = seed_dependency_trees(&from, &to).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "seeding node_modules failed");
+                    None
+                });
+                Ok::<_, std::io::Error>((files, cache, cache_took, packages, started.elapsed()))
             })
             .await
             {
-                Ok(Ok((files, cache, cache_took))) => {
+                Ok(Ok((files, cache, cache_took, packages, packages_took))) => {
                     seeded = true;
                     tracing::info!(
                         workspace = %target.display(),
@@ -871,6 +953,8 @@ pub async fn apply_sync_probe(
                         files,
                         build_cache_mb = cache.map(|bytes| bytes / (1024 * 1024)),
                         build_cache_ms = cache_took.as_millis() as u64,
+                        node_modules_mb = packages.map(|bytes| bytes / (1024 * 1024)),
+                        node_modules_ms = packages_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -5697,6 +5781,85 @@ mod tests {
         assert_eq!(
             modified, old,
             "cargo compares these times; the copy must keep them"
+        );
+    }
+
+    /// A new worktree's copy takes the seed's `node_modules` trees, the root's and a workspace
+    /// package's, with their symlinks kept as symlinks, and none from under `target` or `.git`;
+    /// without room for two of them it takes none (#412).
+    #[test]
+    fn a_seeded_copy_takes_the_node_modules_trees() {
+        let dir = tempfile::tempdir().unwrap();
+        let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
+        for (rel, text) in [
+            (
+                "node_modules/zod/index.d.ts",
+                "export declare const z: unknown;",
+            ),
+            ("node_modules/typescript/bin/tsc", "#!/usr/bin/env node"),
+            ("node_modules/zod/node_modules/inner/index.js", "nested"),
+            ("packages/app/node_modules/left-pad/index.js", "pad"),
+            ("target/node_modules/stray.js", "not a package tree"),
+            ("src/index.ts", "import { z } from 'zod';"),
+        ] {
+            let path = seed.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        std::fs::create_dir_all(seed.join("node_modules/.bin")).unwrap();
+        std::os::unix::fs::symlink("../typescript/bin/tsc", seed.join("node_modules/.bin/tsc"))
+            .unwrap();
+
+        assert_eq!(
+            dependency_trees(&seed),
+            vec![
+                PathBuf::from("node_modules"),
+                PathBuf::from("packages/app/node_modules")
+            ]
+        );
+        assert_eq!(
+            seed_dependency_trees_within(&seed, &fresh, Some(10)).unwrap(),
+            None,
+            "no room for two of them"
+        );
+        assert!(!fresh.join("node_modules").exists());
+
+        let copied = seed_dependency_trees_within(&seed, &fresh, Some(u64::MAX)).unwrap();
+        assert_eq!(copied, Some(32 + 19 + 6 + 3));
+        assert_eq!(
+            std::fs::read_to_string(fresh.join("node_modules/zod/index.d.ts")).unwrap(),
+            "export declare const z: unknown;"
+        );
+        assert!(
+            fresh
+                .join("node_modules/zod/node_modules/inner/index.js")
+                .is_file()
+        );
+        assert!(
+            fresh
+                .join("packages/app/node_modules/left-pad/index.js")
+                .is_file()
+        );
+        let link = fresh.join("node_modules/.bin/tsc");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            PathBuf::from("../typescript/bin/tsc")
+        );
+        assert!(!fresh.join("target").exists());
+        assert!(!fresh.join("src").exists(), "sources are copy_tree's");
+
+        let bare = dir.path().join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(
+            seed_dependency_trees_within(&bare, &dir.path().join("fresh2"), Some(u64::MAX))
+                .unwrap(),
+            None
         );
     }
 

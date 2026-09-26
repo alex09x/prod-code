@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added
+- **A new worktree's copy takes the main copy's `node_modules`** (#412). Before, a copy seeded
+  from the main checkout's copy got the sources and Rust's `target/debug` (#278), but no
+  `node_modules`. Every import from a dependency then resolved to nothing in the new worktree:
+  hover said `any` and diagnostics reported TS2307 until something installed the packages again.
+  The seed now also copies the `node_modules` trees at the root and in workspace packages with
+  `cp -a`, so the symlinks of `.bin` and of pnpm's layout stay symlinks. It happens only when the
+  disk has room for twice their size. The trees are the worktree's own afterwards.
+
 ## v0.3.16 — 2026-09-26
 
 ### Added
