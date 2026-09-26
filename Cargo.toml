@@ -41,10 +41,13 @@ futures-util = { version = "0.3", features = ["sink"] }
 url = "2.5"
 socket2 = { version = "0.6", features = ["all"] }
 
+# Line tables only, in the objects: backtraces keep file and line, and nothing is left behind.
+# `split-debuginfo = "unpacked"` with incremental builds wrote a `.dwo` per codegen unit that
+# nothing removed: 565,488 of them (26.2 GB) in a week (#421). Line tables build as fast and
+# take as much room as the old setting, per a test build of the workspace on a Linux node.
 [profile.dev]
 opt-level = 0
-debug = 1
-split-debuginfo = "unpacked"
+debug = "line-tables-only"
 incremental = true
 
 [profile.dev.package."*"]
@@ -52,8 +55,7 @@ opt-level = 0
 
 [profile.test]
 opt-level = 0
-debug = 1
-split-debuginfo = "unpacked"
+debug = "line-tables-only"
 incremental = true
 
 [profile.release]

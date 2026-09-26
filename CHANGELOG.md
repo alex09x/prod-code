@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+- **The dev and test profiles keep line tables only, in the objects** (#421). With
+  `split-debuginfo = "unpacked"` and incremental builds, rustc wrote a `.dwo` file per codegen
+  unit into `target/debug/deps`, and nothing ever removed the old ones: 565,488 files (26.2 GB)
+  within a week on the node that holds this repository's copy. `debug = "line-tables-only"`
+  without split debug info keeps file and line in backtraces and leaves nothing behind.
+  Measured on a Linux x86_64 build node, a cold `cargo test --workspace --no-run` took 50.7 s
+  against 49.1 s. Three incremental rebuilds after a one-line change to `tools.rs` took 4.04,
+  3.92 and 3.98 s against 4.57, 3.78 and 3.86 s. The target was 6.3 GB either way, with 0
+  `.dwo` files against 20,139 after those four builds.
+
 ### Fixed
 - **Seeding a worktree copy leaves a fifth of the disk free** (#419). A seed copied the main
   copy's whole `target/debug` whenever twice its size was free. For this repository on a build
