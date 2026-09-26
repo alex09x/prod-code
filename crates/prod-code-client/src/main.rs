@@ -960,7 +960,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Change what a function takes — reorder, add, remove parameters — with every call site.
+    /// Change a Rust function's parameters with its call sites, refusing changes to argument
+    /// evaluation or destruction order (including possible Deref coercions).
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`).
         symbol: String,
@@ -987,7 +988,7 @@ enum Commands {
         /// Write the change instead of only reporting it.
         #[arg(long, default_value_t = false)]
         apply: bool,
-        /// Drop a parameter the body still uses, and write even when it does not compile.
+        /// Override body-use/compiler errors; never incomplete references or effect-order checks.
         #[arg(long, default_value_t = false)]
         force: bool,
     },

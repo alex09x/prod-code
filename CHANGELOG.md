@@ -10,6 +10,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust signature changes refuse reordered or removed argument effects and changes to
+  parameter destruction order, including user `Deref` calls and types that shadow built-ins
+  (#442). Missing, malformed or unreadable references stop planning, even with `force`.
+  Confirmed scalar arguments can still be reordered; unproven reference coercions are refused.
 - Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
   described as a reporting policy restriction instead of falsely claiming they do not
   exist in the repository.
