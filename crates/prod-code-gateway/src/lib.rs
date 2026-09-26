@@ -570,9 +570,14 @@ fn seed_build_cache_within(
     Ok(Some(size))
 }
 
-/// The `node_modules` trees of the copy at `root`, relative to it: at the root and in the
-/// workspace packages below it, never one inside another (that is part of its parent), nor any
-/// under `.git` or `target`.
+/// Whether `dir` is a Python virtual environment: it holds `pyvenv.cfg`.
+fn is_virtualenv(dir: &std::path::Path) -> bool {
+    dir.join("pyvenv.cfg").is_file()
+}
+
+/// The `node_modules` trees and Python virtual environments of the copy at `root`, relative to
+/// it: at the root and in the packages below it, never one inside another (that is part of its
+/// parent), nor any under `.git` or `target`.
 fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
     fn walk(root: &std::path::Path, dir: &std::path::Path, found: &mut Vec<PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -584,12 +589,11 @@ fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
             }
             let path = entry.path();
             match entry.file_name().to_str() {
-                Some("node_modules") => {
-                    if let Ok(rel) = path.strip_prefix(root) {
-                        found.push(rel.to_path_buf());
-                    }
-                }
                 Some(".git" | "target") => {}
+                Some("node_modules") => found.extend(path.strip_prefix(root).ok().map(Into::into)),
+                _ if is_virtualenv(&path) => {
+                    found.extend(path.strip_prefix(root).ok().map(Into::into))
+                }
                 _ => walk(root, &path, found),
             }
         }
@@ -600,11 +604,13 @@ fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
     found
 }
 
-/// Copies the seed copy's `node_modules` trees into the new copy at `to`, when there are any and
-/// at least as much free disk as their size remains afterwards (#412). Without them every import
-/// from a dependency resolves to nothing in the new worktree until something installs the
-/// packages again. `cp -a` keeps the symlinks of `.bin` and of pnpm's layout; the trees are the
-/// worktree's own afterwards, so an install in one worktree never changes another's.
+/// Copies the seed copy's `node_modules` trees and virtual environments into the new copy at
+/// `to`, when there are any and at least as much free disk as their size remains afterwards
+/// (#412, #414). Without them every import from a dependency resolves to nothing in the new
+/// worktree until something installs the packages again. `cp -a` keeps the symlinks of `.bin`,
+/// of pnpm's layout and of a venv (`lib64 -> lib`, `bin/python`); a venv's scripts are then
+/// rewritten to name the copy. The trees are the worktree's own afterwards, so an install in one
+/// worktree never changes another's.
 fn seed_dependency_trees(
     from: &std::path::Path,
     to: &std::path::Path,
@@ -642,8 +648,42 @@ fn seed_dependency_trees_within(
                 from.join(&rel).display()
             )));
         }
+        if is_virtualenv(&dest) {
+            relocate_virtualenv(&from.join(&rel), &dest)?;
+        }
     }
     Ok(Some(size))
+}
+
+/// Rewrites the scripts in the `bin` of a virtual environment copied from `old` to `new` that
+/// name `old` (console-script shebangs, `activate`) so that they name `new`: otherwise running
+/// the copy's `pytest` would start the other worktree's interpreter (#414). Binaries and files
+/// over 1 MiB are left alone. Returns how many scripts were rewritten.
+fn relocate_virtualenv(old: &std::path::Path, new: &std::path::Path) -> std::io::Result<usize> {
+    let (Some(old_text), Some(new_text)) = (old.to_str(), new.to_str()) else {
+        return Ok(0);
+    };
+    let Ok(entries) = std::fs::read_dir(new.join("bin")) else {
+        return Ok(0);
+    };
+    let mut rewritten = 0;
+    for entry in entries.flatten() {
+        let small_file = entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry.metadata().is_ok_and(|m| m.len() <= 1 << 20);
+        if !small_file {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains(old_text) {
+            // Writing an existing file keeps its mode, so a script stays executable.
+            std::fs::write(&path, text.replace(old_text, new_text))?;
+            rewritten += 1;
+        }
+    }
+    Ok(rewritten)
 }
 
 /// Bytes of every regular file under `dir`.
@@ -695,8 +735,16 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<us
         }
         let from = entry.path();
         let to = dst.join(&name);
-        if from.is_dir() {
-            copied += copy_tree(&from, &to)?;
+        if entry.file_type()?.is_symlink() && from.is_dir() {
+            // A directory symlink stays one: walking it copied its target a second time, or
+            // without end when it points at a parent (#414).
+            std::os::unix::fs::symlink(std::fs::read_link(&from)?, &to)?;
+        } else if from.is_dir() {
+            // A virtual environment is copied whole, its symlinks kept, by
+            // `seed_dependency_trees`.
+            if !is_virtualenv(&from) {
+                copied += copy_tree(&from, &to)?;
+            }
         } else if from.is_file() {
             std::fs::copy(&from, &to)?;
             copied += 1;
@@ -938,7 +986,7 @@ pub async fn apply_sync_probe(
                 let cache_took = started.elapsed();
                 let started = Instant::now();
                 let packages = seed_dependency_trees(&from, &to).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "seeding node_modules failed");
+                    tracing::warn!(error = %e, "seeding node_modules and virtual environments failed");
                     None
                 });
                 Ok::<_, std::io::Error>((files, cache, cache_took, packages, started.elapsed()))
@@ -953,8 +1001,8 @@ pub async fn apply_sync_probe(
                         files,
                         build_cache_mb = cache.map(|bytes| bytes / (1024 * 1024)),
                         build_cache_ms = cache_took.as_millis() as u64,
-                        node_modules_mb = packages.map(|bytes| bytes / (1024 * 1024)),
-                        node_modules_ms = packages_took.as_millis() as u64,
+                        dependencies_mb = packages.map(|bytes| bytes / (1024 * 1024)),
+                        dependencies_ms = packages_took.as_millis() as u64,
                         "🌱 [SEED] new worktree workspace seeded from origin copy"
                     );
                 }
@@ -5861,6 +5909,78 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// A virtual environment reaches the new copy with its symlinks kept (`lib64 -> lib` is not a
+    /// second copy of site-packages) and its scripts naming the copy; `copy_tree` leaves it to
+    /// the seeding of dependency trees, and keeps a directory symlink as a symlink instead of
+    /// walking it (#414).
+    #[test]
+    fn a_seeded_copy_takes_a_virtualenv_with_its_links_and_its_paths_rewritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
+        let (venv, copy) = (seed.join(".venv"), fresh.join(".venv"));
+        let old = venv.to_str().unwrap().to_string();
+        for (rel, text) in [
+            ("pyvenv.cfg", "home = /usr/bin\n".to_string()),
+            (
+                "lib/python3.12/site-packages/pkg/__init__.py",
+                "x = 1\n".to_string(),
+            ),
+            ("bin/pytest", format!("#!{old}/bin/python\nimport pytest\n")),
+            (
+                "bin/activate",
+                format!("VIRTUAL_ENV='{old}'\nexport VIRTUAL_ENV\n"),
+            ),
+        ] {
+            let path = venv.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+        }
+        std::fs::set_permissions(
+            venv.join("bin/pytest"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("lib", venv.join("lib64")).unwrap();
+        std::os::unix::fs::symlink("/usr/bin/python3", venv.join("bin/python")).unwrap();
+        std::fs::create_dir_all(seed.join("src")).unwrap();
+        std::fs::write(seed.join("src/app.py"), "import pkg\n").unwrap();
+        std::os::unix::fs::symlink(".", seed.join("src/again")).unwrap();
+
+        assert_eq!(copy_tree(&seed, &fresh).unwrap(), 1, "only src/app.py");
+        assert!(!copy.exists(), "the venv is not copy_tree's");
+        let again = std::fs::symlink_metadata(fresh.join("src/again")).unwrap();
+        assert!(again.file_type().is_symlink());
+
+        assert_eq!(dependency_trees(&seed), vec![PathBuf::from(".venv")]);
+        assert!(
+            seed_dependency_trees_within(&seed, &fresh, Some(u64::MAX))
+                .unwrap()
+                .is_some()
+        );
+        let link = |rel: &str| std::fs::read_link(copy.join(rel)).unwrap();
+        assert_eq!(link("lib64"), PathBuf::from("lib"));
+        assert_eq!(link("bin/python"), PathBuf::from("/usr/bin/python3"));
+        assert!(
+            copy.join("lib/python3.12/site-packages/pkg/__init__.py")
+                .is_file()
+        );
+        let new = copy.to_str().unwrap();
+        let pytest = std::fs::read_to_string(copy.join("bin/pytest")).unwrap();
+        assert_eq!(pytest, format!("#!{new}/bin/python\nimport pytest\n"));
+        let mode = std::fs::metadata(copy.join("bin/pytest"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "the script stays executable");
+        let activate = std::fs::read_to_string(copy.join("bin/activate")).unwrap();
+        assert!(
+            activate.contains(&format!("VIRTUAL_ENV='{new}'")),
+            "{activate}"
+        );
+        assert!(!activate.contains(&format!("'{old}'")), "{activate}");
     }
 
     /// No build cache, or not enough room for two of it, leaves the new copy without one.
