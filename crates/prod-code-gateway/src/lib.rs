@@ -4,6 +4,7 @@
 //! stands in front of — the workspace manager, the dispatch, the language server backends —
 //! can be exercised directly by tests.
 
+pub mod admission;
 pub mod backend;
 pub mod detect;
 pub mod editor_proxy;
@@ -117,6 +118,12 @@ pub struct ServerCli {
     /// Unload a workspace's engine after this many seconds without a session (0 disables).
     #[arg(long, env = "PROD_CODE_IDLE_EVICT_SECS", default_value_t = 1800)]
     pub idle_evict_secs: u64,
+
+    /// Memory a new engine is counted at until it has loaded and settled, in MiB, when deciding
+    /// whether the host can take it without passing 85% in use (#433). 0: by engine, 4 GiB for
+    /// Rust, 1 GiB for the other language servers.
+    #[arg(long, env = "PROD_CODE_ENGINE_RESERVE_MIB", default_value_t = 0)]
+    pub engine_reserve_mib: u64,
 
     /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
@@ -366,8 +373,19 @@ impl ServerState {
             cpu_count: std::thread::available_parallelism().ok().map(|n| n.get()),
             platform: Some(prod_code_protocol::platform()),
             running_commands: running_commands(),
-            host: memory::host_resources(&self.storage_root),
+            host: self.host_resources(),
         }
+    }
+
+    /// What this host has left, less the memory held for engines still loading: placement on
+    /// the other nodes then sees a load this one has admitted before the load shows (#433).
+    fn host_resources(&self) -> prod_code_protocol::HostResources {
+        let mut host = memory::host_resources(&self.storage_root);
+        let reserved = self.workspace_manager.admission().reserved_bytes();
+        host.memory_available_bytes = host
+            .memory_available_bytes
+            .map(|available| available.saturating_sub(reserved));
+        host
     }
 }
 
@@ -2651,8 +2669,9 @@ pub async fn handle_client(
                     // Validation runs on its own engine: that is the one to warm. Loading it
                     // warms the newest files, these among them.
                     let workspace = workspace.clone();
+                    let admission = Arc::clone(state.workspace_manager.admission());
                     tokio::spawn(async move {
-                        let view = loaded.validation_view().await;
+                        let view = loaded.validation_view(&admission).await;
                         if let Some(engine) = view.rust_engine.clone() {
                             priming::warm_in_background(engine, workspace, synced_rust);
                         }
@@ -2780,11 +2799,27 @@ pub async fn handle_client(
                     return outcome;
                 }
 
-                // Attach to shared workspace using leader-follower coalescing
-                let shared_ws = state
+                // Attach to shared workspace using leader-follower coalescing. A load refused
+                // for capacity (#433), or failed, is told to the client, which says why.
+                let shared_ws = match state
                     .workspace_manager
                     .get_or_load(&engine_root, engine)
-                    .await?;
+                    .await
+                {
+                    Ok(shared_ws) => shared_ws,
+                    Err(err) => {
+                        let reason = format!("{err:#}");
+                        tracing::warn!(
+                            client_root = %req.client_workspace_root,
+                            engine,
+                            reason,
+                            "refusing handshake: the engine could not be loaded"
+                        );
+                        state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                        framed.send(WireMessage::Disconnect { reason }).await?;
+                        return Ok(());
+                    }
+                };
                 let engine_age_ms = shared_ws.loaded_at.elapsed().as_millis() as u64;
                 // The in-process Rust engine answers from a complete analysis once loaded; gopls
                 // and the servers whose readiness is known are waited for (#391).
@@ -2802,7 +2837,10 @@ pub async fn handle_client(
                 // A session that only validates proposed texts runs on the workspace's second
                 // engine, so its overlays never invalidate the main one (#73).
                 if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION) {
-                    session_view.workspace = session_view.accounted.validation_view().await;
+                    session_view.workspace = session_view
+                        .accounted
+                        .validation_view(state.workspace_manager.admission())
+                        .await;
                 }
 
                 tracing::info!(
@@ -5388,6 +5426,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     );
 
     let mut state = ServerState::new(cli.storage);
+    state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+        admission::Admission::host(cli.engine_reserve_mib),
+    )));
     state.engine_allowlist = cli
         .engines
         .iter()
@@ -5644,6 +5685,65 @@ mod tests {
         assert_eq!(evict_after(1800, true), Some(Duration::from_secs(300)));
         assert_eq!(evict_after(120, true), Some(Duration::from_secs(120)));
         assert_eq!(evict_after(0, true), Some(Duration::from_secs(300)));
+    }
+
+    /// A handshake that needs a new engine on a host without the memory for it is refused with
+    /// capacity as the reason and a way forward, and leaves no session counted (#433).
+    #[tokio::test]
+    async fn a_handshake_without_memory_for_its_engine_is_refused_for_capacity() {
+        const GIB: u64 = 1 << 30;
+        let storage = tempfile::tempdir().expect("tempdir");
+        let mut state = ServerState::new(storage.path().join("workspaces"));
+        state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            admission::Admission::with_probe(
+                admission::scripted_probe(vec![(10 * GIB, 100 * GIB)]),
+                2048,
+                admission::LOAD_SETTLE,
+            ),
+        )));
+        let client_root = "/home/dev/app";
+        let server_root =
+            workspace::resolve_server_workspace(&state.storage_root, client_root, None);
+        std::fs::create_dir_all(&server_root).unwrap();
+        let state = Arc::new(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serving = Arc::clone(&state);
+        let serve = tokio::spawn(async move {
+            let (socket, peer) = listener.accept().await.unwrap();
+            handle_client(socket, peer, serving).await
+        });
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed
+            .send(WireMessage::HandshakeRequest(
+                prod_code_protocol::HandshakeRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    client_name: "test".to_string(),
+                    client_pid: 1,
+                    auth_token: None,
+                    client_workspace_root: client_root.to_string(),
+                    preferred_engine: None,
+                    base_workspace_name: None,
+                    engine_subpath: None,
+                    client_agent: None,
+                    client_host: None,
+                    purpose: None,
+                },
+            ))
+            .await
+            .unwrap();
+        let Some(Ok(WireMessage::Disconnect { reason })) = framed.next().await else {
+            panic!("the handshake was not refused");
+        };
+        assert!(reason.starts_with("capacity: "), "{reason}");
+        assert!(reason.contains("memory 90% used"), "{reason}");
+        assert!(reason.contains("Retry in a few minutes"), "{reason}");
+        assert!(reason.contains("another node"), "{reason}");
+        serve.await.unwrap().unwrap();
+        assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0);
+        assert_eq!(state.workspace_manager.loaded_count().await, 0);
     }
 
     /// The first answer `state` gives a connection that opens with `token`, if any, and asks for
