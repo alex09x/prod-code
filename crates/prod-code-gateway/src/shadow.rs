@@ -341,12 +341,54 @@ where
     })
 }
 
+/// Verifies that the requested hypothesis environment does not conflict with overlay mount
+/// namespace isolation. Sccache requires client-side mode (`SCCACHE_CLIENT_SIDE=1`) to compile
+/// inside the overlay mount namespace; error logging and distributed compilation cause sccache
+/// to ignore client-side mode and compile on the daemon or remote nodes, escaping the namespace.
+fn check_isolation_conflicts(job: &Job) -> Option<String> {
+    if job.env.iter().any(|(k, v)| {
+        k == "SCCACHE_CLIENT_SIDE"
+            && (v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no"))
+    }) {
+        return Some(
+            "cannot run overlay shadow: SCCACHE_CLIENT_SIDE is disabled, which breaks mount namespace isolation"
+                .to_string(),
+        );
+    }
+    if job.env.iter().any(|(k, _)| k == "SCCACHE_ERROR_LOG")
+        || std::env::var_os("SCCACHE_ERROR_LOG").is_some()
+    {
+        return Some(
+            "cannot run overlay shadow with SCCACHE_ERROR_LOG: sccache disables client-side mode and breaks mount namespace isolation"
+                .to_string(),
+        );
+    }
+    if job
+        .env
+        .iter()
+        .any(|(k, _)| k == "SCCACHE_DIST" || k.starts_with("SCCACHE_DIST_"))
+        || std::env::vars_os().any(|(k, _)| {
+            let s = k.to_string_lossy();
+            s == "SCCACHE_DIST" || s.starts_with("SCCACHE_DIST_")
+        })
+    {
+        return Some(
+            "cannot run overlay shadow with distributed sccache: compilation runs outside mount namespace isolation"
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// Runs one hypothesis as an overlay shadow: its files go to a fresh upper directory, the
 /// command runs in a user + mount namespace where the workspace path is the overlay.
 pub async fn run_overlay(
     job: Job,
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> ShadowHypothesisResult {
+    if let Some(err) = check_isolation_conflicts(&job) {
+        return failed(&job.name, err);
+    }
     let dir = job
         .shadow_root
         .join(dir_name(&job.workspace, &job.name, job.nonce));
@@ -380,6 +422,8 @@ pub async fn run_overlay(
         .env("SHADOW_WORK", &work)
         .env("SHADOW_DELETE", &delete_list)
         .env("SHADOW_SUBDIR", &job.subdir)
+        // Ensure sccache compiles in the client process inside the mount namespace (#426).
+        .env("SCCACHE_CLIENT_SIDE", "1")
         .envs(job.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(&job.workspace);
     let result = run_child(cmd, &job, cancel).await;
@@ -840,5 +884,199 @@ mod tests {
         // The upper directories are removed after each hypothesis.
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(std::fs::read_dir(shadow.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn overlay_hypotheses_compile_proposed_source_with_rustc_wrapper() {
+        if let Some(reason) = overlay_unavailable() {
+            eprintln!("skipped: {reason}");
+            return;
+        }
+        let ws = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+
+        // Configure sccache as rustc-wrapper if present on the system
+        let sccache_path = {
+            let output = std::process::Command::new("which")
+                .arg("sccache")
+                .output()
+                .ok();
+            output
+                .and_then(|o| {
+                    if o.status.success() {
+                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        let p = PathBuf::from(s);
+                        p.is_file().then_some(p)
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    std::env::var("HOME").ok().and_then(|home| {
+                        let p = PathBuf::from(home).join(".cargo/bin/sccache");
+                        p.is_file().then_some(p)
+                    })
+                })
+        };
+
+        if let Some(wrapper) = &sccache_path {
+            std::fs::create_dir_all(ws.path().join(".cargo")).unwrap();
+            std::fs::write(
+                ws.path().join(".cargo/config.toml"),
+                format!("[build]\nrustc-wrapper = {:?}\n", wrapper),
+            )
+            .unwrap();
+        }
+
+        std::fs::write(
+            ws.path().join("Cargo.toml"),
+            r#"[package]
+name = "shadow-regress"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+"#,
+        )
+        .unwrap();
+
+        std::fs::write(
+            ws.path().join("build.rs"),
+            r#"fn main() {
+    println!("cargo:rustc-env=SHADOW_BUILD_RS_VAL=from_build_rs");
+}
+"#,
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(ws.path().join("src")).unwrap();
+        std::fs::write(
+            ws.path().join("src/lib.rs"),
+            r#"pub fn message() -> String {
+    format!("base:{}", env!("SHADOW_BUILD_RS_VAL"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn check_output() {
+        assert_eq!(message(), "hypothesis:from_build_rs");
+    }
+}
+"#,
+        )
+        .unwrap();
+
+        let hypothesis_lib = r#"pub fn message() -> String {
+    format!("hypothesis:{}", env!("SHADOW_BUILD_RS_VAL"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn check_output() {
+        assert_eq!(message(), "hypothesis:from_build_rs");
+    }
+}
+"#;
+
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let argv = [
+            "sh",
+            "-c",
+            "cargo test --quiet 2>&1 && ls target/debug/deps/*.rlib",
+        ];
+        let result = run_overlay(
+            job(
+                ws.path(),
+                shadow.path(),
+                "regress",
+                vec![delta("src/lib.rs", Some(hypothesis_lib))],
+                &argv,
+            ),
+            rx,
+        )
+        .await;
+
+        assert_eq!(
+            result.exit_code,
+            Some(0),
+            "compilation failed: error={:?} output={}",
+            result.error,
+            output(&result)
+        );
+        let out = output(&result);
+        assert!(
+            out.contains("1 passed") || out.contains("test result: ok"),
+            "test output missing expected pass: {out}"
+        );
+        assert!(
+            out.contains(".rlib"),
+            "output must include compiled rlib artifact: {out}"
+        );
+
+        // Verify base workspace remains untouched
+        assert!(
+            !ws.path().join("target").exists(),
+            "target artifacts must not be written to the base workspace"
+        );
+        let base_content = std::fs::read_to_string(ws.path().join("src/lib.rs")).unwrap();
+        assert!(
+            base_content.contains("base:"),
+            "base src/lib.rs must remain untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn overlay_hypotheses_reject_isolation_conflicts() {
+        let ws = tempfile::tempdir().unwrap();
+        let shadow = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let argv = ["sh", "-c", "echo ok"];
+
+        // 1. SCCACHE_ERROR_LOG in job env
+        let mut j1 = job(ws.path(), shadow.path(), "err_log", vec![], &argv);
+        j1.env.push((
+            "SCCACHE_ERROR_LOG".to_string(),
+            "/tmp/sccache.log".to_string(),
+        ));
+        let r1 = run_overlay(j1, rx.clone()).await;
+        assert!(r1.exit_code.is_none());
+        assert!(
+            r1.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SCCACHE_ERROR_LOG")
+        );
+
+        // 2. SCCACHE_CLIENT_SIDE=0 in job env
+        let mut j2 = job(ws.path(), shadow.path(), "client_side_zero", vec![], &argv);
+        j2.env
+            .push(("SCCACHE_CLIENT_SIDE".to_string(), "0".to_string()));
+        let r2 = run_overlay(j2, rx.clone()).await;
+        assert!(r2.exit_code.is_none());
+        assert!(
+            r2.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SCCACHE_CLIENT_SIDE")
+        );
+
+        // 3. Distributed sccache in job env
+        let mut j3 = job(ws.path(), shadow.path(), "dist", vec![], &argv);
+        j3.env.push((
+            "SCCACHE_DIST_ADDR".to_string(),
+            "127.0.0.1:10600".to_string(),
+        ));
+        let r3 = run_overlay(j3, rx).await;
+        assert!(r3.exit_code.is_none());
+        assert!(
+            r3.error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("distributed sccache")
+        );
     }
 }
