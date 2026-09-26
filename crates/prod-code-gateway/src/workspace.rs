@@ -91,9 +91,15 @@ impl SharedWorkspace {
     /// overlay. The second engine is loaded by the first validation session, costs the memory
     /// of one more database, and is dropped with this workspace. If it cannot be loaded,
     /// validation runs on the main engine as before.
-    pub async fn validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+    ///
+    /// The second engine is a new engine like any other: while `admission` has no memory for
+    /// it, validation runs on the main engine, and a later validation session asks again.
+    pub async fn validation_view(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+    ) -> Arc<SharedWorkspace> {
         if self.engine == "cpp" && self.generic_engine.is_some() {
-            return self.cpp_validation_view().await;
+            return self.cpp_validation_view(admission).await;
         }
         if self.rust_engine.is_none() {
             return Arc::clone(self);
@@ -102,13 +108,21 @@ impl SharedWorkspace {
         let root = self.root.clone();
         let validation = self
             .validation
-            .get_or_init(|| async move {
+            .get_or_try_init(|| async move {
+                let reservation = admission.try_reserve("rust").map_err(|shortfall| {
+                    let refused = crate::admission::CapacityRefused {
+                        shortfall,
+                        reclaimed: 0,
+                    };
+                    tracing::warn!(workspace = ?root, %refused, "validation engine not loaded; validating on the main engine");
+                })?;
                 let load_root = root.clone();
                 let loaded = tokio::task::spawn_blocking(move || {
                     prod_code_engine_rust::RustEngine::load(&load_root)
                 })
                 .await;
-                match loaded {
+                reservation.release_after_settling();
+                Ok::<_, ()>(match loaded {
                     Ok(Ok(mut engine)) => {
                         engine.set_label("validation");
                         let engine = Arc::new(Mutex::new(engine));
@@ -133,10 +147,10 @@ impl SharedWorkspace {
                         tracing::warn!(error = %err, workspace = ?root, "validation engine load panicked; validating on the main engine");
                         None
                     }
-                }
+                })
             })
             .await;
-        let Some(engine) = validation.clone() else {
+        let Ok(Some(engine)) = validation.cloned() else {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
@@ -169,17 +183,28 @@ impl SharedWorkspace {
     /// server they stay there. It indexes nothing in the background, costs one more clangd
     /// while the workspace is loaded, and is dropped with it. If it cannot start, validation
     /// runs on the main server as before.
-    async fn cpp_validation_view(self: &Arc<Self>) -> Arc<SharedWorkspace> {
+    async fn cpp_validation_view(
+        self: &Arc<Self>,
+        admission: &Arc<crate::admission::Admission>,
+    ) -> Arc<SharedWorkspace> {
         let root = self.root.clone();
         let validation = self
             .cpp_validation
-            .get_or_init(|| async move {
-                match prod_code_engine_generic::GenericLspEngine::spawn(
+            .get_or_try_init(|| async move {
+                let reservation = admission.try_reserve("cpp").map_err(|shortfall| {
+                    let refused = crate::admission::CapacityRefused {
+                        shortfall,
+                        reclaimed: 0,
+                    };
+                    tracing::warn!(workspace = ?root, %refused, "C/C++ validation server not started; validating on the main server");
+                })?;
+                let started = prod_code_engine_generic::GenericLspEngine::spawn(
                     &root,
                     prod_code_engine_generic::GenericLspConfig::for_cpp_validation(),
                 )
-                .await
-                {
+                .await;
+                reservation.release_after_settling();
+                Ok::<_, ()>(match started {
                     Ok(engine) => {
                         tracing::info!(workspace = ?root, "C/C++ validation server started");
                         Some(Arc::new(engine))
@@ -188,10 +213,10 @@ impl SharedWorkspace {
                         tracing::warn!(error = %err, workspace = ?root, "C/C++ validation server failed to start; validating on the main server");
                         None
                     }
-                }
+                })
             })
             .await;
-        let Some(engine) = validation.clone() else {
+        let Ok(Some(engine)) = validation.cloned() else {
             return Arc::clone(self);
         };
         Arc::new(SharedWorkspace {
@@ -214,6 +239,19 @@ impl SharedWorkspace {
 
     pub fn touch(&self) {
         self.last_used.store(unix_now(), Ordering::Relaxed);
+    }
+
+    /// What unloading this workspace is counted to free: its engine, and its validation engine
+    /// once one runs.
+    fn reclaimable(&self, admission: &crate::admission::Admission) -> u64 {
+        let engines = if self.validation.get().is_some_and(Option::is_some)
+            || self.cpp_validation.get().is_some_and(Option::is_some)
+        {
+            2
+        } else {
+            1
+        };
+        admission.reserve_for(&self.engine) * engines
     }
 
     /// Whether a language server this workspace answers from has exited. One that crashed (the
@@ -305,7 +343,14 @@ pub struct WorkspaceManager {
     worktree_owners: Mutex<HashMap<PathBuf, usize>>,
     /// The language servers of editors' sessions, which run outside the shared workspaces.
     pub editor_servers: crate::editor_proxy::EditorServers,
+    /// Whether the host has memory for another engine (#433).
+    admission: Arc<crate::admission::Admission>,
 }
+
+/// How long an engine must have been without a session before a load that finds no memory may
+/// unload it. An agent's commands come in bursts with short gaps between them, and an engine
+/// unloaded in such a gap is loaded again, cold, by the next command.
+pub const RECLAIM_MIN_IDLE: Duration = Duration::from_secs(120);
 
 impl Default for WorkspaceManager {
     fn default() -> Self {
@@ -314,54 +359,152 @@ impl Default for WorkspaceManager {
 }
 
 impl WorkspaceManager {
+    /// A manager that admits new engines against this host's memory.
     pub fn new() -> Self {
+        Self::with_admission(Arc::new(crate::admission::Admission::host(0)))
+    }
+
+    pub fn with_admission(admission: Arc<crate::admission::Admission>) -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
             worktree_owners: Mutex::new(HashMap::new()),
             editor_servers: crate::editor_proxy::EditorServers::default(),
+            admission,
         }
+    }
+
+    pub fn admission(&self) -> &Arc<crate::admission::Admission> {
+        &self.admission
     }
 
     /// Drops every loaded workspace that has had no session for `idle` (engines and their
     /// databases are freed once the last reference goes). Returns the evicted roots.
     pub async fn evict_idle(&self, idle: Duration) -> Vec<PathBuf> {
         let now = unix_now();
+        let evicted = self
+            .remove_idle(|candidates| {
+                candidates
+                    .into_iter()
+                    .filter(|ws| {
+                        now.saturating_sub(ws.last_used.load(Ordering::Relaxed)) >= idle.as_secs()
+                    })
+                    .collect()
+            })
+            .await;
+        let roots = evicted.iter().map(|ws| ws.root.clone()).collect();
+        release(evicted).await;
+        roots
+    }
+
+    /// Takes the workspaces `pick` chooses among those without a session out of the map, under
+    /// its lock, and hands them back to be dropped after it is released.
+    async fn remove_idle(
+        &self,
+        pick: impl FnOnce(Vec<Arc<SharedWorkspace>>) -> Vec<Arc<SharedWorkspace>>,
+    ) -> Vec<Arc<SharedWorkspace>> {
         let mut guard = self.workspaces.write().await;
-        let stale: Vec<WorkspaceKey> = guard
-            .iter()
-            .filter_map(|(key, state)| match state {
-                LoadState::Ready(ws)
-                    if ws.active_sessions.load(Ordering::Relaxed) == 0
-                        && now.saturating_sub(ws.last_used.load(Ordering::Relaxed))
-                            >= idle.as_secs() =>
-                {
-                    Some(key.clone())
+        let idle = guard
+            .values()
+            .filter_map(|state| match state {
+                // Sessions are counted under this lock's read side, so none can attach while
+                // the count is read here.
+                LoadState::Ready(ws) if ws.active_sessions.load(Ordering::Relaxed) == 0 => {
+                    Some(Arc::clone(ws))
                 }
                 _ => None,
             })
             .collect();
-        let mut evicted = Vec::with_capacity(stale.len());
-        for key in stale {
-            guard.remove(&key);
-            evicted.push(key.0);
+        let picked = pick(idle);
+        for ws in &picked {
+            guard.remove(&ws.key);
         }
-        evicted
+        picked
+    }
+
+    /// Unloads idle engines, least recently used first, until what they are counted to free
+    /// covers `excess` bytes. Only engines without a session for [`RECLAIM_MIN_IDLE`] are
+    /// taken, never `loading`. Returns how many were unloaded.
+    async fn reclaim_idle(&self, excess: u64, loading: &WorkspaceKey) -> usize {
+        let now = unix_now();
+        let admission = Arc::clone(&self.admission);
+        let reclaimed = self
+            .remove_idle(|candidates| {
+                let mut candidates: Vec<_> = candidates
+                    .into_iter()
+                    .filter(|ws| {
+                        ws.key != *loading
+                            && now.saturating_sub(ws.last_used.load(Ordering::Relaxed))
+                                >= RECLAIM_MIN_IDLE.as_secs()
+                    })
+                    .collect();
+                candidates.sort_by_key(|ws| ws.last_used.load(Ordering::Relaxed));
+                let mut freed = 0;
+                candidates
+                    .into_iter()
+                    .take_while(|ws| {
+                        let take = freed < excess;
+                        freed += ws.reclaimable(&admission);
+                        take
+                    })
+                    .collect()
+            })
+            .await;
+        for ws in &reclaimed {
+            tracing::info!(workspace = %ws.root.display(), engine = %ws.engine, excess_bytes = excess, "💤 [RECLAIM] unloaded an idle engine to make room for a new one");
+        }
+        let count = reclaimed.len();
+        release(reclaimed).await;
+        count
+    }
+
+    /// Admits a new engine of `engine` for `loading`: at once when the host has room for it,
+    /// otherwise after unloading idle engines, if that makes room. The host is read again once
+    /// they are gone, so only memory actually returned counts.
+    async fn admit(
+        &self,
+        engine: &str,
+        loading: &WorkspaceKey,
+    ) -> Result<crate::admission::Reservation, crate::admission::CapacityRefused> {
+        let shortfall = match self.admission.try_reserve(engine) {
+            Ok(reservation) => return Ok(reservation),
+            Err(shortfall) => shortfall,
+        };
+        let reclaimed = self.reclaim_idle(shortfall.excess(), loading).await;
+        if reclaimed == 0 {
+            return Err(crate::admission::CapacityRefused {
+                shortfall,
+                reclaimed,
+            });
+        }
+        self.admission
+            .try_reserve(engine)
+            .map_err(|shortfall| crate::admission::CapacityRefused {
+                shortfall,
+                reclaimed,
+            })
     }
 
     /// Drops every loaded workspace rooted at or below `prefix` (the checkout and the engines
     /// of its nested projects), so the next session loads it afresh. Sessions that still hold
     /// the old workspace keep it until they end. Returns how many were dropped.
     pub async fn unload_under(&self, prefix: &Path) -> usize {
-        let mut guard = self.workspaces.write().await;
-        let keys: Vec<WorkspaceKey> = guard
-            .keys()
-            .filter(|key| key.0.starts_with(prefix))
-            .cloned()
-            .collect();
-        for key in &keys {
-            guard.remove(key);
-        }
-        keys.len()
+        let mut unloaded = Vec::new();
+        let count = {
+            let mut guard = self.workspaces.write().await;
+            let keys: Vec<WorkspaceKey> = guard
+                .keys()
+                .filter(|key| key.0.starts_with(prefix))
+                .cloned()
+                .collect();
+            for key in &keys {
+                if let Some(LoadState::Ready(ws)) = guard.remove(key) {
+                    unloaded.push(ws);
+                }
+            }
+            keys.len()
+        };
+        release(unloaded).await;
+        count
     }
 
     /// The loaded workspaces rooted at or below `prefix`: the checkout's and those of its
@@ -479,12 +622,13 @@ impl WorkspaceManager {
 
         // Slow path: acquire write lock to become leader
         let (tx, _rx) = broadcast::channel(1);
+        let mut replaced = Vec::new();
         {
             let mut guard = self.workspaces.write().await;
             let stale =
                 matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for(engine));
-            if stale {
-                guard.remove(&key);
+            if stale && let Some(LoadState::Ready(ws)) = guard.remove(&key) {
+                replaced.push(ws);
             }
             // Double check
             if let Some(state) = guard.get(&key) {
@@ -510,6 +654,25 @@ impl WorkspaceManager {
 
             guard.insert(key.clone(), LoadState::Loading(tx.clone()));
         }
+        release(replaced).await;
+
+        // A new engine loads only while the host has memory for it (#433); sessions of engines
+        // already loaded never get here. Followers wait on the broadcast, not on this.
+        let reservation = match self.admit(engine, &key).await {
+            Ok(reservation) => reservation,
+            Err(refused) => {
+                tracing::warn!(workspace = ?workspace_root, engine, %refused, "🚫 [CAPACITY] refused to load a new engine");
+                {
+                    let mut guard = self.workspaces.write().await;
+                    if matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx))
+                    {
+                        guard.remove(&key);
+                    }
+                }
+                let _ = tx.send(Err(refused.to_string()));
+                return Err(anyhow::Error::new(refused));
+            }
+        };
 
         // Leader performs actual workspace load
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
@@ -676,6 +839,7 @@ impl WorkspaceManager {
 
         // Notify followers
         let _ = tx.send(Ok(Arc::clone(&ws)));
+        reservation.release_after_settling();
         Ok(ws)
     }
 
@@ -718,6 +882,16 @@ impl WorkspaceManager {
             }
         }
     }
+}
+
+/// Drops unloaded workspaces on a blocking thread, after the map's lock is released: freeing an
+/// analysis database takes a while, and must hold up neither other sessions nor a runtime
+/// worker. Engines a session still holds live on until it ends.
+async fn release(workspaces: Vec<Arc<SharedWorkspace>>) {
+    if workspaces.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || drop(workspaces)).await;
 }
 
 /// Extract a clean, generic workspace identifier from any client workspace or worktree path.
@@ -1319,9 +1493,151 @@ mod tests {
         assert_eq!(with_probe_line("").1, 0);
     }
 
+    /// A manager admitting against the host memory `snapshots` report in turn, counting every
+    /// new engine at 2 GiB.
+    fn manager_on(snapshots: Vec<(u64, u64)>) -> WorkspaceManager {
+        WorkspaceManager::with_admission(Arc::new(crate::admission::Admission::with_probe(
+            crate::admission::scripted_probe(snapshots),
+            2048,
+            crate::admission::LOAD_SETTLE,
+        )))
+    }
+
+    /// `used` of `total` GiB in use.
+    fn host(used: u64, total: u64) -> (u64, u64) {
+        const GIB: u64 = 1 << 30;
+        ((total - used) * GIB, total * GIB)
+    }
+
+    /// A loaded workspace at `root`, without a session for `idle_secs`.
+    fn loaded(root: &str, idle_secs: u64) -> Arc<SharedWorkspace> {
+        let ws = Arc::new(SharedWorkspace::new(
+            PathBuf::from(root),
+            "text".to_string(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        ws.last_used
+            .store(unix_now() - idle_secs, Ordering::Relaxed);
+        ws
+    }
+
+    /// Six worktrees handshake at once on a host with 80 of 100 GiB in use: 5 GiB are left
+    /// under the 85% limit, so two new engines of 2 GiB load and four are refused for capacity,
+    /// while a session of the engine already loaded attaches as before (#433).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_new_engines_load_only_while_memory_lasts() {
+        let manager = Arc::new(manager_on(vec![host(80, 100)]));
+        manager.insert_ready_for_test(loaded("/srv/ws/warm", 0)).await;
+        let start = Arc::new(tokio::sync::Barrier::new(6));
+        let loads: Vec<_> = (0..6)
+            .map(|i| {
+                let manager = Arc::clone(&manager);
+                let start = Arc::clone(&start);
+                tokio::spawn(async move {
+                    start.wait().await;
+                    manager
+                        .get_or_load(&PathBuf::from(format!("/srv/ws/new-{i}")), "text")
+                        .await
+                })
+            })
+            .collect();
+        let mut refusals = Vec::new();
+        let mut admitted = 0;
+        for load in loads {
+            match load.await.unwrap() {
+                Ok(_) => admitted += 1,
+                Err(err) => refusals.push(err.to_string()),
+            }
+        }
+        assert_eq!(admitted, 2, "{refusals:?}");
+        assert_eq!(refusals.len(), 4);
+        for refusal in &refusals {
+            assert!(refusal.starts_with("capacity: "), "{refusal}");
+            assert!(refusal.contains("another node"), "{refusal}");
+        }
+        assert_eq!(manager.admission().reserved_bytes(), 4 << 30);
+        assert_eq!(manager.loaded_count().await, 3, "no refused load is left behind");
+
+        let warm = manager
+            .get_or_load(Path::new("/srv/ws/warm"), "text")
+            .await
+            .expect("a loaded engine is used whatever the memory");
+        assert_eq!(warm.active_sessions.load(Ordering::Relaxed), 1);
+    }
+
+    /// A new engine that finds no room unloads the least recently used engine that has been
+    /// idle for a while, as many as it needs, and loads once the host shows the memory back;
+    /// engines with a session or used a moment ago stay (#433).
+    #[tokio::test]
+    async fn a_new_engine_makes_room_by_unloading_only_idle_engines() {
+        // 84% in use: a new 2 GiB engine passes the limit by 1 GiB, until one is unloaded.
+        let manager = manager_on(vec![host(84, 100), host(82, 100)]);
+        let oldest = loaded("/srv/ws/oldest", 7200);
+        let older = loaded("/srv/ws/older", 3600);
+        let in_use = loaded("/srv/ws/in-use", 9000);
+        in_use.active_sessions.store(1, Ordering::Relaxed);
+        let recent = loaded("/srv/ws/recent", 30);
+        let gone = Arc::downgrade(&oldest);
+        for ws in [oldest, older, in_use, recent] {
+            manager.insert_ready_for_test(ws).await;
+        }
+
+        manager
+            .get_or_load(Path::new("/srv/ws/new"), "text")
+            .await
+            .expect("room was made");
+        assert!(!manager.is_loaded(Path::new("/srv/ws/oldest")).await);
+        assert!(gone.upgrade().is_none(), "its engine is freed");
+        for kept in ["older", "in-use", "recent", "new"] {
+            assert!(
+                manager.is_loaded(&Path::new("/srv/ws").join(kept)).await,
+                "{kept} was unloaded"
+            );
+        }
+    }
+
+    /// With nothing idle long enough to unload, a new engine is refused and the map is left as
+    /// it was; so is it when the engines unloaded did not give the memory back.
+    #[tokio::test]
+    async fn a_new_engine_is_refused_when_unloading_cannot_make_room() {
+        let manager = manager_on(vec![host(90, 100)]);
+        let in_use = loaded("/srv/ws/in-use", 9000);
+        in_use.active_sessions.store(1, Ordering::Relaxed);
+        manager.insert_ready_for_test(in_use).await;
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/recent", 30))
+            .await;
+        let Err(err) = manager.get_or_load(Path::new("/srv/ws/new"), "text").await else {
+            panic!("admitted without room");
+        };
+        let refused = err
+            .downcast_ref::<crate::admission::CapacityRefused>()
+            .expect("refused for capacity");
+        assert_eq!(refused.reclaimed, 0);
+        assert!(!manager.is_loaded(Path::new("/srv/ws/new")).await);
+        assert_eq!(manager.loaded_count().await, 2);
+        assert_eq!(manager.admission().reserved_bytes(), 0);
+
+        let manager = manager_on(vec![host(90, 100)]);
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/idle", 7200))
+            .await;
+        let Err(err) = manager.get_or_load(Path::new("/srv/ws/new"), "text").await else {
+            panic!("admitted though unloading gave no memory back");
+        };
+        let text = err.to_string();
+        assert!(text.contains("1 idle engine(s) were unloaded"), "{text}");
+        assert_eq!(manager.loaded_count().await, 0);
+    }
+
     #[tokio::test]
     async fn test_leader_follower_coalescing() {
-        let manager = Arc::new(WorkspaceManager::new());
+        let manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
+            crate::admission::Admission::unbounded(),
+        )));
         let root = PathBuf::from("/test/workspace");
 
         // Concurrent requests for the same workspace
@@ -1345,7 +1661,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_single_owner_detection() {
-        let manager = WorkspaceManager::new();
+        let manager =
+            WorkspaceManager::with_admission(Arc::new(crate::admission::Admission::unbounded()));
         let root = PathBuf::from("/test/repo");
         let ws = manager.get_or_load(&root, "rust").await.unwrap();
 
