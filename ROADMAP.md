@@ -67,6 +67,16 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     - First run, twelve of the copies new: p50 8.4 ms, p95 614 ms, p99 27.7 s, and 32 first hovers past the bench's 30 s limit. The copies loaded all at once, the new ones in about 2 min 25 s (#408).
     - With the engines loaded: p50 47 ms, p95 90 ms, p99 137 ms, 0 errors, 569.5 QPS.
     - No cross-worktree bleed in either run. The p95 target holds cold and warm.
+  - Follow-up to #408 (2026-09-26): cold Rust loads, including validation engines, now share a
+    process-wide budget of half the detected CPUs (at least one), at most eight Cargo jobs per load. This
+    bounds Cargo's actual parallelism; the old log about analyzer worker threads overstated
+    their use, since cache prefill was disabled. The isolated benchmark now syncs and loads
+    the origin before seeding each copy, outside the measured query wave. On a 128-core
+    Linux ARM node, release builds against this public repository (139 synced files) completed
+    1,280 queries from 64 persistent clients across 16 fresh copies with zero errors or
+    cross-worktree bleed in both versions: baseline/candidate p95 3.67/4.85 ms,
+    p99 13.65/13.67 s and measured-wave time 22.64/22.47 s. The budget is a resource bound,
+    not a measured speedup. This does not repeat the 1,284-file workload above.
 - [x] **2.3. Safe FileId & Edition Handling**
   - Comply with `EditionedFileId` 24-bit mask (`0x007F_FFFF`) to prevent Rust Edition bit corruption.
   - Path-normalized FileId deduplication and reuse across concurrent sessions.
