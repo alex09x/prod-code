@@ -35,9 +35,13 @@ pub struct TraitParameter {
     /// `file:line` of the trait's declaration and of every implementation.
     pub declarations: Vec<String>,
     pub calls: usize,
-    /// Why nothing may be written: a body that uses the parameter, an argument that does
-    /// something, a use that is not a call.
+    /// Why nothing may be written unless `force`: a body that uses the parameter, an argument
+    /// that does something.
     pub blocked: Vec<String>,
+    /// What was not rewritten — a use that is not a call, a call or declaration this could not
+    /// read, a position the file does not match. Nothing is written while any remains, forced or
+    /// not: each would still pass or declare the parameter (#446).
+    pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
@@ -60,6 +64,12 @@ impl TraitParameter {
             out.push_str("\nnothing may be written while:\n");
             for b in &self.blocked {
                 out.push_str(&format!("  {b}\n"));
+            }
+        }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nnot rewritten; nothing is written while any remains, forced or not:\n");
+            for u in &self.unmatched {
+                out.push_str(&format!("  {u}\n"));
             }
         }
         out.push('\n');
@@ -264,26 +274,6 @@ pub fn effect_of(arg: &str) -> Option<&'static str> {
     }
 }
 
-/// The locations in an LSP `Location[]` answer, as (path, 1-based line, 1-based column).
-fn locations(answer: &serde_json::Value) -> Vec<(PathBuf, u32, u32)> {
-    answer
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|loc| {
-            let uri = loc.get("uri").or_else(|| loc.get("targetUri"))?.as_str()?;
-            let start = loc
-                .pointer("/range/start")
-                .or_else(|| loc.pointer("/targetSelectionRange/start"))?;
-            Some((
-                PathBuf::from(crate::remote_fs::uri_to_path(uri)),
-                start.get("line")?.as_u64()? as u32 + 1,
-                start.get("character")?.as_u64()? as u32 + 1,
-            ))
-        })
-        .collect()
-}
-
 fn position(path: &Path, line: u32, col: u32) -> Result<serde_json::Value> {
     let uri = url::Url::from_file_path(path)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", path))?
@@ -351,7 +341,8 @@ pub async fn remove_parameter(
             )
             .await
             .context("the analyzer does not say where the trait is declared")?;
-            let (tfile, tline, tcol) = locations(&answer)
+            let (tfile, tline, tcol) = crate::refactor::lsp_locations(&answer, "definition")
+                .context("the analyzer does not say where the trait is declared")?
                 .into_iter()
                 .next()
                 .context("the analyzer does not say where the trait is declared")?;
@@ -369,17 +360,20 @@ pub async fn remove_parameter(
     };
     let (tl, tc) = crate::signature::line_col_at(&texts[&trait_file], trait_at);
 
-    // Every implementation, and every reference: calls, and the implementations' names.
-    let impls = locations(
-        &crate::tools::execute_lsp_query(
-            remote,
-            root,
-            &trait_file,
-            "textDocument/implementation",
-            position(&trait_file, tl, tc)?,
-        )
-        .await?,
-    );
+    // Every implementation, and every reference: calls, and the implementations' names. An
+    // implementation the answer does not place would keep the parameter the trait lost (#446).
+    let impls = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        &trait_file,
+        "textDocument/implementation",
+        position(&trait_file, tl, tc)?,
+    )
+    .await
+    .and_then(|answer| crate::refactor::lsp_locations(&answer, "implementations"))
+    .with_context(|| {
+        format!("cannot find the implementations of `{method}`; nothing was planned")
+    })?;
     let refs = crate::signature::references(remote, root, &trait_file, tl, tc)
         .await
         .with_context(|| format!("cannot find the calls to `{method}`; nothing was planned"))?;
@@ -397,21 +391,30 @@ pub async fn remove_parameter(
 
     let mut cuts: BTreeMap<PathBuf, Vec<(usize, usize)>> = BTreeMap::new();
     let mut blocked = Vec::new();
+    let mut unmatched = Vec::new();
     let mut declared_lines = Vec::new();
     let mut parameter = String::new();
     let mut has_receiver = false;
     for (path, line, col) in &declarations {
         let text = &texts[path];
         let shown = format!("{}:{line}", display(root, path));
-        let at = crate::signature::offset_of(text, *line, *col)
-            .with_context(|| format!("{shown} is not in its file"))?;
+        let at = crate::signature::offset_of(text, *line, *col).with_context(|| {
+            format!("{shown}:{col}, a declaration of `{method}`, is not in its file; nothing was planned")
+        })?;
+        // A stale position would take the parameter out of whatever function follows it.
+        anyhow::ensure!(
+            text[at..].starts_with(method.as_str())
+                && !text[at + method.len()..].starts_with(is_ident),
+            "the analyzer places a declaration of `{method}` at {shown}:{col}, but the file says \
+             otherwise; nothing was planned"
+        );
         let (_, open, close) = crate::signature::param_span(text, at)
             .with_context(|| format!("{shown}: no parameter list after the name"))?;
         let list = &text[open..close];
         let (receiver, declared) = crate::signature::parse_declared(list);
         has_receiver = receiver.is_some();
         let Some(removed) = declared.get(index) else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{shown}: declares {} parameter(s), not {}",
                 declared.len(),
                 index + 1
@@ -437,11 +440,15 @@ pub async fn remove_parameter(
         }
         let offset = usize::from(receiver.is_some());
         let spans = item_spans(list);
-        if let Some((from, to)) = removal(&spans, index + offset) {
-            cuts.entry(path.clone())
-                .or_default()
-                .push((open + from, open + to));
-        }
+        let Some((from, to)) = removal(&spans, index + offset) else {
+            unmatched.push(format!(
+                "{shown}: the parameter list does not split into its parameters"
+            ));
+            continue;
+        };
+        cuts.entry(path.clone())
+            .or_default()
+            .push((open + from, open + to));
     }
 
     let mut calls = 0;
@@ -456,11 +463,19 @@ pub async fn remove_parameter(
         let text = &*crate::refactor::referenced_text(&mut texts, &path)?;
         let shown = format!("{}:{line}", display(root, &path));
         let Some(at) = crate::signature::offset_of(text, line, col) else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{shown}:{col}: the analyzer's position is not in the file"
             ));
             continue;
         };
+        if !text[at..].starts_with(method.as_str())
+            || text[at + method.len()..].starts_with(is_ident)
+        {
+            unmatched.push(format!(
+                "{shown}:{col}: the analyzer places `{method}` here, but the file says otherwise"
+            ));
+            continue;
+        }
         let name_end = at + method.len();
         let mut rest_at = name_end + (text[name_end..].len() - text[name_end..].trim_start().len());
         if text[rest_at..].starts_with("::<")
@@ -485,13 +500,14 @@ pub async fn remove_parameter(
             rest_at = close + 1;
         }
         if !text[rest_at..].starts_with('(') {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{shown}: `{method}` is used as a value, not called; what calls it passes the \
                  argument"
             ));
             continue;
         }
         let Some(close) = crate::parameter_object::matching_bracket(text, rest_at) else {
+            unmatched.push(format!("{shown}: the call's arguments do not close"));
             continue;
         };
         let args = &text[rest_at + 1..close];
@@ -499,7 +515,7 @@ pub async fn remove_parameter(
         let method_call = text[..at].trim_end().ends_with('.');
         let arg_index = index + usize::from(!method_call && has_receiver);
         let Some((from, to)) = spans.get(arg_index).copied() else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{shown}: the call passes {} argument(s), fewer than the declaration",
                 spans.len()
             ));
@@ -557,7 +573,9 @@ pub async fn remove_parameter(
         .collect();
 
     let mut applied = false;
-    if apply && ((blocked.is_empty() && diagnostics.is_empty()) || force) {
+    // `force` drops a used parameter or an argument's effect on purpose; a call or declaration
+    // this did not rewrite would still pass or declare it.
+    if apply && unmatched.is_empty() && ((blocked.is_empty() && diagnostics.is_empty()) || force) {
         crate::refactor::apply_workspace_edit(
             root,
             &crate::signature::whole_file_edit(&rewritten),
@@ -572,6 +590,7 @@ pub async fn remove_parameter(
         declarations: declared_lines,
         calls,
         blocked,
+        unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))

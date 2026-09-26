@@ -31,6 +31,7 @@ pub struct Inverted {
     /// Uses that cannot keep their meaning under the inversion; nothing is written while any
     /// remains, unless `force`.
     pub blocked: Vec<String>,
+    /// References that were not negated; nothing is written while any remains, forced or not.
     pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
@@ -95,7 +96,7 @@ impl Inverted {
         if !self.unmatched.is_empty() {
             out.push_str(&format!(
                 "\nnot rewritten ({} reference(s) that are not a call — a function used as a value \
-                 keeps its old meaning under its new name, so each needs a look):\n",
+                 keeps its old meaning under its new name; nothing is written while any remains):\n",
                 self.unmatched.len()
             ));
             for r in &self.unmatched {
@@ -411,6 +412,15 @@ pub async fn invert(
 
     let mut applied = false;
     if apply {
+        // A function used as a value keeps its old meaning under the new name, and still
+        // compiles; `force` overrides the analyzer, not a use this did not negate (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{name}` were not negated and would mean the opposite; nothing \
+             was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Pass `force: true` \

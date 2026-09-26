@@ -428,9 +428,10 @@ pub async fn invert_value(
             blocked.len(),
             blocked.join("\n  ")
         );
-        // A use left as it was reads the opposite of what it did, and still compiles (#446).
+        // A use left as it was reads the opposite of what it did, and still compiles; `force`
+        // overrides the analyzer, not a use this did not negate (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} use(s) of `{name}` were not rewritten and would read the opposite; nothing was \
              written:\n  {}",
             unmatched.len(),

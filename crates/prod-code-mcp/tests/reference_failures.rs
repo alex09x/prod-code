@@ -5,8 +5,9 @@
 //! referenced file that cannot be read are not "no references": each stops the planner with the
 //! reason before anything is written, and `force`, which overrides a compiler error, does not
 //! override a missing answer. A valid empty answer (`[]`, or `null`, the protocol's "none") is
-//! still no references. A reference a planner read but did not rewrite blocks the write until
-//! `force`: the file it is in is not one the planner checks.
+//! still no references. A reference a planner read but did not rewrite blocks the write, forced
+//! or not: the file it is in is not one the planner checks, and `force` overrides the analyzer's
+//! verdict on a complete plan, not a plan that is incomplete.
 
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use serde_json::{Value, json};
@@ -303,7 +304,7 @@ async fn a_valid_empty_answer_is_still_no_references() {
 
 /// Wrapping a return type rewrites the calls it can; a reference it could not read as a call —
 /// here `count` used as a value in a file it neither rewrites nor checks — is reported, and
-/// stops the write until `force`. The base revision reported it and wrote anyway.
+/// stops the write, forced or not. The base revision reported it and wrote anyway.
 #[tokio::test]
 async fn wrapping_a_return_type_does_not_write_past_a_reference_it_did_not_rewrite() {
     let ws = workspace();
@@ -361,16 +362,19 @@ async fn wrapping_a_return_type_does_not_write_past_a_reference_it_did_not_rewri
     );
     assert_untouched(&ws, "an unmatched reference");
 
-    // `force` keeps its meaning: write what was planned, the reference stays for a person.
-    let forced = wrap(true, true).await.expect("force writes");
-    assert!(forced.applied);
-    assert!(ws.read("src/count.rs").contains("Some(count(2)? * 2)"));
-    assert_eq!(ws.read("src/table.rs"), TABLE);
+    // `force` overrides the analyzer; it does not complete a plan that left a reference behind.
+    let forced = wrap(true, true).await;
+    let Err(err) = forced else {
+        restore(&ws);
+        panic!("the forced write went past src/table.rs:2:19: {forced:?}");
+    };
+    assert!(format!("{err:#}").contains("src/table.rs:2:19"), "{err:#}");
+    assert_untouched(&ws, "a forced write past an unmatched reference");
 }
 
 /// Inverting a boolean field negates every read the analyzer points at; a position where the
 /// file does not say the field would keep reading the old meaning under the new name, so it
-/// stops the write until `force`. The base revision reported it and wrote anyway.
+/// stops the write, forced or not. The base revision reported it and wrote anyway.
 #[tokio::test]
 async fn inverting_a_field_does_not_write_past_a_use_it_did_not_negate() {
     let ws = workspace();
@@ -410,7 +414,14 @@ async fn inverting_a_field_does_not_write_past_a_use_it_did_not_negate() {
     );
     assert_untouched(&ws, "an unmatched use");
 
-    let forced = invert(true, true).await.expect("force writes");
-    assert!(forced.applied);
-    assert!(ws.read("src/flags.rs").contains("pub disabled: bool"));
+    let forced = invert(true, true).await;
+    let Err(err) = forced else {
+        restore(&ws);
+        panic!("the forced write went past src/flags.rs:5:8: {forced:?}");
+    };
+    assert!(
+        format!("{err:#}").contains("would read the opposite"),
+        "{err:#}"
+    );
+    assert_untouched(&ws, "a forced write past an unmatched use");
 }

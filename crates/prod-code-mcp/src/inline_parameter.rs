@@ -319,8 +319,10 @@ pub async fn inline_parameter(
 
     let mut applied = false;
     if apply {
+        // A reference left as it was would still pass the parameter, or change type unseen; `force`
+        // overrides the analyzer, not a reference this did not rewrite (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{function}` are not a call passing `{param}`; nothing was \
              written:\n  {}",
             unmatched.len(),

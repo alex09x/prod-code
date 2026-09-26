@@ -29,6 +29,9 @@ pub struct MadeMethod {
     pub rewritten_calls: usize,
     /// References left as they are, and why: still valid, but not rewritten.
     pub unchanged: Vec<String>,
+    /// Positions the analyzer reported where the file does not name the function: what is there
+    /// is unknown, so nothing is written while any remains, forced or not (#446).
+    pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
@@ -84,6 +87,12 @@ impl MadeMethod {
             ));
             for r in &self.unchanged {
                 out.push_str(&format!("  {r}\n"));
+            }
+        }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nnot rewritten; nothing is written while any remains, forced or not:\n");
+            for u in &self.unmatched {
+                out.push_str(&format!("  {u}\n"));
             }
         }
         if self.diagnostics.is_empty() {
@@ -315,13 +324,16 @@ pub async fn convert_to_method(
                 display(root, file)
             )
         })?;
-        if !(body_open < use_at && use_at < body_close) || !text[use_at..].starts_with(&binding) {
+        if !(body_open < use_at && use_at < body_close) {
             continue;
         }
-        let after = &text[use_at + binding.len()..];
-        if after.chars().next().is_some_and(is_ident) {
-            continue;
-        }
+        anyhow::ensure!(
+            text[use_at..].starts_with(&binding)
+                && !text[use_at + binding.len()..].starts_with(is_ident),
+            "the analyzer places a use of `{binding}` at {}:{l}:{c}, but the file says otherwise; \
+             nothing was planned",
+            display(root, file)
+        );
         edits.entry(file.to_path_buf()).or_default().push((
             use_at,
             binding.len(),
@@ -335,6 +347,7 @@ pub async fn convert_to_method(
     texts.insert(file.to_path_buf(), text.clone());
     let mut rewritten_calls = 0usize;
     let mut unchanged = Vec::new();
+    let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::line_col_at(&text, start);
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
@@ -343,11 +356,11 @@ pub async fn convert_to_method(
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
-            unchanged.push(format!("{site} (the position is not in the file)"));
+            unmatched.push(format!("{site} (the position is not in the file)"));
             continue;
         };
-        if !body[at..].starts_with(name.as_str()) {
-            unchanged.push(format!(
+        if !body[at..].starts_with(name.as_str()) || body[at + name.len()..].starts_with(is_ident) {
+            unmatched.push(format!(
                 "{site} (the analyzer places `{name}` here, but the file says otherwise)"
             ));
             continue;
@@ -427,6 +440,13 @@ pub async fn convert_to_method(
 
     let mut applied = false;
     if apply {
+        // `force` overrides the analyzer, not a position this could not read (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{name}` could not be read; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Pass `force: true` \
@@ -449,6 +469,7 @@ pub async fn convert_to_method(
         renamed_uses,
         rewritten_calls,
         unchanged,
+        unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
@@ -512,6 +533,7 @@ mod tests {
             renamed_uses: 2,
             rewritten_calls: 1,
             unchanged: vec!["src/lib.rs:9:5 (the function used as a value)".into()],
+            unmatched: vec![],
             rewritten: vec![],
             diagnostics: vec![],
             applied: false,

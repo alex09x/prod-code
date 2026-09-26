@@ -440,9 +440,9 @@ pub async fn wrap(
             blocked.join("\n  ")
         );
         // A reference left as it was is in a file nothing here checks: it would stop compiling
-        // unseen (#446).
+        // unseen. `force` overrides the analyzer, not a reference this did not rewrite (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{name}` were not rewritten; nothing was written:\n  {}",
             unmatched.len(),
             unmatched.join("\n  ")

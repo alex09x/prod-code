@@ -252,7 +252,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "by_value": { "type": "boolean", "description": "Return the field by value (it must be `Copy`) or by shared reference; default: by value for primitive `Copy` types only" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a borrow the getter no longer allows" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when a use cannot be rewritten or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when a use cannot become a method call or the result does not compile; a reference that is not read as a use still blocks the write" }
                 }
             }),
         },
@@ -377,7 +377,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the parameter's name" },
                     "character": { "type": "integer", "description": "1-based column of the parameter's name" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when a reference is not a call or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile; a reference that is not a call still blocks the write" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -590,7 +590,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "to_param": { "type": "string", "description": "The parameter whose type the method moves to" },
                     "to_type": { "type": "string", "description": "For an associated function (no `self`): the struct or enum it moves to; every `Old::f` path becomes `New::f`" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when something blocks it or it does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when a call's evaluation order changes or the result does not compile; a reference that is not rewritten still blocks the write" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -2639,6 +2639,7 @@ async fn handle_move(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &moved.unmatched)?;
     let gate = if verify {
         let files = moved.rewritten.clone();
         Some(
@@ -2816,6 +2817,7 @@ async fn handle_extract_parameter(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify {
         let files = done.rewritten.clone();
         Some(
@@ -2890,6 +2892,7 @@ async fn handle_extract_field(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3008,7 +3011,8 @@ async fn handle_invert_boolean(
         force,
     )
     .await?;
-    let gate = if verify {
+    refuse_incomplete(apply, &done.unmatched)?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -3027,7 +3031,9 @@ async fn handle_invert_boolean(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -3068,6 +3074,7 @@ async fn handle_make_static(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3130,6 +3137,7 @@ async fn handle_convert_to_method(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify {
         let files = done.rewritten.clone();
         Some(
@@ -3303,7 +3311,8 @@ async fn handle_move_method(
         ),
     };
     let text = done.render(8000);
-    Ok(if done.diagnostics.is_empty() && done.blocked.is_empty() {
+    let clean = done.diagnostics.is_empty() && done.blocked.is_empty() && done.unmatched.is_empty();
+    Ok(if clean {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)
@@ -3522,6 +3531,7 @@ async fn handle_wrap_return(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3588,6 +3598,7 @@ async fn handle_encapsulate_field(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -5564,6 +5575,19 @@ pub async fn execute_lsp_query(
     // One long-lived session per checkout for the life of this process (see
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+}
+
+/// Refuses to write a plan that left references it did not rewrite. With `verify: "compile"` the
+/// planner runs as a dry run and the compile gate writes its files, so its own refusal never
+/// comes; the gate judges compilation, and neither it nor `force` completes a plan (#446).
+fn refuse_incomplete(apply: bool, unmatched: &[String]) -> Result<()> {
+    anyhow::ensure!(
+        !apply || unmatched.is_empty(),
+        "{} reference(s) were not rewritten; nothing was written:\n  {}",
+        unmatched.len(),
+        unmatched.join("\n  ")
+    );
+    Ok(())
 }
 
 /// What asking the compiler added to a write tool's run.

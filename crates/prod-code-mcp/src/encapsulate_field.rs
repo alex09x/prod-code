@@ -665,9 +665,10 @@ pub async fn encapsulate(
             display(root, file),
             blocked.join("\n  ")
         );
-        // A use left as it was reaches a private field in a file nothing here checks (#446).
+        // A use left as it was reaches a private field in a file nothing here checks; `force`
+        // overrides the analyzer, not a use this did not rewrite (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{field}` were not rewritten; nothing was written:\n  {}",
             unmatched.len(),
             unmatched.join("\n  ")

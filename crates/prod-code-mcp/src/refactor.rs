@@ -247,6 +247,50 @@ pub(crate) fn referenced_text<'a>(
     }
 }
 
+/// The locations of a `definition`, `declaration` or `implementation` answer, as (file, 1-based
+/// line, 1-based column): `null` is none, and a `Location`, a `LocationLink` or a list of either
+/// is read whole. Any other answer, and an entry without a file or a start, is an error naming
+/// `what` was asked: a planner that dropped it would leave that declaration as it was (#446).
+pub(crate) fn lsp_locations(
+    answer: &serde_json::Value,
+    what: &str,
+) -> Result<Vec<(std::path::PathBuf, u32, u32)>> {
+    let entries = match answer {
+        serde_json::Value::Null => return Ok(Vec::new()),
+        serde_json::Value::Array(all) => all.iter().collect(),
+        one @ serde_json::Value::Object(_) => vec![one],
+        other => anyhow::bail!("the analyzer's {what} is not a location or a list: {other}"),
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for (n, loc) in entries.iter().enumerate() {
+        let uri = loc.get("uri").or_else(|| loc.get("targetUri"));
+        let start = loc
+            .pointer("/range/start")
+            .or_else(|| loc.pointer("/targetSelectionRange/start"));
+        let at = |key: &str| {
+            start
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+        };
+        let (Some(uri), Some(line), Some(col)) =
+            (uri.and_then(|u| u.as_str()), at("line"), at("character"))
+        else {
+            anyhow::bail!(
+                "entry {} of {} in the analyzer's {what} has no file or start position: {loc}",
+                n + 1,
+                entries.len()
+            );
+        };
+        out.push((
+            std::path::PathBuf::from(crate::remote_fs::uri_to_path(uri)),
+            line + 1,
+            col + 1,
+        ));
+    }
+    Ok(out)
+}
+
 /// Every checkout-relative path an edit renames, creates, deletes or rewrites, in the order the
 /// edit names them. Refuses a path outside the checkout, the same as applying would.
 fn paths_touched_by(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {

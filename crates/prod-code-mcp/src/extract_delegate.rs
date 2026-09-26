@@ -563,6 +563,14 @@ pub async fn extract_delegate(
                     path.display()
                 )
             })?;
+            // A stale position names something else, and a prefix there would break it.
+            anyhow::ensure!(
+                other[off..].starts_with(f.as_str())
+                    && !other[off + f.len()..].starts_with(is_ident),
+                "the analyzer places a use of `{f}` at {}:{rl}:{rc}, but the file says otherwise; \
+                 nothing was planned",
+                path.display()
+            );
             if path == file && moved_ranges.iter().any(|(s, e)| *s <= off && off < *e) {
                 continue;
             }

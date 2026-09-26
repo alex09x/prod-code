@@ -681,10 +681,14 @@ pub async fn extract(
     braces.dedup();
     for (path, open) in braces {
         let body = &texts[&path];
+        let (line, col) = crate::signature::line_col_at(body, open);
         let Some(close) = crate::parameter_object::matching_bracket(body, open) else {
+            unmatched.push(format!(
+                "{}:{line}:{col} (a construction whose braces do not close)",
+                display(root, &path)
+            ));
             continue;
         };
-        let (line, col) = crate::signature::line_col_at(body, open);
         match braces_kind(body, open, close) {
             Braces::Literal => {
                 edits
@@ -743,9 +747,10 @@ pub async fn extract(
             blocked.len(),
             blocked.join("\n  ")
         );
-        // A construction site left as it was is in a file nothing here checks (#446).
+        // A construction site left as it was is in a file nothing here checks; `force`
+        // overrides the analyzer, not a site this did not read (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{owner}` were not read, so a construction there may lack the \
              field; nothing was written:\n  {}",
             unmatched.len(),

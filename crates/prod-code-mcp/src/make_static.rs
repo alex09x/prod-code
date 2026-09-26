@@ -334,8 +334,10 @@ pub async fn make_static(
             blocked.len(),
             blocked.join("\n  ")
         );
+        // `force` drops a receiver on purpose; it does not write past a reference this did not
+        // rewrite (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{name}` were not rewritten, and would still pass a receiver; \
              nothing was written:\n  {}",
             unmatched.len(),

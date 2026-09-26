@@ -26,9 +26,13 @@ pub struct MovedMethod {
     /// The signature the method has now.
     pub signature: String,
     pub calls: usize,
-    /// Why nothing may be written: a call whose receiver or argument does something, the method
-    /// used as a value.
+    /// Why nothing may be written unless `force`: a call whose receiver or argument does
+    /// something, and would be evaluated in the other order.
     pub blocked: Vec<String>,
+    /// References that were not rewritten — the method used as a value, a call this could not
+    /// read, a position the file does not match. Nothing is written while any remains, forced or
+    /// not: each would still name the method where it was (#446).
+    pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
@@ -44,6 +48,12 @@ impl MovedMethod {
             out.push_str("\nnothing may be written while:\n");
             for b in &self.blocked {
                 out.push_str(&format!("  {b}\n"));
+            }
+        }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nnot rewritten; nothing is written while any remains, forced or not:\n");
+            for u in &self.unmatched {
+                out.push_str(&format!("  {u}\n"));
             }
         }
         out.push('\n');
@@ -434,7 +444,7 @@ pub async fn move_associated_function(
         .push((insert_at, insert_at, inserted));
 
     // Every path to it names the new type.
-    let mut blocked = Vec::new();
+    let mut unmatched = Vec::new();
     let mut calls = 0;
     let (nl, nc) = crate::signature::line_col_at(&text, name_at);
     let refs = crate::signature::references(remote, root, file, nl, nc)
@@ -445,14 +455,20 @@ pub async fn move_associated_function(
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{site}:{c}: the analyzer's position is not in the file"
             ));
             continue;
         };
+        if !body[at..].starts_with(name.as_str()) || body[at + name.len()..].starts_with(is_ident) {
+            unmatched.push(format!(
+                "{site}:{c}: the analyzer places `{name}` here, but the file says otherwise"
+            ));
+            continue;
+        }
         let before = body[..at].trim_end();
         let Some(qualifier) = before.strip_suffix("::") else {
-            blocked.push(format!("{site}: `{name}` is named without its type's path"));
+            unmatched.push(format!("{site}: `{name}` is named without its type's path"));
             continue;
         };
         let path_start = qualifier
@@ -492,7 +508,8 @@ pub async fn move_associated_function(
     }
     let diagnostics = errors_of(remote, root, &rewritten).await?;
     let mut applied = false;
-    if apply && ((blocked.is_empty() && diagnostics.is_empty()) || force) {
+    // `force` overrides the analyzer; a path this did not rewrite still names the old type.
+    if apply && unmatched.is_empty() && (diagnostics.is_empty() || force) {
         crate::refactor::apply_workspace_edit(
             root,
             &crate::signature::whole_file_edit(&rewritten),
@@ -506,7 +523,8 @@ pub async fn move_associated_function(
         root: root.clone(),
         signature,
         calls,
-        blocked,
+        blocked: Vec::new(),
+        unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
@@ -722,7 +740,15 @@ pub async fn move_method(
                 display(root, file)
             )
         })?;
-        if body_open <= at && at <= body_close && text[at..].starts_with(to_param) {
+        if body_open <= at && at <= body_close {
+            // A use passed over would name a parameter the method no longer has (#446).
+            anyhow::ensure!(
+                text[at..].starts_with(to_param)
+                    && !text[at + to_param.len()..].starts_with(is_ident),
+                "the analyzer places a use of `{to_param}` at {}:{l}:{c}, but the file says \
+                 otherwise; nothing was planned",
+                display(root, file)
+            );
             param_uses.push(at - body_open);
         }
     }
@@ -789,6 +815,7 @@ pub async fn move_method(
 
     // The calls: the receiver and the argument swap places.
     let mut blocked = Vec::new();
+    let mut unmatched = Vec::new();
     let mut calls = 0;
     let (nl, nc) = crate::signature::line_col_at(&text, name_at);
     let refs = crate::signature::references(remote, root, file, nl, nc)
@@ -799,19 +826,25 @@ pub async fn move_method(
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{site}:{c}: the analyzer's position is not in the file"
             ));
             continue;
         };
+        if !body[at..].starts_with(name.as_str()) || body[at + name.len()..].starts_with(is_ident) {
+            unmatched.push(format!(
+                "{site}:{c}: the analyzer places `{name}` here, but the file says otherwise"
+            ));
+            continue;
+        }
         if path == *file && span_start <= at && at < span_end {
-            blocked.push(format!("{site}: `{name}` calls itself; not handled"));
+            unmatched.push(format!("{site}: `{name}` calls itself; not handled"));
             continue;
         }
         let Some((args_start, args_end)) =
             crate::parameter_object::call_args_span(&body, at + name.len())
         else {
-            blocked.push(format!(
+            unmatched.push(format!(
                 "{site}: `{name}` is used as a value, not called; its callers pass the receiver"
             ));
             continue;
@@ -824,7 +857,7 @@ pub async fn move_method(
             let recv_start = crate::encapsulate_field::chain_start(&body, dot);
             let recv = body[recv_start..dot].trim().to_string();
             let Some(arg) = args.get(index) else {
-                blocked.push(format!(
+                unmatched.push(format!(
                     "{site}: the call has fewer arguments than `{name}`"
                 ));
                 continue;
@@ -869,7 +902,7 @@ pub async fn move_method(
                 .last()
                 .map_or(qualifier.len(), |(i, _)| i);
             if args.len() < index + 2 {
-                blocked.push(format!(
+                unmatched.push(format!(
                     "{site}: the call has fewer arguments than `{name}`"
                 ));
                 continue;
@@ -904,7 +937,7 @@ pub async fn move_method(
                 format!("{target_path}::{name}({})", new_args.join(", ")),
             )
         } else {
-            blocked.push(format!("{site}: neither a method call nor a path call"));
+            unmatched.push(format!("{site}: neither a method call nor a path call"));
             continue;
         };
         edits
@@ -927,7 +960,9 @@ pub async fn move_method(
     let diagnostics = errors_of(remote, root, &rewritten).await?;
 
     let mut applied = false;
-    if apply && ((blocked.is_empty() && diagnostics.is_empty()) || force) {
+    // `force` accepts the evaluation order and the analyzer's errors; a call this did not
+    // rewrite would call a method that is gone.
+    if apply && unmatched.is_empty() && ((blocked.is_empty() && diagnostics.is_empty()) || force) {
         crate::refactor::apply_workspace_edit(
             root,
             &crate::signature::whole_file_edit(&rewritten),
@@ -942,6 +977,7 @@ pub async fn move_method(
         signature,
         calls,
         blocked,
+        unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
