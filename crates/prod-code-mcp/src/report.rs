@@ -27,8 +27,8 @@ pub const AREA_LABELS: &[&str] = &[
 ];
 
 /// The labels an issue is filed with: those asked for, lower-cased and once each, and `bug`
-/// first when none of them says what kind of issue it is. A label the repository does not
-/// have is refused here, before anything is searched or sent.
+/// first when none of them says what kind of issue it is. The documented `roadmap` marker
+/// is also supported. Other labels are refused by this local policy before any request.
 pub fn issue_labels(asked: &[String]) -> Result<Vec<String>> {
     let mut labels: Vec<String> = Vec::new();
     for label in asked
@@ -37,9 +37,11 @@ pub fn issue_labels(asked: &[String]) -> Result<Vec<String>> {
         .filter(|l| !l.is_empty())
     {
         anyhow::ensure!(
-            TYPE_LABELS.contains(&label.as_str()) || AREA_LABELS.contains(&label.as_str()),
-            "{REPOSITORY} has no label `{label}`: give one type ({}) and the areas the issue \
-             is about ({})",
+            TYPE_LABELS.contains(&label.as_str())
+                || AREA_LABELS.contains(&label.as_str())
+                || label == "roadmap",
+            "unsupported report label `{label}`: give one type ({}) and the areas the issue \
+             is about ({}), optionally with `roadmap`",
             TYPE_LABELS.join(", "),
             AREA_LABELS.join(", ")
         );
@@ -542,13 +544,21 @@ mod tests {
     }
 
     #[test]
-    fn labels_default_to_a_bug_and_a_label_the_repository_lacks_is_refused() {
+    fn labels_default_to_a_bug_allow_roadmap_and_refuse_unsupported_labels() {
         let given = |labels: &[&str]| labels.iter().map(|l| l.to_string()).collect::<Vec<_>>();
         assert_eq!(issue_labels(&[]).unwrap(), ["bug"]);
         assert_eq!(issue_labels(&given(&["mcp"])).unwrap(), ["bug", "mcp"]);
         assert_eq!(
             issue_labels(&given(&[" Perf ", "gateway", "gateway", ""])).unwrap(),
             ["perf", "gateway"]
+        );
+        assert_eq!(
+            issue_labels(&given(&["enhancement", "mcp", " Roadmap ", "roadmap"])).unwrap(),
+            ["enhancement", "mcp", "roadmap"]
+        );
+        assert_eq!(
+            issue_labels(&given(&["roadmap"])).unwrap(),
+            ["bug", "roadmap"]
         );
         let err = issue_labels(&given(&["mcp", "urgent"]))
             .unwrap_err()

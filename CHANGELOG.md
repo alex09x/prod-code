@@ -13,12 +13,15 @@
 - Shadow hypotheses reject control characters, duplicate or nested paths and symlinked
   parents before staging (#440). In-place runs take turns per workspace across requests,
   restore failed writes, preserve file modes and report restoration failures. Rollback
-  checks symlink containment again before restoring files or removing created directories. Internal
-  overlay variables cannot be overridden by request environment values.
+  checks symlink containment again before restoring files or removing created directories.
+  Internal overlay variables cannot be overridden by request environment values.
 - Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
   They enable client-side compilation and refuse settings that disable it or send work
   to a distributed compiler. Config checks follow the proposed files, deletions and
   symlink aliases, so a hypothesis cannot silently be checked against the base source.
+- Issue reports accept the documented `roadmap` label (#447). Unsupported labels are
+  described as a reporting policy restriction instead of falsely claiming they do not
+  exist in the repository.
 - Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
   earlier writes and resource operations when a later step fails (#425). Paths are checked
   again after directory moves, and deleted files do not survive as hidden backup files.
