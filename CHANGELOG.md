@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.16 — 2026-09-26
+
 ### Added
 - **`prod-code divergent-bench --worktrees N`** (#406). N is a multiple of 4, and the bench forks
   every mutation kind (untouched, signature change, manifest change, untracked file) N/4 times.
