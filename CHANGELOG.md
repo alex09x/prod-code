@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- **Seeding a worktree copy leaves a fifth of the disk free** (#419). A seed copied the main
+  copy's whole `target/debug` whenever twice its size was free. For this repository on a build
+  node that was 48 GB in 571,304 files per worktree: three short-lived worktrees took 140 GB in
+  an hour and left the disk at 16% free. A seed now copies the build cache, `node_modules` and
+  virtual environments only when at least 20% of the filesystem stays free afterwards. That is
+  above the janitor's 15% prune line, so seeding never forces pruning or the disk pressure
+  placement avoids. A skipped copy is logged with its size and the free space, so a slow first
+  build in a worktree can be told apart from a bug.
+
 ## v0.3.17 — 2026-09-26
 
 ### Added

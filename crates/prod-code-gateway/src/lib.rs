@@ -525,17 +525,52 @@ fn place_in(req: &PlaceRequest, view: ClusterResponse) -> PlaceResponse {
 /// worktree's own: nothing is shared afterwards, so no build waits on another's lock.
 const SEEDED_BUILD_DIRS: &[&str] = &["deps", "build", ".fingerprint"];
 
+/// Free and total bytes of a filesystem.
+#[derive(Debug, Clone, Copy)]
+struct DiskSpace {
+    free: u64,
+    total: u64,
+}
+
+/// The share of its filesystem a seed must leave free (#419): above the janitor's 15% prune
+/// line (#386), so seeding a worktree never pushes the node into pruning or into the disk
+/// pressure that placement avoids (#396).
+const SEED_MIN_FREE_SHARE: f64 = 0.20;
+
+/// Whether copying `size` bytes of `what` fits in `space`: twice the size free, and a fifth of
+/// the filesystem still free afterwards. A copy that does not fit is logged as skipped: the
+/// worktree's first build or install is then slower, not broken (#419).
+fn seed_fits(what: &str, size: u64, space: Option<DiskSpace>) -> bool {
+    let Some(space) = space else {
+        return false;
+    };
+    let after = space.free.saturating_sub(size);
+    let fits = space.free >= size.saturating_mul(2)
+        && after as f64 >= SEED_MIN_FREE_SHARE * space.total as f64;
+    if !fits {
+        let mb = |bytes: u64| bytes / (1024 * 1024);
+        tracing::info!(
+            what,
+            size_mb = mb(size),
+            free_mb = mb(space.free),
+            total_mb = mb(space.total),
+            "🌱 [SEED] skipped: the copy would leave too little disk free"
+        );
+    }
+    fits
+}
+
 /// Copies the seed copy's `target/debug` build cache into the new copy at `to`, when there is
-/// one and at least as much free disk as its size remains afterwards. Returns the bytes copied,
-/// or `None` when there was nothing to copy or no room for it.
+/// one and it fits (`seed_fits`). Returns the bytes copied, or `None` when there was nothing to
+/// copy or no room for it.
 fn seed_build_cache(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<Option<u64>> {
-    seed_build_cache_within(from, to, free_disk_bytes(to))
+    seed_build_cache_within(from, to, disk_space(to))
 }
 
 fn seed_build_cache_within(
     from: &std::path::Path,
     to: &std::path::Path,
-    free_bytes: Option<u64>,
+    space: Option<DiskSpace>,
 ) -> std::io::Result<Option<u64>> {
     let source = from.join("target").join("debug");
     let parts: Vec<&str> = SEEDED_BUILD_DIRS
@@ -547,7 +582,7 @@ fn seed_build_cache_within(
         return Ok(None);
     }
     let size: u64 = parts.iter().map(|part| tree_size(&source.join(part))).sum();
-    if free_bytes.is_none_or(|free| free < size.saturating_mul(2)) {
+    if !seed_fits("target/debug", size, space) {
         return Ok(None);
     }
     let dest = to.join("target").join("debug");
@@ -605,8 +640,8 @@ fn dependency_trees(root: &std::path::Path) -> Vec<PathBuf> {
 }
 
 /// Copies the seed copy's `node_modules` trees and virtual environments into the new copy at
-/// `to`, when there are any and at least as much free disk as their size remains afterwards
-/// (#412, #414). Without them every import from a dependency resolves to nothing in the new
+/// `to`, when there are any and they fit (`seed_fits`, #412, #414, #419). Without them every
+/// import from a dependency resolves to nothing in the new
 /// worktree until something installs the packages again. `cp -a` keeps the symlinks of `.bin`,
 /// of pnpm's layout and of a venv (`lib64 -> lib`, `bin/python`); a venv's scripts are then
 /// rewritten to name the copy. The trees are the worktree's own afterwards, so an install in one
@@ -615,20 +650,20 @@ fn seed_dependency_trees(
     from: &std::path::Path,
     to: &std::path::Path,
 ) -> std::io::Result<Option<u64>> {
-    seed_dependency_trees_within(from, to, free_disk_bytes(to))
+    seed_dependency_trees_within(from, to, disk_space(to))
 }
 
 fn seed_dependency_trees_within(
     from: &std::path::Path,
     to: &std::path::Path,
-    free_bytes: Option<u64>,
+    space: Option<DiskSpace>,
 ) -> std::io::Result<Option<u64>> {
     let trees = dependency_trees(from);
     if trees.is_empty() {
         return Ok(None);
     }
     let size: u64 = trees.iter().map(|rel| tree_size(&from.join(rel))).sum();
-    if free_bytes.is_none_or(|free| free < size.saturating_mul(2)) {
+    if !seed_fits("node_modules and virtual environments", size, space) {
         return Ok(None);
     }
     for rel in trees {
@@ -701,8 +736,8 @@ fn tree_size(dir: &std::path::Path) -> u64 {
         .sum()
 }
 
-/// Free bytes on the filesystem that holds `path` (or its nearest existing parent).
-fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
+/// Free and total bytes of the filesystem that holds `path` (or its nearest existing parent).
+fn disk_space(path: &std::path::Path) -> Option<DiskSpace> {
     use std::os::unix::ffi::OsStrExt;
     let existing = path.ancestors().find(|p| p.exists())?;
     let c_path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
@@ -712,10 +747,13 @@ fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
     if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
         return None;
     }
-    // The two fields are `u64` on Linux and narrower on macOS.
+    // The fields are `u64` on Linux and narrower on macOS.
     #[allow(clippy::unnecessary_cast)]
-    let free = stat.f_bavail as u64 * stat.f_frsize as u64;
-    Some(free)
+    let (free, total) = (
+        stat.f_bavail as u64 * stat.f_frsize as u64,
+        stat.f_blocks as u64 * stat.f_frsize as u64,
+    );
+    Some(DiskSpace { free, total })
 }
 
 /// Copies the sources of the seed copy `src` into the new copy `dst`: every per-node cache
@@ -5812,7 +5850,7 @@ mod tests {
             .set_modified(old)
             .unwrap();
 
-        let copied = seed_build_cache_within(&seed, &fresh, Some(u64::MAX)).unwrap();
+        let copied = seed_build_cache_within(&seed, &fresh, roomy()).unwrap();
         assert_eq!(copied, Some(4 + 20 + 11));
         let out = fresh.join("target/debug");
         assert_eq!(
@@ -5865,13 +5903,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            seed_dependency_trees_within(&seed, &fresh, Some(10)).unwrap(),
+            seed_dependency_trees_within(&seed, &fresh, space(10, 1 << 40)).unwrap(),
             None,
             "no room for two of them"
         );
         assert!(!fresh.join("node_modules").exists());
 
-        let copied = seed_dependency_trees_within(&seed, &fresh, Some(u64::MAX)).unwrap();
+        let copied = seed_dependency_trees_within(&seed, &fresh, roomy()).unwrap();
         assert_eq!(copied, Some(32 + 19 + 6 + 3));
         assert_eq!(
             std::fs::read_to_string(fresh.join("node_modules/zod/index.d.ts")).unwrap(),
@@ -5904,8 +5942,7 @@ mod tests {
         let bare = dir.path().join("bare");
         std::fs::create_dir_all(&bare).unwrap();
         assert_eq!(
-            seed_dependency_trees_within(&bare, &dir.path().join("fresh2"), Some(u64::MAX))
-                .unwrap(),
+            seed_dependency_trees_within(&bare, &dir.path().join("fresh2"), roomy()).unwrap(),
             None
         );
     }
@@ -5955,7 +5992,7 @@ mod tests {
 
         assert_eq!(dependency_trees(&seed), vec![PathBuf::from(".venv")]);
         assert!(
-            seed_dependency_trees_within(&seed, &fresh, Some(u64::MAX))
+            seed_dependency_trees_within(&seed, &fresh, roomy())
                 .unwrap()
                 .is_some()
         );
@@ -6010,30 +6047,51 @@ mod tests {
         }
     }
 
-    /// No build cache, or not enough room for two of it, leaves the new copy without one.
+    /// Room for a seed with plenty to spare.
+    fn roomy() -> Option<DiskSpace> {
+        space(u64::MAX / 4, u64::MAX / 2)
+    }
+
+    fn space(free: u64, total: u64) -> Option<DiskSpace> {
+        Some(DiskSpace { free, total })
+    }
+
+    /// No build cache, not enough room for two of it, or a copy that would leave less than a
+    /// fifth of the filesystem free, leaves the new copy without one (#419).
     #[test]
     fn a_seeded_copy_goes_without_a_build_cache_it_has_no_room_for() {
         let dir = tempfile::tempdir().unwrap();
         let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
         assert_eq!(
-            seed_build_cache_within(&seed, &fresh, Some(u64::MAX)).unwrap(),
+            seed_build_cache_within(&seed, &fresh, roomy()).unwrap(),
             None
         );
         let deps = seed.join("target/debug/deps");
         std::fs::create_dir_all(&deps).unwrap();
         std::fs::write(deps.join("libbig.rlib"), vec![0u8; 1000]).unwrap();
         assert_eq!(
-            seed_build_cache_within(&seed, &fresh, Some(1999)).unwrap(),
-            None
+            seed_build_cache_within(&seed, &fresh, space(1999, 5000)).unwrap(),
+            None,
+            "not twice its size free"
         );
         assert_eq!(seed_build_cache_within(&seed, &fresh, None).unwrap(), None);
+        assert_eq!(
+            seed_build_cache_within(&seed, &fresh, space(10_000, 46_000)).unwrap(),
+            None,
+            "9,000 left of 46,000 is under a fifth"
+        );
         assert!(!fresh.join("target").exists());
         assert_eq!(
-            seed_build_cache_within(&seed, &fresh, Some(2000)).unwrap(),
-            Some(1000)
+            seed_build_cache_within(&seed, &fresh, space(10_000, 44_000)).unwrap(),
+            Some(1000),
+            "9,000 left of 44,000 is more than a fifth"
         );
-        assert!(free_disk_bytes(dir.path()).is_some_and(|free| free > 0));
-        assert!(free_disk_bytes(&dir.path().join("not/yet/created")).is_some());
+        assert!(
+            disk_space(dir.path()).is_some_and(|s| s.free > 0 && s.total >= s.free),
+            "{:?}",
+            disk_space(dir.path())
+        );
+        assert!(disk_space(&dir.path().join("not/yet/created")).is_some());
     }
 
     /// A running command is in the status for as long as its handler runs, and gone however the
