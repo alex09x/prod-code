@@ -2626,6 +2626,165 @@ async fn an_editors_python_server_does_not_watch_the_editors_process() {
     );
 }
 
+/// Every `uri` (or `targetUri`) a location answer names.
+fn answer_uris(result: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    let items = match result {
+        serde_json::Value::Array(items) => items.clone(),
+        serde_json::Value::Null => Vec::new(),
+        one => vec![one.clone()],
+    };
+    items
+        .iter()
+        .filter_map(|l| l.get("uri").or_else(|| l.get("targetUri")))
+        .filter_map(|u| u.as_str().map(String::from))
+        .collect()
+}
+
+/// A checkout whose path holds spaces, `#`, a literal `%41` and non-ASCII letters, with a
+/// module file named the same way (#438). Navigation names those files by URIs that decode to
+/// them, the source text reaches the analyzer as written (a column after the checkout's own
+/// path in a string still points at the same token), and a rename rewrites exactly those files.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn special_characters_in_paths_survive_navigation_and_edits() {
+    use prod_code_protocol::path::{file_uri, file_uri_path};
+    let gateway = Gateway::start_with(&[("PROD_CODE_EDITOR_SERVERS", "off")]);
+    let holder = tempfile::tempdir().expect("checkout");
+    let dir = holder.path().join("deeper").join("my app #1 100%41 ü");
+    std::fs::create_dir_all(dir.join("src/odd dir #2")).expect("dirs");
+    let root = std::fs::canonicalize(&dir).expect("canonical");
+    let odd_rel = "src/odd dir #2/100%41 ü.rs";
+    let odd_text = "pub fn helper(n: u32) -> u32 {\n    n + 1\n}\n";
+    let lib = format!(
+        "#[path = \"odd dir #2/100%41 ü.rs\"]\npub mod odd;\n\npub const HOME: &str = \"{}\"; pub fn run() -> u32 {{ odd::helper(2) }}\n",
+        root.display()
+    );
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"subject\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n",
+    )
+    .expect("Cargo.toml");
+    std::fs::write(root.join("src/lib.rs"), &lib).expect("lib.rs");
+    std::fs::write(root.join(odd_rel), odd_text).expect("odd file");
+    commit_in(&root);
+
+    let lib_uri = file_uri(&root.join("src/lib.rs"));
+    let odd_uri = file_uri(&root.join(odd_rel));
+    assert!(odd_uri.contains("%2541") && odd_uri.contains("%23") && odd_uri.contains("%C3%BC"));
+
+    let (mut editor, _) = EditorSession::open_with(
+        gateway.addr,
+        &root,
+        serde_json::json!({ "rootUri": file_uri(&root), "capabilities": {} }),
+    )
+    .await;
+    editor
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": { "uri": lib_uri, "languageId": "rust", "version": 1, "text": lib } }),
+        )
+        .await;
+    let line = lib.lines().nth(3).expect("line 3");
+    let character = line[..line.find("helper(").expect("call")]
+        .encode_utf16()
+        .count()
+        + 1;
+    let at = serde_json::json!({ "textDocument": { "uri": lib_uri }, "position": { "line": 3, "character": character } });
+
+    let definition = editor.request("textDocument/definition", at.clone()).await;
+    let targets = answer_uris(&definition["result"]);
+    assert_eq!(
+        targets.into_iter().collect::<Vec<_>>(),
+        vec![odd_uri.clone()],
+        "{definition}"
+    );
+    assert_eq!(file_uri_path(&odd_uri), Some(root.join(odd_rel)));
+
+    // Asked from the declaration, in the file whose URI the server has to decode.
+    let references = editor
+        .request(
+            "textDocument/references",
+            serde_json::json!({ "textDocument": { "uri": odd_uri }, "position": { "line": 0, "character": 8 },
+                "context": { "includeDeclaration": true } }),
+        )
+        .await;
+    let found = answer_uris(&references["result"]);
+    assert!(found.contains(&lib_uri), "{references}");
+    for uri in &found {
+        let path = file_uri_path(uri).unwrap_or_else(|| panic!("{uri} names no file"));
+        assert!(path.is_file(), "{uri} names {}", path.display());
+    }
+
+    let mut rename_params = at.clone();
+    rename_params["newName"] = serde_json::json!("bump");
+    let rename = editor.request("textDocument/rename", rename_params).await;
+    let edit = &rename["result"];
+    let mut edited: std::collections::BTreeSet<String> = edit["changes"]
+        .as_object()
+        .map(|changes| changes.keys().cloned().collect())
+        .unwrap_or_default();
+    for change in edit["documentChanges"].as_array().into_iter().flatten() {
+        if let Some(uri) = change.pointer("/textDocument/uri").and_then(|u| u.as_str()) {
+            edited.insert(uri.to_string());
+        }
+    }
+    assert_eq!(
+        edited,
+        [lib_uri.clone(), odd_uri.clone()].into_iter().collect(),
+        "{rename}"
+    );
+    drop(editor);
+
+    // The same through the tools an agent uses, which write the edit to the checkout.
+    let definition = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_definition",
+            serde_json::json!({ "symbol": "helper" }),
+        )
+        .await,
+    );
+    assert!(
+        definition.contains(&format!("{odd_uri}:1:8")),
+        "{definition}"
+    );
+    let renamed = text_of(
+        &tool(
+            gateway.addr,
+            &root,
+            "code_rename",
+            serde_json::json!({ "symbol": "helper", "new_name": "bump" }),
+        )
+        .await,
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(odd_rel)).expect("odd file"),
+        odd_text.replace("helper", "bump"),
+        "{renamed}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/lib.rs")).expect("lib.rs"),
+        lib.replace("odd::helper", "odd::bump"),
+        "{renamed}"
+    );
+    // No file appeared under a decoded, re-encoded or truncated name.
+    fn rust_files(dir: &Path, root: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() && entry.file_name() != ".git" {
+                rust_files(&path, root, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let rel = path.strip_prefix(root).expect("under root");
+                out.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut files = Vec::new();
+    rust_files(&root, &root, &mut files);
+    files.sort();
+    assert_eq!(files, vec!["src/lib.rs".to_string(), odd_rel.to_string()]);
+}
+
 /// #442: the planner consumes actual analyzer hovers/references/SSR, and a permitted
 /// scalar reorder preserves the compiled program's output.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

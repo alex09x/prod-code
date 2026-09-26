@@ -221,10 +221,11 @@ impl LspSession {
             &gateway_node(&session.framed),
             &handshake.stale_paths,
         );
+        let root_uri = prod_code_protocol::path::file_uri(&session.root);
         let init = serde_json::json!({
             "processId": null,
-            "rootUri": format!("file://{root_str}"),
-            "workspaceFolders": [{ "name": folder_name, "uri": format!("file://{root_str}") }],
+            "rootUri": root_uri,
+            "workspaceFolders": [{ "name": folder_name, "uri": root_uri }],
             "capabilities": {
                 "workspace": { "workspaceFolders": true, "configuration": true },
                 "textDocument": {

@@ -1154,7 +1154,7 @@ pub(crate) fn whole_file_edit(files: &BTreeMap<PathBuf, String>) -> serde_json::
                 .map(|t| t.lines().count())
                 .unwrap_or(0);
             serde_json::json!({
-                "textDocument": { "uri": format!("file://{}", path.display()), "version": null },
+                "textDocument": { "uri": prod_code_protocol::path::file_uri(path), "version": null },
                 "edits": [ {
                     "range": {
                         "start": { "line": 0, "character": 0 },
