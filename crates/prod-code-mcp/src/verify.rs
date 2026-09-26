@@ -340,6 +340,9 @@ pub struct ProjectTools {
     pub python: PythonRuntime,
     pub python_tests: PythonTestRunner,
     pub cpp: CppBuild,
+    /// A golangci-lint config (`.golangci.yml` and the like) at the root: the project expects
+    /// golangci-lint, and `lint --fix` runs its fix mode.
+    pub golangci_config: bool,
 }
 
 impl Default for ProjectTools {
@@ -351,9 +354,15 @@ impl Default for ProjectTools {
             python: PythonRuntime::System,
             python_tests: PythonTestRunner::Pytest,
             cpp: CppBuild::CMake,
+            golangci_config: false,
         }
     }
 }
+
+/// How Go is linted (#400): golangci-lint when the node has it, which reads the project's own
+/// config, otherwise `go vet`, saying so on stderr. The packages come as the script's arguments
+/// (`./...`), so a `--path` narrows them as it does for `go test`.
+const GO_LINT_SCRIPT: &str = "if command -v golangci-lint >/dev/null 2>&1; then exec golangci-lint run \"$@\"; fi; echo 'prod-code: golangci-lint is not installed on this node; linting with go vet' >&2; exec go vet \"$@\"";
 
 fn any_exists(root: &Path, names: &[&str]) -> bool {
     names.iter().any(|n| root.join(n).exists())
@@ -487,6 +496,17 @@ pub fn detect_tools(root: &Path) -> ProjectTools {
     } else {
         CppBuild::CMake
     };
+
+    // Go
+    tools.golangci_config = any_exists(
+        root,
+        &[
+            ".golangci.yml",
+            ".golangci.yaml",
+            ".golangci.toml",
+            ".golangci.json",
+        ],
+    );
     tools
 }
 
@@ -549,8 +569,9 @@ fn clang_tidy_script(build: CppBuild, fix: bool) -> Result<String> {
 
 /// The command that applies a linter's own fixes in place, for `lint --fix` on a language
 /// whose linter has a fix mode: `ruff check --fix`, `eslint --fix`, `biome lint --write`,
-/// `clang-tidy -fix`. `None` when it has none (`go vet`), or for Rust, whose fixes are read
-/// from the compiler's JSON instead.
+/// `clang-tidy -fix`, and `golangci-lint run --fix` for a Go project with a golangci config.
+/// `None` when it has none (`go vet`), or for Rust, whose fixes are read from the compiler's
+/// JSON instead.
 pub fn fix_command(tools: &ProjectTools, language: &str) -> Result<Option<Vec<String>>> {
     let pm = tools.package_manager;
     Ok(Some(match language {
@@ -577,6 +598,7 @@ pub fn fix_command(tools: &ProjectTools, language: &str) -> Result<Option<Vec<St
             _ => return Ok(None),
         },
         "cpp" => strs(&["sh", "-c", &clang_tidy_script(tools.cpp, true)?]),
+        "go" if tools.golangci_config => strs(&["golangci-lint", "run", "--fix", "./..."]),
         _ => return Ok(None),
     }))
 }
@@ -683,6 +705,7 @@ pub fn plan_command_with(
             }
             c
         }
+        ("go", VerifyKind::Lint) => strs(&["sh", "-c", GO_LINT_SCRIPT, "sh", "./..."]),
         ("cpp", VerifyKind::Lint) => strs(&["sh", "-c", &clang_tidy_script(tools.cpp, false)?]),
         ("cpp", VerifyKind::Check) => match tools.cpp {
             CppBuild::CMake => strs(&[
@@ -862,7 +885,6 @@ fn plan_command_basic(
         ("rust", VerifyKind::Bench) => vec!["cargo", "bench", "--workspace"],
         ("go", VerifyKind::Bench) => vec!["go", "test", "-run", "^$", "-bench"],
         ("go", VerifyKind::Check) => vec!["go", "build", "./..."],
-        ("go", VerifyKind::Lint) => vec!["go", "vet", "./..."],
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
         ("swift", VerifyKind::Check) => vec!["swift", "build"],
         ("swift", VerifyKind::Test) => vec!["swift", "test"],
@@ -1185,7 +1207,9 @@ pub fn parse_pytest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
-/// Parses `go build` / `go vet` output lines of the form `path/file.go:12:34: message`.
+/// Parses `go build` / `go vet` / `golangci-lint run` output lines of the form
+/// `path/file.go:12:34: message`; golangci-lint's quoted source lines and its summary are
+/// skipped.
 pub fn parse_go_text(text: &str) -> Vec<Diagnostic> {
     text.lines()
         .filter_map(|line| {
@@ -1994,6 +2018,11 @@ mod tests {
         narrow_scope(&mut cmd, "go", root, &root.join("crates/gw"));
         assert_eq!(cmd, strs(&["go", "test", "-json", "./crates/gw/..."]));
 
+        // Go's lint script takes its packages as an argument, which narrows the same way.
+        let mut cmd = plan_command("go", VerifyKind::Lint, None).unwrap();
+        narrow_scope(&mut cmd, "go", root, &root.join("crates/gw"));
+        assert_eq!(cmd.last().unwrap(), "./crates/gw/...");
+
         let mut cmd = strs(&["python3", "-m", "pytest", "-q"]);
         narrow_scope(&mut cmd, "python", root, &member.join("lib.rs"));
         assert_eq!(cmd.last().unwrap(), "crates/gw/src/lib.rs");
@@ -2188,6 +2217,15 @@ expected 42, got 43\n\
         let d = parse_go_text("# prod/cmd\ncmd/main.go:10:2: undefined: foo\n");
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].render(), "error: undefined: foo (cmd/main.go:10:2)");
+        // golangci-lint quotes the source line under each finding and ends with a summary.
+        let golangci = "main.go:9:10: Error return value of `os.Remove` is not checked (errcheck)\n\tos.Remove(\"x\")\n\t         ^\ncalc/calc.go:4:2: ineffectual assignment to total (ineffassign)\n\ttotal := 0\n\t^\n2 issues:\n* errcheck: 1\n* ineffassign: 1\n";
+        let d = parse_go_text(golangci);
+        assert_eq!(d.len(), 2, "{d:?}");
+        assert_eq!(
+            d[0].render(),
+            "error: Error return value of `os.Remove` is not checked (errcheck) (main.go:9:10)"
+        );
+        assert_eq!(d[1].file.as_deref(), Some("calc/calc.go"));
         let events = r#"{"Action":"run","Package":"p","Test":"TestA"}
 {"Action":"output","Package":"p","Test":"TestA","Output":"    a_test.go:7: boom\n"}
 {"Action":"fail","Package":"p","Test":"TestA","Elapsed":0}
@@ -2383,6 +2421,35 @@ expected 42, got 43\n\
         );
         tools.cpp = CppBuild::Make;
         assert!(plan_command_with(&tools, "cpp", VerifyKind::Lint, None).is_err());
+    }
+
+    /// Go is linted with golangci-lint when the node has it and with `go vet` otherwise, and a
+    /// project with a golangci config gets golangci-lint's fix mode (#400).
+    #[test]
+    fn go_lints_with_golangci_lint_and_falls_back_to_go_vet() {
+        let lint = plan_command("go", VerifyKind::Lint, None).unwrap();
+        assert_eq!(lint[..2], ["sh", "-c"]);
+        assert_eq!(lint[3..], ["sh", "./..."]);
+        let script = &lint[2];
+        assert!(
+            script.contains("command -v golangci-lint")
+                && script.contains("exec golangci-lint run \"$@\"")
+                && script.contains("exec go vet \"$@\""),
+            "{script}"
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("go.mod"), "module m\n").unwrap();
+        let plain = detect_tools(temp.path());
+        assert!(!plain.golangci_config);
+        assert!(fix_command(&plain, "go").unwrap().is_none());
+        std::fs::write(temp.path().join(".golangci.yml"), "version: \"2\"\n").unwrap();
+        let configured = detect_tools(temp.path());
+        assert!(configured.golangci_config);
+        assert_eq!(
+            fix_command(&configured, "go").unwrap().unwrap(),
+            ["golangci-lint", "run", "--fix", "./..."]
+        );
     }
 
     #[test]

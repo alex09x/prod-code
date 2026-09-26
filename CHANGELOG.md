@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **Go is linted with golangci-lint** (#400). `lint` and `code_lint` on a Go project run
+  `golangci-lint run` when the node has it, which reads the project's `.golangci.yml`. Otherwise
+  they run `go vet` as before, with a line on stderr saying golangci-lint is missing. `--path`
+  still narrows the run to one package tree. `lint --fix` runs `golangci-lint run --fix` when the
+  project has a golangci config. The findings, `file.go:line:col: message (linter)`, are parsed
+  like go vet's; golangci-lint's quoted source lines and summary are skipped.
 - **`prod-code status --json` and `prod-code cluster --json`** (#398). `status --json` prints the
   gateway's status as one JSON object, with the fields as the gateway sent them: engines, sessions,
   running commands, host memory and disk. It adds `remote`, `rtt_ms`, `healthy` and `pressure`.

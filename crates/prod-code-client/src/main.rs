@@ -382,7 +382,8 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         events: bool,
     },
-    /// Lint the workspace remotely (cargo clippy -D warnings / go vet) with structured findings.
+    /// Lint the workspace remotely (cargo clippy -D warnings, golangci-lint or go vet, ruff,
+    /// eslint / biome, clang-tidy) with structured findings.
     Lint {
         /// The crate, package or directory to run in (a nested project, or one member of a
         /// workspace), as `path` for the MCP tools; the current directory by default (#323).
@@ -392,7 +393,8 @@ enum Commands {
         timeout_secs: u64,
         #[arg(long, default_value_t = false)]
         json: bool,
-        /// Apply the machine-applicable fixes, then lint again (Rust).
+        /// Apply the fixes, then lint again: clippy's machine-applicable ones for Rust, the
+        /// linter's own fix mode for Python, TypeScript, C++ and Go with a golangci config.
         #[arg(long, default_value_t = false)]
         fix: bool,
         /// An environment variable for the command (repeatable): `--env RUST_BACKTRACE=1`.
