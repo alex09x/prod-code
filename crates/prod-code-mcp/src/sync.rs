@@ -527,7 +527,25 @@ pub fn expected_engine(root: &Path) -> Option<&'static str> {
     found
 }
 
-/// The engine a directory's own manifests ask for.
+/// Whether `dir` holds C or C++ sources or headers directly.
+fn has_c_sources(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok_and(|entries| {
+        entries.flatten().any(|e| {
+            e.path()
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| {
+                    matches!(x, "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx")
+                })
+        })
+    })
+}
+
+/// The engine a directory's own manifests ask for. A Makefile next to C or C++ sources, at the
+/// root or in `src/`, is a C/C++ project built with Make, below every other manifest: Go,
+/// Python and JavaScript repositories keep a Makefile of tasks too. A `project.yml` with
+/// top-level `targets:` is an XcodeGen spec, a Swift project whose Xcode project is generated
+/// (#404). The gateway's `detect_engine` decides the same way.
 fn engine_at(root: &Path) -> Option<&'static str> {
     let has = |name: &str| root.join(name).exists();
     let has_xcode = std::fs::read_dir(root)
@@ -539,11 +557,17 @@ fn engine_at(root: &Path) -> Option<&'static str> {
             })
         })
         .unwrap_or(false);
+    let xcodegen = std::fs::read_to_string(root.join("project.yml"))
+        .is_ok_and(|text| text.lines().any(|line| line.starts_with("targets:")));
+    let make_cpp = ["Makefile", "makefile", "GNUmakefile"]
+        .iter()
+        .any(|m| root.join(m).is_file())
+        && (has_c_sources(root) || has_c_sources(&root.join("src")));
     if has("Cargo.toml") {
         Some("rust")
     } else if has("go.mod") || has("go.work") {
         Some("go")
-    } else if has("Package.swift") || has_xcode {
+    } else if has("Package.swift") || has_xcode || xcodegen {
         Some("swift")
     } else if has("compile_commands.json")
         || has("CMakeLists.txt")
@@ -565,6 +589,8 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         || has("deno.jsonc")
     {
         Some("typescript")
+    } else if make_cpp {
+        Some("cpp")
     } else {
         None
     }
@@ -3232,5 +3258,33 @@ version = "0.2.2"
             excluded_from_root_workspace(root, &root.join("sub")),
             "a crate under a plain package answers for itself"
         );
+    }
+
+    /// A Makefile next to C sources is C/C++, below every other manifest, and one with no C
+    /// sources is not; an XcodeGen `project.yml` is Swift, another `project.yml` is not (#404).
+    #[test]
+    fn a_make_c_project_and_an_xcodegen_spec_are_recognised() {
+        let make = tempfile::tempdir().expect("tempdir");
+        std::fs::write(make.path().join("Makefile"), "all:\n\tcc main.c\n").expect("makefile");
+        assert_eq!(expected_engine(make.path()), None, "no C sources");
+        std::fs::write(make.path().join("main.c"), "int main(void){}\n").expect("source");
+        assert_eq!(expected_engine(make.path()), Some("cpp"));
+        std::fs::write(make.path().join("pyproject.toml"), "[project]\n").expect("manifest");
+        assert_eq!(
+            expected_engine(make.path()),
+            Some("python"),
+            "a Makefile ranks below every manifest"
+        );
+
+        let xcodegen = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            xcodegen.path().join("project.yml"),
+            "name: App\ntargets:\n  App:\n    type: application\n",
+        )
+        .expect("spec");
+        assert_eq!(expected_engine(xcodegen.path()), Some("swift"));
+        let other = tempfile::tempdir().expect("tempdir");
+        std::fs::write(other.path().join("project.yml"), "name: docs\n").expect("yml");
+        assert_eq!(engine_at(other.path()), None);
     }
 }
