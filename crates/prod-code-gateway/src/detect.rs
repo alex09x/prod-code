@@ -32,9 +32,40 @@ const TYPESCRIPT_MARKERS: &[&str] = &[
     "deno.jsonc",
 ];
 
-/// A Swift package manifest or an Xcode project/workspace bundle at the root.
+/// The names a Makefile goes by.
+const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
+
+/// The extensions of C and C++ sources and headers.
+const C_SOURCE_EXTENSIONS: &[&str] = &["c", "cc", "cpp", "cxx", "h", "hh", "hpp", "hxx"];
+
+/// A Makefile next to C or C++ sources, at the root or in `src/`: a C/C++ project built with
+/// Make (#404). It ranks below every other manifest, since Go, Python and JavaScript
+/// repositories keep a Makefile of tasks too, and a Makefile with no C sources is not C.
+pub fn is_make_cpp_project(root: &Path) -> bool {
+    let has_c_sources = |dir: &Path| {
+        std::fs::read_dir(dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| C_SOURCE_EXTENSIONS.contains(&x))
+            })
+        })
+    };
+    MAKEFILES.iter().any(|m| root.join(m).is_file())
+        && (has_c_sources(root) || has_c_sources(&root.join("src")))
+}
+
+/// An XcodeGen spec at the root: a `project.yml` with top-level `targets:`, from which the
+/// Xcode project, usually not committed, is generated (#404).
+pub fn is_xcodegen_spec(root: &Path) -> bool {
+    std::fs::read_to_string(root.join("project.yml"))
+        .is_ok_and(|text| text.lines().any(|line| line.starts_with("targets:")))
+}
+
+/// A Swift package manifest, an XcodeGen spec, or an Xcode project/workspace bundle at the root.
 pub fn has_swift_project(root: &Path) -> bool {
-    if SWIFT_MARKERS.iter().any(|m| root.join(m).exists()) {
+    if SWIFT_MARKERS.iter().any(|m| root.join(m).exists()) || is_xcodegen_spec(root) {
         return true;
     }
     std::fs::read_dir(root)
@@ -53,9 +84,12 @@ pub fn has_swift_project(root: &Path) -> bool {
 /// Priority order:
 /// 1. Rust (`Cargo.toml`)
 /// 2. Go (`go.mod`, `go.work`)
-/// 3. Python (`pyproject.toml`, `requirements.txt`, `setup.py`, etc.)
-/// 4. TypeScript / JavaScript (`tsconfig.json`, `package.json`, etc.)
-/// 5. Generic LSP fallback
+/// 3. Swift (`Package.swift`, an XcodeGen `project.yml`, an Xcode bundle)
+/// 4. C/C++ (`compile_commands.json`, `CMakeLists.txt`, `meson.build`, `.clangd`)
+/// 5. Python (`pyproject.toml`, `requirements.txt`, `setup.py`, etc.)
+/// 6. TypeScript / JavaScript (`tsconfig.json`, `package.json`, etc.)
+/// 7. C/C++ built with Make (a Makefile next to C sources)
+/// 8. Generic LSP fallback
 pub fn detect_engine(root: &Path) -> EngineKind {
     for marker in RUST_MARKERS {
         if root.join(marker).exists() {
@@ -85,6 +119,9 @@ pub fn detect_engine(root: &Path) -> EngineKind {
             return EngineKind::TypeScript;
         }
     }
+    if is_make_cpp_project(root) {
+        return EngineKind::Cpp;
+    }
     EngineKind::Generic
 }
 
@@ -104,7 +141,7 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     if TYPESCRIPT_MARKERS.iter().any(|m| root.join(m).exists()) {
         engines.push(EngineKind::TypeScript);
     }
-    if CPP_MARKERS.iter().any(|m| root.join(m).exists()) {
+    if CPP_MARKERS.iter().any(|m| root.join(m).exists()) || is_make_cpp_project(root) {
         engines.push(EngineKind::Cpp);
     }
     if has_swift_project(root) {
@@ -156,6 +193,45 @@ mod tests {
             "Rust outranks Swift"
         );
         assert!(detect_all_engines(dir.path()).contains(&EngineKind::Cpp));
+    }
+
+    /// A Makefile next to C sources is C/C++, below every other manifest; one with no C sources
+    /// is not; an XcodeGen `project.yml` is Swift, another `project.yml` is not (#404).
+    #[test]
+    fn a_make_c_project_and_an_xcodegen_spec_are_detected() {
+        let make = tempdir().unwrap();
+        std::fs::write(make.path().join("Makefile"), "all:\n\tcc main.c\n").unwrap();
+        assert_eq!(
+            detect_engine(make.path()),
+            EngineKind::Generic,
+            "no C sources"
+        );
+        std::fs::create_dir_all(make.path().join("src")).unwrap();
+        std::fs::write(make.path().join("src/main.c"), "int main(void){}\n").unwrap();
+        assert_eq!(detect_engine(make.path()), EngineKind::Cpp);
+        assert_eq!(detect_all_engines(make.path()), vec![EngineKind::Cpp]);
+        std::fs::write(make.path().join("package.json"), "{}").unwrap();
+        assert_eq!(
+            detect_engine(make.path()),
+            EngineKind::TypeScript,
+            "a Makefile ranks below every manifest"
+        );
+        let go = tempdir().unwrap();
+        std::fs::write(go.path().join("go.mod"), "module m\n").unwrap();
+        std::fs::write(go.path().join("Makefile"), "test:\n\tgo test ./...\n").unwrap();
+        std::fs::write(go.path().join("cgo.h"), "").unwrap();
+        assert_eq!(detect_engine(go.path()), EngineKind::Go);
+
+        let xcodegen = tempdir().unwrap();
+        std::fs::write(
+            xcodegen.path().join("project.yml"),
+            "name: App\ntargets:\n  App:\n    type: application\n",
+        )
+        .unwrap();
+        assert_eq!(detect_engine(xcodegen.path()), EngineKind::Swift);
+        let other = tempdir().unwrap();
+        std::fs::write(other.path().join("project.yml"), "name: docs\npages: []\n").unwrap();
+        assert_eq!(detect_engine(other.path()), EngineKind::Generic);
     }
 
     #[test]

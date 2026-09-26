@@ -38,6 +38,13 @@
   `HEALTHY`.
 
 ### Fixed
+- **A C project built with Make and an XcodeGen project are detected** (#404). A `Makefile` next to
+  C or C++ sources (at the root or in `src/`) now marks a C/C++ project for the client and the
+  gateway alike. It ranks below every other manifest, because Go, Python and JavaScript
+  repositories keep a Makefile of tasks too, and a Makefile with no C sources is not C. `check`
+  and `test` then run `make` / `make test` instead of answering "no project manifest". A
+  `project.yml` with top-level `targets:` (an XcodeGen spec) marks a Swift project, placed on a
+  macOS node, like `Package.swift`.
 - **`prod-code lsp` fails loudly when the gateway goes away** (#394). The bridge noticed only on
   the editor's next message, answered nothing until then, and exited 0, which an editor reads as a
   clean shutdown and does not restart. It now says on stderr which gateway closed or broke the
