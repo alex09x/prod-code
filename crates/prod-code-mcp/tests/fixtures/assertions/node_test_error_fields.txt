@@ -1,0 +1,149 @@
+✖ multiline nested (4.032131ms)
+✖ long strings (0.477347ms)
+✖ custom message (0.276993ms)
+✖ strict equal numbers (1.688634ms)
+✖ deep strict equal (1.892349ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 0
+ℹ fail 5
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 79.393814
+
+✖ failing tests:
+
+test at e.test.mjs:4:1
+✖ multiline nested (4.032131ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      name: 'a fairly long name to force wrapping',
+      nested: {
+        deeper: {
+          level3: {
+  +         level4: 1
+  -         level4: 9
+          }
+        },
+        expected: 'inner-expected',
+        operator: 'strictEqual'
+      },
+      values: [
+  +     1,
+  -     9,
+        2,
+        3
+      ]
+    }
+  
+      at TestContext.<anonymous> (file:///tmp/p3026/e.test.mjs:4:41)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { name: 'a fairly long name to force wrapping', values: [ 1, 2, 3 ], nested: { expected: 'inner-expected', operator: 'strictEqual', deeper: [Object] } },
+    expected: { name: 'a fairly long name to force wrapping', values: [ 9, 2, 3 ], nested: { expected: 'inner-expected', operator: 'strictEqual', deeper: [Object] } },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }
+
+test at e.test.mjs:5:1
+✖ long strings (0.477347ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'abcdefghijk'
+  - 'abcdefghijz'
+               ^
+  
+      at TestContext.<anonymous> (file:///tmp/p3026/e.test.mjs:5:37)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'abcdefghijk',
+    expected: 'abcdefghijz',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at e.test.mjs:6:1
+✖ custom message (0.276993ms)
+  AssertionError [ERR_ASSERTION]: numbers
+  must match
+  
+  1 !== 2
+  
+      at TestContext.<anonymous> (file:///tmp/p3026/e.test.mjs:6:39)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:744:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at n.test.mjs:3:1
+✖ strict equal numbers (1.688634ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  2 !== 3
+  
+      at TestContext.<anonymous> (file:///tmp/p3026/n.test.mjs:3:45)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 2,
+    expected: 3,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at n.test.mjs:4:1
+✖ deep strict equal (1.892349ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    {
+      a: 1,
+      b: [
+  +     2
+  -     3
+      ],
+      nested: {
+        expected: 'x',
+        operator: 'y'
+      }
+  
+      at TestContext.<anonymous> (file:///tmp/p3026/n.test.mjs:5:10)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:744:18)
+      at Test.postRun (node:internal/test_runner/test:1173:19)
+      at Test.run (node:internal/test_runner/test:1101:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:296:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: { a: 1, b: [ 2 ], nested: { expected: 'x', operator: 'y' } },
+    expected: { a: 1, b: [ 3 ], nested: { expected: 'x', operator: 'y' } },
+    operator: 'deepStrictEqual',
+    diff: 'simple'
+  }

@@ -1,0 +1,120 @@
+
+running 7 tests
+test tests::a_first_blank_lines ... FAILED
+test tests::b_middle_blank_lines ... FAILED
+test tests::c_blank_lines_with_message ... FAILED
+test tests::d_right_only_blank_lines ... FAILED
+test tests::e_trailing_blank_lines ... FAILED
+test tests::f_ne_blank_lines ... FAILED
+test tests::g_last_blank_lines ... FAILED
+
+failures:
+
+---- tests::a_first_blank_lines stdout ----
+
+thread 'tests::a_first_blank_lines' panicked at src/lib.rs:27:32:
+assertion `left == right` failed
+  left: Doc {
+
+    one
+
+}
+ right: Doc {
+
+    two
+
+}
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- tests::b_middle_blank_lines stdout ----
+
+thread 'tests::b_middle_blank_lines' panicked at src/lib.rs:29:33:
+assertion `left == right` failed
+  left: Doc {
+
+    three
+
+}
+ right: Doc {
+
+    four
+
+}
+
+---- tests::c_blank_lines_with_message stdout ----
+
+thread 'tests::c_blank_lines_with_message' panicked at src/lib.rs:31:39:
+assertion `left == right` failed: docs differ
+  left: Doc {
+
+    x
+
+}
+ right: Doc {
+
+    y
+
+}
+
+---- tests::d_right_only_blank_lines stdout ----
+
+thread 'tests::d_right_only_blank_lines' panicked at src/lib.rs:33:37:
+assertion `left == right` failed
+  left: Text(flat)
+ right: Text(para one
+
+para two)
+
+---- tests::e_trailing_blank_lines stdout ----
+
+thread 'tests::e_trailing_blank_lines' panicked at src/lib.rs:35:35:
+assertion `left == right` failed
+  left: Trailing(1)
+
+
+ right: Trailing(2)
+
+
+
+---- tests::f_ne_blank_lines stdout ----
+
+thread 'tests::f_ne_blank_lines' panicked at src/lib.rs:37:29:
+assertion `left != right` failed
+  left: Doc {
+
+    same
+
+}
+ right: Doc {
+
+    same
+
+}
+
+---- tests::g_last_blank_lines stdout ----
+
+thread 'tests::g_last_blank_lines' panicked at src/lib.rs:39:31:
+assertion `left == right` failed
+  left: Doc {
+
+    five
+
+}
+ right: Doc {
+
+    six
+
+}
+
+
+failures:
+    tests::a_first_blank_lines
+    tests::b_middle_blank_lines
+    tests::c_blank_lines_with_message
+    tests::d_right_only_blank_lines
+    tests::e_trailing_blank_lines
+    tests::f_ne_blank_lines
+    tests::g_last_blank_lines
+
+test result: FAILED. 0 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

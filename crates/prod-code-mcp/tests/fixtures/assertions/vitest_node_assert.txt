@@ -1,0 +1,108 @@
+
+ RUN  v2.1.9 /tmp/p3026/vt
+
+ × test/a.test.js > plain error
+   → boom without values
+ × test/a.test.js > strict equal numbers
+   → Expected values to be strictly equal:
+
+2 !== 3
+
+ × test/a.test.js > deep strict equal
+   → Expected values to be strictly deep-equal:
++ actual - expected
+
+  {
+    a: 1,
+    b: [
++     2
+-     3
+    ],
+    nested: {
+      expected: 'x',
+      operator: 'y'
+    }
+
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  test/a.test.js > plain error
+Error: boom without values
+ ❯ test/a.test.js:3:35
+      1| import assert from "node:assert";
+      2| import { test } from "vitest";
+      3| test("plain error", () => { throw new Error("boom without values"); });
+       |                                   ^
+      4| test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+      5| test("deep strict equal", () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  test/a.test.js > strict equal numbers
+AssertionError: Expected values to be strictly equal:
+
+2 !== 3
+
+
+- Expected
++ Received
+
+- 3
++ 2
+
+ ❯ test/a.test.js:4:45
+      2| import { test } from "vitest";
+      3| test("plain error", () => { throw new Error("boom without values"); });
+      4| test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+       |                                             ^
+      5| test("deep strict equal", () => {
+      6|   assert.deepStrictEqual(
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  test/a.test.js > deep strict equal
+AssertionError: Expected values to be strictly deep-equal:
++ actual - expected
+
+  {
+    a: 1,
+    b: [
++     2
+-     3
+    ],
+    nested: {
+      expected: 'x',
+      operator: 'y'
+    }
+
+
+- Expected
++ Received
+
+  Object {
+    "a": 1,
+    "b": Array [
+-     3,
++     2,
+    ],
+    "nested": Object {
+      "expected": "x",
+      "operator": "y",
+    },
+  }
+
+ ❯ test/a.test.js:6:10
+      4| test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+      5| test("deep strict equal", () => {
+      6|   assert.deepStrictEqual(
+       |          ^
+      7|     { a: 1, b: [2], nested: { expected: "x", operator: "y" } },
+      8|     { a: 1, b: [3], nested: { expected: "x", operator: "y" } });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+ Test Files  1 failed (1)
+      Tests  3 failed (3)
+   Start at  22:53:10
+   Duration  1.09s (transform 46ms, setup 0ms, collect 20ms, tests 16ms, environment 0ms, prepare 132ms)
+

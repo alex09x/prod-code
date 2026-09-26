@@ -1821,6 +1821,19 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     let dossier = &report.dossiers[0];
     assert_eq!(dossier.test, "tests::it_fails");
     assert!(dossier.output.contains("assertion `left == right` failed"));
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "assert_eq");
+    assert_eq!(assertion.expression.as_deref(), Some("left == right"));
+    assert_eq!(assertion.left.as_deref(), Some("4"));
+    assert_eq!(assertion.right.as_deref(), Some("5"));
+    assert_eq!(assertion.actual, None);
+    assert_eq!(assertion.expected, None);
+    assert_eq!(assertion.operands, vec!["4".to_string(), "5".to_string()]);
+    assert!(assertion.excerpt.contains("left: 4"));
+    assert!(assertion.excerpt.contains("right: 5"));
     assert_eq!(dossier.sites.len(), 1);
     let site = &dossier.sites[0];
     assert_eq!(site.file, "src/lib.rs");
@@ -1835,6 +1848,7 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     let rendered = report.render();
     assert!(rendered.contains("0 passed, 1 failed"));
     assert!(rendered.contains("=== tests::it_fails ==="));
+    assert!(rendered.contains("assertion [assert_eq (left == right)]: left: 4, right: 5\n"));
     assert!(rendered.contains("in it_fails"));
     assert!(rendered.contains("callers: test_runner"));
     assert!(rendered.contains("changed in the working tree:"));
@@ -1933,6 +1947,7 @@ async fn dossier_report_render_includes_the_caller_list_and_the_diff() {
                 hops: 2,
                 diff: Some("@@ -2 +2 @@\n-    a + b\n+    a + b + 1\n".to_string()),
             }],
+            assertion: None,
         }],
         build_errors: vec![],
         suggested_fixes: vec![],
@@ -1969,4 +1984,606 @@ async fn diagnose_fails_cleanly_when_the_gateway_is_unreachable() {
         format!("{err:#}").contains("failed to connect to remote gateway"),
         "{err:#}"
     );
+}
+
+#[tokio::test]
+async fn diagnose_builds_a_dossier_for_rust_multiline_colored_assertion() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", DOSSIER_LIB)]);
+    let root = ws.root();
+    let output = b"running 1 test\ntest tests::it_fails ... FAILED\n\nfailures:\n\n---- tests::it_fails stdout ----\n\n\x1b[1m\x1b[31mthread 'tests::it_fails' panicked at \x1b[0msrc/lib.rs:13:9:\n\x1b[1m\x1b[31massertion `left == right` failed\x1b[0m\n\x1b[1m\x1b[31m  left: \x1b[0mFoo {\n    x: 1,\n    y: 2,\n}\n\x1b[1m\x1b[31m right: \x1b[0mFoo {\n    x: 1,\n    y: 3,\n}\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nfailures:\n    tests::it_fails\n\ntest result: FAILED. 0 passed; 1 failed; 0 filtered out; finished in 0.00s\n".to_vec();
+    let exec: ExecAnswer = Arc::new(move |_req| (output.clone(), Vec::new(), Some(101)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+
+    let report = dossier::diagnose(remote, &root, None, 60)
+        .await
+        .expect("diagnose runs");
+
+    assert_eq!(report.dossiers.len(), 1);
+    let dossier = &report.dossiers[0];
+    let assertion = dossier
+        .assertion
+        .as_ref()
+        .expect("assertion evidence captured");
+    assert_eq!(assertion.format, "assert_eq");
+    assert_eq!(
+        assertion.left.as_deref(),
+        Some("Foo {\n    x: 1,\n    y: 2,\n}")
+    );
+    assert_eq!(
+        assertion.right.as_deref(),
+        Some("Foo {\n    x: 1,\n    y: 3,\n}")
+    );
+    assert_eq!(assertion.operands.len(), 2);
+    assert_eq!(assertion.actual, None);
+    // Escape sequences stay in the excerpt as the runner printed them.
+    assert!(
+        assertion
+            .excerpt
+            .contains("\x1b[1m\x1b[31m  left: \x1b[0mFoo {\n")
+    );
+}
+
+// Failure output captured from real runs on a Linux build node (cargo 1.97, jest 29.7, vitest
+// 2.1.9, Node 22.23) of probe tests that mix an ordinary panic or thrown `Error` with
+// assertions failing on different values, in `tests/fixtures/assertions/`.
+const CARGO_MULTI: &str = include_str!("fixtures/assertions/cargo_test_multi.txt");
+const JEST_NODE_ASSERT: &str = include_str!("fixtures/assertions/jest_node_assert.txt");
+const JEST_NODE_ASSERT_EDGE: &str = include_str!("fixtures/assertions/jest_node_assert_edge.txt");
+const JEST_NODE_ASSERT_COLORS: &str =
+    include_str!("fixtures/assertions/jest_node_assert_colors.txt");
+const VITEST_NODE_ASSERT: &str = include_str!("fixtures/assertions/vitest_node_assert.txt");
+const NODE_TEST_ERROR_FIELDS: &str = include_str!("fixtures/assertions/node_test_error_fields.txt");
+
+/// The probe crate behind `cargo_test_multi.txt`.
+const PROBE_LIB: &str = r#"pub fn add(a: i32, b: i32) -> i32 { a + b }
+#[derive(Debug, PartialEq)]
+pub struct Foo { pub x: i32, pub y: Vec<i32> }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_plain_panic() { panic!("boom without values"); }
+    #[test]
+    fn b_add_mismatch() { assert_eq!(add(2, 2), 5); }
+    #[test]
+    fn c_reversed_mismatch() { assert_eq!(20, add(5, 5), "totals differ"); }
+    #[test]
+    fn d_struct_mismatch() { assert_eq!(Foo { x: 1, y: vec![2] }, Foo { x: 1, y: vec![3] }); }
+    #[test]
+    fn e_ne() { assert_ne!(add(1, 1), 2); }
+    #[test]
+    fn f_bool() { assert!(add(1, 1) == 3); }
+    #[test]
+    fn g_string_with_newline() { assert_eq!("a\nb".to_string(), "a\nc"); }
+    #[test]
+    fn h_ok() {}
+}
+"#;
+
+fn dossier_of<'a>(report: &'a DossierReport, test: &str) -> &'a FailureDossier {
+    report
+        .dossiers
+        .iter()
+        .find(|d| d.test == test)
+        .unwrap_or_else(|| panic!("no dossier for {test}"))
+}
+
+async fn diagnose_output(ws: &Workspace, stdout: Vec<u8>, code: i32) -> DossierReport {
+    let exec: ExecAnswer = Arc::new(move |_req| (stdout.clone(), Vec::new(), Some(code)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+    dossier::diagnose(remote, &ws.root(), None, 60)
+        .await
+        .expect("diagnose runs")
+}
+
+/// Every probe failure gets only its own evidence: the ordinary panic and the plain `assert!`
+/// get none although the run's tail holds the other tests' assertions, and `assert_eq!`
+/// operands keep their left/right names without being called actual or expected.
+fn assert_cargo_probe_dossiers(report: &DossierReport) {
+    assert_eq!(report.tests_failed, 7);
+    assert_eq!(report.dossiers.len(), 7);
+    for plain in ["tests::a_plain_panic", "tests::f_bool"] {
+        assert_eq!(dossier_of(report, plain).assertion, None, "{plain}");
+    }
+    let expected = [
+        ("tests::b_add_mismatch", "assert_eq", "4", "5"),
+        ("tests::c_reversed_mismatch", "assert_eq", "20", "10"),
+        (
+            "tests::d_struct_mismatch",
+            "assert_eq",
+            "Foo { x: 1, y: [2] }",
+            "Foo { x: 1, y: [3] }",
+        ),
+        ("tests::e_ne", "assert_ne", "2", "2"),
+        (
+            "tests::g_string_with_newline",
+            "assert_eq",
+            "\"a\\nb\"",
+            "\"a\\nc\"",
+        ),
+    ];
+    for (test, format, left, right) in expected {
+        let d = dossier_of(report, test);
+        let a = d
+            .assertion
+            .as_ref()
+            .unwrap_or_else(|| panic!("no evidence for {test}"));
+        assert_eq!(a.format, format, "{test}");
+        assert_eq!(a.left.as_deref(), Some(left), "{test}");
+        assert_eq!(a.right.as_deref(), Some(right), "{test}");
+        assert_eq!(a.actual, None, "{test}");
+        assert_eq!(a.expected, None, "{test}");
+        assert_eq!(a.operands, vec![left, right], "{test}");
+        assert!(d.output.contains(&a.excerpt), "{test}: {}", a.excerpt);
+    }
+    let rendered = report.render();
+    assert!(rendered.contains("assertion [assert_eq (left == right)]: left: 20, right: 10\n"));
+    assert!(!rendered.contains("actual:"));
+}
+
+#[tokio::test]
+async fn diagnose_keeps_every_cargo_failure_to_its_own_assertion_evidence() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", PROBE_LIB)]);
+    let report = diagnose_output(&ws, CARGO_MULTI.as_bytes().to_vec(), 101).await;
+    assert!(report.tail.contains("  left: 4\n right: 5"));
+    assert_cargo_probe_dossiers(&report);
+}
+
+fn probe_workspace(lib: &str) -> Workspace {
+    Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        ),
+        ("src/lib.rs", lib),
+    ])
+}
+
+/// `cargo test` of a probe crate through the cargo running this test, with only the
+/// toolchain's own environment and `env`: the runner's `RUST_BACKTRACE`, `RUST_TEST_NOCAPTURE`
+/// and the like change what libtest prints.
+fn live_probe_run(
+    ws: &Workspace,
+    target: &std::path::Path,
+    env: &[(&str, &str)],
+    test_args: &[&str],
+) -> Vec<u8> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let toolchain_env = [
+        "PATH",
+        "HOME",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "TMPDIR",
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var_os(key).map(|value| (key, value)));
+    let run = std::process::Command::new(cargo)
+        .args(["test", "--offline", "--no-fail-fast", "--lib", "--"])
+        .args(test_args)
+        .current_dir(ws.root())
+        .env_clear()
+        .envs(toolchain_env)
+        .env("CARGO_TARGET_DIR", target)
+        .envs(env.iter().copied())
+        .output()
+        .expect("cargo runs");
+    assert_eq!(
+        run.status.code(),
+        Some(101),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    run.stdout
+}
+
+/// The same probe crate through the cargo running this test, so the parser is held to the
+/// current toolchain's real output and not only to the recorded one; then again with
+/// backtraces, which end each panic message with a trailer of their own.
+#[tokio::test]
+async fn diagnose_keeps_every_live_cargo_failure_to_its_own_assertion_evidence() {
+    let ws = probe_workspace(PROBE_LIB);
+    let target = tempfile::tempdir().expect("target dir");
+    let stdout = live_probe_run(&ws, target.path(), &[], &[]);
+    let report = diagnose_output(&ws, stdout, 101).await;
+    assert!(report.tail.contains("  left: 4\n right: 5"));
+    assert_cargo_probe_dossiers(&report);
+
+    let stdout = live_probe_run(&ws, target.path(), &[("RUST_BACKTRACE", "1")], &[]);
+    assert!(String::from_utf8_lossy(&stdout).contains("\nstack backtrace:\n"));
+    let report = diagnose_output(&ws, stdout, 101).await;
+    assert_cargo_probe_dossiers(&report);
+}
+
+/// Real output of `cargo test -- --test-threads=1` on this probe crate (cargo 1.97, Linux build
+/// node): hand-written `Debug` values with blank lines, ended by the backtrace note (the first
+/// failure), by libtest's one-line separator, or by the two before its `failures:` list.
+const CARGO_BLANK_DEBUG: &str = include_str!("fixtures/assertions/cargo_test_blank_debug.txt");
+
+const BLANK_DEBUG_LIB: &str = r#"use std::fmt;
+#[derive(PartialEq)]
+pub struct Doc(pub &'static str);
+impl fmt::Debug for Doc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Doc {{\n\n    {}\n\n}}", self.0)
+    }
+}
+#[derive(PartialEq)]
+pub struct Text(pub &'static str);
+impl fmt::Debug for Text {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Text({})", self.0)
+    }
+}
+#[derive(PartialEq)]
+pub struct Trailing(pub u8);
+impl fmt::Debug for Trailing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Trailing({})\n\n", self.0)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_first_blank_lines() { assert_eq!(Doc("one"), Doc("two")); }
+    #[test]
+    fn b_middle_blank_lines() { assert_eq!(Doc("three"), Doc("four")); }
+    #[test]
+    fn c_blank_lines_with_message() { assert_eq!(Doc("x"), Doc("y"), "docs differ"); }
+    #[test]
+    fn d_right_only_blank_lines() { assert_eq!(Text("flat"), Text("para one\n\npara two")); }
+    #[test]
+    fn e_trailing_blank_lines() { assert_eq!(Trailing(1), Trailing(2)); }
+    #[test]
+    fn f_ne_blank_lines() { assert_ne!(Doc("same"), Doc("same")); }
+    #[test]
+    fn g_last_blank_lines() { assert_eq!(Doc("five"), Doc("six")); }
+}
+"#;
+
+/// Blank lines inside an operand do not end it: each value is the complete one `Debug` printed.
+/// A value that ends in blank lines of its own cannot be told from libtest's separators, so it
+/// gets no evidence rather than a shortened value.
+fn assert_blank_debug_dossiers(report: &DossierReport) {
+    assert_eq!(report.tests_failed, 7);
+    assert_eq!(report.dossiers.len(), 7);
+    let doc = |s: &str| format!("Doc {{\n\n    {s}\n\n}}");
+    let expected = [
+        (
+            "tests::a_first_blank_lines",
+            "assert_eq",
+            doc("one"),
+            doc("two"),
+        ),
+        (
+            "tests::b_middle_blank_lines",
+            "assert_eq",
+            doc("three"),
+            doc("four"),
+        ),
+        (
+            "tests::c_blank_lines_with_message",
+            "assert_eq",
+            doc("x"),
+            doc("y"),
+        ),
+        (
+            "tests::d_right_only_blank_lines",
+            "assert_eq",
+            "Text(flat)".to_string(),
+            "Text(para one\n\npara two)".to_string(),
+        ),
+        (
+            "tests::f_ne_blank_lines",
+            "assert_ne",
+            doc("same"),
+            doc("same"),
+        ),
+        (
+            "tests::g_last_blank_lines",
+            "assert_eq",
+            doc("five"),
+            doc("six"),
+        ),
+    ];
+    for (test, format, left, right) in &expected {
+        let d = dossier_of(report, test);
+        let a = d
+            .assertion
+            .as_ref()
+            .unwrap_or_else(|| panic!("no evidence for {test}"));
+        assert_eq!(a.format, *format, "{test}");
+        assert_eq!(a.left.as_ref(), Some(left), "{test}");
+        assert_eq!(a.right.as_ref(), Some(right), "{test}");
+        assert_eq!(a.actual, None, "{test}");
+        assert_eq!(a.expected, None, "{test}");
+        assert_eq!(a.operands, vec![left.clone(), right.clone()], "{test}");
+        assert!(d.output.contains(&a.excerpt), "{test}: {}", a.excerpt);
+        assert!(a.excerpt.ends_with(right.as_str()), "{test}: {}", a.excerpt);
+    }
+    assert_eq!(
+        dossier_of(report, "tests::e_trailing_blank_lines").assertion,
+        None
+    );
+    let rendered = report.render();
+    assert!(rendered.contains(
+        "assertion [assert_eq (left == right)]: left: Doc { … (5 lines), right: Doc { … (5 lines)\n"
+    ));
+    assert!(!rendered.contains("actual:"));
+}
+
+#[tokio::test]
+async fn diagnose_keeps_blank_lines_inside_rust_debug_operands() {
+    let ws = probe_workspace(BLANK_DEBUG_LIB);
+    let report = diagnose_output(&ws, CARGO_BLANK_DEBUG.as_bytes().to_vec(), 101).await;
+    assert_blank_debug_dossiers(&report);
+}
+
+#[tokio::test]
+async fn diagnose_keeps_blank_lines_inside_live_rust_debug_operands() {
+    let ws = probe_workspace(BLANK_DEBUG_LIB);
+    let target = tempfile::tempdir().expect("target dir");
+    let stdout = live_probe_run(&ws, target.path(), &[], &["--test-threads=1"]);
+    let report = diagnose_output(&ws, stdout, 101).await;
+    assert_blank_debug_dossiers(&report);
+}
+
+/// Output cut at any line of a recorded block gives the block's complete operands or nothing.
+#[test]
+fn a_cut_cargo_block_gives_complete_operands_or_nothing() {
+    let (_, failed, failures) = prod_code_mcp::verify::parse_cargo_test_text(CARGO_BLANK_DEBUG);
+    assert_eq!(failed, 7);
+    for failure in &failures {
+        let full = dossier::parse_assertion_evidence(&failure.output);
+        let lines: Vec<&str> = failure.output.split_inclusive('\n').collect();
+        for cut in 1..lines.len() {
+            let prefix = lines[..cut].concat();
+            let got = dossier::parse_assertion_evidence(&prefix);
+            // The one exception: a cut after one of the blank lines that end `Trailing(2)\n\n`
+            // looks exactly like a block libtest closed, and nothing in it shows otherwise.
+            if failure.name == "tests::e_trailing_blank_lines"
+                && prefix.trim_end().ends_with(" right: Trailing(2)")
+            {
+                continue;
+            }
+            assert!(
+                got.is_none() || got == full,
+                "{}: {prefix:?} gave {got:?}",
+                failure.name
+            );
+        }
+    }
+}
+
+/// A node:test error-fields block cut anywhere after its opening `{` gives nothing, not the
+/// short `2 !== 3` message above it.
+#[test]
+fn a_cut_node_error_fields_block_is_not_read_from_its_short_message() {
+    let block = NODE_TEST_ERROR_FIELDS
+        .split("\ntest at ")
+        .skip(1)
+        .find(|b| b.contains("✖ strict equal numbers ("))
+        .expect("block");
+    let full = dossier::parse_assertion_evidence(block).expect("complete block");
+    assert_eq!(full.actual.as_deref(), Some("2"));
+    let lines: Vec<&str> = block.split_inclusive('\n').collect();
+    let open = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("at ") && l.trim_end().ends_with(" {"))
+        .expect("opening brace");
+    let close = lines
+        .iter()
+        .position(|l| l.trim_end() == "  }")
+        .expect("closing brace");
+    for cut in 1..=close {
+        let got = dossier::parse_assertion_evidence(&lines[..cut].concat());
+        if cut > open {
+            assert_eq!(got, None, "cut at line {cut}");
+        } else if let Some(got) = got {
+            // Before the fields, only the complete short message may answer.
+            assert_eq!(
+                (got.actual.as_deref(), got.expected.as_deref()),
+                (Some("2"), Some("3"))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn diagnose_keeps_every_jest_failure_to_its_own_node_assert_values() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"probe","devDependencies":{"jest":"^29.7.0"}}"#,
+        ),
+        ("jest.config.js", "module.exports = {};\n"),
+        ("test/a.test.js", "test('probe', () => {});\n"),
+    ]);
+    let report = diagnose_output(&ws, JEST_NODE_ASSERT.as_bytes().to_vec(), 1).await;
+
+    assert_eq!(report.tests_failed, 5);
+    assert_eq!(report.dossiers.len(), 5);
+    assert!(
+        report
+            .tail
+            .contains("Expected value to strictly be equal to:")
+    );
+    // A thrown Error and a jest matcher failure carry no Node assert values.
+    for plain in ["plain error", "jest matcher"] {
+        assert_eq!(dossier_of(&report, plain).assertion, None, "{plain}");
+    }
+    let expected = [
+        ("strict equal numbers", "strictEqual", "2", "3"),
+        (
+            "strict equal strings",
+            "strictEqual",
+            "\"left side\"",
+            "\"right side\"",
+        ),
+        (
+            "deep strict equal",
+            "deepStrictEqual",
+            r#"{"a": 1, "b": [2], "nested": {"expected": "x", "operator": "y"}}"#,
+            r#"{"a": 1, "b": [3], "nested": {"expected": "x", "operator": "y"}}"#,
+        ),
+    ];
+    for (test, format, actual, expected) in expected {
+        let d = dossier_of(&report, test);
+        let a = d
+            .assertion
+            .as_ref()
+            .unwrap_or_else(|| panic!("no evidence for {test}"));
+        assert_eq!(a.format, format, "{test}");
+        assert_eq!(a.expression, None, "{test}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{test}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{test}");
+        assert_eq!(a.left.as_deref(), Some(actual), "{test}");
+        assert_eq!(a.right.as_deref(), Some(expected), "{test}");
+        assert_eq!(a.operands, vec![actual, expected], "{test}");
+        assert!(d.output.contains(&a.excerpt), "{test}: {}", a.excerpt);
+    }
+    assert!(
+        report
+            .render()
+            .contains("assertion [strictEqual]: actual: 2, expected: 3\n")
+    );
+}
+
+#[tokio::test]
+async fn diagnose_takes_vitests_short_node_message_and_nothing_from_a_diff() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"probe","type":"module","devDependencies":{"vitest":"^2.1.0"}}"#,
+        ),
+        ("test/a.test.js", "test('probe', () => {});\n"),
+    ]);
+    let report = diagnose_output(&ws, VITEST_NODE_ASSERT.as_bytes().to_vec(), 1).await;
+
+    assert_eq!(report.tests_failed, 3);
+    assert_eq!(report.dossiers.len(), 3);
+    assert_eq!(
+        dossier_of(&report, "test/a.test.js > plain error").assertion,
+        None
+    );
+    // vitest prints a deep-equal failure only as a diff, never the complete values.
+    assert_eq!(
+        dossier_of(&report, "test/a.test.js > deep strict equal").assertion,
+        None
+    );
+    let a = dossier_of(&report, "test/a.test.js > strict equal numbers")
+        .assertion
+        .as_ref()
+        .expect("short message evidence");
+    assert_eq!(a.format, "strictEqual");
+    assert_eq!(a.expression.as_deref(), Some("2 !== 3"));
+    assert_eq!(a.actual.as_deref(), Some("2"));
+    assert_eq!(a.expected.as_deref(), Some("3"));
+}
+
+#[test]
+fn node_test_runner_error_fields_are_bound_at_the_top_level_only() {
+    let blocks: Vec<&str> = NODE_TEST_ERROR_FIELDS.split("\ntest at ").skip(1).collect();
+    assert_eq!(blocks.len(), 5);
+    let parse = |name: &str| {
+        let block = blocks
+            .iter()
+            .find(|b| b.contains(&format!("✖ {name} (")))
+            .unwrap_or_else(|| panic!("no block for {name}"));
+        dossier::parse_assertion_evidence(block)
+    };
+    // util.inspect printed `deeper: [Object]`: the values are incomplete.
+    assert_eq!(parse("multiline nested"), None);
+    let cases = [
+        (
+            "strict equal numbers",
+            "strictEqual",
+            Some("2 !== 3"),
+            "2",
+            "3",
+        ),
+        (
+            "long strings",
+            "strictEqual",
+            None,
+            "'abcdefghijk'",
+            "'abcdefghijz'",
+        ),
+        ("custom message", "strictEqual", None, "1", "2"),
+        (
+            "deep strict equal",
+            "deepStrictEqual",
+            None,
+            "{ a: 1, b: [ 2 ], nested: { expected: 'x', operator: 'y' } }",
+            "{ a: 1, b: [ 3 ], nested: { expected: 'x', operator: 'y' } }",
+        ),
+    ];
+    for (name, format, expression, actual, expected) in cases {
+        let a = parse(name).unwrap_or_else(|| panic!("no evidence for {name}"));
+        assert_eq!(a.format, format, "{name}");
+        assert_eq!(a.expression.as_deref(), expression, "{name}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{name}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{name}");
+        assert!(a.excerpt.ends_with("diff: 'simple'\n  }"), "{name}");
+    }
+}
+
+#[test]
+fn jest_node_assert_edge_cases_keep_complete_values_and_refuse_elided_ones() {
+    let (_, failed, failures) = prod_code_mcp::verify::parse_jest_text(JEST_NODE_ASSERT_EDGE);
+    assert_eq!(failed, 4);
+    let parse = |name: &str| {
+        let failure = failures
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no failure {name}"));
+        dossier::parse_assertion_evidence(&failure.output)
+    };
+    // jest's maxWidth printed `10, …]`: the arrays are not complete.
+    assert_eq!(parse("long array"), None);
+    let cases = [
+        (
+            "multiline string",
+            "\"line one\nline two\"",
+            "\"line one\nline 2\"",
+        ),
+        ("custom message", "1", "2"),
+        ("received label text", "\"Received:\"", "\"x\""),
+    ];
+    for (name, actual, expected) in cases {
+        let a = parse(name).unwrap_or_else(|| panic!("no evidence for {name}"));
+        assert_eq!(a.format, "strictEqual", "{name}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{name}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn colored_jest_output_gives_the_same_values_and_keeps_its_escapes() {
+    // With `--colors` jest escapes the `●` marker too, so blocks split on the stripped text.
+    let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
+    for line in JEST_NODE_ASSERT_COLORS.lines() {
+        let plain = dossier::strip_ansi(line);
+        if let Some(name) = plain.trim().strip_prefix("● ") {
+            blocks.push((name.to_string(), Vec::new()));
+        } else if let Some((_, lines)) = blocks.last_mut() {
+            lines.push(line);
+        }
+    }
+    let parse = |name: &str| {
+        let (_, lines) = blocks
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no block {name}"));
+        dossier::parse_assertion_evidence(&lines.join("\n"))
+    };
+    assert_eq!(parse("plain error"), None);
+    assert_eq!(parse("jest matcher"), None);
+    let a = parse("strict equal numbers").expect("colored evidence");
+    assert_eq!(a.actual.as_deref(), Some("2"));
+    assert_eq!(a.expected.as_deref(), Some("3"));
+    assert!(a.excerpt.contains("\x1b[32m3\x1b[39m"));
+    assert!(a.excerpt.contains("\x1b[31m2\x1b[39m"));
 }
