@@ -539,6 +539,27 @@ async fn cli_finds_references_and_reports_when_none_found() {
 }
 
 #[tokio::test]
+async fn cli_refs_at_a_position_on_no_name_is_an_error() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/references" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    // Line 3 of the fixture is the struct's closing brace.
+    let out = run_cli(&ws, gw.addr, &["refs", "src/lib.rs", "3", "1"]).await;
+    let text = format!(
+        "{}{}",
+        stdout_of(&out),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!out.status.success(), "{text}");
+    assert!(text.contains("src/lib.rs:3:1 is on no name"), "{text}");
+    assert!(!text.contains("No references found"), "{text}");
+}
+
+#[tokio::test]
 async fn cli_lists_incoming_callers_and_handles_none_found() {
     let ws = make_workspace();
     let path = ws.path("src/lib.rs");

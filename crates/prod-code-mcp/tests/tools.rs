@@ -760,7 +760,10 @@ async fn code_references_counts_hits_and_says_when_there_are_none() {
     )
     .await
     .expect("the query runs");
-    assert_eq!(text_of(&none), "No references found.");
+    assert_eq!(
+        text_of(&none),
+        "No references found.\n(the position is on `a`; the line reads `pub fn a() {}`)"
+    );
 }
 
 #[tokio::test]
@@ -1855,6 +1858,154 @@ async fn an_outline_of_a_file_no_server_serves_says_so() {
         text.contains("no language server serves `.sh` files"),
         "{text}"
     );
+}
+
+/// A position on no name is an error that shows the line, not "No references found" (#373).
+#[tokio::test]
+async fn references_at_a_position_on_no_name_say_so() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/lib.rs", "#[inline]\npub fn a() {}\n"),
+    ]);
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::json!([]))).await;
+    let text = match execute_tool(
+        remote,
+        &ws.root(),
+        "code_references",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 1 }),
+    )
+    .await
+    {
+        Ok(result) => text_of(&result),
+        Err(err) => format!("{err:#}"),
+    };
+    assert!(
+        text.contains("src/lib.rs:1:1 is on no name; the line reads `#[inline]`"),
+        "{text}"
+    );
+
+    // On the attribute's name, one line above the function: nothing uses it, and the answer
+    // says what the position was on.
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 3 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(
+        text.contains(
+            "No references found.\n(the position is on `inline`; the line reads `#[inline]`)"
+        ),
+        "{text}"
+    );
+}
+
+/// A dependency's type asked about at its declaration, where `symbol` lands, has its uses in the
+/// checkout as references: the server found none from inside the dependency's file, so they are
+/// asked from a use whose definition is that declaration (#373).
+#[tokio::test]
+async fn a_dependencys_type_asked_at_its_declaration_has_the_checkouts_uses() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        (
+            "src/main.rs",
+            "use dep::Widget;\n\nfn main() {\n    let _w = Widget;\n}\n",
+        ),
+    ]);
+    let declaration = "/srv/registry/dep/src/lib.rs";
+    let main = ws.path("src/main.rs");
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "prod-code/readFile" => serde_json::json!("pub struct Widget;\n"),
+            "textDocument/definition" if uri.ends_with("src/main.rs") => serde_json::json!([{
+                "uri": format!("file://{declaration}"),
+                "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 17 } }
+            }]),
+            "textDocument/references" if uri.ends_with("src/main.rs") => {
+                answers::locations(&main, &[(1, 10), (4, 14)])
+            }
+            "textDocument/references" => serde_json::json!([]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": declaration, "line": 1, "character": 12 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(
+        text.contains("asked from a use of `Widget` in the checkout, src/main.rs:1:10"),
+        "{text}"
+    );
+    assert!(text.contains("Found 2 reference(s)"), "{text}");
+}
+
+/// A file no target compiles, walked before the real use and naming the type more often than the
+/// whole budget of questions, costs two of them, not all (#373).
+#[tokio::test]
+async fn a_file_no_target_compiles_does_not_spend_the_search_for_a_use() {
+    let orphan = "use dep::Widget;\n".repeat(50);
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/a_orphan.rs", &orphan),
+        (
+            "src/main.rs",
+            "use dep::Widget;\n\nfn main() {\n    let _w = Widget;\n}\n",
+        ),
+    ]);
+    let declaration = "/srv/registry/dep/src/lib.rs";
+    let main = ws.path("src/main.rs");
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or_default();
+        match method {
+            "prod-code/readFile" => serde_json::json!("pub struct Widget;\n"),
+            "textDocument/definition" if uri.ends_with("src/main.rs") => serde_json::json!([{
+                "uri": format!("file://{declaration}"),
+                "range": { "start": { "line": 0, "character": 11 }, "end": { "line": 0, "character": 17 } }
+            }]),
+            "textDocument/references" if uri.ends_with("src/main.rs") => {
+                answers::locations(&main, &[(1, 10), (4, 14)])
+            }
+            "textDocument/references" => serde_json::json!([]),
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    let text = text_of(
+        &execute_tool(
+            remote,
+            &ws.root(),
+            "code_references",
+            serde_json::json!({ "path": declaration, "line": 1, "character": 12 }),
+        )
+        .await
+        .expect("the references"),
+    );
+    assert!(
+        text.contains("asked from a use of `Widget` in the checkout, src/main.rs:1:10"),
+        "{text}"
+    );
+    assert!(text.contains("Found 2 reference(s)"), "{text}");
 }
 
 /// A Swift `extension` of a type is listed by the index under the type's name; the type's own
