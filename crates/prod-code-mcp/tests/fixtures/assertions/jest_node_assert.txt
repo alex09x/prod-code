@@ -1,0 +1,123 @@
+FAIL test/a.test.js
+  ✕ plain error (2 ms)
+  ✕ strict equal numbers (2 ms)
+  ✕ strict equal strings (1 ms)
+  ✕ deep strict equal (3 ms)
+  ✓ passes (1 ms)
+  ✕ jest matcher (2 ms)
+
+  ● plain error
+
+    boom without values
+
+      1 | const assert = require("node:assert");
+    > 2 | test("plain error", () => { throw new Error("boom without values"); });
+        |                                   ^
+      3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });
+      5 | test("deep strict equal", () => {
+
+      at Object.<anonymous> (test/a.test.js:2:35)
+
+  ● strict equal numbers
+
+    assert.strictEqual(received, expected)
+
+    Expected value to strictly be equal to:
+      3
+    Received:
+      2
+
+      1 | const assert = require("node:assert");
+      2 | test("plain error", () => { throw new Error("boom without values"); });
+    > 3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+        |                                             ^
+      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });
+      5 | test("deep strict equal", () => {
+      6 |   assert.deepStrictEqual(
+
+      at Object.strictEqual (test/a.test.js:3:45)
+
+  ● strict equal strings
+
+    assert.strictEqual(received, expected)
+
+    Expected value to strictly be equal to:
+      "right side"
+    Received:
+      "left side"
+
+    Difference:
+
+    - Expected
+    + Received
+
+    - right side
+    + left side
+
+      2 | test("plain error", () => { throw new Error("boom without values"); });
+      3 | test("strict equal numbers", () => { assert.strictEqual(1 + 1, 3); });
+    > 4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });
+        |                                             ^
+      5 | test("deep strict equal", () => {
+      6 |   assert.deepStrictEqual(
+      7 |     { a: 1, b: [2], nested: { expected: "x", operator: "y" } },
+
+      at Object.strictEqual (test/a.test.js:4:45)
+
+  ● deep strict equal
+
+    assert.deepStrictEqual(received, expected)
+
+    Expected value to deeply and strictly equal to:
+      {"a": 1, "b": [3], "nested": {"expected": "x", "operator": "y"}}
+    Received:
+      {"a": 1, "b": [2], "nested": {"expected": "x", "operator": "y"}}
+
+    Difference:
+
+    - Expected
+    + Received
+
+    @@ -1,9 +1,9 @@
+      Object {
+        "a": 1,
+        "b": Array [
+    -     3,
+    +     2,
+        ],
+        "nested": Object {
+          "expected": "x",
+          "operator": "y",
+        },
+
+      4 | test("strict equal strings", () => { assert.strictEqual("left side", "right side"); });
+      5 | test("deep strict equal", () => {
+    > 6 |   assert.deepStrictEqual(
+        |          ^
+      7 |     { a: 1, b: [2], nested: { expected: "x", operator: "y" } },
+      8 |     { a: 1, b: [3], nested: { expected: "x", operator: "y" } });
+      9 | });
+
+      at Object.deepStrictEqual (test/a.test.js:6:10)
+
+  ● jest matcher
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 3
+    Received: 2
+
+       9 | });
+      10 | test("passes", () => {});
+    > 11 | test("jest matcher", () => { expect(2).toBe(3); });
+         |                                        ^
+      12 |
+
+      at Object.toBe (test/a.test.js:11:40)
+
+Test Suites: 1 failed, 1 total
+Tests:       5 failed, 1 passed, 6 total
+Snapshots:   0 total
+Time:        0.454 s
+Ran all test suites.
