@@ -1,10 +1,8 @@
 //! Applying gateway refactorings (LSP `WorkspaceEdit`) to the local checkout. Rewritten files
-//! are recorded in the sync watermark so the next pre-flight does not push them back.
+//! are dropped from the sync watermark so the next pre-flight uploads them.
 
-use crate::sync::apply_pulled_files;
-use anyhow::{Context, Result, anyhow};
-use prod_code_protocol::FileDelta;
-use std::path::Path;
+use anyhow::{Context, Result, anyhow, bail};
+use std::path::{Path, PathBuf};
 use url::Url;
 
 fn uri_to_relative(root: &Path, uri: &str) -> Result<String> {
@@ -12,7 +10,7 @@ fn uri_to_relative(root: &Path, uri: &str) -> Result<String> {
         .ok()
         .and_then(|u| u.to_file_path().ok())
         .ok_or_else(|| anyhow!("not a file URI: {uri}"))?;
-    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let path = resolve(&path)?;
     let rel = path.strip_prefix(root).map_err(|_| {
         anyhow!(
             "{} is outside the checkout {}",
@@ -20,12 +18,58 @@ fn uri_to_relative(root: &Path, uri: &str) -> Result<String> {
             root.display()
         )
     })?;
+    anyhow::ensure!(
+        !rel.as_os_str().is_empty(),
+        "{uri} names the checkout itself, not a file in it"
+    );
     Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
-/// Applies LSP text edits (0-based line/character, character counted in chars) to `text`.
-/// A single edit starting at 0:0 and ending at or past the last line replaces the whole file.
+/// `path` with every symlink on it resolved, including those above a part that does not exist
+/// yet: a new file under a symlinked directory lands where the symlink points, and that is what
+/// has to be inside the checkout. A symlink that cannot be resolved is refused, since writing
+/// through it could land anywhere.
+fn resolve(path: &Path) -> Result<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = path.to_path_buf();
+    loop {
+        match std::fs::canonicalize(&at) {
+            Ok(mut real) => {
+                real.extend(missing.iter().rev());
+                return Ok(real);
+            }
+            Err(err) => {
+                if std::fs::symlink_metadata(&at).is_ok() {
+                    bail!("{} cannot be resolved: {err}", at.display());
+                }
+                let (Some(parent), Some(name)) = (at.parent(), at.file_name()) else {
+                    bail!("{} has no existing directory above it", path.display());
+                };
+                missing.push(name.to_os_string());
+                at = parent.to_path_buf();
+            }
+        }
+    }
+}
+
+/// Applies LSP text edits (0-based line/character, character counted in UTF-16 code units, the
+/// LSP default; prod-code negotiates no other position encoding) to `text`. A single edit
+/// starting at 0:0 and ending at or past the last line replaces the whole file.
 pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Result<String> {
+    apply_edits_counting(text, edits, char::len_utf16)
+}
+
+/// [`apply_text_edits`] for edits whose character counts Unicode scalar values, the columns the
+/// crate's own text scanners produce rather than an analyzer's.
+pub(crate) fn apply_scalar_text_edits(text: &str, edits: &[serde_json::Value]) -> Result<String> {
+    apply_edits_counting(text, edits, |_| 1)
+}
+
+fn apply_edits_counting(
+    text: &str,
+    edits: &[serde_json::Value],
+    width: fn(char) -> usize,
+) -> Result<String> {
     let line_count = text.lines().count() as u64;
     if let [edit] = edits
         && edit.pointer("/range/start/line").and_then(|v| v.as_u64()) == Some(0)
@@ -45,7 +89,7 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Resul
             .unwrap_or_default()
             .to_string());
     }
-    // General case: convert positions to char offsets and apply from the end backwards.
+    // General case: convert positions to byte offsets and apply from the end backwards.
     let line_starts: Vec<usize> = std::iter::once(0)
         .chain(
             text.char_indices()
@@ -53,17 +97,23 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Resul
                 .map(|(i, _)| i + 1),
         )
         .collect();
+    // A column past the end of its line is the line's end; one inside a character (half a
+    // surrogate pair) is the character's end.
     let offset = |line: u64, character: u64| -> usize {
         let start = line_starts
             .get(line as usize)
             .copied()
             .unwrap_or(text.len());
         let rest = &text[start..];
-        let mut it = rest.char_indices();
         let end_of_line = rest.find('\n').unwrap_or(rest.len());
-        it.nth(character as usize)
-            .map(|(i, _)| start + i.min(end_of_line))
-            .unwrap_or(start + end_of_line)
+        let mut units = 0u64;
+        for (i, c) in rest[..end_of_line].char_indices() {
+            if units >= character {
+                return start + i;
+            }
+            units += width(c) as u64;
+        }
+        start + end_of_line
     };
     let mut spans: Vec<(usize, usize, String)> = edits
         .iter()
@@ -103,6 +153,35 @@ pub(crate) fn apply_text_edits(text: &str, edits: &[serde_json::Value]) -> Resul
     Ok(out)
 }
 
+/// The bytes of the file at `abs`, or `None` where there is no file and one could be created
+/// (nothing there, or a file where a directory above it would be). Any other failure is an
+/// error: a file that exists but cannot be read is not an empty one.
+fn read_existing(abs: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(abs) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err)
+            if matches!(
+                err.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(err) => Err(anyhow!(err).context(format!("cannot read {}", abs.display()))),
+    }
+}
+
+/// The text of the file at `abs` for editing: empty where there is no file yet.
+fn text_for_edit(abs: &Path) -> Result<(Option<Vec<u8>>, String)> {
+    let bytes = read_existing(abs)?;
+    let text = match &bytes {
+        Some(b) => String::from_utf8(b.clone())
+            .map_err(|_| anyhow!("{} is not UTF-8 text; it cannot be edited", abs.display()))?,
+        None => String::new(),
+    };
+    Ok((bytes, text))
+}
+
 /// What every file an edit rewrites would contain, without writing anything: the text edits of
 /// a `WorkspaceEdit` applied in memory to the files as they are. File renames, creations and
 /// deletions are not modelled; the second value says whether the edit had any, so a caller can
@@ -112,75 +191,463 @@ pub(crate) fn planned_texts(
     edit: &serde_json::Value,
 ) -> Result<(Vec<(std::path::PathBuf, String)>, bool)> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut per_file: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
+    let mut out = Vec::new();
     let mut moves_files = false;
-    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
-        for change in changes {
-            if change.get("kind").and_then(|k| k.as_str()).is_some() {
-                moves_files = true;
-                continue;
+    for op in operations(&root, edit)? {
+        match op {
+            Op::Text { rel, edits } => {
+                let abs = root.join(&rel);
+                let (_, current) = text_for_edit(&abs)?;
+                out.push((abs, apply_text_edits(&current, &edits)?));
             }
-            let uri = change
-                .pointer("/textDocument/uri")
-                .and_then(|u| u.as_str())
-                .unwrap_or("");
-            let edits = change
-                .get("edits")
-                .and_then(|e| e.as_array())
-                .cloned()
-                .unwrap_or_default();
-            per_file.push((uri_to_relative(&root, uri)?, edits));
+            _ => moves_files = true,
         }
-    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
-        for (uri, edits) in changes {
-            per_file.push((
-                uri_to_relative(&root, uri)?,
-                edits.as_array().cloned().unwrap_or_default(),
-            ));
-        }
-    }
-    let mut out = Vec::with_capacity(per_file.len());
-    for (rel, edits) in per_file {
-        let abs = root.join(&rel);
-        let current = std::fs::read_to_string(&abs).unwrap_or_default();
-        out.push((abs, apply_text_edits(&current, &edits)?));
     }
     Ok((out, moves_files))
 }
 
-/// Applies a `WorkspaceEdit` (`documentChanges` or `changes`) to the checkout at `root`.
-/// Returns the relative paths written, moved or deleted, in application order.
-pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    // Every path the edit can touch, and what is there now, before the first byte moves. A
-    // multi-file refactor that stops halfway is worse than one that never started: the checkout
-    // is inconsistent and nothing says which half landed.
-    let paths = paths_touched_by(&root, edit)?;
-    let before: Vec<(String, Option<Vec<u8>>)> = paths
-        .iter()
-        .map(|rel| {
-            let abs = root.join(rel);
-            let bytes = if abs.is_file() {
-                std::fs::read(&abs).ok()
-            } else {
-                None
+/// One change of a `WorkspaceEdit`, its paths resolved inside the checkout.
+enum Op {
+    Text {
+        rel: String,
+        edits: Vec<serde_json::Value>,
+    },
+    Create {
+        rel: String,
+        overwrite: bool,
+        ignore_if_exists: bool,
+    },
+    Rename {
+        from: String,
+        to: String,
+        overwrite: bool,
+        ignore_if_exists: bool,
+    },
+    Delete {
+        rel: String,
+        recursive: bool,
+    },
+}
+
+/// Every change of `edit`, in the order it names them (`documentChanges` wins over `changes`, as
+/// LSP says). Refuses a path outside the checkout and a resource operation it does not know,
+/// before anything is written.
+fn operations(root: &Path, edit: &serde_json::Value) -> Result<Vec<Op>> {
+    let mut ops = Vec::new();
+    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
+        for change in changes {
+            let uri_at = |key: &str| change.get(key).and_then(|u| u.as_str()).unwrap_or("");
+            let option = |key: &str| {
+                change
+                    .pointer(&format!("/options/{key}"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
             };
-            (rel.clone(), bytes)
-        })
-        .collect();
-    match apply_unguarded(&root, edit) {
-        Ok(touched) => {
-            remember_applied(&root, &before);
-            Ok(touched)
+            ops.push(match change.get("kind").and_then(|k| k.as_str()) {
+                Some("rename") => Op::Rename {
+                    from: uri_to_relative(root, uri_at("oldUri"))?,
+                    to: uri_to_relative(root, uri_at("newUri"))?,
+                    overwrite: option("overwrite"),
+                    ignore_if_exists: option("ignoreIfExists"),
+                },
+                Some("create") => Op::Create {
+                    rel: uri_to_relative(root, uri_at("uri"))?,
+                    overwrite: option("overwrite"),
+                    ignore_if_exists: option("ignoreIfExists"),
+                },
+                Some("delete") => Op::Delete {
+                    rel: uri_to_relative(root, uri_at("uri"))?,
+                    recursive: option("recursive"),
+                },
+                Some(other) => bail!(
+                    "unsupported resource operation `{other}` in the workspace edit; only \
+                     create, rename, delete and text edits can be applied, so nothing was written"
+                ),
+                None => Op::Text {
+                    rel: uri_to_relative(
+                        root,
+                        change
+                            .pointer("/textDocument/uri")
+                            .and_then(|u| u.as_str())
+                            .unwrap_or(""),
+                    )?,
+                    edits: change
+                        .get("edits")
+                        .and_then(|e| e.as_array())
+                        .cloned()
+                        .unwrap_or_default(),
+                },
+            });
         }
-        Err(err) => {
-            let restored = restore(&root, &before);
-            crate::sync::forget_synced_files(&root, &paths);
-            Err(err.context(format!(
-                "the edit failed partway and was undone: {restored} file(s) put back as they were"
-            )))
+    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
+        for (uri, edits) in changes {
+            ops.push(Op::Text {
+                rel: uri_to_relative(root, uri)?,
+                edits: edits.as_array().cloned().unwrap_or_default(),
+            });
         }
     }
+    Ok(ops)
+}
+
+/// What can be told wrong about an edit from the checkout as it is: a file to edit that is not
+/// readable text, a directory to delete that is not empty without `recursive`. Found here,
+/// nothing has been written yet.
+fn check(root: &Path, ops: &[Op]) -> Result<()> {
+    for op in ops {
+        match op {
+            Op::Text { rel, .. } => {
+                text_for_edit(&root.join(rel))?;
+            }
+            Op::Delete {
+                rel,
+                recursive: false,
+            } => {
+                let abs = root.join(rel);
+                if abs.is_dir()
+                    && std::fs::read_dir(&abs)
+                        .with_context(|| format!("cannot read {rel}"))?
+                        .next()
+                        .is_some()
+                {
+                    bail!(
+                        "deleting the directory {rel} needs `recursive: true`, it is not empty"
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Applies a `WorkspaceEdit` (`documentChanges` or `changes`) to the checkout at `root`, its
+/// changes in order. Returns the relative paths written, moved or deleted, in application order.
+///
+/// A multi-file refactor that stops halfway is worse than one that never started: the checkout
+/// is inconsistent and nothing says which half landed. Everything is checked before the first
+/// byte moves, and each step records how to take it back, renames of whole directories
+/// included, so a failure puts every path and byte back as it was.
+pub fn apply_workspace_edit(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let ops = operations(&root, edit)?;
+    check(&root, &ops).context("nothing was written")?;
+    let mut run = Run::default();
+    match run.apply(&root, &ops) {
+        Ok(()) => {
+            run.journal.commit();
+            remember_applied(&root, &run.originals);
+            let mut forget = run.touched.clone();
+            forget.extend(run.also_forget);
+            crate::sync::forget_synced_files(&root, &forget);
+            Ok(run.touched)
+        }
+        Err(err) => {
+            let (restored, failed) = run.journal.roll_back();
+            let mut forget = run.touched;
+            forget.extend(run.also_forget);
+            crate::sync::forget_synced_files(&root, &forget);
+            if failed.is_empty() {
+                Err(err.context(format!(
+                    "the edit failed partway and was undone: {restored} change(s) put back as \
+                     they were"
+                )))
+            } else {
+                Err(err.context(format!(
+                    "the edit failed partway; {restored} change(s) were put back, but these \
+                     could not be:\n  {}",
+                    failed.join("\n  ")
+                )))
+            }
+        }
+    }
+}
+
+/// One step of an edit taken back.
+enum Undo {
+    /// The file had these bytes.
+    Write(PathBuf, Vec<u8>),
+    /// The edit created this file.
+    RemoveFile(PathBuf),
+    /// The edit created this directory.
+    RemoveDir(PathBuf),
+    /// The edit moved the first path from the second.
+    Move(PathBuf, PathBuf),
+}
+
+/// How to take back what an edit did so far, and what it set aside to remove once it lands.
+#[derive(Default)]
+struct Journal {
+    undo: Vec<Undo>,
+    set_aside: Vec<PathBuf>,
+}
+
+impl Journal {
+    /// Creates the missing directories above `abs`, remembering each to remove again.
+    fn create_parents(&mut self, abs: &Path) -> Result<()> {
+        let Some(parent) = abs.parent() else {
+            return Ok(());
+        };
+        let mut missing = Vec::new();
+        let mut at = parent;
+        while std::fs::symlink_metadata(at).is_err() {
+            missing.push(at.to_path_buf());
+            match at.parent() {
+                Some(up) => at = up,
+                None => break,
+            }
+        }
+        for dir in missing.into_iter().rev() {
+            std::fs::create_dir(&dir)
+                .with_context(|| format!("cannot create the directory {}", dir.display()))?;
+            self.undo.push(Undo::RemoveDir(dir));
+        }
+        Ok(())
+    }
+
+    /// Moves what is at `abs` out of the way, next to it, until the edit lands or is undone.
+    fn set_aside(&mut self, abs: &Path) -> Result<()> {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let name = abs.file_name().unwrap_or_default().to_string_lossy();
+        let aside = loop {
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let candidate =
+                abs.with_file_name(format!(".{name}.prod-code-undo-{}-{seq}", std::process::id()));
+            if std::fs::symlink_metadata(&candidate).is_err() {
+                break candidate;
+            }
+        };
+        std::fs::rename(abs, &aside)
+            .with_context(|| format!("cannot move {} out of the way", abs.display()))?;
+        self.undo.push(Undo::Move(aside.clone(), abs.to_path_buf()));
+        self.set_aside.push(aside);
+        Ok(())
+    }
+
+    /// The edit landed: what it set aside goes.
+    fn commit(&mut self) {
+        for aside in self.set_aside.drain(..) {
+            let removed = if aside.is_dir() && !aside.is_symlink() {
+                std::fs::remove_dir_all(&aside)
+            } else {
+                std::fs::remove_file(&aside)
+            };
+            if let Err(error) = removed {
+                tracing::warn!(path = %aside.display(), %error, "could not remove what an edit replaced");
+            }
+        }
+        self.undo.clear();
+    }
+
+    /// Takes every step back, last first. Returns how many were taken back and the ones that
+    /// could not be.
+    fn roll_back(&mut self) -> (usize, Vec<String>) {
+        let mut restored = 0;
+        let mut failed = Vec::new();
+        for step in self.undo.drain(..).rev() {
+            let (what, result) = match &step {
+                Undo::Write(abs, bytes) => {
+                    if std::fs::read(abs).ok().as_deref() == Some(bytes.as_slice()) {
+                        continue;
+                    }
+                    (abs.clone(), std::fs::write(abs, bytes))
+                }
+                Undo::RemoveFile(abs) => (abs.clone(), std::fs::remove_file(abs)),
+                Undo::RemoveDir(abs) => (abs.clone(), std::fs::remove_dir(abs)),
+                Undo::Move(from, to) => (to.clone(), std::fs::rename(from, to)),
+            };
+            match result {
+                Ok(()) => restored += 1,
+                Err(err) => failed.push(format!("{}: {err}", what.display())),
+            }
+        }
+        self.set_aside.clear();
+        (restored, failed)
+    }
+}
+
+/// The state of one edit being applied.
+#[derive(Default)]
+struct Run {
+    journal: Journal,
+    /// Relative paths written, moved or deleted, in order.
+    touched: Vec<String>,
+    /// Further paths the sync watermark must drop: the files a directory move carried along and
+    /// the files an edit created.
+    also_forget: Vec<String>,
+    /// What each file held before the edit first touched it, for [`remember_applied`].
+    originals: Vec<(String, Option<Vec<u8>>)>,
+    /// The renames done so far, `(from, to)`.
+    moved: Vec<(String, String)>,
+}
+
+impl Run {
+    fn original(&mut self, rel: &str, bytes: Option<Vec<u8>>) {
+        if !self.originals.iter().any(|(r, _)| r == rel) {
+            self.originals.push((rel.to_string(), bytes));
+        }
+    }
+
+    fn apply(&mut self, root: &Path, ops: &[Op]) -> Result<()> {
+        for op in ops {
+            match op {
+                Op::Text { rel, edits } => self.text(root, rel, edits)?,
+                Op::Create {
+                    rel,
+                    overwrite,
+                    ignore_if_exists,
+                } => {
+                    let abs = root.join(rel);
+                    if std::fs::symlink_metadata(&abs).is_ok() {
+                        if *overwrite {
+                            self.original(rel, read_existing(&abs).ok().flatten());
+                            self.journal.set_aside(&abs)?;
+                        } else if *ignore_if_exists {
+                            continue;
+                        } else {
+                            bail!(
+                                "cannot create {rel}: it already exists, and the edit neither \
+                                 overwrites nor ignores it"
+                            );
+                        }
+                    } else {
+                        self.original(rel, None);
+                    }
+                    self.journal.create_parents(&abs)?;
+                    std::fs::write(&abs, b"").with_context(|| format!("create {rel}"))?;
+                    self.journal.undo.push(Undo::RemoveFile(abs));
+                    self.also_forget.push(rel.clone());
+                }
+                Op::Rename {
+                    from,
+                    to,
+                    overwrite,
+                    ignore_if_exists,
+                } => {
+                    if from == to {
+                        continue;
+                    }
+                    let (from_abs, to_abs) = (root.join(from), root.join(to));
+                    anyhow::ensure!(
+                        std::fs::symlink_metadata(&from_abs).is_ok(),
+                        "rename {from} -> {to}: {from} does not exist"
+                    );
+                    if std::fs::symlink_metadata(&to_abs).is_ok() {
+                        if *overwrite {
+                            self.original(to, read_existing(&to_abs).ok().flatten());
+                            self.journal.set_aside(&to_abs)?;
+                        } else if *ignore_if_exists {
+                            continue;
+                        } else {
+                            bail!(
+                                "rename {from} -> {to}: {to} already exists, and the edit does \
+                                 not overwrite it"
+                            );
+                        }
+                    }
+                    self.original(from, read_existing(&from_abs).ok().flatten());
+                    self.original(to, None);
+                    self.journal.create_parents(&to_abs)?;
+                    std::fs::rename(&from_abs, &to_abs)
+                        .with_context(|| format!("rename {from} -> {to}"))?;
+                    self.journal.undo.push(Undo::Move(to_abs.clone(), from_abs));
+                    if to_abs.is_dir() {
+                        for inner in files_under(&to_abs) {
+                            self.also_forget.push(format!("{from}/{inner}"));
+                            self.also_forget.push(format!("{to}/{inner}"));
+                        }
+                    }
+                    self.moved.push((from.clone(), to.clone()));
+                    self.touched.push(from.clone());
+                    self.touched.push(to.clone());
+                }
+                Op::Delete { rel, recursive } => {
+                    let abs = root.join(rel);
+                    if std::fs::symlink_metadata(&abs).is_ok() {
+                        if abs.is_dir() && !abs.is_symlink() {
+                            anyhow::ensure!(
+                                *recursive || std::fs::read_dir(&abs)?.next().is_none(),
+                                "deleting the directory {rel} needs `recursive: true`, it is \
+                                 not empty"
+                            );
+                            for inner in files_under(&abs) {
+                                self.also_forget.push(format!("{rel}/{inner}"));
+                            }
+                        } else {
+                            self.original(rel, read_existing(&abs)?);
+                        }
+                        self.journal.set_aside(&abs)?;
+                    }
+                    self.touched.push(rel.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn text(&mut self, root: &Path, rel: &str, edits: &[serde_json::Value]) -> Result<()> {
+        let mut rel = rel.to_string();
+        // An edit computed against a file this edit has already moved names its old path; it
+        // meant the file, which is at the new one now.
+        if read_existing(&root.join(&rel))?.is_none() {
+            let followed = follow_moves(&rel, &self.moved);
+            if followed != rel && root.join(&followed).is_file() {
+                rel = followed;
+            }
+        }
+        let abs = root.join(&rel);
+        let (bytes, current) = text_for_edit(&abs)?;
+        let new_text = apply_text_edits(&current, edits).with_context(|| format!("edit {rel}"))?;
+        self.original(&rel, bytes.clone());
+        match bytes {
+            Some(bytes) => self.journal.undo.push(Undo::Write(abs.clone(), bytes)),
+            None => {
+                self.journal.create_parents(&abs)?;
+                self.journal.undo.push(Undo::RemoveFile(abs.clone()));
+            }
+        }
+        std::fs::write(&abs, new_text).with_context(|| format!("write {rel}"))?;
+        self.touched.push(rel);
+        Ok(())
+    }
+}
+
+/// Where `rel` is after the renames in `moved`, applied in order; a rename of a directory
+/// carries what is under it.
+fn follow_moves(rel: &str, moved: &[(String, String)]) -> String {
+    let mut rel = rel.to_string();
+    for (from, to) in moved {
+        if rel == *from {
+            rel = to.clone();
+        } else if let Some(rest) = rel.strip_prefix(&format!("{from}/")) {
+            rel = format!("{to}/{rest}");
+        }
+    }
+    rel
+}
+
+/// The files under the directory `dir`, relative to it, symlinks not followed.
+fn files_under(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(at) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(t) if t.is_dir() => stack.push(path),
+                Ok(_) => {
+                    if let Ok(rel) = path.strip_prefix(dir) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    out
 }
 
 /// What each file held before the last edit applied to it, and what the edit left there.
@@ -223,177 +690,6 @@ pub fn text_before_apply(path: &Path) -> String {
         return old.clone();
     }
     String::from_utf8_lossy(&current).into_owned()
-}
-
-/// Every checkout-relative path an edit renames, creates, deletes or rewrites, in the order the
-/// edit names them. Refuses a path outside the checkout, the same as applying would.
-fn paths_touched_by(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |rel: String| {
-        if !out.contains(&rel) {
-            out.push(rel);
-        }
-    };
-    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
-        for change in changes {
-            let uri_at = |key: &str| change.get(key).and_then(|u| u.as_str()).unwrap_or("");
-            match change.get("kind").and_then(|k| k.as_str()) {
-                Some("rename") => {
-                    push(uri_to_relative(root, uri_at("oldUri"))?);
-                    push(uri_to_relative(root, uri_at("newUri"))?);
-                }
-                Some("create") | Some("delete") => push(uri_to_relative(root, uri_at("uri"))?),
-                _ => {
-                    let uri = change
-                        .pointer("/textDocument/uri")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("");
-                    push(uri_to_relative(root, uri)?);
-                }
-            }
-        }
-    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
-        for uri in changes.keys() {
-            push(uri_to_relative(root, uri)?);
-        }
-    }
-    Ok(out)
-}
-
-/// Puts every snapshotted path back: the bytes it had, or no file at all where there was none.
-/// A directory is never removed — only files this edit could have created.
-fn restore(root: &Path, before: &[(String, Option<Vec<u8>>)]) -> usize {
-    let mut restored = 0;
-    for (rel, bytes) in before {
-        let abs = root.join(rel);
-        match bytes {
-            Some(bytes) => {
-                if std::fs::read(&abs).ok().as_deref() == Some(bytes.as_slice()) {
-                    continue;
-                }
-                if let Some(parent) = abs.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if std::fs::write(&abs, bytes).is_ok() {
-                    restored += 1;
-                }
-            }
-            None => {
-                if abs.is_file() && std::fs::remove_file(&abs).is_ok() {
-                    restored += 1;
-                }
-            }
-        }
-    }
-    restored
-}
-
-fn apply_unguarded(root: &Path, edit: &serde_json::Value) -> Result<Vec<String>> {
-    let root = root.to_path_buf();
-    let mut deltas: Vec<FileDelta> = Vec::new();
-    let mut touched = Vec::new();
-
-    let mut text_edits: Vec<(String, Vec<serde_json::Value>)> = Vec::new();
-    if let Some(changes) = edit.get("documentChanges").and_then(|c| c.as_array()) {
-        for change in changes {
-            match change.get("kind").and_then(|k| k.as_str()) {
-                Some("rename") => {
-                    let from = uri_to_relative(
-                        &root,
-                        change.get("oldUri").and_then(|u| u.as_str()).unwrap_or(""),
-                    )?;
-                    let to = uri_to_relative(
-                        &root,
-                        change.get("newUri").and_then(|u| u.as_str()).unwrap_or(""),
-                    )?;
-                    let to_abs = root.join(&to);
-                    if let Some(parent) = to_abs.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    std::fs::rename(root.join(&from), &to_abs)
-                        .with_context(|| format!("rename {from} -> {to}"))?;
-                    deltas.push(FileDelta {
-                        relative_path: from.clone(),
-                        content: None,
-                        is_executable: false,
-                    });
-                    if to_abs.is_file() {
-                        deltas.push(FileDelta {
-                            relative_path: to.clone(),
-                            content: Some(std::fs::read(&to_abs)?),
-                            is_executable: false,
-                        });
-                    }
-                    touched.push(from);
-                    touched.push(to);
-                }
-                Some("create") => {
-                    let rel = uri_to_relative(
-                        &root,
-                        change.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
-                    )?;
-                    let abs = root.join(&rel);
-                    if let Some(parent) = abs.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    if !abs.exists() {
-                        std::fs::write(&abs, b"")?;
-                    }
-                }
-                Some("delete") => {
-                    let rel = uri_to_relative(
-                        &root,
-                        change.get("uri").and_then(|u| u.as_str()).unwrap_or(""),
-                    )?;
-                    let abs = root.join(&rel);
-                    if abs.is_file() {
-                        std::fs::remove_file(&abs)?;
-                    }
-                    deltas.push(FileDelta {
-                        relative_path: rel.clone(),
-                        content: None,
-                        is_executable: false,
-                    });
-                    touched.push(rel);
-                }
-                _ => {
-                    let uri = change
-                        .pointer("/textDocument/uri")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("");
-                    let edits = change
-                        .get("edits")
-                        .and_then(|e| e.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    text_edits.push((uri_to_relative(&root, uri)?, edits));
-                }
-            }
-        }
-    } else if let Some(changes) = edit.get("changes").and_then(|c| c.as_object()) {
-        for (uri, edits) in changes {
-            let edits = edits.as_array().cloned().unwrap_or_default();
-            text_edits.push((uri_to_relative(&root, uri)?, edits));
-        }
-    }
-
-    for (rel, edits) in text_edits {
-        let abs = root.join(&rel);
-        let current = std::fs::read_to_string(&abs).unwrap_or_default();
-        let new_text = apply_text_edits(&current, &edits)?;
-        deltas.push(FileDelta {
-            relative_path: rel.clone(),
-            content: Some(new_text.into_bytes()),
-            is_executable: false,
-        });
-        touched.push(rel);
-    }
-
-    // The gateway has not seen these edits (it only computed them), so they must not be
-    // recorded as synced: forget them everywhere and let the next sync upload them.
-    apply_pulled_files(&root, &deltas)?;
-    crate::sync::forget_synced_files(&root, &touched);
-    Ok(touched)
 }
 
 #[cfg(test)]
@@ -526,6 +822,272 @@ mod tests {
             "not a directory\n",
             "and nothing that was in the way is disturbed"
         );
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// Every path under `root` with its bytes (none for a directory) and permission bits: what a
+    /// failed edit has to leave exactly as it found it.
+    fn tree(root: &Path) -> std::collections::BTreeMap<String, (Option<Vec<u8>>, u32)> {
+        let mut out = std::collections::BTreeMap::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                #[cfg(unix)]
+                let mode = std::os::unix::fs::PermissionsExt::mode(&meta.permissions());
+                #[cfg(not(unix))]
+                let mode = 0;
+                let rel = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
+                if meta.is_dir() {
+                    stack.push(path);
+                    out.insert(rel, (None, mode));
+                } else {
+                    out.insert(rel, (Some(std::fs::read(&path).unwrap_or_default()), mode));
+                }
+            }
+        }
+        out
+    }
+
+    fn whole(text: &str) -> serde_json::Value {
+        serde_json::json!([{ "range": { "start": { "line": 0, "character": 0 },
+                                         "end": { "line": 1, "character": 0 } },
+                              "newText": text }])
+    }
+
+    fn at(line: u64, start: u64, end: u64, text: &str) -> serde_json::Value {
+        serde_json::json!([{ "range": { "start": { "line": line, "character": start },
+                                         "end": { "line": line, "character": end } },
+                              "newText": text }])
+    }
+
+    /// LSP columns count UTF-16 code units: past an emoji, which is two of them, an analyzer's
+    /// column is one more than the character count. The crate's own scanners count characters
+    /// and keep their own entry point.
+    #[test]
+    fn lsp_columns_count_utf16_units_and_the_scanners_count_characters() {
+        let text = "let s = \"\u{1F600}\"; let x = 1;\n";
+        // `x` is character 17 and UTF-16 unit 18.
+        let lsp = at(0, 18, 19, "y");
+        assert_eq!(
+            apply_text_edits(text, lsp.as_array().unwrap()).unwrap(),
+            "let s = \"\u{1F600}\"; let y = 1;\n"
+        );
+        let scalar = at(0, 17, 18, "y");
+        assert_eq!(
+            apply_scalar_text_edits(text, scalar.as_array().unwrap()).unwrap(),
+            "let s = \"\u{1F600}\"; let y = 1;\n"
+        );
+        // A column past the end of its line stops at the line's end.
+        let past = at(0, 99, 99, " // end");
+        assert_eq!(
+            apply_text_edits(text, past.as_array().unwrap()).unwrap(),
+            "let s = \"\u{1F600}\"; let x = 1; // end\n"
+        );
+    }
+
+    /// The same through the whole applicator: every byte of the file is what the analyzer meant.
+    #[test]
+    fn a_workspace_edit_after_non_bmp_text_lands_on_its_utf16_column() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::write(
+            root.join("lib.rs"),
+            "// \u{1D11E} clef\nfn f(\u{1F600}: u8, old: u8) {}\n",
+        )
+        .unwrap();
+        let uri = format!("file://{}/lib.rs", root.display());
+        // `old` starts at character 12 and UTF-16 unit 13 of the second line, `clef` at
+        // character 5 and unit 6 of the first.
+        let edit = serde_json::json!({ "changes": { uri: [
+            { "range": { "start": { "line": 1, "character": 13 }, "end": { "line": 1, "character": 16 } },
+              "newText": "new" },
+            { "range": { "start": { "line": 0, "character": 6 }, "end": { "line": 0, "character": 10 } },
+              "newText": "G clef" }
+        ] } });
+        apply_workspace_edit(&root, &edit).unwrap();
+        assert_eq!(
+            std::fs::read(root.join("lib.rs")).unwrap(),
+            "// \u{1D11E} G clef\nfn f(\u{1F600}: u8, new: u8) {}\n".as_bytes()
+        );
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A batch that moves a whole directory, edits inside it, creates a file in a new directory,
+    /// deletes a file and a directory tree, and then fails: every path and byte is back, the
+    /// moved directory at its old name and nothing the batch created left behind.
+    #[test]
+    fn a_failure_after_a_directory_move_puts_every_path_and_byte_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src/foo")).unwrap();
+        std::fs::create_dir_all(root.join("src/stale/deep")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "mod foo;\n").unwrap();
+        std::fs::write(root.join("src/foo/mod.rs"), "pub mod a;\n").unwrap();
+        std::fs::write(root.join("src/foo/a.rs"), "// \u{1F600}\npub fn a() {}\n").unwrap();
+        std::fs::write(root.join("src/gone.rs"), "pub fn gone() {}\n").unwrap();
+        std::fs::write(root.join("src/stale/deep/x.rs"), "x\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let gone = root.join("src/gone.rs");
+            std::fs::set_permissions(&gone, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(root.join("blocker"), "not a directory\n").unwrap();
+        let before = tree(&root);
+
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("src/lib.rs"), "version": null }, "edits": whole("mod bar;\n") },
+            { "kind": "rename", "oldUri": uri("src/foo"), "newUri": uri("src/bar"), "options": { "overwrite": false } },
+            { "textDocument": { "uri": uri("src/bar/a.rs"), "version": null }, "edits": at(1, 7, 8, "b") },
+            { "kind": "create", "uri": uri("src/new/fresh.rs") },
+            { "textDocument": { "uri": uri("src/new/fresh.rs"), "version": null }, "edits": at(0, 0, 0, "fresh\n") },
+            { "kind": "delete", "uri": uri("src/gone.rs") },
+            { "kind": "delete", "uri": uri("src/stale"), "options": { "recursive": true } },
+            { "textDocument": { "uri": uri("blocker/inner.rs"), "version": null }, "edits": whole("x\n") }
+        ]});
+
+        let err = apply_workspace_edit(&root, &edit).expect_err("the last write cannot happen");
+        assert!(format!("{err:#}").contains("put back"), "{err:#}");
+        assert_eq!(tree(&root), before, "every path and byte is as it was");
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// The same batch without the failing step lands whole, the moved directory with its edit.
+    #[test]
+    fn a_directory_move_with_an_edit_inside_it_lands_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::create_dir_all(root.join("src/foo")).unwrap();
+        std::fs::create_dir_all(root.join("src/stale/deep")).unwrap();
+        std::fs::write(root.join("src/foo/a.rs"), "// \u{1F600}\npub fn a() {}\n").unwrap();
+        std::fs::write(root.join("src/stale/deep/x.rs"), "x\n").unwrap();
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "kind": "rename", "oldUri": uri("src/foo"), "newUri": uri("src/bar") },
+            { "textDocument": { "uri": uri("src/bar/a.rs"), "version": null }, "edits": at(1, 7, 8, "b") },
+            { "kind": "delete", "uri": uri("src/stale"), "options": { "recursive": true } }
+        ]});
+        apply_workspace_edit(&root, &edit).unwrap();
+        assert!(!root.join("src/foo").exists() && !root.join("src/stale").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("src/bar/a.rs")).unwrap(),
+            "// \u{1F600}\npub fn b() {}\n"
+        );
+        let names: Vec<String> = std::fs::read_dir(root.join("src"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["bar"], "nothing set aside is left behind");
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A rename onto a file that exists, without `overwrite`, would destroy that file: it is
+    /// refused, and the edit before it is undone.
+    #[test]
+    fn a_rename_onto_an_existing_file_is_refused_and_undone() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        std::fs::write(root.join("other.rs"), "pub fn other() {}\n").unwrap();
+        let before = tree(&root);
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("lib.rs"), "version": null }, "edits": whole("changed\n") },
+            { "kind": "rename", "oldUri": uri("other.rs"), "newUri": uri("lib.rs"), "options": { "overwrite": false } }
+        ]});
+        let err = apply_workspace_edit(&root, &edit).expect_err("lib.rs exists");
+        assert!(format!("{err:#}").contains("already exists"), "{err:#}");
+        assert_eq!(tree(&root), before);
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// An analyzer that moves a file and rewrites it names the rewrite by the old path. The text
+    /// goes to the file where it now is; the old path is not brought back.
+    #[test]
+    fn an_edit_naming_a_file_the_batch_moved_follows_it() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::write(root.join("old.rs"), "use crate::old;\n").unwrap();
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "kind": "rename", "oldUri": uri("old.rs"), "newUri": uri("new.rs") },
+            { "textDocument": { "uri": uri("old.rs"), "version": null }, "edits": whole("use crate::new;\n") }
+        ]});
+        let touched = apply_workspace_edit(&root, &edit).unwrap();
+        assert_eq!(touched, vec!["old.rs", "new.rs", "new.rs"]);
+        assert!(!root.join("old.rs").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("new.rs")).unwrap(),
+            "use crate::new;\n"
+        );
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A file that cannot be read as text is not an empty one: editing it is refused before
+    /// anything is written, and its bytes stay.
+    #[test]
+    fn a_file_that_is_not_text_is_refused_not_overwritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::write(root.join("lib.rs"), "pub fn lib() {}\n").unwrap();
+        std::fs::write(root.join("blob.rs"), b"\xff\xfe binary\n").unwrap();
+        let before = tree(&root);
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edit = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("lib.rs"), "version": null }, "edits": whole("changed\n") },
+            { "textDocument": { "uri": uri("blob.rs"), "version": null }, "edits": at(0, 0, 0, "x") }
+        ]});
+        let err = apply_workspace_edit(&root, &edit).expect_err("blob.rs is not UTF-8");
+        assert!(format!("{err:#}").contains("not UTF-8"), "{err:#}");
+        assert_eq!(tree(&root), before);
+        let unknown = serde_json::json!({ "documentChanges": [
+            { "textDocument": { "uri": uri("lib.rs"), "version": null }, "edits": whole("changed\n") },
+            { "kind": "chmod", "uri": uri("lib.rs") }
+        ]});
+        let err = apply_workspace_edit(&root, &unknown).expect_err("chmod is not an LSP operation");
+        assert!(format!("{err:#}").contains("unsupported resource operation"), "{err:#}");
+        assert_eq!(tree(&root), before);
+        crate::sync::clear_sync_cache(&root);
+    }
+
+    /// A path that does not exist yet, under a directory symlinked out of the checkout, is
+    /// outside it; so is a dangling symlink inside it. Nothing is written through either.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_written_through_a_symlink_that_leads_out_of_the_checkout() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let away = std::fs::canonicalize(outside.path()).unwrap();
+        crate::sync::clear_sync_cache(&root);
+        std::fs::write(root.join("a.rs"), "pub fn a() {}\n").unwrap();
+        std::os::unix::fs::symlink(&away, root.join("link")).unwrap();
+        std::os::unix::fs::symlink(away.join("missing.rs"), root.join("dangling")).unwrap();
+        let before = tree(&root);
+        let uri = |rel: &str| format!("file://{}/{}", root.display(), rel);
+        let edits = [
+            serde_json::json!({ "changes": { uri("link/new.rs"): whole("escaped\n") } }),
+            serde_json::json!({ "documentChanges": [ { "kind": "create", "uri": uri("link/sub/new.rs") } ] }),
+            serde_json::json!({ "documentChanges": [
+                { "kind": "rename", "oldUri": uri("a.rs"), "newUri": uri("link/a.rs") } ] }),
+            serde_json::json!({ "changes": { uri("dangling"): whole("escaped\n") } }),
+        ];
+        for edit in &edits {
+            assert!(apply_workspace_edit(&root, edit).is_err(), "{edit}");
+            assert!(planned_texts(&root, edit).is_err(), "{edit}");
+            assert_eq!(tree(&root), before, "{edit}");
+            assert_eq!(tree(&away), Default::default(), "{edit}");
+        }
         crate::sync::clear_sync_cache(&root);
     }
 }
