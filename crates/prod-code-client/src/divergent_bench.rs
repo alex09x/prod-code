@@ -241,6 +241,9 @@ pub struct DivergentBenchConfig {
     /// connection without a goodbye (an agent killed mid-query) and reconnects. The run then
     /// checks that the gateway stays healthy and retires every session.
     pub churn_percent: u8,
+    /// How many worktrees to fork: a multiple of four, every [`WorktreeKind`] that many times
+    /// over four (#406).
+    pub worktrees: usize,
 }
 
 impl Default for DivergentBenchConfig {
@@ -255,6 +258,7 @@ impl Default for DivergentBenchConfig {
             mode: WorkspaceMode::Isolated,
             persistent: false,
             churn_percent: 0,
+            worktrees: 4,
         }
     }
 }
@@ -702,9 +706,24 @@ fn go_package_name(content: &str) -> Option<String> {
     })
 }
 
-fn create_worktree(origin: &Path, workdir: &Path, kind: WorktreeKind) -> Result<PathBuf> {
-    let path = workdir.join(kind.dir_name());
-    let branch = format!("divergent-bench-{}", kind.dir_name());
+/// The directory of copy `copy` (from 0) of a worktree of `kind`: `wt-signature`,
+/// `wt-signature-2`, ...
+fn copy_dir_name(kind: WorktreeKind, copy: usize) -> String {
+    match copy {
+        0 => kind.dir_name().to_string(),
+        n => format!("{}-{}", kind.dir_name(), n + 1),
+    }
+}
+
+fn create_worktree(
+    origin: &Path,
+    workdir: &Path,
+    kind: WorktreeKind,
+    copy: usize,
+) -> Result<PathBuf> {
+    let dir_name = copy_dir_name(kind, copy);
+    let path = workdir.join(&dir_name);
+    let branch = format!("divergent-bench-{dir_name}");
     let path_str = path
         .to_str()
         .ok_or_else(|| anyhow!("worktree path must be valid UTF-8: {:?}", path))?;
@@ -786,38 +805,41 @@ fn apply_mutation(
     }
 }
 
-/// Creates the origin repository, discovers the target symbol, and materializes the four
-/// diverged, mutated worktrees.
+/// Creates the origin repository, discovers the target symbol, and materializes `copies`
+/// diverged, mutated worktrees of every kind.
 pub fn setup(
     base_repo: Option<&Path>,
     workdir: &Path,
     mode: WorkspaceMode,
+    copies: usize,
 ) -> Result<DivergenceSetup> {
     let workspace_name = bench_workspace_name(base_repo);
     let origin = prepare_origin(base_repo, workdir, &workspace_name)?;
     let language = detect_language(&origin)?;
     let target = discover_target(&origin, language)?;
 
-    let mut worktrees = Vec::with_capacity(4);
-    for kind in WorktreeKind::all() {
-        let root = create_worktree(&origin, workdir, kind)?;
-        let (query_file, symbol) = apply_mutation(&root, kind, &target)?;
-        let wt_workspace_name = match mode {
-            WorkspaceMode::Shared => workspace_name.clone(),
-            // Same shape as production worktree workspaces (`<repo>--wt-<id>`), so the
-            // gateway's seeding, pruning and shared-target logic applies to the bench too.
-            WorkspaceMode::Isolated => format!(
-                "{workspace_name}--wt-{}",
-                kind.dir_name().trim_start_matches("wt-")
-            ),
-        };
-        worktrees.push(DivergentWorktree {
-            kind,
-            root,
-            query_file,
-            symbol,
-            workspace_name: wt_workspace_name,
-        });
+    let mut worktrees = Vec::with_capacity(4 * copies);
+    for copy in 0..copies {
+        for kind in WorktreeKind::all() {
+            let root = create_worktree(&origin, workdir, kind, copy)?;
+            let (query_file, symbol) = apply_mutation(&root, kind, &target)?;
+            let wt_workspace_name = match mode {
+                WorkspaceMode::Shared => workspace_name.clone(),
+                // Same shape as production worktree workspaces (`<repo>--wt-<id>`), so the
+                // gateway's seeding, pruning and shared-target logic applies to the bench too.
+                WorkspaceMode::Isolated => format!(
+                    "{workspace_name}--wt-{}",
+                    copy_dir_name(kind, copy).trim_start_matches("wt-")
+                ),
+            };
+            worktrees.push(DivergentWorktree {
+                kind,
+                root,
+                query_file,
+                symbol,
+                workspace_name: wt_workspace_name,
+            });
+        }
     }
 
     Ok(DivergenceSetup {
@@ -1184,6 +1206,12 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
     if config.queries_per_worker == 0 {
         bail!("queries_per_worker must be at least 1");
     }
+    if config.worktrees == 0 || !config.worktrees.is_multiple_of(4) {
+        bail!(
+            "--worktrees must be a multiple of 4, one copy of each mutation kind per four, got {}",
+            config.worktrees
+        );
+    }
 
     let mut owned_tempdir: Option<tempfile::TempDir> = None;
     let workdir = match &config.workdir {
@@ -1200,7 +1228,12 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
         }
     };
 
-    let setup = setup(config.base_repo.as_deref(), &workdir, config.mode)?;
+    let setup = setup(
+        config.base_repo.as_deref(),
+        &workdir,
+        config.mode,
+        config.worktrees / 4,
+    )?;
     let language = setup.target.language;
     let expect = Expectations::for_target(&setup.target);
     let worktrees = setup.worktrees;
@@ -1606,7 +1639,8 @@ mod tests {
     #[test]
     fn setup_creates_four_worktrees_with_expected_mutations() {
         let tmp = tempfile::tempdir().unwrap();
-        let setup = setup(None, tmp.path(), WorkspaceMode::Shared).expect("setup should succeed");
+        let setup =
+            setup(None, tmp.path(), WorkspaceMode::Shared, 1).expect("setup should succeed");
         assert_eq!(setup.worktrees.len(), 4);
         assert_eq!(setup.workspace_name, "fixture-divergent-bench");
         assert_eq!(setup.target.symbol, "compute_signal");
@@ -1647,7 +1681,7 @@ mod tests {
     #[test]
     fn setup_isolated_mode_names_each_worktree_workspace() {
         let tmp = tempfile::tempdir().unwrap();
-        let setup = setup(None, tmp.path(), WorkspaceMode::Isolated).unwrap();
+        let setup = setup(None, tmp.path(), WorkspaceMode::Isolated, 1).unwrap();
         let names: Vec<&str> = setup
             .worktrees
             .iter()
@@ -1664,6 +1698,30 @@ mod tests {
         );
     }
 
+    /// Two copies of every kind are eight worktrees, each with its own directory and server
+    /// workspace, the second copy mutated as the first (#406).
+    #[test]
+    fn setup_forks_every_kind_as_many_times_as_asked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let setup = setup(None, tmp.path(), WorkspaceMode::Isolated, 2).unwrap();
+        assert_eq!(setup.worktrees.len(), 8);
+        let names: std::collections::BTreeSet<&str> = setup
+            .worktrees
+            .iter()
+            .map(|w| w.workspace_name.as_str())
+            .collect();
+        assert_eq!(names.len(), 8, "{names:?}");
+        assert!(names.contains("fixture-divergent-bench--wt-signature-2"));
+        let second = setup
+            .worktrees
+            .iter()
+            .find(|w| w.root.ends_with("wt-signature-2"))
+            .unwrap();
+        assert_eq!(second.kind, WorktreeKind::SignatureChange);
+        let content = std::fs::read_to_string(&second.query_file).unwrap();
+        assert!(content.contains(MUTATED_SIGNATURE));
+    }
+
     #[tokio::test]
     async fn run_rejects_too_few_workers() {
         let config = DivergentBenchConfig {
@@ -1672,6 +1730,16 @@ mod tests {
         };
         let err = run(config).await.unwrap_err();
         assert!(err.to_string().contains("at least"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_a_worktree_count_that_is_not_a_multiple_of_four() {
+        let config = DivergentBenchConfig {
+            worktrees: 15,
+            ..DivergentBenchConfig::default()
+        };
+        let err = run(config).await.unwrap_err();
+        assert!(err.to_string().contains("multiple of 4"), "{err}");
     }
 }
 

@@ -1098,6 +1098,10 @@ enum Commands {
         /// queries (simulated agent SIGKILL) and verify the gateway retires the sessions.
         #[arg(long, default_value_t = 0)]
         churn: u8,
+        /// How many worktrees to fork, a multiple of 4: every mutation kind (untouched,
+        /// signature change, manifest change, untracked file) that many times over four.
+        #[arg(long, default_value_t = 4)]
+        worktrees: usize,
     },
 }
 
@@ -2160,6 +2164,7 @@ async fn main() -> Result<()> {
             mode,
             persistent,
             churn,
+            worktrees,
         } => {
             run_divergent_bench(DivergentBenchConfig {
                 remote,
@@ -2171,6 +2176,7 @@ async fn main() -> Result<()> {
                 mode,
                 persistent,
                 churn_percent: churn,
+                worktrees,
             })
             .await
         }

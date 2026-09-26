@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **`prod-code divergent-bench --worktrees N`** (#406). N is a multiple of 4, and the bench forks
+  every mutation kind (untouched, signature change, manifest change, untracked file) N/4 times.
+  Each copy gets its own directory, branch and server workspace (`<repo>--wt-signature-2`, ...),
+  and the workers spread over all of them. It had always been four worktrees, so the ROADMAP 2.2
+  target of 15 concurrent agent worktrees could not be measured.
 - **An optional cluster token that every connection must open with** (#402). With
   `PROD_CODE_AUTH_TOKEN` set, or `PROD_CODE_AUTH_TOKEN_FILE` naming a file that holds it,
   clients and peer gateways send the token as the first frame of every connection. A gateway
