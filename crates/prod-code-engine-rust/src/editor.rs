@@ -88,13 +88,14 @@ impl<'a> Lines<'a> {
     }
 }
 
-/// The server path a `file://` URI names.
+/// The server path a `file://` URI names, percent-decoded once.
 fn path_of(uri: &str) -> PathBuf {
-    PathBuf::from(uri.trim_start_matches("file://"))
+    prod_code_protocol::path::uri_or_path(uri)
 }
 
+/// The `file://` URI of a server path, percent-encoded.
 fn uri_of(path: &Path) -> String {
-    format!("file://{}", path.display())
+    prod_code_protocol::path::file_uri(path)
 }
 
 /// The document a request is about: its path, file id and text.
@@ -790,5 +791,21 @@ mod tests {
         );
         assert_eq!(completion_kind(CompletionItemKind::Binding), 6);
         assert_eq!(completion_kind(CompletionItemKind::Keyword), 14);
+    }
+
+    #[test]
+    fn editor_uris_round_trip_spaces_hashes_percents_and_unicode() {
+        let path = Path::new("/srv/ws/my app #1/100%41 ü/src/lib.rs");
+        let uri = uri_of(path);
+        assert_eq!(
+            uri,
+            "file:///srv/ws/my%20app%20%231/100%2541%20%C3%BC/src/lib.rs"
+        );
+        assert_eq!(path_of(&uri), path);
+        // An editor's own encoding of the same file decodes to it, once.
+        assert_eq!(
+            path_of("file:///srv/ws/my%20app%20%231/100%2541%20%c3%bc/src/lib.rs"),
+            path
+        );
     }
 }

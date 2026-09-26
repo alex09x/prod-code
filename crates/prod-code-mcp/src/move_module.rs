@@ -140,7 +140,7 @@ impl ModuleMove {
             for old in &self.removed {
                 changes.push(serde_json::json!({
                     "kind": "delete",
-                    "uri": format!("file://{}", self.root.join(old).display()),
+                    "uri": prod_code_protocol::path::file_uri(&self.root.join(old)),
                 }));
             }
         }
