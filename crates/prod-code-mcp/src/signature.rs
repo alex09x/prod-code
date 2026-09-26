@@ -751,6 +751,10 @@ pub(crate) fn in_async_fn(text: &str, at: usize) -> bool {
 }
 
 /// [`change`], with the return type and the visibility changed in the same edit.
+///
+/// A `.go` file goes to [`crate::signature_go::change_with`], which reorders named parameters
+/// through gopls and refuses everything else; it uses this module's helpers but never this
+/// function, so the dispatch is one step deep.
 #[allow(clippy::too_many_arguments)]
 pub async fn change_with(
     remote: SocketAddr,
@@ -763,6 +767,12 @@ pub async fn change_with(
     apply: bool,
     force: bool,
 ) -> Result<SignatureChange> {
+    if file.extension().is_some_and(|e| e == "go") {
+        return crate::signature_go::change_with(
+            remote, root, file, line, col, request, modifiers, apply, force,
+        )
+        .await;
+    }
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let offset =
