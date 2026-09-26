@@ -534,7 +534,12 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
     // Without rename detection a moved file is its old path deleted and its new path added:
     // what called into the old path must be accounted for. External diff drivers, text
     // conversion and the configured prefixes would change what is printed.
-    let common = ["--no-renames", "--no-ext-diff", "--no-textconv", "--no-relative"];
+    let common = [
+        "--no-renames",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+    ];
     // Every changed path with the lines git counts for it, NUL-terminated and so never quoted:
     // the list the hunks below must account for in full.
     let numstat = git(
@@ -545,7 +550,8 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
     let mut counted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for record in numstat.split(|&b| b == 0).filter(|r| !r.is_empty()) {
         let mut fields = record.splitn(3, |&b| b == b'\t');
-        let (Some(added), Some(removed), Some(path)) = (fields.next(), fields.next(), fields.next())
+        let (Some(added), Some(removed), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
         else {
             anyhow::bail!(
                 "git diff --numstat printed a record it cannot read: {}",
@@ -586,7 +592,13 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
     let diff = git(
         root,
         &[
-            &["diff", "-U0", "--no-color", "--src-prefix=a/", "--dst-prefix=b/"][..],
+            &[
+                "diff",
+                "-U0",
+                "--no-color",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+            ][..],
             &common,
             &[base, "--"],
         ]
@@ -678,14 +690,16 @@ fn diff_hunks(root: &Path, base: Option<&str>) -> Result<BTreeMap<String, Change
             continue;
         }
         let (path, unreadable_path) = path_text(path);
-        changes.entry(path).or_insert_with(|| match unreadable_path {
-            Some(why) => Change::Unknown(why),
-            None => Change::Hunks(vec![Hunk {
-                start: 1,
-                added: u32::MAX,
-                removed: 0,
-            }]),
-        });
+        changes
+            .entry(path)
+            .or_insert_with(|| match unreadable_path {
+                Some(why) => Change::Unknown(why),
+                None => Change::Hunks(vec![Hunk {
+                    start: 1,
+                    added: u32::MAX,
+                    removed: 0,
+                }]),
+            });
     }
     Ok(changes)
 }
@@ -749,6 +763,9 @@ fn collect_functions(
         ) else {
             return Err(malformed());
         };
+        if name.is_empty() || !(1..=26).contains(&kind) {
+            return Err(malformed());
+        }
         if matches!(kind, 6 | 9 | 12) && !name.is_empty() {
             let (start, end, sl, sc) = symbol_range(sym).ok_or_else(malformed)?;
             out.push((name.to_string(), start, end, sl, sc));
@@ -1104,8 +1121,9 @@ pub async fn analyze(
             Ok(serde_json::Value::Array(symbols)) => symbols,
             // The protocol's "no result": it does not say the file has no functions.
             Ok(serde_json::Value::Null) => {
-                let error = "textDocument/documentSymbol answered null, so its functions are unknown"
-                    .to_string();
+                let error =
+                    "textDocument/documentSymbol answered null, so its functions are unknown"
+                        .to_string();
                 note(
                     &mut incomplete,
                     Gap::Symbols {
@@ -1769,6 +1787,9 @@ mod tests {
         for bad in [
             serde_json::json!(42),
             serde_json::json!({ "kind": 12 }),
+            serde_json::json!({ "name": "", "kind": 12 }),
+            serde_json::json!({ "name": "f", "kind": 0 }),
+            serde_json::json!({ "name": "f", "kind": 99 }),
             serde_json::json!({ "name": "f" }),
             serde_json::json!({ "name": "f", "kind": 12 }),
             function(serde_json::json!(-1)),

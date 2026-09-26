@@ -219,6 +219,9 @@ fn collect(
         ) else {
             return Err(malformed());
         };
+        if name.is_empty() || !(1..=26).contains(&kind) {
+            return Err(malformed());
+        }
         let container = match sym.get("containerName") {
             None | Some(serde_json::Value::Null) => String::new(),
             Some(serde_json::Value::String(c)) => c.to_ascii_lowercase(),
@@ -443,6 +446,9 @@ mod tests {
         for bad in [
             serde_json::json!(null),
             serde_json::json!({ "kind": 12 }),
+            serde_json::json!({ "name": "", "kind": 12 }),
+            serde_json::json!({ "name": "f", "kind": 0 }),
+            serde_json::json!({ "name": "f", "kind": 99 }),
             serde_json::json!({ "name": "f", "kind": "12" }),
             serde_json::json!({ "name": "f", "kind": 12 }),
             serde_json::json!({ "name": "f", "kind": 12, "containerName": 3 }),

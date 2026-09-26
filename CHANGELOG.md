@@ -10,6 +10,11 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
+  unattributed changes, failed hierarchy queries or a depth limit leave the selection
+  incomplete (#434). It includes directly changed tests, all call-hierarchy items and
+  Git-quoted filenames. Dead-code scans mark failed or malformed analyzer answers as
+  unverified; pruning keeps those symbols and files (#435).
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,

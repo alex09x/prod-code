@@ -1052,12 +1052,10 @@ async fn a_binary_source_change_runs_the_whole_suite_and_a_mode_change_does_not(
         ("src/blob.rs", "\0binary\n"),
     ]);
     let root = ws.root();
-    let remote = ScriptedGateway::start_arc(impact_script(
-        &ws.path("src/lib.rs"),
-        the_real_callers,
-    ))
-    .await
-    .addr();
+    let remote =
+        ScriptedGateway::start_arc(impact_script(&ws.path("src/lib.rs"), the_real_callers))
+            .await
+            .addr();
 
     std::fs::set_permissions(
         ws.path("src/lib.rs"),
@@ -1186,7 +1184,10 @@ async fn a_call_without_a_readable_caller_makes_ci_run_the_whole_suite() {
     let cases = [
         from(None, good.clone()),
         from(Some(""), good.clone()),
-        from(Some("wrapper"), serde_json::json!({ "line": -1, "character": 7 })),
+        from(
+            Some("wrapper"),
+            serde_json::json!({ "line": -1, "character": 7 }),
+        ),
         from(
             Some("wrapper"),
             serde_json::json!({ "line": 4_294_967_300u64, "character": 7 }),
@@ -1228,15 +1229,16 @@ async fn the_callers_of_every_call_hierarchy_item_are_walked() {
     let lib = ws.path("src/lib.rs");
     ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
     let uri = format!("file://{}", lib.display());
-    let items = move |params: &serde_json::Value, second: serde_json::Value| {
-        match params.pointer("/position/line").and_then(|l| l.as_u64()) {
-            Some(0) => serde_json::json!([
-                { "name": "helper", "uri": uri, "_id": "helper-declaration" },
-                second,
-            ]),
-            Some(4) => serde_json::json!([{ "name": "wrapper", "uri": uri, "_id": "wrapper" }]),
-            _ => serde_json::json!([]),
-        }
+    let items = move |params: &serde_json::Value, second: serde_json::Value| match params
+        .pointer("/position/line")
+        .and_then(|l| l.as_u64())
+    {
+        Some(0) => serde_json::json!([
+            { "name": "helper", "uri": uri, "_id": "helper-declaration" },
+            second,
+        ]),
+        Some(4) => serde_json::json!([{ "name": "wrapper", "uri": uri, "_id": "wrapper" }]),
+        _ => serde_json::json!([]),
     };
     let definition = serde_json::json!({ "name": "helper", "_id": "helper" });
 
@@ -1418,7 +1420,7 @@ async fn find_dead_code_stops_at_the_file_limit_and_marks_the_scan_truncated() {
 }
 
 /// [`DEAD_LIB`] with the analyzer failing in every way it can: a request that fails, a `null`
-/// (no symbol searched for), an answer of the wrong shape, and a second file whose symbols
+/// (no result), an answer of the wrong shape, and a second file whose symbols
 /// cannot be listed. Only the successful empty list makes a symbol unreferenced. `safe_deletes`
 /// counts the deletions pruning asks for.
 async fn failing_dead_code_gateway(
@@ -1503,7 +1505,9 @@ async fn a_symbol_the_analyzer_could_not_answer_for_is_unverified_not_dead() {
     assert!(report.unverified[1].reason.contains("null"));
     // `null` is the protocol's "no result": it does not prove nothing was searched for.
     assert!(
-        !report.unverified[1].reason.contains("no symbol was searched"),
+        !report.unverified[1]
+            .reason
+            .contains("no symbol was searched"),
         "{}",
         report.unverified[1].reason
     );
@@ -1560,9 +1564,7 @@ async fn a_malformed_symbol_list_leaves_its_file_unverified_and_unpruned() {
         ("src/quiet.rs", "fn quiet() {}\n"),
     ]);
     let root = ws.root();
-    let lonely = |start: serde_json::Value| {
-        serde_json::json!({ "name": "lonely", "kind": 12, "selectionRange": { "start": start } })
-    };
+    let lonely = |start: serde_json::Value| serde_json::json!({ "name": "lonely", "kind": 12, "selectionRange": { "start": start } });
     let at = |line: serde_json::Value| serde_json::json!({ "line": line, "character": 3 });
     let gateway = |lib: serde_json::Value, quiet: serde_json::Value| {
         let deletes = Arc::new(AtomicUsize::new(0));
@@ -1613,6 +1615,8 @@ async fn a_malformed_symbol_list_leaves_its_file_unverified_and_unpruned() {
         serde_json::json!([lonely(at(serde_json::json!(-1)))]),
         serde_json::json!([lonely(serde_json::json!({ "line": 0 }))]),
         serde_json::json!([{ "name": "lonely", "kind": 12 }]),
+        serde_json::json!([{ "name": "", "kind": 12 }]),
+        serde_json::json!([{ "name": "lonely", "kind": 99 }]),
         serde_json::json!([42, lonely(at(serde_json::json!(0)))]),
         serde_json::json!([{ "name": "Holder", "kind": 23,
             "selectionRange": { "start": { "line": 0, "character": 0 } },
