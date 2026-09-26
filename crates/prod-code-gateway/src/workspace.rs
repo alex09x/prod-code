@@ -811,6 +811,102 @@ pub fn sanitize_identifier(s: &str) -> String {
     }
 }
 
+/// How long a workspace directory has gone unused: since its last-used marker, or the directory
+/// itself when it has none.
+fn idle_for(path: &Path, now: SystemTime) -> Duration {
+    std::fs::metadata(path.join(LAST_USED_MARKER))
+        .or_else(|_| std::fs::metadata(path))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| now.duration_since(t).ok())
+        .unwrap_or_default()
+}
+
+/// The share of the filesystem holding `path` that is free for use (0.0 to 1.0); `None` when it
+/// cannot be read.
+pub fn free_share(path: &Path) -> Option<f64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `statvfs` only writes the struct it is given, and the path is NUL-terminated.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    let total = stat.f_blocks as f64 * stat.f_frsize as f64;
+    (total > 0.0).then(|| stat.f_bavail as f64 * stat.f_frsize as f64 / total)
+}
+
+/// How long a worktree copy must have gone unused before it may be removed to free space: one in
+/// use between two sessions stays.
+const SPACE_PRUNE_MIN_IDLE: Duration = Duration::from_secs(3600);
+
+/// Removes idle `<repo>--wt-*` copies that are not loaded, oldest first, while the storage
+/// filesystem has less than `min_free` (a share of its size) free, however young they are: they
+/// are rebuildable, and a client whose worktree comes back resyncs. Forty-seven of them filled a
+/// 913 GB disk in two days, well before any was seven days idle, and the full disk then truncated
+/// synced files (#385, #386). `free` reads the free share. Returns the removed paths.
+pub async fn prune_worktree_dirs_for_space(
+    storage_root: &Path,
+    min_free: f64,
+    manager: &WorkspaceManager,
+    free: impl Fn(&Path) -> Option<f64>,
+) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    let Some(mut share) = free(storage_root) else {
+        return removed;
+    };
+    if share >= min_free {
+        return removed;
+    }
+    let Ok(entries) = std::fs::read_dir(storage_root) else {
+        return removed;
+    };
+    let now = SystemTime::now();
+    let mut candidates: Vec<(Duration, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !path.is_dir() || !name.contains("--wt-") || manager.is_loaded(&path).await {
+            continue;
+        }
+        let idle = idle_for(&path, now);
+        if idle >= SPACE_PRUNE_MIN_IDLE {
+            candidates.push((idle, path));
+        }
+    }
+    candidates.sort_by_key(|(idle, _)| std::cmp::Reverse(*idle));
+    for (idle, path) in candidates {
+        if share >= min_free {
+            break;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                let before = share;
+                share = free(storage_root).unwrap_or(share);
+                tracing::info!(
+                    workspace = %path.display(),
+                    idle_hours = idle.as_secs() / 3600,
+                    free_before = %format!("{:.1}%", before * 100.0),
+                    free_after = %format!("{:.1}%", share * 100.0),
+                    "🧹 pruned a worktree workspace to free disk space"
+                );
+                removed.push(path);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, workspace = %path.display(), "failed to prune worktree workspace")
+            }
+        }
+    }
+    if share < min_free {
+        tracing::warn!(
+            free = %format!("{:.1}%", share * 100.0),
+            wanted = %format!("{:.1}%", min_free * 100.0),
+            "storage is still low on space after pruning idle worktree copies"
+        );
+    }
+    removed
+}
+
 /// Resolve client workspace path or worktree path to the canonical server workspace root.
 pub fn resolve_server_workspace(
     storage_root: &Path,
@@ -859,13 +955,7 @@ pub async fn prune_stale_worktree_dirs(
         if manager.is_loaded(&path).await {
             continue;
         }
-        let stamp = std::fs::metadata(path.join(LAST_USED_MARKER))
-            .or_else(|_| std::fs::metadata(&path))
-            .and_then(|m| m.modified())
-            .ok();
-        let idle = stamp
-            .and_then(|t| now.duration_since(t).ok())
-            .unwrap_or_default();
+        let idle = idle_for(&path, now);
         if idle < max_age {
             continue;
         }
@@ -1319,6 +1409,59 @@ mod tests {
         assert_eq!(manager.loaded_count().await, 2);
         assert!(manager.is_loaded(Path::new("/srv/ws/busy")).await);
         assert!(!manager.is_loaded(Path::new("/srv/ws/idle")).await);
+    }
+
+    /// Low on space, idle worktree copies go oldest first until enough is free, however young;
+    /// one used within the hour and the main copy stay (#386).
+    #[tokio::test]
+    async fn worktree_copies_are_pruned_oldest_first_when_space_runs_low() {
+        let temp = tempfile::tempdir().unwrap();
+        let storage = temp.path();
+        let manager = WorkspaceManager::new();
+        let aged = |name: &str, hours: u64| {
+            let dir = storage.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            touch_last_used(&dir);
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(LAST_USED_MARKER))
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(hours * 3600))
+                .unwrap();
+            dir
+        };
+        let oldest = aged("repo--wt-00000001", 44);
+        let older = aged("repo--wt-00000002", 30);
+        let old = aged("repo--wt-00000003", 25);
+        let in_use = aged("repo--wt-00000004", 0);
+        let main = aged("repo", 100);
+        // Every copy removed frees ten points: 5% free with four copies, 25% with two left.
+        let copies = |root: &Path| {
+            std::fs::read_dir(root)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().contains("--wt-"))
+                .count() as f64
+        };
+        let free = |root: &Path| Some(0.05 + 0.10 * (4.0 - copies(root)));
+
+        let removed = prune_worktree_dirs_for_space(storage, 0.20, &manager, free).await;
+        assert_eq!(removed, vec![oldest.clone(), older.clone()]);
+        assert!(old.exists() && in_use.exists() && main.exists());
+
+        // With enough free, nothing goes.
+        let plenty = |_: &Path| Some(0.50);
+        assert!(
+            prune_worktree_dirs_for_space(storage, 0.20, &manager, plenty)
+                .await
+                .is_empty()
+        );
+        // Out of candidates, the one in use still stays.
+        let full = |_: &Path| Some(0.0);
+        let rest = prune_worktree_dirs_for_space(storage, 0.20, &manager, full).await;
+        assert_eq!(rest, vec![old.clone()]);
+        assert!(in_use.exists() && main.exists());
+        assert!(free_share(storage).is_some_and(|share| (0.0..=1.0).contains(&share)));
     }
 
     #[tokio::test]

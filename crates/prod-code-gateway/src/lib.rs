@@ -122,6 +122,11 @@ pub struct ServerCli {
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
     pub prune_worktree_days: u64,
 
+    /// Below this share of free space (percent) on the storage filesystem, idle worktree copies
+    /// are deleted oldest first, however young, until it is reached again (0 disables) (#386).
+    #[arg(long, env = "PROD_CODE_PRUNE_BELOW_FREE_PERCENT", default_value_t = 15)]
+    pub prune_below_free_percent: u64,
+
     /// Only serve these engines (comma-separated: rust, go, cpp, swift, python, typescript).
     /// The node advertises nothing else, so placement never sends other work here, and a
     /// handshake for another engine is refused. Empty: every installed engine.
@@ -4988,7 +4993,12 @@ async fn gossip_loop(state: Arc<ServerState>) {
     }
 }
 
-async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_days: u64) {
+async fn janitor(
+    state: Arc<ServerState>,
+    idle_evict_secs: u64,
+    prune_worktree_days: u64,
+    prune_below_free_percent: u64,
+) {
     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
     ticker.tick().await;
     loop {
@@ -5010,6 +5020,15 @@ async fn janitor(state: Arc<ServerState>, idle_evict_secs: u64, prune_worktree_d
                 &state.storage_root,
                 std::time::Duration::from_secs(prune_worktree_days * 86_400),
                 &state.workspace_manager,
+            )
+            .await;
+        }
+        if prune_below_free_percent > 0 {
+            workspace::prune_worktree_dirs_for_space(
+                &state.storage_root,
+                prune_below_free_percent as f64 / 100.0,
+                &state.workspace_manager,
+                workspace::free_share,
             )
             .await;
         }
@@ -5089,6 +5108,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         Arc::clone(&state),
         cli.idle_evict_secs,
         cli.prune_worktree_days,
+        cli.prune_below_free_percent,
     ));
 
     // A gateway is stopped by its supervisor (launchd, systemd) and by a deploy script, both

@@ -15,6 +15,12 @@
   with `--compile`, 3 × E0603 in 10.4 s. The `compile` description now names that case.
 
 ### Fixed
+- **Worktree copies no longer fill a build node's disk** (#386). The gateway deleted a
+  `<repo>--wt-*` copy only after 7 idle days; 47 copies of 13–21 GB (446 GB) filled a 913 GB disk
+  in two days, none older than 5.3 days. Below `PROD_CODE_PRUNE_BELOW_FREE_PERCENT` free (15 by
+  default, 0 disables) the janitor now deletes idle copies that are not loaded, oldest first,
+  however young (never one used within the hour), until the share is back, logging each with its
+  idle time and the free space before and after.
 - **A full disk no longer empties the files a sync writes** (#385). The gateway wrote a synced
   file with `fs::write`, which truncates first, and ignored a failure: on a node whose disk had
   filled, 22 files of one checkout were left 0 bytes while the sync reported success and the
