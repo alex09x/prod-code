@@ -759,10 +759,16 @@ impl WorkspaceManager {
                     ws.active_sessions.fetch_add(1, Ordering::Relaxed);
                     LeaderSession(Some(Arc::clone(&ws)))
                 });
-                self.workspaces
-                    .write()
-                    .await
-                    .insert(key, LoadState::Ready(Arc::clone(&ws)));
+                let mut guard = self.workspaces.write().await;
+                if !matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx)) {
+                    drop(guard);
+                    let reason = "the workspace was unloaded while its engine was loading; retry the request";
+                    let _ = tx.send(Err(reason.to_string()));
+                    let _ = leader.send(Err(anyhow::anyhow!(reason)));
+                    return;
+                }
+                guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
+                drop(guard);
                 if let Some(session) = session {
                     let _ = leader.send(Ok(session));
                 }
@@ -1853,6 +1859,53 @@ mod tests {
             "returned once the load ended"
         );
         assert!(manager.get_loaded(&root).await.is_some());
+    }
+
+    /// An unloaded in-flight engine cannot replace a later load of the same path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_unloaded_load_cannot_publish_over_its_replacement() {
+        let SlowLoader {
+            load,
+            mut started,
+            gate,
+            loads,
+        } = slow_loader();
+        let manager =
+            Arc::new(WorkspaceManager::with_admission(roomy_admission()).with_rust_loader(load));
+        let root = PathBuf::from("/srv/ws/replaced");
+        let attach = || {
+            let manager = Arc::clone(&manager);
+            let root = root.clone();
+            tokio::spawn(async move { manager.get_or_load(&root, "rust").await })
+        };
+        let old = attach();
+        started.recv().await.unwrap();
+        assert_eq!(manager.unload_under(&root).await, 1);
+        let fresh = attach();
+        started.recv().await.unwrap();
+        gate.send(()).unwrap();
+        let old_result = tokio::time::timeout(Duration::from_secs(30), old)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            old_result.is_err(),
+            "an unloaded engine was published as ready"
+        );
+        assert!(
+            manager.get_loaded(&root).await.is_none(),
+            "the newer load is still pending"
+        );
+        gate.send(()).unwrap();
+        let current = tokio::time::timeout(Duration::from_secs(30), fresh)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let registered = manager.get_loaded(&root).await.unwrap();
+        assert!(Arc::ptr_eq(&current, &registered));
+        assert_eq!(current.active_sessions.load(Ordering::Relaxed), 1);
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
     }
 
     /// A load that panics, here while it reads the host's memory, is answered like one that
