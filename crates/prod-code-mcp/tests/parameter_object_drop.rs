@@ -65,6 +65,22 @@ async fn later(a: Guard, b: Guard) {
     println!(\"later {} {}\", a.0, b.0);
 }
 
+async /* the future owns both
+of them */ fn noted(a: Guard, b: Guard) {
+    println!(\"noted {} {}\", a.0, b.0);
+}
+
+pub(crate)
+async
+fn spread(a: Guard, b: Guard) {
+    println!(\"spread {} {}\", a.0, b.0);
+}
+
+pub(crate) // async once
+/* not async */ fn plain(a: Guard, b: Guard) {
+    println!(\"plain {} {}\", a.0, b.0);
+}
+
 fn main() {
     take(Guard(\"A\"), Guard(\"B\"));
     around(Guard(\"X\"), Guard(\"A\"), Guard(\"B\"), Guard(\"Y\"));
@@ -79,11 +95,14 @@ fn main() {
     let (first, middle, last) = (Guard(\"A\"), Guard(\"X\"), Guard(\"B\"));
     apart(first, middle, last);
     drop(later(Guard(\"A\"), Guard(\"B\")));
+    drop(noted(Guard(\"A\"), Guard(\"B\")));
+    drop(spread(Guard(\"A\"), Guard(\"B\")));
+    plain(Guard(\"A\"), Guard(\"B\"));
 }
 ";
 
-/// What `DROPS` prints: `B` before `A` at the end of every call, and the future of `later`,
-/// dropped before it is polled, dropping `A` before `B`.
+/// What `DROPS` prints: `B` before `A` at the end of every call, and the futures of `later`,
+/// `noted` and `spread`, dropped before they are polled, dropping `A` before `B`.
 const PRINTED: &str = "take A B
 drop B
 drop A
@@ -122,6 +141,13 @@ drop X
 drop A
 drop A
 drop B
+drop A
+drop B
+drop A
+drop B
+plain A B
+drop B
+drop A
 ";
 
 /// The 1-based line and column of byte `at`.
@@ -204,13 +230,14 @@ async fn gateway(file: &Path, text: &str) -> SocketAddr {
 }
 
 fn workspace(edition: &str) -> Workspace {
-    Workspace::new(&[
-        (
-            "Cargo.toml",
-            &format!("[package]\nname = \"drops\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"),
-        ),
-        ("src/main.rs", DROPS),
-    ])
+    manifest(&format!(
+        "[package]\nname = \"drops\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+    ))
+}
+
+/// A crate of `DROPS` whose manifest is `cargo_toml`.
+fn manifest(cargo_toml: &str) -> Workspace {
+    Workspace::new(&[("Cargo.toml", cargo_toml), ("src/main.rs", DROPS)])
 }
 
 /// Bundles `params` of `function` in `src/main.rs` into `name`, bound as `binding`.
@@ -221,7 +248,19 @@ async fn bundle(
     name: &str,
     apply: bool,
 ) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
-    let file = ws.path("src/main.rs");
+    bundle_in(ws, "src/main.rs", function, params, name, apply).await
+}
+
+/// Bundles `params` of `function` in `rel`, a copy of `DROPS`, into `name`.
+async fn bundle_in(
+    ws: &Workspace,
+    rel: &str,
+    function: &str,
+    params: &[&str],
+    name: &str,
+    apply: bool,
+) -> anyhow::Result<prod_code_mcp::parameter_object::ParameterObject> {
+    let file = ws.path(rel);
     let remote = gateway(&file, DROPS).await;
     let at = DROPS
         .find(&format!("fn {function}("))
@@ -338,6 +377,13 @@ async fn neighbours_moves_early_returns_and_closures_keep_the_drop_order() {
             "pub struct Labels<'a> {\n    pub name: &'a str,\n    pub count: u32,\n}",
         ),
         ("hold", &["a", "b"], "Pair", "let g = pair.a;"),
+        // `async` only in comments: a function that runs at once, bundled like `take`.
+        (
+            "plain",
+            &["a", "b"],
+            "Pair",
+            "pub(crate) // async once\n/* not async */ fn plain(pair: Pair) {",
+        ),
     ];
     for (function, params, name, expected) in cases {
         let done = bundle(&ws, function, params, name, false)
@@ -386,6 +432,23 @@ async fn an_order_no_struct_keeps_is_refused_before_anything_is_written() {
     assert!(err.contains("nothing was rewritten"), "{err}");
     assert_eq!(ws.read("src/main.rs"), DROPS, "nothing was written");
 
+    // `async` a line above `fn`, or apart from it by a comment, is as `async` as `later`.
+    for function in ["noted", "spread"] {
+        let err = bundle(&ws, function, &["a", "b"], "Pair", true)
+            .await
+            .expect_err("an `async` function written over several lines");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains(&format!(
+                "`{function}` is `async`: a future dropped before it is polled drops the \
+                 parameters that may have a destructor in the order `a`, `b`"
+            )),
+            "{function}: {err}"
+        );
+        assert!(err.contains("nothing was rewritten"), "{err}");
+    }
+    assert_eq!(ws.read("src/main.rs"), DROPS, "nothing was written");
+
     let old = workspace("2018");
     let err = bundle(&old, "hold", &["a", "b"], "Pair", true)
         .await
@@ -404,4 +467,73 @@ async fn an_order_no_struct_keeps_is_refused_before_anything_is_written() {
         .expect("a body without a closure is bundled in edition 2018 too");
     let text = main_rs(&done);
     assert_eq!(run(&text, "2018"), PRINTED, "{text}");
+}
+
+/// The edition is the one Cargo reads from the manifest: text that only looks like an `edition`
+/// key does not make a crate 2021, a workspace named by `package.workspace` outside the crate's
+/// directories is where an inherited edition comes from, and a manifest Cargo could not read
+/// refuses a closure rather than guess.
+#[tokio::test]
+async fn the_edition_is_the_one_cargo_reads_from_the_manifest() {
+    // No `edition` key: Cargo builds it as 2015, whatever the description says.
+    let quoted = manifest(
+        "[package]\nname = \"drops\"\nversion = \"0.1.0\"\ndescription = \"\"\"\nedition = \
+         \"2021\"\n[workspace.package]\nedition = \"2024\"\n\"\"\"\n\n[package.metadata.docs]\n\
+         edition = \"2021\"\n",
+    );
+    let err = bundle(&quoted, "hold", &["a", "b"], "Pair", true)
+        .await
+        .expect_err("a crate of edition 2015 captures all of `pair`");
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("`hold` is in a crate of edition 2015, where a closure"),
+        "{err}"
+    );
+    assert_eq!(quoted.read("src/main.rs"), DROPS, "nothing was written");
+
+    // Inherited from a workspace that is not an ancestor, spelled as an inline table.
+    let apart = Workspace::new(&[
+        (
+            "ws/Cargo.toml",
+            "[workspace]\nmembers = [\"../drops\"]\n\n[workspace.package] # the members'\n\
+             'edition' = \"2021\"\n",
+        ),
+        (
+            "drops/Cargo.toml",
+            "[package]\nname = \"drops\"\nversion = \"0.1.0\"\nworkspace = \"../ws\"\n\
+             edition = { workspace = true } # from ../ws\n",
+        ),
+        ("drops/src/main.rs", DROPS),
+    ]);
+    let done = bundle_in(
+        &apart,
+        "drops/src/main.rs",
+        "hold",
+        &["a", "b"],
+        "Pair",
+        false,
+    )
+    .await
+    .expect("the workspace's edition 2021 captures only `pair.a`");
+    let text = main_rs(&done);
+    assert!(text.contains("let g = pair.a;"), "{text}");
+    assert_eq!(run(&text, "2021"), PRINTED, "{text}");
+
+    // A manifest Cargo rejects: a closure is refused, a body without one is still bundled.
+    let broken = manifest("[package]\nname = \"drops\"\nedition = \"2021\"\nedition = \"2021\"\n");
+    let err = bundle(&broken, "hold", &["a", "b"], "Pair", true)
+        .await
+        .expect_err("an unreadable manifest has no edition to rely on");
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("cannot tell which edition the crate of `hold` is in"),
+        "{err}"
+    );
+    assert!(err.contains("nothing was rewritten"), "{err}");
+    assert_eq!(broken.read("src/main.rs"), DROPS, "nothing was written");
+    let done = bundle(&broken, "take", &["a", "b"], "Pair", false)
+        .await
+        .expect("a body without a closure does not depend on the edition");
+    let text = main_rs(&done);
+    assert_eq!(run(&text, "2021"), PRINTED, "{text}");
 }

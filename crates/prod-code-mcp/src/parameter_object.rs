@@ -550,9 +550,8 @@ fn drop_order(
         was.reverse();
         units.reverse();
     }
-    let owned_only = |order: Vec<usize>| -> Vec<usize> {
-        order.into_iter().filter(|i| owned[*i]).collect()
-    };
+    let owned_only =
+        |order: Vec<usize>| -> Vec<usize> { order.into_iter().filter(|i| owned[*i]).collect() };
     (owned_only(was), owned_only(units.concat()))
 }
 
@@ -588,36 +587,226 @@ fn dropped_differently(
     )
 }
 
-/// The edition of the crate `file` belongs to: its manifest's, or its workspace's where the
-/// manifest inherits it, and 2015 where neither says, as Cargo reads it.
-fn rust_edition(file: &Path) -> u32 {
-    let mut section = "[package]";
-    for dir in file.ancestors().skip(1) {
-        let Ok(manifest) = std::fs::read_to_string(dir.join("Cargo.toml")) else {
-            continue;
-        };
-        let Some(at) = manifest.find(section) else {
-            continue;
-        };
-        let table = &manifest[at + section.len()..];
-        let table = &table[..table.find("\n[").unwrap_or(table.len())];
-        let Some(value) = table
-            .lines()
-            .find_map(|l| l.trim().strip_prefix("edition"))
-        else {
-            return 2015;
-        };
-        if value.contains("workspace") {
-            section = "[workspace.package]";
-            continue;
+/// `code` (Rust source) with every comment and the inside of every string and character literal
+/// made spaces, so that what is left is code at the same offsets. A string keeps its quotes.
+/// Block comments nest, as in Rust, and `'a` is a lifetime rather than a character.
+fn rust_code(code: &str) -> Vec<u8> {
+    let mut out = code.as_bytes().to_vec();
+    let bytes = code.as_bytes();
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let mut blank = |from: usize, to: usize| out[from..to].fill(b' ');
+    let mut i = 0;
+    while i < bytes.len() {
+        let rest = &bytes[i..];
+        if rest.starts_with(b"//") {
+            let end = line_end(bytes, i);
+            blank(i, end);
+            i = end;
+        } else if rest.starts_with(b"/*") {
+            let (mut j, mut depth) = (i + 2, 1);
+            while j < bytes.len() && depth > 0 {
+                if bytes[j..].starts_with(b"/*") {
+                    depth += 1;
+                    j += 2;
+                } else if bytes[j..].starts_with(b"*/") {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            let j = j.min(bytes.len());
+            blank(i, j);
+            i = j;
+        } else if bytes[i] == b'r'
+            && (i == 0
+                || !word(bytes[i - 1])
+                || (matches!(bytes[i - 1], b'b' | b'c') && (i == 1 || !word(bytes[i - 2]))))
+            && rest[1..].iter().find(|b| **b != b'#') == Some(&b'"')
+        {
+            // A raw string: no escapes, and it ends at a quote with as many `#` as it began.
+            let hashes = rest[1..].iter().take_while(|b| **b == b'#').count();
+            let open = i + 1 + hashes;
+            let close: Vec<u8> = std::iter::once(b'"')
+                .chain(std::iter::repeat_n(b'#', hashes))
+                .collect();
+            let end = find_bytes(&bytes[open + 1..], &close).map_or(bytes.len(), |n| open + 1 + n);
+            blank(i + 1, open);
+            blank(open + 1, end);
+            if end < bytes.len() {
+                blank(end + 1, end + close.len());
+            }
+            i = (end + close.len()).min(bytes.len());
+        } else if bytes[i] == b'"'
+            || (bytes[i] == b'\''
+                && (bytes
+                    .get(i + 1)
+                    .is_some_and(|n| *n != b'_' && !n.is_ascii_alphabetic())
+                    || bytes.get(i + 2) == Some(&b'\'')))
+        {
+            let quote = bytes[i];
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j] != quote {
+                j += if bytes[j] == b'\\' { 2 } else { 1 };
+            }
+            let j = j.min(bytes.len());
+            blank(i + 1, j);
+            i = j + 1;
+        } else {
+            i += 1;
         }
-        return value
-            .trim_start_matches(['=', ' ', '"'])
-            .get(..4)
-            .and_then(|year| year.parse().ok())
-            .unwrap_or(2015);
     }
-    2015
+    out
+}
+
+/// The token of `code` (blanked by [`rust_code`]) that ends at `*end`, whitespace skipped: a
+/// name, a string, or one other character; `*end` moves to its start.
+fn token_before<'a>(code: &'a [u8], end: &mut usize) -> Option<&'a [u8]> {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    while *end > 0 && code[*end - 1].is_ascii_whitespace() {
+        *end -= 1;
+    }
+    let stop = *end;
+    match code[..stop].last()? {
+        b if word(*b) => {
+            while *end > 0 && word(code[*end - 1]) {
+                *end -= 1;
+            }
+        }
+        // The ABI of `extern "C"`, whose inside is blank.
+        b'"' => *end = code[..stop - 1].iter().rposition(|b| *b == b'"')?,
+        _ => *end -= 1,
+    }
+    Some(&code[*end..stop])
+}
+
+/// Whether the Rust function whose name starts at `name` is declared `async`: its qualifiers are
+/// read back from `fn` over line breaks and comments (`pub(crate)\nasync /* … */ fn`), and an
+/// `async` in a comment or a string is not one. `None` where no `fn` comes before the name.
+fn declared_async(text: &str, name: usize) -> Option<bool> {
+    let code = rust_code(&text[..name]);
+    let mut end = code.len();
+    if token_before(&code, &mut end)? != b"fn" {
+        return None;
+    }
+    while let Some(token) = token_before(&code, &mut end) {
+        match token {
+            b"async" => return Some(true),
+            b"const" | b"unsafe" | b"safe" | b"extern" | b"default" => {}
+            t if t.first() == Some(&b'"') => {}
+            _ => break,
+        }
+    }
+    Some(false)
+}
+
+/// The manifest in `dir`, parsed; `None` where there is none.
+fn manifest_in(dir: &Path) -> Option<Result<toml::Table, String>> {
+    let path = dir.join("Cargo.toml");
+    if !path.is_file() {
+        return None;
+    }
+    Some(
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))
+            .and_then(|text| {
+                text.parse::<toml::Table>()
+                    .map_err(|e| format!("{} is not valid TOML: {}", path.display(), e.message()))
+            }),
+    )
+}
+
+/// The edition of the crate `file` belongs to, as Cargo reads it: the `package.edition` of the
+/// nearest manifest, 2015 where it has none, and with `edition.workspace = true` the
+/// `workspace.package.edition` of the workspace that `package.workspace` names or, without it,
+/// of the nearest manifest from the crate's directory up that has a `[workspace]`.
+///
+/// Where that cannot be told — no manifest, one that is not valid TOML or has no `[package]`,
+/// a workspace that does not say, an edition this check does not know — the error says why,
+/// and the caller must not assume one.
+fn rust_edition(file: &Path) -> Result<u32, String> {
+    let (dir, manifest) = file
+        .ancestors()
+        .skip(1)
+        .find_map(|dir| Some((dir, manifest_in(dir)?)))
+        .ok_or_else(|| format!("no Cargo.toml in a directory above {}", file.display()))?;
+    let path = dir.join("Cargo.toml");
+    let manifest = manifest?;
+    let package = manifest
+        .get("package")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| format!("{} has no [package]", path.display()))?;
+    let (edition, from) = match package.get("edition") {
+        None => return Ok(2015),
+        Some(toml::Value::Table(inherit)) => {
+            if inherit.len() != 1
+                || inherit.get("workspace").and_then(toml::Value::as_bool) != Some(true)
+            {
+                return Err(format!(
+                    "`package.edition` in {} is neither a string nor `{{ workspace = true }}`",
+                    path.display()
+                ));
+            }
+            let root = match package.get("workspace") {
+                Some(toml::Value::String(to)) => dir.join(to),
+                Some(_) => {
+                    return Err(format!(
+                        "`package.workspace` in {} is not a path",
+                        path.display()
+                    ));
+                }
+                None => {
+                    let mut found = None;
+                    for up in dir.ancestors() {
+                        match manifest_in(up) {
+                            Some(Ok(m))
+                                if m.get("workspace").is_some_and(toml::Value::is_table) =>
+                            {
+                                found = Some(up.to_path_buf());
+                                break;
+                            }
+                            Some(Err(e)) => return Err(e),
+                            _ => {}
+                        }
+                    }
+                    found.ok_or_else(|| {
+                        format!(
+                            "{} inherits `edition` from its workspace, and no Cargo.toml from its \
+                             directory up has a [workspace]",
+                            path.display()
+                        )
+                    })?
+                }
+            };
+            let root_path = root.join("Cargo.toml");
+            let workspace = manifest_in(&root)
+                .unwrap_or_else(|| Err(format!("there is no {}", root_path.display())))?;
+            let edition = workspace
+                .get("workspace")
+                .and_then(|w| w.get("package"))
+                .and_then(|p| p.get("edition"))
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "{} inherits `edition` from {}, which has no `workspace.package.edition`",
+                        path.display(),
+                        root_path.display()
+                    )
+                })?;
+            (edition, root_path)
+        }
+        Some(edition) => (edition.clone(), path),
+    };
+    match edition.as_str() {
+        Some("2015") => Ok(2015),
+        Some("2018") => Ok(2018),
+        Some("2021") => Ok(2021),
+        Some("2024") => Ok(2024),
+        _ => Err(format!(
+            "the edition {edition} in {} is not one this check knows",
+            from.display()
+        )),
+    }
 }
 
 /// Bundles `params` of the function at `file:line:col` into a struct called `name`.
@@ -715,10 +904,10 @@ pub async fn introduce(
     } else {
         bundled.clone()
     };
+    // Where the qualifiers cannot be read, the function is taken to be `async`: that only
+    // refuses more.
+    let is_async = declared_async(&text, offset).unwrap_or(true);
     let item_line_start = text[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let is_async = text[item_line_start..offset]
-        .split_whitespace()
-        .any(|w| w == "async");
     let quoted = |list: &[usize]| -> String {
         list.iter()
             .map(|i| format!("`{}`", declared[*i].name))
@@ -749,20 +938,29 @@ pub async fn introduce(
         .and_then(|b| matching_bracket(&text, close + b))
         .map_or("", |end| &text[close..end]);
     if !owned_bundled.is_empty() && (body.contains('|') || body.contains("async")) {
-        let edition = rust_edition(file);
-        anyhow::ensure!(
-            edition >= 2021,
-            "`{callee}` is in a crate of edition {edition}, where a closure or an `async` block \
-             that uses a field of `{binding}` captures all of it, and would keep {} (whose types \
-             may have a destructor) until it is dropped rather than drop them when `{callee}` \
-             returns (#441). Bundle them in edition 2021 or later, or from a body without \
-             closures; nothing was rewritten",
-            owned_bundled
-                .iter()
-                .map(|n| format!("`{n}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let kept = owned_bundled
+            .iter()
+            .map(|n| format!("`{n}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        match rust_edition(file) {
+            Ok(edition) => anyhow::ensure!(
+                edition >= 2021,
+                "`{callee}` is in a crate of edition {edition}, where a closure or an `async` \
+                 block that uses a field of `{binding}` captures all of it, and would keep {kept} \
+                 (whose types may have a destructor) until it is dropped rather than drop them \
+                 when `{callee}` returns (#441). Bundle them in edition 2021 or later, or from a \
+                 body without closures; nothing was rewritten"
+            ),
+            Err(why) => anyhow::bail!(
+                "cannot tell which edition the crate of `{callee}` is in ({why}); before edition \
+                 2021 a closure or an `async` block that uses a field of `{binding}` captures all \
+                 of it, and would keep {kept} (whose types may have a destructor) until it is \
+                 dropped rather than drop them when `{callee}` returns (#441). Give the crate's \
+                 Cargo.toml an `edition` Cargo accepts, or bundle from a body without closures; \
+                 nothing was rewritten"
+            ),
+        }
     }
 
     let laid_out: Vec<(String, String)> = if reverse {
@@ -5111,7 +5309,14 @@ mod tests {
         ] {
             assert!(!may_drop(inert), "{inert}");
         }
-        for owned in ["Guard", "String", "T", "impl Drop", "(u8, Guard)", "[Guard; 2]"] {
+        for owned in [
+            "Guard",
+            "String",
+            "T",
+            "impl Drop",
+            "(u8, Guard)",
+            "[Guard; 2]",
+        ] {
             assert!(may_drop(owned), "{owned}");
         }
     }
@@ -5156,10 +5361,133 @@ mod tests {
             "a/Cargo.toml",
             "[package]\nname = \"a\"\nedition.workspace = true\n",
         );
-        at("b/Cargo.toml", "[package]\nname = \"b\"\nedition = \"2018\"\n");
-        at("c/Cargo.toml", "[package]\nname = \"c\"\n\n[dependencies]\n");
-        assert_eq!(rust_edition(&at("a/src/lib.rs", "")), 2024);
-        assert_eq!(rust_edition(&at("b/src/lib.rs", "")), 2018);
-        assert_eq!(rust_edition(&at("c/src/lib.rs", "")), 2015);
+        at(
+            "b/Cargo.toml",
+            "[package]\nname = \"b\"\nedition = \"2018\"\n",
+        );
+        at(
+            "c/Cargo.toml",
+            "[package]\nname = \"c\"\n\n[dependencies]\n",
+        );
+        // Spellings TOML allows: an inline table, quoted keys, literal strings, comments.
+        at(
+            "d/Cargo.toml",
+            "package = { name = 'd', edition = '2021' } # [package] edition = \"2015\"\n",
+        );
+        at(
+            "e/Cargo.toml",
+            "[package]\n\"name\" = \"e\"\n'edition' = \"2018\" # old\n",
+        );
+        // An explicit workspace outside the crate's directories wins over the ancestor's 2024.
+        at(
+            "f/Cargo.toml",
+            "[package]\nname = \"f\"\nworkspace = \"../g/ws\"\nedition = { workspace = true }\n",
+        );
+        at(
+            "g/ws/Cargo.toml",
+            "[workspace.package]\nedition = \"2021\"\n\n[workspace]\nmembers = [\"../../f\"]\n",
+        );
+        // Text that only looks like an edition: in a string, another table, another key.
+        at(
+            "h/Cargo.toml",
+            "[package]\nname = \"h\"\ndescription = '''\n[package]\nedition = \"2024\"\n'''\n\
+             editions = \"2021\"\n\n[package.metadata.x]\nedition = \"2024\"\n",
+        );
+        assert_eq!(rust_edition(&at("a/src/lib.rs", "")), Ok(2024));
+        assert_eq!(rust_edition(&at("b/src/lib.rs", "")), Ok(2018));
+        assert_eq!(rust_edition(&at("c/src/lib.rs", "")), Ok(2015));
+        assert_eq!(rust_edition(&at("d/src/lib.rs", "")), Ok(2021));
+        assert_eq!(rust_edition(&at("e/src/bin/x.rs", "")), Ok(2018));
+        assert_eq!(rust_edition(&at("f/src/lib.rs", "")), Ok(2021));
+        assert_eq!(rust_edition(&at("h/src/lib.rs", "")), Ok(2015));
+
+        // What Cargo would reject, or what does not say, is not an edition.
+        let unknown = [
+            (
+                "i",
+                "[package]\nname = \"i\"\nedition = \"2027\"\n",
+                "not one this check knows",
+            ),
+            (
+                "j",
+                "[package]\nname = \"j\"\nedition = 2021\n",
+                "not one this check knows",
+            ),
+            ("k", "[package\nedition = \"2021\"\n", "is not valid TOML"),
+            (
+                "l",
+                "[package]\nedition = \"2021\"\nedition = \"2021\"\n",
+                "is not valid TOML",
+            ),
+            ("m", "[workspace]\nmembers = []\n", "has no [package]"),
+            (
+                "n",
+                "[package]\nname = \"n\"\nedition = { workspace = false }\n",
+                "neither a string nor",
+            ),
+            (
+                "o",
+                "[package]\nname = \"o\"\nworkspace = \"../c\"\nedition.workspace = true\n",
+                "which has no `workspace.package.edition`",
+            ),
+            (
+                "p",
+                "[package]\nname = \"p\"\nworkspace = \"../missing\"\nedition.workspace = true\n",
+                "there is no",
+            ),
+        ];
+        for (krate, manifest, why) in unknown {
+            at(&format!("{krate}/Cargo.toml"), manifest);
+            let err = rust_edition(&at(&format!("{krate}/src/lib.rs"), ""))
+                .expect_err(&format!("{krate}: {manifest}"));
+            assert!(err.contains(why), "{krate}: {err}");
+        }
+
+        // A member whose workspace has no `[workspace.package]` edition to give.
+        let bare = tempfile::tempdir().expect("a directory");
+        std::fs::write(bare.path().join("Cargo.toml"), "[workspace]\n").expect("write");
+        std::fs::create_dir_all(bare.path().join("q/src")).expect("mkdir");
+        std::fs::write(
+            bare.path().join("q/Cargo.toml"),
+            "[package]\nname = \"q\"\nedition.workspace = true\n",
+        )
+        .expect("write");
+        let err = rust_edition(&bare.path().join("q/src/lib.rs")).expect_err("nothing to inherit");
+        assert!(
+            err.contains("which has no `workspace.package.edition`"),
+            "{err}"
+        );
+    }
+
+    /// `async` is read from the qualifiers before `fn`, over line breaks and comments; in a
+    /// comment, a string or another item it does not count.
+    #[test]
+    fn a_function_is_async_by_its_qualifiers_not_by_its_comments() {
+        let at = |text: &str| declared_async(text, text.find("f(").expect("a name"));
+        for text in [
+            "async fn f(a: A) {}",
+            "pub(crate)\nasync\nfn f(a: A) {}",
+            "async /* the future\nowns both */ fn f(a: A) {}",
+            "pub async unsafe extern \"C\" fn f(a: A) {}",
+            "const async // why\nunsafe fn f(a: A) {}",
+            "impl T {\n    async\n    fn f(a: A) {}\n}",
+            "'a: loop {}\nlet c = '\"';\npub async fn f(a: A) {}",
+        ] {
+            assert_eq!(at(text), Some(true), "{text}");
+        }
+        for text in [
+            "fn f(a: A) {}",
+            "/* async */ fn f(a: A) {}",
+            "pub(crate) // async once\n/* not async */ fn f(a: A) {}",
+            "// async\nfn f(a: A) {}",
+            "/* async /* nested */ async */ fn f(a: A) {}",
+            "#[doc = \"async\"]\nfn f(a: A) {}",
+            "const S: &str = r#\"\" async \"#;\nfn f(a: A) {}",
+            "async fn g() {}\nfn f(a: A) {}",
+            "unsafe extern \"C\" fn f(a: A) {}",
+        ] {
+            assert_eq!(at(text), Some(false), "{text}");
+        }
+        assert_eq!(at("x f(a: A)"), None);
     }
 }
