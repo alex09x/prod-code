@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+- **References of a dependency's item asked at its declaration** (#373). `refs --symbol` lands on
+  the declaration inside the dependency, where the server finds nothing to search for; an empty
+  answer there is now asked again from a use in the checkout whose definition is that declaration,
+  and says so. `refs --symbol DataBTC7` in a Rust checkout: "No references found" before, 40
+  references in 1.1 s after. A file no target compiles costs two of the search's 40 questions.
+- **A position on no name is an error** (#373) that shows the line, instead of "No references
+  found"; an empty answer at a name says which name and line it was. `prod-code refs FILE LINE COL`
+  goes through the same code as `code_references`.
+
 ### Changed
 - **`impact` runs Go tests in their packages** (#371): `go test ./internal/push -run ...` instead
   of `go test ./... -run ...`, which built every package's tests to run a filter most of them never

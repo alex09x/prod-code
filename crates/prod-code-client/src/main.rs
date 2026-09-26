@@ -3078,52 +3078,16 @@ async fn run_implementations(remote: SocketAddr, file: &Path, line: u32, col: u3
     Ok(())
 }
 
+/// `refs FILE LINE COL`: answered by the MCP tool, which refuses a position on no name and asks
+/// a dependency's item from its uses in the checkout (#373).
 async fn run_references(remote: SocketAddr, file: &Path, line: u32, col: u32) -> Result<()> {
-    let abs_path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let file_uri = Url::from_file_path(&abs_path)
-        .map_err(|_| anyhow::anyhow!("Invalid file path"))?
-        .to_string();
-
-    let lsp_line = line.saturating_sub(1);
-    let lsp_col = col.saturating_sub(1);
-
-    let params = serde_json::json!({
-        "textDocument": { "uri": file_uri },
-        "position": { "line": lsp_line, "character": lsp_col },
-        "context": { "includeDeclaration": false }
+    let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let args = serde_json::json!({
+        "path": file.to_string_lossy(),
+        "line": line,
+        "character": col,
     });
-
-    let result = execute_lsp_query(remote, file, "textDocument/references", params).await?;
-
-    if let Some(arr) = result.as_array() {
-        if arr.is_empty() {
-            println!("No references found.");
-        } else {
-            println!("Found {} reference(s):", arr.len());
-            for loc in arr {
-                let uri = loc.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-                let start_line = loc
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("line"))
-                    .and_then(|l| l.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                let start_col = loc
-                    .get("range")
-                    .and_then(|r| r.get("start"))
-                    .and_then(|s| s.get("character"))
-                    .and_then(|c| c.as_u64())
-                    .unwrap_or(0)
-                    + 1;
-                println!("  • {uri}:{start_line}:{start_col}");
-            }
-        }
-    } else {
-        println!("{:#}", result);
-    }
-
-    Ok(())
+    run_tool(remote, "code_references", args).await
 }
 
 async fn run_symbols(

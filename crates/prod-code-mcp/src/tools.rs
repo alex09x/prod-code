@@ -2075,6 +2075,18 @@ async fn handle_references(
     let file_uri = Url::from_file_path(&file_path)
         .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", file_path))?
         .to_string();
+    // A position on no name has no references: "No references found" read as "nothing uses
+    // this" when it meant "you pointed at nothing" (#373).
+    let line_text = position_line(remote, workspace_root, &file_path, line).await;
+    if let Some(text) = &line_text
+        && name_at(text, character).is_none()
+    {
+        anyhow::bail!(
+            "{path_str}:{line}:{character} is on no name; the line reads `{}`. Give the position of \
+             a use or a declaration, or pass `symbol`",
+            text.trim()
+        );
+    }
     let params = serde_json::json!({
         "textDocument": { "uri": file_uri },
         "position": { "line": line.saturating_sub(1), "character": character.saturating_sub(1) },
@@ -2089,6 +2101,38 @@ async fn handle_references(
     )
     .await?;
     let mut out = String::new();
+    // A dependency's item asked about at its own declaration (where `symbol` lands) can come
+    // back with nothing while its uses in the checkout have references: ask from a use (#373).
+    if res.as_array().is_none_or(|a| a.is_empty())
+        && crate::remote_fs::is_external(workspace_root, &file_path.to_string_lossy())
+        && let Some(name) = line_text.as_deref().and_then(|t| name_at(t, character))
+        && let Some((use_path, use_line, use_col)) =
+            checkout_use_of(remote, workspace_root, &file_path, line, &name).await
+    {
+        let use_uri = Url::from_file_path(&use_path)
+            .map_err(|_| anyhow::anyhow!("Invalid file path for URI: {:?}", use_path))?
+            .to_string();
+        res = execute_lsp_query(
+            remote,
+            workspace_root,
+            &use_path,
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": use_uri },
+                "position": { "line": use_line - 1, "character": use_col - 1 },
+                "context": { "includeDeclaration": include_decl }
+            }),
+        )
+        .await?;
+        out.push_str(&format!(
+            "(asked from a use of `{name}` in the checkout, {}:{use_line}:{use_col}: at the \
+             dependency's own declaration the server found none)\n",
+            use_path
+                .strip_prefix(workspace_root)
+                .unwrap_or(&use_path)
+                .display()
+        ));
+    }
     if res.as_array().is_none_or(|a| a.is_empty())
         && let Some((built, note)) = build_swift_index(remote, workspace_root, &file_path).await
     {
@@ -2105,9 +2149,17 @@ async fn handle_references(
             .await?;
         }
     }
+    // An empty answer says what the position stood on, so a position one line off (an
+    // attribute above the function) shows as such (#373).
+    let stood_on = line_text
+        .as_deref()
+        .and_then(|text| Some((name_at(text, character)?, text.trim())))
+        .map(|(name, text)| format!("\n(the position is on `{name}`; the line reads `{text}`)"))
+        .unwrap_or_default();
     if let Some(arr) = res.as_array() {
         if arr.is_empty() {
             out.push_str("No references found.");
+            out.push_str(&stood_on);
         } else {
             out.push_str(&format!("Found {} reference(s):\n", arr.len()));
             for loc in arr {
@@ -2131,8 +2183,143 @@ async fn handle_references(
         }
     } else {
         out.push_str("No references found.");
+        out.push_str(&stood_on);
     }
     Ok(McpToolCallResult::text(out.trim_end()))
+}
+
+/// The text of 1-based `line` of `file`: read here, or from the node for a file only the node
+/// has (a dependency's source). `None` when it cannot be read.
+async fn position_line(remote: SocketAddr, root: &Path, file: &Path, line: u32) -> Option<String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(_) if crate::remote_fs::is_external(root, &file.to_string_lossy()) => {
+            let (bytes, _) = crate::remote_fs::read_remote_file(remote, &file.to_string_lossy(), 0)
+                .await
+                .ok()?;
+            String::from_utf8_lossy(&bytes).into_owned()
+        }
+        Err(_) => return None,
+    };
+    text.lines()
+        .nth((line as usize).checked_sub(1)?)
+        .map(str::to_string)
+}
+
+/// The name a 1-based `character` of a line stands on, or just after (where an editor's cursor
+/// sits at the end of a word). `None` for a position on no name.
+fn name_at(line: &str, character: u32) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let is_name = |c: &char| c.is_alphanumeric() || *c == '_';
+    let at = (character as usize).checked_sub(1)?;
+    let at = if chars.get(at).is_some_and(is_name) {
+        at
+    } else if at > 0 && chars.get(at - 1).is_some_and(is_name) {
+        at - 1
+    } else {
+        return None;
+    };
+    let start = chars[..at]
+        .iter()
+        .rposition(|c| !is_name(c))
+        .map_or(0, |i| i + 1);
+    let end = chars[at..]
+        .iter()
+        .position(|c| !is_name(c))
+        .map_or(chars.len(), |i| at + i);
+    Some(chars[start..end].iter().collect())
+}
+
+/// The most places in the checkout asked for their definition when looking for a use.
+const MAX_USES_ASKED: usize = 40;
+
+/// The most places in one file asked: a file no target compiles answers none of them, and a name
+/// that resolves elsewhere in a file means the same elsewhere through the rest of it.
+const MAX_USES_ASKED_PER_FILE: usize = 2;
+
+/// A use in the checkout of the item declared at 1-based `line` of `declaration` (a file only
+/// the node has): a place in a source file of the same language where `name` stands as a word
+/// and whose definition is that line (#373). 1-based line and column.
+async fn checkout_use_of(
+    remote: SocketAddr,
+    root: &Path,
+    declaration: &Path,
+    line: u32,
+    name: &str,
+) -> Option<(std::path::PathBuf, u32, u32)> {
+    let language = crate::sync::engine_for_file(declaration)?;
+    let declared = declaration.to_string_lossy().into_owned();
+    let wanted: Vec<char> = name.chars().collect();
+    let is_name = |c: Option<&char>| c.is_some_and(|c| c.is_alphanumeric() || *c == '_');
+    let mut asked = 0usize;
+    let candidates = source_files(root)
+        .filter(|path| crate::sync::engine_for_file(path) == Some(language))
+        .take(MAX_SCANNED_FILES);
+    for path in candidates {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !names_word(&text, name) {
+            continue;
+        }
+        let uri = Url::from_file_path(&path).ok()?.to_string();
+        let uses = text.lines().enumerate().flat_map(|(index, text_line)| {
+            let chars: Vec<char> = text_line.chars().collect();
+            (0..chars.len())
+                .filter(|&col| {
+                    chars[col..].starts_with(&wanted)
+                        && !(col > 0 && is_name(chars.get(col - 1)))
+                        && !is_name(chars.get(col + wanted.len()))
+                })
+                .map(move |col| (index, col))
+                .collect::<Vec<_>>()
+        });
+        for (index, col) in uses.take(MAX_USES_ASKED_PER_FILE) {
+            asked += 1;
+            if asked > MAX_USES_ASKED {
+                return None;
+            }
+            let params = serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": index, "character": col }
+            });
+            let Ok(found) =
+                execute_lsp_query(remote, root, &path, "textDocument/definition", params).await
+            else {
+                continue;
+            };
+            if definition_is(&found, &declared, line.saturating_sub(1)) {
+                return Some((path, index as u32 + 1, col as u32 + 1));
+            }
+            if found.as_array().is_some_and(|a| !a.is_empty()) || found.is_object() {
+                // The name means another item in this file.
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// Whether a `textDocument/definition` answer (a location, a list of them, or of links) names
+/// 0-based `line` of the file at `path`.
+fn definition_is(found: &serde_json::Value, path: &str, line: u32) -> bool {
+    let locations: Vec<&serde_json::Value> = match found {
+        serde_json::Value::Array(all) => all.iter().collect(),
+        serde_json::Value::Object(_) => vec![found],
+        _ => Vec::new(),
+    };
+    locations.iter().any(|location| {
+        let uri = location
+            .get("uri")
+            .or_else(|| location.get("targetUri"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        let start = location
+            .pointer("/range/start/line")
+            .or_else(|| location.pointer("/targetSelectionRange/start/line"))
+            .and_then(|l| l.as_u64());
+        crate::remote_fs::uri_to_path(uri) == path && start == Some(line as u64)
+    })
 }
 
 async fn handle_source(remote: SocketAddr, args: &serde_json::Value) -> Result<McpToolCallResult> {
