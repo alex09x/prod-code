@@ -1140,30 +1140,39 @@ async fn cli_diagnoses_assertion_failure_and_exposes_additive_fields_in_json() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
     *gw.custom_exec.lock().unwrap() = Some(
-        b"running 1 test\ntest tests::it_fails ... FAILED\n\nfailures:\n\n---- tests::it_fails stdout ----\n\nthread 'tests::it_fails' panicked at src/lib.rs:13:9:\nassertion `left == right` failed\n  left: 4\n right: 5\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\nfailures:\n    tests::it_fails\n\ntest result: FAILED. 0 passed; 1 failed; 0 filtered out; finished in 0.00s\n".to_vec(),
+        b"running 2 tests\ntest tests::it_panics ... FAILED\ntest tests::it_fails ... FAILED\n\nfailures:\n\n---- tests::it_panics stdout ----\n\nthread 'tests::it_panics' (4101) panicked at src/lib.rs:9:9:\nboom without values\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- tests::it_fails stdout ----\n\nthread 'tests::it_fails' (4102) panicked at src/lib.rs:13:9:\nassertion `left == right` failed\n  left: 4\n right: 5\n\nfailures:\n    tests::it_fails\n    tests::it_panics\n\ntest result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n".to_vec(),
     );
 
     let out = run_cli(&ws, gw.addr, &["diagnose"]).await;
     assert_eq!(out.status.code(), Some(1));
     let stdout_text = stdout_of(&out);
-    assert!(stdout_text.contains("assertion [assert_eq"));
-    assert!(stdout_text.contains("actual: 4, expected: 5"));
+    assert!(stdout_text.contains("assertion [assert_eq (left == right)]: left: 4, right: 5\n"));
+    assert!(!stdout_text.contains("actual:"));
 
     let out_json = run_cli(&ws, gw.addr, &["diagnose", "--json"]).await;
     assert_eq!(out_json.status.code(), Some(1));
     let val: serde_json::Value = serde_json::from_slice(&out_json.stdout).expect("valid json");
-    assert_eq!(val["tests_failed"], 1);
+    assert_eq!(val["tests_failed"], 2);
     let dossiers = val["dossiers"].as_array().expect("dossiers array");
-    assert_eq!(dossiers.len(), 1);
-    let assertion = &dossiers[0]["assertion"];
+    assert_eq!(dossiers.len(), 2);
+    // The ordinary panic keeps its raw output and gets no other test's assertion.
+    assert_eq!(dossiers[0]["test"], "tests::it_panics");
+    assert!(dossiers[0]["output"].as_str().unwrap().contains("boom without values"));
+    assert!(dossiers[0].get("assertion").is_none());
+    assert_eq!(dossiers[1]["test"], "tests::it_fails");
+    let assertion = &dossiers[1]["assertion"];
     assert_eq!(assertion["format"], "assert_eq");
     assert_eq!(assertion["expression"], "left == right");
     assert_eq!(assertion["left"], "4");
     assert_eq!(assertion["right"], "5");
-    assert_eq!(assertion["actual"], "4");
-    assert_eq!(assertion["expected"], "5");
+    // `assert_eq!` takes either order, so neither operand is called actual or expected.
+    assert!(assertion.get("actual").is_none());
+    assert!(assertion.get("expected").is_none());
     assert_eq!(assertion["operands"], serde_json::json!(["4", "5"]));
-    assert!(assertion["excerpt"].as_str().unwrap().contains("left: 4"));
+    assert_eq!(
+        assertion["excerpt"],
+        "assertion `left == right` failed\n  left: 4\n right: 5"
+    );
 }
 
 #[tokio::test]

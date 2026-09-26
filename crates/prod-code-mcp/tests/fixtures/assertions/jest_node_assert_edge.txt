@@ -1,0 +1,122 @@
+FAIL test/b.test.js
+  ✕ multiline string (7 ms)
+  ✕ long array (2 ms)
+  ✕ custom message
+  ✕ received label text
+
+  ● multiline string
+
+    assert.strictEqual(received, expected)
+
+    Expected value to strictly be equal to:
+      "line one
+    line 2"
+    Received:
+      "line one
+    line two"
+
+    Difference:
+
+    - Expected
+    + Received
+
+      line one
+    - line 2
+    + line two
+
+      1 | const assert = require("node:assert");
+    > 2 | test("multiline string", () => { assert.strictEqual("line one\nline two", "line one\nline 2"); });
+        |                                         ^
+      3 | test("long array", () => { assert.deepStrictEqual([1,2,3,4,5,6,7,8,9,10,11,12], [1,2,3,4,5,6,7,8,9,10,11,13]); });
+      4 | test("custom message", () => { assert.strictEqual(1, 2, "numbers must match"); });
+      5 | test("received label text", () => { assert.strictEqual("Received:", "x"); });
+
+      at Object.strictEqual (test/b.test.js:2:41)
+
+  ● long array
+
+    assert.deepStrictEqual(received, expected)
+
+    Expected value to deeply and strictly equal to:
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]
+    Received:
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]
+
+    Difference:
+
+    - Expected
+    + Received
+
+    @@ -8,7 +8,7 @@
+        7,
+        8,
+        9,
+        10,
+        11,
+    -   13,
+    +   12,
+      ]
+
+      1 | const assert = require("node:assert");
+      2 | test("multiline string", () => { assert.strictEqual("line one\nline two", "line one\nline 2"); });
+    > 3 | test("long array", () => { assert.deepStrictEqual([1,2,3,4,5,6,7,8,9,10,11,12], [1,2,3,4,5,6,7,8,9,10,11,13]); });
+        |                                   ^
+      4 | test("custom message", () => { assert.strictEqual(1, 2, "numbers must match"); });
+      5 | test("received label text", () => { assert.strictEqual("Received:", "x"); });
+      6 |
+
+      at Object.deepStrictEqual (test/b.test.js:3:35)
+
+  ● custom message
+
+    assert.strictEqual(received, expected)
+
+    Expected value to strictly be equal to:
+      2
+    Received:
+      1
+
+    Message:
+      numbers must match
+
+    1 !== 2
+
+      2 | test("multiline string", () => { assert.strictEqual("line one\nline two", "line one\nline 2"); });
+      3 | test("long array", () => { assert.deepStrictEqual([1,2,3,4,5,6,7,8,9,10,11,12], [1,2,3,4,5,6,7,8,9,10,11,13]); });
+    > 4 | test("custom message", () => { assert.strictEqual(1, 2, "numbers must match"); });
+        |                                       ^
+      5 | test("received label text", () => { assert.strictEqual("Received:", "x"); });
+      6 |
+
+      at Object.strictEqual (test/b.test.js:4:39)
+
+  ● received label text
+
+    assert.strictEqual(received, expected)
+
+    Expected value to strictly be equal to:
+      "x"
+    Received:
+      "Received:"
+
+    Difference:
+
+    - Expected
+    + Received
+
+    - x
+    + Received:
+
+      3 | test("long array", () => { assert.deepStrictEqual([1,2,3,4,5,6,7,8,9,10,11,12], [1,2,3,4,5,6,7,8,9,10,11,13]); });
+      4 | test("custom message", () => { assert.strictEqual(1, 2, "numbers must match"); });
+    > 5 | test("received label text", () => { assert.strictEqual("Received:", "x"); });
+        |                                            ^
+      6 |
+
+      at Object.strictEqual (test/b.test.js:5:44)
+
+Test Suites: 1 failed, 1 total
+Tests:       4 failed, 4 total
+Snapshots:   0 total
+Time:        0.277 s, estimated 1 s
+Ran all test suites matching /test\/b.test.js/i.

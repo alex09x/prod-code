@@ -32,10 +32,11 @@ pub struct AssertionEvidence {
     /// The expression from the assertion if actually present in failure output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expression: Option<String>,
-    /// Exact printed actual value as a string.
+    /// Exact printed actual value, only where the assertion itself names that role (Node's
+    /// `actual`); Rust's `assert_eq!` takes either order, so it leaves this unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual: Option<String>,
-    /// Exact printed expected value as a string.
+    /// Exact printed expected value, under the same rule as `actual`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected: Option<String>,
     /// Exact printed left operand as a string.
@@ -67,47 +68,26 @@ impl AssertionEvidence {
             }
         };
 
-        let mut out = String::new();
-        if let (Some(left), Some(right)) = (&self.left, &self.right) {
-            if self.actual.is_some() && self.expected.is_some() {
-                let act = self.actual.as_deref().unwrap_or(left);
-                let exp = self.expected.as_deref().unwrap_or(right);
-                if let Some(expr) = &self.expression {
-                    out.push_str(&format!(
-                        "assertion [{} ({expr})]: actual: {}, expected: {}\n",
-                        self.format,
-                        short_val(act),
-                        short_val(exp)
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "assertion [{}]: actual: {}, expected: {}\n",
-                        self.format,
-                        short_val(act),
-                        short_val(exp)
-                    ));
-                }
-            } else if let Some(expr) = &self.expression {
-                out.push_str(&format!(
-                    "assertion [{} ({expr})]: left: {}, right: {}\n",
-                    self.format,
-                    short_val(left),
-                    short_val(right)
-                ));
-            } else {
-                out.push_str(&format!(
-                    "assertion [{}]: left: {}, right: {}\n",
-                    self.format,
-                    short_val(left),
-                    short_val(right)
-                ));
-            }
-        } else if let Some(expr) = &self.expression {
-            out.push_str(&format!("assertion [{}]: {expr}\n", self.format));
-        } else {
-            out.push_str(&format!("assertion [{}]\n", self.format));
+        let label = match &self.expression {
+            Some(expr) => format!("{} ({expr})", self.format),
+            None => self.format.clone(),
+        };
+        match (&self.actual, &self.expected, &self.left, &self.right) {
+            (Some(actual), Some(expected), _, _) => format!(
+                "assertion [{label}]: actual: {}, expected: {}\n",
+                short_val(actual),
+                short_val(expected)
+            ),
+            (_, _, Some(left), Some(right)) => format!(
+                "assertion [{label}]: left: {}, right: {}\n",
+                short_val(left),
+                short_val(right)
+            ),
+            _ => match &self.expression {
+                Some(expr) => format!("assertion [{}]: {expr}\n", self.format),
+                None => format!("assertion [{}]\n", self.format),
+            },
         }
-        out
     }
 }
 
@@ -505,8 +485,8 @@ pub async fn diagnose(
                     callers,
                 });
             }
-            let assertion = parse_assertion_evidence(&failure.output)
-                .or_else(|| parse_assertion_evidence(&report.tail));
+            // Only this failure's own output: the run's tail holds other tests' assertions.
+            let assertion = parse_assertion_evidence(&failure.output);
             dossiers.push(FailureDossier {
                 test: failure.name.clone(),
                 output: failure.output.clone(),
@@ -657,487 +637,340 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Parses structured runtime assertion evidence from test failure output.
-/// Supports Rust `assert_eq!` / `assert_ne!`, Node `strictEqual` / `deepStrictEqual`,
-/// pytest literal comparisons, and Go testify comparisons.
-/// Never evaluates expressions or guesses omitted values.
+/// Parses structured assertion evidence from one test's failure output: Rust `assert_eq!` /
+/// `assert_ne!` panics, and Node `assert.strictEqual` / `assert.deepStrictEqual` failures as
+/// Node prints the error's own fields, as jest reprints them, or as Node's short `a !== b`
+/// message. A value is taken only where the printed layout shows where it starts and ends; an
+/// incomplete block or a value the printer elided yields `None`. Nothing is evaluated.
 pub fn parse_assertion_evidence(output: &str) -> Option<AssertionEvidence> {
     if output.trim().is_empty() {
         return None;
     }
-    let raw_lines: Vec<&str> = output.lines().collect();
-    let stripped_lines: Vec<String> = raw_lines.iter().map(|l| strip_ansi(l)).collect();
-
-    if let Some(ev) = parse_rust_assertion(&raw_lines, &stripped_lines) {
-        return Some(ev);
-    }
-    if let Some(ev) = parse_node_assertion(&raw_lines, &stripped_lines) {
-        return Some(ev);
-    }
-    if let Some(ev) = parse_testify_assertion(&raw_lines, &stripped_lines) {
-        return Some(ev);
-    }
-    if let Some(ev) = parse_pytest_assertion(&raw_lines, &stripped_lines) {
-        return Some(ev);
-    }
-
-    None
+    let raw: Vec<&str> = output.lines().collect();
+    let stripped: Vec<String> = raw.iter().map(|l| strip_ansi(l)).collect();
+    parse_rust_assertion(&raw, &stripped)
+        .or_else(|| parse_node_error_fields(&raw, &stripped))
+        .or_else(|| parse_jest_node_assert(&raw, &stripped))
+        .or_else(|| parse_node_short_message(&raw, &stripped))
 }
 
-fn parse_rust_assertion(
-    raw_lines: &[&str],
-    stripped_lines: &[String],
-) -> Option<AssertionEvidence> {
-    let mut header_idx = None;
-    let mut is_ne = false;
-    let mut expression = None;
+/// The raw lines `from..=to`, escape sequences included.
+fn raw_excerpt(raw: &[&str], from: usize, to: usize) -> String {
+    raw[from..=to].join("\n")
+}
 
-    for (i, line) in stripped_lines.iter().enumerate() {
-        if line.starts_with("---- ") && line.ends_with(" stdout ----") {
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.starts_with("assertion `") || trimmed.starts_with("assertion failed:") {
-            if trimmed.contains("left != right") || trimmed.contains("(left != right)") {
-                is_ne = true;
-                header_idx = Some(i);
-                expression = Some("left != right".to_string());
-                break;
-            } else if trimmed.contains("left == right") || trimmed.contains("(left == right)") {
-                is_ne = false;
-                header_idx = Some(i);
-                expression = Some("left == right".to_string());
-                break;
-            } else if let Some(between) = extract_between_backticks(trimmed) {
-                if between.contains("!=") {
-                    is_ne = true;
-                    header_idx = Some(i);
-                    expression = Some(between.to_string());
-                    break;
-                } else if between.contains("==") {
-                    is_ne = false;
-                    header_idx = Some(i);
-                    expression = Some(between.to_string());
-                    break;
-                }
-            }
-        }
-    }
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
 
-    let header_idx = header_idx?;
-
-    // Look for `left:`
-    let mut left_line_idx = None;
-    for i in (header_idx + 1)..stripped_lines.len() {
-        let trimmed = stripped_lines[i].trim();
-        if is_test_boundary(trimmed) {
+/// `assert_eq!` / `assert_ne!` since Rust 1.73:
+/// "assertion `left == right` failed[: message]\n  left: {:?}\n right: {:?}". The operands keep
+/// the macro's names: either one may be the expected value, so no actual/expected is claimed.
+fn parse_rust_assertion(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+    let (header, is_ne) = stripped.iter().enumerate().find_map(|(i, line)| {
+        let (is_ne, rest) =
+            if let Some(rest) = line.strip_prefix("assertion `left == right` failed") {
+                (false, rest)
+            } else {
+                (true, line.strip_prefix("assertion `left != right` failed")?)
+            };
+        (rest.trim_end().is_empty() || rest.starts_with(": ")).then_some((i, is_ne))
+    })?;
+    // The panic message ends at the first blank line, the backtrace note or another panic.
+    let end = (header + 1..stripped.len())
+        .find(|&i| {
+            let line = &stripped[i];
+            line.trim().is_empty()
+                || line.starts_with("note: run with ")
+                || line.starts_with("stack backtrace:")
+                || line.starts_with("thread '")
+        })
+        .unwrap_or(stripped.len());
+    // A custom message may hold a "  left: " line of its own; the operands are the last pair.
+    let (left_at, right_at) = (header + 1..end).rev().find_map(|j| {
+        if !stripped[j].starts_with("  left: ") {
             return None;
         }
-        if stripped_lines[i].trim_start().starts_with("left:") {
-            left_line_idx = Some(i);
-            break;
-        }
-    }
-    let left_line_idx = left_line_idx?;
-
-    let mut left_lines = Vec::new();
-    let first_left = stripped_lines[left_line_idx]
-        .trim_start()
-        .strip_prefix("left:")
-        .unwrap_or("")
-        .trim_start();
-    left_lines.push(first_left.to_string());
-
-    let mut right_line_idx = None;
-    for i in (left_line_idx + 1)..stripped_lines.len() {
-        let trimmed = stripped_lines[i].trim();
-        if is_test_boundary(trimmed) {
-            return None;
-        }
-        if stripped_lines[i].trim_start().starts_with("right:") {
-            right_line_idx = Some(i);
-            break;
-        }
-        left_lines.push(stripped_lines[i].clone());
-    }
-    let right_line_idx = right_line_idx?;
-
-    let mut right_lines = Vec::new();
-    let first_right = stripped_lines[right_line_idx]
-        .trim_start()
-        .strip_prefix("right:")
-        .unwrap_or("")
-        .trim_start();
-    right_lines.push(first_right.to_string());
-
-    let mut end_idx = stripped_lines.len();
-    for i in (right_line_idx + 1)..stripped_lines.len() {
-        let trimmed = stripped_lines[i].trim();
-        if is_rust_end_boundary(trimmed) {
-            end_idx = i;
-            break;
-        }
-        if trimmed.is_empty()
-            && i + 1 < stripped_lines.len()
-            && is_rust_end_boundary(stripped_lines[i + 1].trim())
-        {
-            end_idx = i;
-            break;
-        }
-        right_lines.push(stripped_lines[i].clone());
-    }
-
-    let left_str = clean_operand_lines(left_lines);
-    let right_str = clean_operand_lines(right_lines);
-    if left_str.is_empty() || right_str.is_empty() {
+        let k = (j + 1..end).find(|&k| stripped[k].starts_with(" right: "))?;
+        Some((j, k))
+    })?;
+    let operand = |first: &str, rest: &[String]| {
+        std::iter::once(first)
+            .chain(rest.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let left = operand(
+        &stripped[left_at]["  left: ".len()..],
+        &stripped[left_at + 1..right_at],
+    );
+    let right = operand(
+        &stripped[right_at][" right: ".len()..],
+        &stripped[right_at + 1..end],
+    );
+    if left.trim().is_empty() || right.trim().is_empty() {
         return None;
     }
-
-    let excerpt = raw_lines[header_idx..end_idx]
-        .iter()
-        .map(|s| s.trim_end())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let (actual, expected) = if is_ne {
-        (None, None)
-    } else {
-        (Some(left_str.clone()), Some(right_str.clone()))
-    };
-
     Some(AssertionEvidence {
-        format: if is_ne {
-            "assert_ne".to_string()
-        } else {
-            "assert_eq".to_string()
-        },
-        expression,
-        actual,
-        expected,
-        left: Some(left_str.clone()),
-        right: Some(right_str.clone()),
-        operands: vec![left_str, right_str],
-        excerpt,
+        format: if is_ne { "assert_ne" } else { "assert_eq" }.to_string(),
+        expression: Some(if is_ne { "left != right" } else { "left == right" }.to_string()),
+        actual: None,
+        expected: None,
+        left: Some(left.clone()),
+        right: Some(right.clone()),
+        operands: vec![left, right],
+        excerpt: raw_excerpt(raw, header, end - 1),
     })
 }
 
-fn is_rust_end_boundary(trimmed: &str) -> bool {
-    trimmed.starts_with("note:")
-        || trimmed.starts_with("stack backtrace:")
-        || trimmed.starts_with("---- ")
-        || trimmed == "failures:"
-        || trimmed.starts_with("failures:")
-        || trimmed.starts_with("test result:")
-        || trimmed.starts_with("thread '")
+/// Node's `assert` names its operands: the first argument is `actual`, the second `expected`.
+fn node_evidence(
+    format: &str,
+    expression: Option<String>,
+    actual: String,
+    expected: String,
+    excerpt: String,
+) -> AssertionEvidence {
+    AssertionEvidence {
+        format: format.to_string(),
+        expression,
+        actual: Some(actual.clone()),
+        expected: Some(expected.clone()),
+        left: Some(actual.clone()),
+        right: Some(expected.clone()),
+        operands: vec![actual, expected],
+        excerpt,
+    }
 }
 
-fn is_test_boundary(trimmed: &str) -> bool {
-    trimmed.starts_with("---- ")
-        || trimmed == "failures:"
-        || trimmed.starts_with("failures:")
-        || trimmed.starts_with("test result:")
+/// Whether Node's `util.inspect` shortened a value: objects past its depth, and the tails of
+/// long arrays and strings.
+fn inspect_elided(value: &str) -> bool {
+    value.contains("[Object]")
+        || value.contains("[Array]")
+        || (value.contains("... ")
+            && (value.contains(" more item") || value.contains(" more character")))
 }
 
-fn clean_operand_lines(mut lines: Vec<String>) -> String {
-    while let Some(last) = lines.last() {
-        if last.trim().is_empty() {
-            lines.pop();
+/// The error's own properties as Node prints an uncaught or test-runner `AssertionError`: the
+/// last stack frame opens `{`, top-level fields sit two columns in from the error header, and
+/// `}` at the header's column closes the block. Only those top-level fields are bound, so an
+/// `expected:` or `operator:` key nested in a value, or printed in the diff above, is never
+/// taken for the error's own. Without the closing brace the block is incomplete: `None`.
+fn parse_node_error_fields(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+    let header = stripped
+        .iter()
+        .position(|l| l.trim_start().starts_with("AssertionError [ERR_ASSERTION]: "))?;
+    let base = indent_of(&stripped[header]);
+    let open = (header + 1..stripped.len()).find(|&i| {
+        let line = stripped[i].trim_end();
+        indent_of(line) == base + 4
+            && line.trim_start().starts_with("at ")
+            && line.ends_with(" {")
+    })?;
+    let mut fields: Vec<(String, Vec<String>)> = Vec::new();
+    let mut close = None;
+    for (i, line) in stripped.iter().enumerate().skip(open + 1) {
+        let line = line.trim_end();
+        let indent = indent_of(line);
+        let text = line.trim_start_matches(' ');
+        if text.is_empty() {
+            return None;
+        }
+        if indent == base && text == "}" {
+            close = Some(i);
+            break;
+        }
+        if indent < base + 2 {
+            return None;
+        }
+        if indent == base + 2 && !text.starts_with(['}', ']', ')']) {
+            let (key, value) = text.split_once(": ")?;
+            fields.push((key.to_string(), vec![value.to_string()]));
         } else {
-            break;
+            fields.last_mut()?.1.push(line.to_string());
         }
     }
-    let mut joined = lines.join("\n");
-    let trimmed = joined.trim();
-    if trimmed.starts_with('`') && (trimmed.ends_with('`') || trimmed.ends_with("`,")) {
-        let unquoted = trimmed
-            .trim_start_matches('`')
-            .trim_end_matches(',')
-            .trim_end_matches('`');
-        return unquoted.to_string();
-    }
-    if !joined.contains('\n') && joined.ends_with(',') {
-        joined.pop();
-    }
-    joined
-}
-
-fn extract_between_backticks(s: &str) -> Option<&str> {
-    let start = s.find('`')? + 1;
-    let end = s[start..].find('`')? + start;
-    Some(&s[start..end])
-}
-
-fn parse_node_assertion(
-    raw_lines: &[&str],
-    stripped_lines: &[String],
-) -> Option<AssertionEvidence> {
-    let mut header_idx = None;
-    for (i, line) in stripped_lines.iter().enumerate() {
-        if line.contains("AssertionError") || line.contains("ERR_ASSERTION") {
-            header_idx = Some(i);
-            break;
+    let close = close?;
+    let value_of = |name: &str| -> Option<String> {
+        let mut found = fields.iter().enumerate().filter(|(_, (key, _))| key == name);
+        let (at, (_, lines)) = found.next()?;
+        if found.next().is_some() {
+            return None;
         }
-    }
-    let header_idx = header_idx?;
-
-    let mut op_idx = None;
-    let mut op_name = None;
-    for i in header_idx..stripped_lines.len() {
-        let trimmed = stripped_lines[i].trim();
-        if is_test_boundary(trimmed) {
-            break;
-        }
-        if let Some(rest) = trimmed.strip_prefix("operator:") {
-            let op = rest
-                .trim()
-                .trim_matches(|c| c == '\'' || c == '"' || c == ',');
-            if op == "strictEqual" || op == "deepStrictEqual" {
-                op_idx = Some(i);
-                op_name = Some(op.to_string());
-                break;
-            }
-        }
-    }
-
-    if let (Some(op_idx), Some(format)) = (op_idx, op_name) {
-        let mut actual_idx = None;
-        let mut expected_idx = None;
-        for i in header_idx..op_idx {
-            let trimmed = stripped_lines[i].trim();
-            if trimmed.starts_with("actual:") && actual_idx.is_none() {
-                actual_idx = Some(i);
-            } else if trimmed.starts_with("expected:") && expected_idx.is_none() {
-                expected_idx = Some(i);
-            }
-        }
-
-        if let (Some(actual_idx), Some(expected_idx)) = (actual_idx, expected_idx) {
-            if actual_idx < expected_idx && expected_idx < op_idx {
-                let mut actual_lines = Vec::new();
-                let first_act = stripped_lines[actual_idx]
-                    .trim_start()
-                    .strip_prefix("actual:")
-                    .unwrap_or("")
-                    .trim_start();
-                actual_lines.push(first_act.to_string());
-                for i in (actual_idx + 1)..expected_idx {
-                    actual_lines.push(stripped_lines[i].clone());
-                }
-
-                let mut expected_lines = Vec::new();
-                let first_exp = stripped_lines[expected_idx]
-                    .trim_start()
-                    .strip_prefix("expected:")
-                    .unwrap_or("")
-                    .trim_start();
-                expected_lines.push(first_exp.to_string());
-                for i in (expected_idx + 1)..op_idx {
-                    expected_lines.push(stripped_lines[i].clone());
-                }
-
-                let actual_str = clean_node_lines(actual_lines);
-                let expected_str = clean_node_lines(expected_lines);
-
-                let mut expression = None;
-                for i in (header_idx + 1)..actual_idx {
-                    let trimmed = stripped_lines[i].trim();
-                    if trimmed.starts_with("at ") {
-                        break;
-                    }
-                    if trimmed.contains("!==")
-                        || trimmed.contains("===")
-                        || trimmed.contains("!=")
-                        || trimmed.contains("==")
-                    {
-                        expression = Some(trimmed.to_string());
-                        break;
-                    }
-                }
-
-                let mut close_idx = op_idx;
-                for i in (op_idx + 1)..stripped_lines.len().min(op_idx + 5) {
-                    if stripped_lines[i].trim() == "}" || stripped_lines[i].trim().ends_with('}') {
-                        close_idx = i;
-                        break;
-                    }
-                }
-
-                let excerpt = raw_lines[header_idx..=close_idx]
-                    .iter()
-                    .map(|s| s.trim_end())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-
-                return Some(AssertionEvidence {
-                    format,
-                    expression,
-                    actual: Some(actual_str.clone()),
-                    expected: Some(expected_str.clone()),
-                    left: Some(actual_str.clone()),
-                    right: Some(expected_str.clone()),
-                    operands: vec![actual_str, expected_str],
-                    excerpt,
-                });
-            }
-        }
-    }
-
-    for i in header_idx..stripped_lines.len() {
-        let trimmed = stripped_lines[i].trim();
-        if trimmed.contains("Expected values to be strictly equal:") {
-            for j in (i + 1)..stripped_lines.len().min(i + 5) {
-                let expr_line = stripped_lines[j].trim();
-                if expr_line.contains("!==") {
-                    if let Some((left, right)) = expr_line.split_once("!==") {
-                        let left = left.trim().to_string();
-                        let right = right.trim().to_string();
-                        let excerpt = raw_lines[header_idx..=j]
-                            .iter()
-                            .map(|s| s.trim_end())
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        return Some(AssertionEvidence {
-                            format: "strictEqual".to_string(),
-                            expression: Some(expr_line.to_string()),
-                            actual: Some(left.clone()),
-                            expected: Some(right.clone()),
-                            left: Some(left.clone()),
-                            right: Some(right.clone()),
-                            operands: vec![left, right],
-                            excerpt,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn clean_node_lines(mut lines: Vec<String>) -> String {
-    while let Some(last) = lines.last() {
-        if last.trim().is_empty() {
-            lines.pop();
+        let joined = lines.join("\n");
+        // Every field but the last ends with a comma.
+        let value = if at + 1 < fields.len() {
+            joined.strip_suffix(',')?
+        } else if joined.ends_with(',') {
+            return None;
         } else {
-            break;
-        }
-    }
-    let mut joined = lines.join("\n");
-    let trimmed = joined.trim();
-    if trimmed.ends_with(',') {
-        joined = trimmed[..trimmed.len() - 1].trim().to_string();
-    }
-    joined
+            joined.as_str()
+        };
+        (!value.trim().is_empty() && !inspect_elided(value)).then(|| value.to_string())
+    };
+    let format = match value_of("operator")?.as_str() {
+        "'strictEqual'" => "strictEqual",
+        "'deepStrictEqual'" => "deepStrictEqual",
+        _ => return None,
+    };
+    let actual = value_of("actual")?;
+    let expected = value_of("expected")?;
+    let expression = node_short_pair(stripped, header).map(|(_, line, _, _)| line);
+    Some(node_evidence(
+        format,
+        expression,
+        actual,
+        expected,
+        raw_excerpt(raw, header, close),
+    ))
 }
 
-fn parse_testify_assertion(
-    raw_lines: &[&str],
-    stripped_lines: &[String],
-) -> Option<AssertionEvidence> {
-    for (i, line) in stripped_lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.contains("Not equal:") || trimmed.contains("Should not be equal:") {
-            let is_ne = trimmed.contains("Should not be equal:");
-            let mut expected = None;
-            let mut actual = None;
-            let mut end_idx = i;
-            for j in (i + 1)..stripped_lines.len().min(i + 10) {
-                let l = stripped_lines[j].trim();
-                if l.starts_with("Test:") || is_test_boundary(l) {
-                    break;
+/// Node's message for two short unequal primitives: "Expected values to be strictly equal:",
+/// then `actual !== expected` on the next non-blank line. Exactly one ` !== ` makes the split
+/// unambiguous; a quoted value that holds that text gives two and is refused.
+fn node_short_pair(
+    stripped: &[String],
+    header: usize,
+) -> Option<(usize, String, String, String)> {
+    if !stripped[header]
+        .trim_end()
+        .ends_with("Expected values to be strictly equal:")
+    {
+        return None;
+    }
+    let at = (header + 1..stripped.len()).find(|&i| !stripped[i].trim().is_empty())?;
+    let line = stripped[at].trim();
+    if line.matches(" !== ").count() != 1 || inspect_elided(line) {
+        return None;
+    }
+    let (actual, expected) = line.split_once(" !== ")?;
+    if actual.is_empty() || expected.is_empty() {
+        return None;
+    }
+    Some((
+        at,
+        line.to_string(),
+        actual.to_string(),
+        expected.to_string(),
+    ))
+}
+
+/// The short message alone, as vitest prints a Node assertion error.
+fn parse_node_short_message(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+    let header = stripped.iter().position(|l| {
+        let l = l.trim();
+        l.starts_with("AssertionError") && l.ends_with("Expected values to be strictly equal:")
+    })?;
+    let (at, line, actual, expected) = node_short_pair(stripped, header)?;
+    Some(node_evidence(
+        "strictEqual",
+        Some(line),
+        actual,
+        expected,
+        raw_excerpt(raw, header, at),
+    ))
+}
+
+/// jest's reprint of a Node assertion error: "assert.strictEqual(received, expected)", then
+/// "Expected value to strictly be equal to:" and "Received:" at the hint's column, each value
+/// two columns further in (further lines of a multi-line string at the hint's column), and a
+/// blank line after the received value. Output cut before that blank line is refused.
+fn parse_jest_node_assert(raw: &[&str], stripped: &[String]) -> Option<AssertionEvidence> {
+    let (hint, format, label) =
+        stripped
+            .iter()
+            .enumerate()
+            .find_map(|(i, line)| match line.trim() {
+                "assert.strictEqual(received, expected)" => Some((
+                    i,
+                    "strictEqual",
+                    "Expected value to strictly be equal to:",
+                )),
+                "assert.deepStrictEqual(received, expected)" => Some((
+                    i,
+                    "deepStrictEqual",
+                    "Expected value to deeply and strictly equal to:",
+                )),
+                _ => None,
+            })?;
+    let base = indent_of(&stripped[hint]);
+    let at_base = |i: usize, text: &str| indent_of(&stripped[i]) == base && stripped[i].trim() == text;
+    let expected_label = (hint + 1..stripped.len()).find(|&i| !stripped[i].trim().is_empty())?;
+    if !at_base(expected_label, label) {
+        return None;
+    }
+    let received_label =
+        (expected_label + 1..stripped.len()).find(|&i| at_base(i, "Received:"))?;
+    let end = (received_label + 1..stripped.len()).find(|&i| stripped[i].trim().is_empty())?;
+    let expected = jest_value(&stripped[expected_label + 1..received_label], base)?;
+    let actual = jest_value(&stripped[received_label + 1..end], base)?;
+    Some(node_evidence(
+        format,
+        None,
+        actual,
+        expected,
+        raw_excerpt(raw, hint, end - 1),
+    ))
+}
+
+/// One value as jest prints it: the first line two columns in from `base`, any further lines
+/// (a multi-line string) at `base`. Refused unless its strings and brackets all close and
+/// nothing was elided (`…` past jest's `maxWidth`, `[Object]` / `[Array]` past `maxDepth`).
+fn jest_value(lines: &[String], base: usize) -> Option<String> {
+    let (first, rest) = lines.split_first()?;
+    let first = first.trim_end().strip_prefix(&" ".repeat(base + 2))?;
+    if first.is_empty() || first.starts_with(' ') {
+        return None;
+    }
+    let mut value = first.to_string();
+    for line in rest {
+        let line = line.trim_end();
+        value.push('\n');
+        if !line.is_empty() {
+            value.push_str(line.strip_prefix(&" ".repeat(base))?);
+        }
+    }
+    (!value.contains('…')
+        && !value.contains("[Object]")
+        && !value.contains("[Array]")
+        && closes(&value))
+    .then_some(value)
+}
+
+/// Whether every double-quoted string and every bracket in a printed value closes.
+fn closes(value: &str) -> bool {
+    let mut open = Vec::new();
+    let mut in_string = false;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '\\' => {
+                    chars.next();
                 }
-                if let Some(exp) = l.strip_prefix("expected:") {
-                    expected = Some(exp.trim().to_string());
-                    end_idx = j;
-                } else if let Some(act) = l.strip_prefix("actual  :") {
-                    actual = Some(act.trim().to_string());
-                    end_idx = j;
-                } else if let Some(act) = l.strip_prefix("actual:") {
-                    actual = Some(act.trim().to_string());
-                    end_idx = j;
-                }
+                '"' => in_string = false,
+                _ => {}
             }
-            if let (Some(expected), Some(actual)) = (expected, actual) {
-                let excerpt = raw_lines[i..=end_idx]
-                    .iter()
-                    .map(|s| s.trim_end())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let (act_field, exp_field) = if is_ne {
-                    (None, None)
-                } else {
-                    (Some(actual.clone()), Some(expected.clone()))
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '(' | '[' | '{' => open.push(c),
+            ')' | ']' | '}' => {
+                let want = match c {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
                 };
-                return Some(AssertionEvidence {
-                    format: if is_ne {
-                        "assert_ne".to_string()
-                    } else {
-                        "assert_eq".to_string()
-                    },
-                    expression: None,
-                    actual: act_field,
-                    expected: exp_field,
-                    left: Some(actual.clone()),
-                    right: Some(expected.clone()),
-                    operands: vec![actual, expected],
-                    excerpt,
-                });
-            }
-        }
-    }
-    None
-}
-
-fn parse_pytest_assertion(
-    raw_lines: &[&str],
-    stripped_lines: &[String],
-) -> Option<AssertionEvidence> {
-    for (i, line) in stripped_lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed
-            .strip_prefix("E   assert ")
-            .or_else(|| trimmed.strip_prefix("E       assert "))
-            .or_else(|| trimmed.strip_prefix("assert "))
-        {
-            if let Some((left, right)) = rest.split_once(" == ") {
-                let left = left.trim();
-                let right = right.trim();
-                if !left.is_empty() && !right.is_empty() {
-                    let excerpt = raw_lines[i].trim().to_string();
-                    let expr = format!("{left} == {right}");
-                    return Some(AssertionEvidence {
-                        format: "assert_eq".to_string(),
-                        expression: Some(expr),
-                        actual: Some(left.to_string()),
-                        expected: Some(right.to_string()),
-                        left: Some(left.to_string()),
-                        right: Some(right.to_string()),
-                        operands: vec![left.to_string(), right.to_string()],
-                        excerpt,
-                    });
-                }
-            } else if let Some((left, right)) = rest.split_once(" != ") {
-                let left = left.trim();
-                let right = right.trim();
-                if !left.is_empty() && !right.is_empty() {
-                    let excerpt = raw_lines[i].trim().to_string();
-                    let expr = format!("{left} != {right}");
-                    return Some(AssertionEvidence {
-                        format: "assert_ne".to_string(),
-                        expression: Some(expr),
-                        actual: None,
-                        expected: None,
-                        left: Some(left.to_string()),
-                        right: Some(right.to_string()),
-                        operands: vec![left.to_string(), right.to_string()],
-                        excerpt,
-                    });
+                if open.pop() != Some(want) {
+                    return false;
                 }
             }
+            _ => {}
         }
     }
-    None
+    !in_string && open.is_empty()
 }
 
 #[cfg(test)]
@@ -1201,11 +1034,18 @@ mod tests {
         assert_eq!(ev.expression.as_deref(), Some("left == right"));
         assert_eq!(ev.left.as_deref(), Some("4"));
         assert_eq!(ev.right.as_deref(), Some("5"));
-        assert_eq!(ev.actual.as_deref(), Some("4"));
-        assert_eq!(ev.expected.as_deref(), Some("5"));
+        // `assert_eq!` accepts either order: no operand is claimed to be the expected one.
+        assert_eq!(ev.actual, None);
+        assert_eq!(ev.expected, None);
         assert_eq!(ev.operands, vec!["4", "5"]);
-        assert!(ev.excerpt.contains("left: 4"));
-        assert!(ev.excerpt.contains("right: 5"));
+        assert_eq!(
+            ev.excerpt,
+            "assertion `left == right` failed\n  left: 4\n right: 5"
+        );
+        assert_eq!(
+            ev.render_compact(),
+            "assertion [assert_eq (left == right)]: left: 4, right: 5\n"
+        );
     }
 
     #[test]
@@ -1225,8 +1065,17 @@ mod tests {
         assert_eq!(ev.format, "assert_eq");
         assert_eq!(ev.left.as_deref(), Some("4"));
         assert_eq!(ev.right.as_deref(), Some("5"));
-        assert_eq!(ev.actual.as_deref(), Some("4"));
-        assert_eq!(ev.expected.as_deref(), Some("5"));
+        assert_eq!(ev.actual, None);
+        assert_eq!(ev.expected, None);
+        // The excerpt keeps the escape sequences exactly as the runner printed them.
+        assert!(
+            ev.excerpt
+                .starts_with("\x1b[1m\x1b[31massertion `left == right` failed\x1b[0m\n")
+        );
+        assert!(
+            ev.excerpt
+                .ends_with("\x1b[1m\x1b[31m right: \x1b[0m\x1b[32m5\x1b[0m")
+        );
     }
 
     #[test]
@@ -1249,6 +1098,20 @@ mod tests {
         assert_eq!(ev.format, "assert_eq");
         assert_eq!(ev.left.as_deref(), Some("\"usr_1\""));
         assert_eq!(ev.right.as_deref(), Some("\"usr_2\""));
+    }
+
+    #[test]
+    fn a_left_line_inside_a_custom_message_is_not_an_operand() {
+        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed: first line\n  left: from the message\n  left: 7\n right: 8\n";
+        let ev = parse_assertion_evidence(output).expect("parsed assertion");
+        assert_eq!(ev.left.as_deref(), Some("7"));
+        assert_eq!(ev.right.as_deref(), Some("8"));
+    }
+
+    #[test]
+    fn a_rust_block_without_both_operands_gives_nothing() {
+        let output = "thread 't' panicked at src/lib.rs:3:5:\nassertion `left == right` failed\n  left: 7\n\n right: 8\n";
+        assert_eq!(parse_assertion_evidence(output), None);
     }
 
     #[test]
@@ -1292,24 +1155,92 @@ mod tests {
         assert_eq!(ev.expected.as_deref(), Some("2"));
     }
 
+    const NESTED_FIELDS: &str = "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  {\n+   expected: 'inner-a',\n-   expected: 'inner-b',\n    operator: 'strictEqual'\n  }\n\n    at run (file.js:1:1) {\n  generatedMessage: true,\n  code: 'ERR_ASSERTION',\n  actual: {\n    expected: 'inner-a',\n    operator: 'strictEqual'\n  },\n  expected: {\n    expected: 'inner-b',\n    operator: 'strictEqual'\n  },\n  operator: 'deepStrictEqual'\n}\n";
+
     #[test]
-    fn parses_pytest_literal_comparison() {
-        let output = "def test_f():\n>       assert 1 == 2\nE       assert 1 == 2\n\ntest_f.py:2: AssertionError\n";
-        let ev = parse_assertion_evidence(output).expect("parsed pytest assertion");
-        assert_eq!(ev.format, "assert_eq");
-        assert_eq!(ev.expression.as_deref(), Some("1 == 2"));
-        assert_eq!(ev.actual.as_deref(), Some("1"));
-        assert_eq!(ev.expected.as_deref(), Some("2"));
+    fn node_fields_nested_in_a_value_or_the_diff_are_not_the_errors_own() {
+        let ev = parse_assertion_evidence(NESTED_FIELDS).expect("parsed node fields");
+        assert_eq!(ev.format, "deepStrictEqual");
+        assert_eq!(ev.expression, None);
+        assert_eq!(
+            ev.actual.as_deref(),
+            Some("{\n    expected: 'inner-a',\n    operator: 'strictEqual'\n  }")
+        );
+        assert_eq!(
+            ev.expected.as_deref(),
+            Some("{\n    expected: 'inner-b',\n    operator: 'strictEqual'\n  }")
+        );
+        assert!(ev.excerpt.ends_with("operator: 'deepStrictEqual'\n}"));
     }
 
     #[test]
-    fn parses_go_testify_comparison() {
-        let output = "    foo_test.go:12:\n        \tError:      \tNot equal:\n        \t            \texpected: 1\n        \t            \tactual  : 2\n        \tTest:       \tTestFoo\n";
-        let ev = parse_assertion_evidence(output).expect("parsed testify assertion");
-        assert_eq!(ev.format, "assert_eq");
-        assert_eq!(ev.expected.as_deref(), Some("1"));
-        assert_eq!(ev.actual.as_deref(), Some("2"));
-        assert_eq!(ev.operands, vec!["2", "1"]);
+    fn incomplete_or_elided_node_fields_give_nothing() {
+        // Cut before the closing brace.
+        let cut = NESTED_FIELDS.trim_end().strip_suffix("\n}").unwrap();
+        assert_eq!(parse_assertion_evidence(cut), None);
+        // Cut inside the expected value.
+        let cut = &NESTED_FIELDS[..NESTED_FIELDS.find("    expected: 'inner-b'").unwrap()];
+        assert_eq!(parse_assertion_evidence(cut), None);
+        // A top-level field missing.
+        let no_operator = NESTED_FIELDS.replace("  },\n  operator: 'deepStrictEqual'\n", "  }\n");
+        assert_eq!(parse_assertion_evidence(&no_operator), None);
+        // util.inspect elided a nested object or the tail of an array.
+        let depth = NESTED_FIELDS.replace("operator: 'strictEqual'\n  },", "deeper: [Object]\n  },");
+        assert_eq!(parse_assertion_evidence(&depth), None);
+        let items = NESTED_FIELDS.replace("expected: 'inner-a',", "list: [ 1, ... 99 more items ],");
+        assert_eq!(parse_assertion_evidence(&items), None);
+    }
+
+    #[test]
+    fn a_node_short_message_splits_only_on_a_single_operator() {
+        let output = "AssertionError: Expected values to be strictly equal:\n\n'a' !== 'b'\n";
+        let ev = parse_assertion_evidence(output).expect("parsed short message");
+        assert_eq!(ev.format, "strictEqual");
+        assert_eq!(ev.actual.as_deref(), Some("'a'"));
+        assert_eq!(ev.expected.as_deref(), Some("'b'"));
+        assert_eq!(ev.expression.as_deref(), Some("'a' !== 'b'"));
+        let ambiguous = "AssertionError: Expected values to be strictly equal:\n\n'x !== y' !== 'z'\n";
+        assert_eq!(parse_assertion_evidence(ambiguous), None);
+    }
+
+    const JEST_STRICT: &str = "    assert.strictEqual(received, expected)\n\n    Expected value to strictly be equal to:\n      \"line one\n    line 2\"\n    Received:\n      \"line one\n    line two\"\n\n    Difference:\n";
+
+    #[test]
+    fn jest_values_are_bound_by_their_labels_and_columns() {
+        let ev = parse_assertion_evidence(JEST_STRICT).expect("parsed jest reprint");
+        assert_eq!(ev.format, "strictEqual");
+        assert_eq!(ev.expected.as_deref(), Some("\"line one\nline 2\""));
+        assert_eq!(ev.actual.as_deref(), Some("\"line one\nline two\""));
+        assert_eq!(ev.left, ev.actual);
+        assert_eq!(ev.right, ev.expected);
+        assert!(ev.excerpt.starts_with("    assert.strictEqual(received, expected)"));
+        assert!(ev.excerpt.ends_with("    line two\""));
+    }
+
+    #[test]
+    fn truncated_or_elided_jest_values_give_nothing() {
+        // Output cut inside the received value: no blank line ends it.
+        let cut = &JEST_STRICT[..JEST_STRICT.find("\n\n    Difference").unwrap()];
+        assert_eq!(parse_assertion_evidence(cut), None);
+        // A string that is still open when the next label comes.
+        let open = JEST_STRICT.replace("    line 2\"\n", "    Received:\n    line 2\"\n");
+        assert_eq!(parse_assertion_evidence(&open), None);
+        // jest's maxWidth and maxDepth elisions.
+        let wide = "    assert.deepStrictEqual(received, expected)\n\n    Expected value to deeply and strictly equal to:\n      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]\n    Received:\n      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]\n\n";
+        assert_eq!(parse_assertion_evidence(wide), None);
+        let deep = wide.replace("[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …]", "{\"a\": [Object]}");
+        assert_eq!(parse_assertion_evidence(&deep), None);
+        // A label that does not match the hint's operator.
+        let mismatched = JEST_STRICT.replace("strictly be equal to:", "deeply and strictly equal to:");
+        assert_eq!(parse_assertion_evidence(&mismatched), None);
+    }
+
+    #[test]
+    fn pytest_and_testify_output_is_not_parsed() {
+        let pytest = "def test_f():\n>       assert result == expected\nE       assert result == expected\n\ntest_f.py:2: AssertionError\n";
+        assert_eq!(parse_assertion_evidence(pytest), None);
+        let testify = "    foo_test.go:12:\n        \tError:      \tNot equal:\n        \t            \texpected: 1\n        \t            \tactual  : 2\n        \tTest:       \tTestFoo\n";
+        assert_eq!(parse_assertion_evidence(testify), None);
     }
 
     #[test]

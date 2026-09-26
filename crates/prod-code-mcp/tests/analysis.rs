@@ -1829,8 +1829,8 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     assert_eq!(assertion.expression.as_deref(), Some("left == right"));
     assert_eq!(assertion.left.as_deref(), Some("4"));
     assert_eq!(assertion.right.as_deref(), Some("5"));
-    assert_eq!(assertion.actual.as_deref(), Some("4"));
-    assert_eq!(assertion.expected.as_deref(), Some("5"));
+    assert_eq!(assertion.actual, None);
+    assert_eq!(assertion.expected, None);
     assert_eq!(assertion.operands, vec!["4".to_string(), "5".to_string()]);
     assert!(assertion.excerpt.contains("left: 4"));
     assert!(assertion.excerpt.contains("right: 5"));
@@ -1848,7 +1848,7 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
     let rendered = report.render();
     assert!(rendered.contains("0 passed, 1 failed"));
     assert!(rendered.contains("=== tests::it_fails ==="));
-    assert!(rendered.contains("assertion [assert_eq"));
+    assert!(rendered.contains("assertion [assert_eq (left == right)]: left: 4, right: 5\n"));
     assert!(rendered.contains("in it_fails"));
     assert!(rendered.contains("callers: test_runner"));
     assert!(rendered.contains("changed in the working tree:"));
@@ -1987,85 +1987,6 @@ async fn diagnose_fails_cleanly_when_the_gateway_is_unreachable() {
 }
 
 #[tokio::test]
-async fn diagnose_builds_a_dossier_for_node_strict_equal_failure() {
-    let ws = Workspace::new(&[
-        (
-            "package.json",
-            r#"{"name":"test-node","devDependencies":{"jest":"^29.0.0"}}"#,
-        ),
-        ("jest.config.js", "module.exports = {};\n"),
-        ("test/index.test.js", "test('adds', () => {});\n"),
-    ]);
-    let root = ws.root();
-    let jest_output = b"  \xe2\x97\x8f strict equality test\n\n    AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:\n\n    1 !== 2\n\n        at Object.<anonymous> (test/index.test.js:3:12) {\n      generatedMessage: true,\n      code: 'ERR_ASSERTION',\n      actual: 1,\n      expected: 2,\n      operator: 'strictEqual'\n    }\n\nTests: 1 failed, 0 passed, 1 total\n".to_vec();
-    let exec: ExecAnswer = Arc::new(move |_req| (jest_output.clone(), Vec::new(), Some(1)));
-    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
-
-    let report = dossier::diagnose(remote, &root, None, 60)
-        .await
-        .expect("diagnose runs");
-
-    assert_eq!(report.tests_failed, 1);
-    assert_eq!(report.dossiers.len(), 1);
-    let dossier = &report.dossiers[0];
-    let assertion = dossier
-        .assertion
-        .as_ref()
-        .expect("assertion evidence captured");
-    assert_eq!(assertion.format, "strictEqual");
-    assert_eq!(assertion.expression.as_deref(), Some("1 !== 2"));
-    assert_eq!(assertion.actual.as_deref(), Some("1"));
-    assert_eq!(assertion.expected.as_deref(), Some("2"));
-    assert_eq!(assertion.left.as_deref(), Some("1"));
-    assert_eq!(assertion.right.as_deref(), Some("2"));
-    assert_eq!(assertion.operands, vec!["1", "2"]);
-    assert!(assertion.excerpt.contains("AssertionError"));
-    assert!(assertion.excerpt.contains("operator: 'strictEqual'"));
-
-    let rendered = report.render();
-    assert!(rendered.contains("assertion [strictEqual (1 !== 2)]: actual: 1, expected: 2"));
-}
-
-#[tokio::test]
-async fn diagnose_builds_a_dossier_for_node_deep_strict_equal_failure() {
-    let ws = Workspace::new(&[
-        (
-            "package.json",
-            r#"{"name":"test-node","devDependencies":{"jest":"^29.0.0"}}"#,
-        ),
-        ("jest.config.js", "module.exports = {};\n"),
-        ("test/index.test.js", "test('diff', () => {});\n"),
-    ]);
-    let root = ws.root();
-    let jest_output = b"  \xe2\x97\x8f deep equality test\n\n    AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:\n+ actual - expected\n\n  {\n+   a: 1\n-   a: 2\n  }\n\n        at Object.<anonymous> (test/index.test.js:3:12) {\n      generatedMessage: true,\n      code: 'ERR_ASSERTION',\n      actual: {\n        a: 1,\n        b: [ 2 ]\n      },\n      expected: {\n        a: 1,\n        b: [ 3 ]\n      },\n      operator: 'deepStrictEqual'\n    }\n\nTests: 1 failed, 0 passed, 1 total\n".to_vec();
-    let exec: ExecAnswer = Arc::new(move |_req| (jest_output.clone(), Vec::new(), Some(1)));
-    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
-
-    let report = dossier::diagnose(remote, &root, None, 60)
-        .await
-        .expect("diagnose runs");
-
-    assert_eq!(report.tests_failed, 1);
-    assert_eq!(report.dossiers.len(), 1);
-    let dossier = &report.dossiers[0];
-    let assertion = dossier
-        .assertion
-        .as_ref()
-        .expect("assertion evidence captured");
-    assert_eq!(assertion.format, "deepStrictEqual");
-    assert_eq!(assertion.expression, None);
-    assert_eq!(
-        assertion.actual.as_deref(),
-        Some("{\n        a: 1,\n        b: [ 2 ]\n      }")
-    );
-    assert_eq!(
-        assertion.expected.as_deref(),
-        Some("{\n        a: 1,\n        b: [ 3 ]\n      }")
-    );
-    assert_eq!(assertion.operands.len(), 2);
-}
-
-#[tokio::test]
 async fn diagnose_builds_a_dossier_for_rust_multiline_colored_assertion() {
     let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", DOSSIER_LIB)]);
     let root = ws.root();
@@ -2093,4 +2014,334 @@ async fn diagnose_builds_a_dossier_for_rust_multiline_colored_assertion() {
         Some("Foo {\n    x: 1,\n    y: 3,\n}")
     );
     assert_eq!(assertion.operands.len(), 2);
+    assert_eq!(assertion.actual, None);
+    // Escape sequences stay in the excerpt as the runner printed them.
+    assert!(
+        assertion
+            .excerpt
+            .contains("\x1b[1m\x1b[31m  left: \x1b[0mFoo {\n")
+    );
+}
+
+// Failure output captured from real runs on a Linux build node (cargo 1.97, jest 29.7, vitest
+// 2.1.9, Node 22.23) of probe tests that mix an ordinary panic or thrown `Error` with
+// assertions failing on different values, in `tests/fixtures/assertions/`.
+const CARGO_MULTI: &str = include_str!("fixtures/assertions/cargo_test_multi.txt");
+const JEST_NODE_ASSERT: &str = include_str!("fixtures/assertions/jest_node_assert.txt");
+const JEST_NODE_ASSERT_EDGE: &str = include_str!("fixtures/assertions/jest_node_assert_edge.txt");
+const JEST_NODE_ASSERT_COLORS: &str =
+    include_str!("fixtures/assertions/jest_node_assert_colors.txt");
+const VITEST_NODE_ASSERT: &str = include_str!("fixtures/assertions/vitest_node_assert.txt");
+const NODE_TEST_ERROR_FIELDS: &str =
+    include_str!("fixtures/assertions/node_test_error_fields.txt");
+
+/// The probe crate behind `cargo_test_multi.txt`.
+const PROBE_LIB: &str = r#"pub fn add(a: i32, b: i32) -> i32 { a + b }
+#[derive(Debug, PartialEq)]
+pub struct Foo { pub x: i32, pub y: Vec<i32> }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn a_plain_panic() { panic!("boom without values"); }
+    #[test]
+    fn b_add_mismatch() { assert_eq!(add(2, 2), 5); }
+    #[test]
+    fn c_reversed_mismatch() { assert_eq!(20, add(5, 5), "totals differ"); }
+    #[test]
+    fn d_struct_mismatch() { assert_eq!(Foo { x: 1, y: vec![2] }, Foo { x: 1, y: vec![3] }); }
+    #[test]
+    fn e_ne() { assert_ne!(add(1, 1), 2); }
+    #[test]
+    fn f_bool() { assert!(add(1, 1) == 3); }
+    #[test]
+    fn g_string_with_newline() { assert_eq!("a\nb".to_string(), "a\nc"); }
+    #[test]
+    fn h_ok() {}
+}
+"#;
+
+fn dossier_of<'a>(report: &'a DossierReport, test: &str) -> &'a FailureDossier {
+    report
+        .dossiers
+        .iter()
+        .find(|d| d.test == test)
+        .unwrap_or_else(|| panic!("no dossier for {test}"))
+}
+
+async fn diagnose_output(ws: &Workspace, stdout: Vec<u8>, code: i32) -> DossierReport {
+    let exec: ExecAnswer = Arc::new(move |_req| (stdout.clone(), Vec::new(), Some(code)));
+    let remote = ExecGateway::start(no_lsp(), exec).await.addr();
+    dossier::diagnose(remote, &ws.root(), None, 60)
+        .await
+        .expect("diagnose runs")
+}
+
+/// Every probe failure gets only its own evidence: the ordinary panic and the plain `assert!`
+/// get none although the run's tail holds the other tests' assertions, and `assert_eq!`
+/// operands keep their left/right names without being called actual or expected.
+fn assert_cargo_probe_dossiers(report: &DossierReport) {
+    assert_eq!(report.tests_failed, 7);
+    assert_eq!(report.dossiers.len(), 7);
+    assert!(report.tail.contains("  left: 4\n right: 5"));
+    for plain in ["tests::a_plain_panic", "tests::f_bool"] {
+        assert_eq!(dossier_of(report, plain).assertion, None, "{plain}");
+    }
+    let expected = [
+        ("tests::b_add_mismatch", "assert_eq", "4", "5"),
+        ("tests::c_reversed_mismatch", "assert_eq", "20", "10"),
+        (
+            "tests::d_struct_mismatch",
+            "assert_eq",
+            "Foo { x: 1, y: [2] }",
+            "Foo { x: 1, y: [3] }",
+        ),
+        ("tests::e_ne", "assert_ne", "2", "2"),
+        (
+            "tests::g_string_with_newline",
+            "assert_eq",
+            "\"a\\nb\"",
+            "\"a\\nc\"",
+        ),
+    ];
+    for (test, format, left, right) in expected {
+        let d = dossier_of(report, test);
+        let a = d
+            .assertion
+            .as_ref()
+            .unwrap_or_else(|| panic!("no evidence for {test}"));
+        assert_eq!(a.format, format, "{test}");
+        assert_eq!(a.left.as_deref(), Some(left), "{test}");
+        assert_eq!(a.right.as_deref(), Some(right), "{test}");
+        assert_eq!(a.actual, None, "{test}");
+        assert_eq!(a.expected, None, "{test}");
+        assert_eq!(a.operands, vec![left, right], "{test}");
+        assert!(d.output.contains(&a.excerpt), "{test}: {}", a.excerpt);
+    }
+    let rendered = report.render();
+    assert!(rendered.contains("assertion [assert_eq (left == right)]: left: 20, right: 10\n"));
+    assert!(!rendered.contains("actual:"));
+}
+
+#[tokio::test]
+async fn diagnose_keeps_every_cargo_failure_to_its_own_assertion_evidence() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", PROBE_LIB)]);
+    let report = diagnose_output(&ws, CARGO_MULTI.as_bytes().to_vec(), 101).await;
+    assert_cargo_probe_dossiers(&report);
+}
+
+/// The same probe crate through the cargo running this test, so the parser is held to the
+/// current toolchain's real output and not only to the recorded one.
+#[tokio::test]
+async fn diagnose_keeps_every_live_cargo_failure_to_its_own_assertion_evidence() {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        ),
+        ("src/lib.rs", PROBE_LIB),
+    ]);
+    let target = tempfile::tempdir().expect("target dir");
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let run = std::process::Command::new(cargo)
+        .args(["test", "--offline", "--no-fail-fast", "--lib"])
+        .current_dir(ws.root())
+        .env("CARGO_TARGET_DIR", target.path())
+        .output()
+        .expect("cargo runs");
+    assert_eq!(
+        run.status.code(),
+        Some(101),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let report = diagnose_output(&ws, run.stdout, 101).await;
+    assert_cargo_probe_dossiers(&report);
+}
+
+#[tokio::test]
+async fn diagnose_keeps_every_jest_failure_to_its_own_node_assert_values() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"probe","devDependencies":{"jest":"^29.7.0"}}"#,
+        ),
+        ("jest.config.js", "module.exports = {};\n"),
+        ("test/a.test.js", "test('probe', () => {});\n"),
+    ]);
+    let report = diagnose_output(&ws, JEST_NODE_ASSERT.as_bytes().to_vec(), 1).await;
+
+    assert_eq!(report.tests_failed, 5);
+    assert_eq!(report.dossiers.len(), 5);
+    assert!(report.tail.contains("Expected value to strictly be equal to:"));
+    // A thrown Error and a jest matcher failure carry no Node assert values.
+    for plain in ["plain error", "jest matcher"] {
+        assert_eq!(dossier_of(&report, plain).assertion, None, "{plain}");
+    }
+    let expected = [
+        ("strict equal numbers", "strictEqual", "2", "3"),
+        (
+            "strict equal strings",
+            "strictEqual",
+            "\"left side\"",
+            "\"right side\"",
+        ),
+        (
+            "deep strict equal",
+            "deepStrictEqual",
+            r#"{"a": 1, "b": [2], "nested": {"expected": "x", "operator": "y"}}"#,
+            r#"{"a": 1, "b": [3], "nested": {"expected": "x", "operator": "y"}}"#,
+        ),
+    ];
+    for (test, format, actual, expected) in expected {
+        let d = dossier_of(&report, test);
+        let a = d
+            .assertion
+            .as_ref()
+            .unwrap_or_else(|| panic!("no evidence for {test}"));
+        assert_eq!(a.format, format, "{test}");
+        assert_eq!(a.expression, None, "{test}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{test}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{test}");
+        assert_eq!(a.left.as_deref(), Some(actual), "{test}");
+        assert_eq!(a.right.as_deref(), Some(expected), "{test}");
+        assert_eq!(a.operands, vec![actual, expected], "{test}");
+        assert!(d.output.contains(&a.excerpt), "{test}: {}", a.excerpt);
+    }
+    assert!(
+        report
+            .render()
+            .contains("assertion [strictEqual]: actual: 2, expected: 3\n")
+    );
+}
+
+#[tokio::test]
+async fn diagnose_takes_vitests_short_node_message_and_nothing_from_a_diff() {
+    let ws = Workspace::new(&[
+        (
+            "package.json",
+            r#"{"name":"probe","type":"module","devDependencies":{"vitest":"^2.1.0"}}"#,
+        ),
+        ("test/a.test.js", "test('probe', () => {});\n"),
+    ]);
+    let report = diagnose_output(&ws, VITEST_NODE_ASSERT.as_bytes().to_vec(), 1).await;
+
+    assert_eq!(report.tests_failed, 3);
+    assert_eq!(report.dossiers.len(), 3);
+    assert_eq!(
+        dossier_of(&report, "test/a.test.js > plain error").assertion,
+        None
+    );
+    // vitest prints a deep-equal failure only as a diff, never the complete values.
+    assert_eq!(
+        dossier_of(&report, "test/a.test.js > deep strict equal").assertion,
+        None
+    );
+    let a = dossier_of(&report, "test/a.test.js > strict equal numbers")
+        .assertion
+        .as_ref()
+        .expect("short message evidence");
+    assert_eq!(a.format, "strictEqual");
+    assert_eq!(a.expression.as_deref(), Some("2 !== 3"));
+    assert_eq!(a.actual.as_deref(), Some("2"));
+    assert_eq!(a.expected.as_deref(), Some("3"));
+}
+
+#[test]
+fn node_test_runner_error_fields_are_bound_at_the_top_level_only() {
+    let blocks: Vec<&str> = NODE_TEST_ERROR_FIELDS.split("\ntest at ").skip(1).collect();
+    assert_eq!(blocks.len(), 5);
+    let parse = |name: &str| {
+        let block = blocks
+            .iter()
+            .find(|b| b.contains(&format!("✖ {name} (")))
+            .unwrap_or_else(|| panic!("no block for {name}"));
+        dossier::parse_assertion_evidence(block)
+    };
+    // util.inspect printed `deeper: [Object]`: the values are incomplete.
+    assert_eq!(parse("multiline nested"), None);
+    let cases = [
+        ("strict equal numbers", "strictEqual", Some("2 !== 3"), "2", "3"),
+        (
+            "long strings",
+            "strictEqual",
+            None,
+            "'abcdefghijk'",
+            "'abcdefghijz'",
+        ),
+        ("custom message", "strictEqual", None, "1", "2"),
+        (
+            "deep strict equal",
+            "deepStrictEqual",
+            None,
+            "{ a: 1, b: [ 2 ], nested: { expected: 'x', operator: 'y' } }",
+            "{ a: 1, b: [ 3 ], nested: { expected: 'x', operator: 'y' } }",
+        ),
+    ];
+    for (name, format, expression, actual, expected) in cases {
+        let a = parse(name).unwrap_or_else(|| panic!("no evidence for {name}"));
+        assert_eq!(a.format, format, "{name}");
+        assert_eq!(a.expression.as_deref(), expression, "{name}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{name}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{name}");
+        assert!(a.excerpt.ends_with("diff: 'simple'\n  }"), "{name}");
+    }
+}
+
+#[test]
+fn jest_node_assert_edge_cases_keep_complete_values_and_refuse_elided_ones() {
+    let (_, failed, failures) = prod_code_mcp::verify::parse_jest_text(JEST_NODE_ASSERT_EDGE);
+    assert_eq!(failed, 4);
+    let parse = |name: &str| {
+        let failure = failures
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no failure {name}"));
+        dossier::parse_assertion_evidence(&failure.output)
+    };
+    // jest's maxWidth printed `10, …]`: the arrays are not complete.
+    assert_eq!(parse("long array"), None);
+    let cases = [
+        (
+            "multiline string",
+            "\"line one\nline two\"",
+            "\"line one\nline 2\"",
+        ),
+        ("custom message", "1", "2"),
+        ("received label text", "\"Received:\"", "\"x\""),
+    ];
+    for (name, actual, expected) in cases {
+        let a = parse(name).unwrap_or_else(|| panic!("no evidence for {name}"));
+        assert_eq!(a.format, "strictEqual", "{name}");
+        assert_eq!(a.actual.as_deref(), Some(actual), "{name}");
+        assert_eq!(a.expected.as_deref(), Some(expected), "{name}");
+    }
+}
+
+#[test]
+fn colored_jest_output_gives_the_same_values_and_keeps_its_escapes() {
+    // With `--colors` jest escapes the `●` marker too, so blocks split on the stripped text.
+    let mut blocks: Vec<(String, Vec<&str>)> = Vec::new();
+    for line in JEST_NODE_ASSERT_COLORS.lines() {
+        let plain = dossier::strip_ansi(line);
+        if let Some(name) = plain.trim().strip_prefix("● ") {
+            blocks.push((name.to_string(), Vec::new()));
+        } else if let Some((_, lines)) = blocks.last_mut() {
+            lines.push(line);
+        }
+    }
+    let parse = |name: &str| {
+        let (_, lines) = blocks
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("no block {name}"));
+        dossier::parse_assertion_evidence(&lines.join("\n"))
+    };
+    assert_eq!(parse("plain error"), None);
+    assert_eq!(parse("jest matcher"), None);
+    let a = parse("strict equal numbers").expect("colored evidence");
+    assert_eq!(a.actual.as_deref(), Some("2"));
+    assert_eq!(a.expected.as_deref(), Some("3"));
+    assert!(a.excerpt.contains("\x1b[32m3\x1b[39m"));
+    assert!(a.excerpt.contains("\x1b[31m2\x1b[39m"));
 }
