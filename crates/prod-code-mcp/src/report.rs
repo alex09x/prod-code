@@ -512,18 +512,31 @@ mod tests {
     fn fake_gh(dir: &Path, similar: &str) -> std::path::PathBuf {
         let script = dir.join("gh");
         let log = dir.join("calls.log");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$2\" in\n  list) echo '{similar}' ;;\n  \
-                 create) cat > '{}' ; echo 'https://github.com/{REPOSITORY}/issues/999' ;;\nesac\n",
-                log.display(),
-                dir.join("body.md").display()
-            ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let text = format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\ncase \"$2\" in\n  list) echo '{similar}' ;;\n  \
+             create) cat > '{}' ; echo 'https://github.com/{REPOSITORY}/issues/999' ;;\nesac\n",
+            log.display(),
+            dir.join("body.md").display()
+        );
+        // Written by a child process: a descriptor for writing to the script held by this
+        // process would be inherited by a process another test forks meanwhile, until it execs,
+        // and Linux refuses to run a file open for writing anywhere (ETXTBSY) (#382).
+        use std::io::Write;
+        let mut writer = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("cat > \"$1\" && chmod 755 \"$1\"")
+            .arg("sh")
+            .arg(&script)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        writer
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        assert!(writer.wait().unwrap().success(), "{}", script.display());
         script
     }
 
