@@ -270,6 +270,11 @@ enum Commands {
         /// Repeat it for each file of a multi-file change.
         #[arg(long = "with", value_name = "FILE=NEW")]
         with: Vec<String>,
+        /// Also run the project's check command (`cargo check`, `go build`, `tsc`) on the
+        /// proposed text in a shadow copy on the node: errors the analyzer does not report
+        /// (borrow checker, private items of another crate) (#376).
+        #[arg(long)]
+        compile: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1443,8 +1448,12 @@ async fn main() -> Result<()> {
             from,
             diff,
             with,
+            compile,
             json,
         } => {
+            if compile && json {
+                anyhow::bail!("--compile reports as text; leave out --json");
+            }
             if let Some(diff) = diff {
                 let patch = if diff.as_os_str() == "-" {
                     let mut buf = String::new();
@@ -1457,7 +1466,7 @@ async fn main() -> Result<()> {
                 return run_tool(
                     remote,
                     "code_validate_edits",
-                    serde_json::json!({ "diff": patch }),
+                    serde_json::json!({ "diff": patch, "compile": compile }),
                 )
                 .await;
             }
@@ -1471,7 +1480,9 @@ async fn main() -> Result<()> {
                     buf
                 }
             };
-            if with.is_empty() {
+            if compile {
+                run_validate_compiled(remote, &file, text, &with).await
+            } else if with.is_empty() {
                 run_diagnostics(remote, &file, Some(text), json).await
             } else {
                 run_validate_together(remote, &file, text, &with, json).await
@@ -2940,6 +2951,44 @@ fn symbol_args(symbol: &str, file: Option<PathBuf>) -> serde_json::Value {
         args["path"] = serde_json::json!(file.to_string_lossy());
     }
     args
+}
+
+/// `validate --compile`: the proposed files through `code_validate_edits` with `compile: true`,
+/// so the project's check command runs on them in a shadow copy on the node (#376).
+async fn run_validate_compiled(
+    remote: SocketAddr,
+    file: &Path,
+    text: String,
+    with: &[String],
+) -> Result<()> {
+    let abs = |p: &Path| {
+        std::fs::canonicalize(p).unwrap_or_else(|_| {
+            env::current_dir()
+                .map(|cwd| cwd.join(p))
+                .unwrap_or_else(|_| p.to_path_buf())
+        })
+    };
+    let mut edits = vec![serde_json::json!({
+        "path": abs(file).to_string_lossy(),
+        "new_text": text,
+    })];
+    for pair in with {
+        let (target, from) = pair
+            .split_once('=')
+            .with_context(|| format!("--with takes FILE=NEW, got `{pair}`"))?;
+        let new_text =
+            std::fs::read_to_string(from).with_context(|| format!("failed to read {from}"))?;
+        edits.push(serde_json::json!({
+            "path": abs(Path::new(target)).to_string_lossy(),
+            "new_text": new_text,
+        }));
+    }
+    run_tool(
+        remote,
+        "code_validate_edits",
+        serde_json::json!({ "edits": edits, "compile": true }),
+    )
+    .await
 }
 
 /// Several proposed files checked together in one overlay, so a change to one is judged against

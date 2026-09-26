@@ -1695,6 +1695,50 @@ async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
     assert!(ws.read("src/lib.rs").contains("let cap = 64 * 1024;"));
 }
 
+/// `validate --compile` runs the project's check command on the proposed text, as
+/// `compile: true` does for the MCP tools; it reports as text, so `--json` is refused (#376).
+#[tokio::test]
+async fn cli_validate_compile_runs_the_check_command_on_the_proposal() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::json!([])).await;
+    let proposal = ws.root().join("proposal.rs");
+    std::fs::write(&proposal, "pub fn calculate() -> i32 {\n    41\n}\n").unwrap();
+    let proposal = proposal.to_string_lossy().into_owned();
+
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &["validate", "src/lib.rs", "--from", &proposal, "--compile"],
+    )
+    .await;
+    let text = stdout_of(&out);
+    assert!(out.status.success(), "{text}{}", stderr_of(&out));
+    assert!(
+        text.contains("compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"),
+        "{text}"
+    );
+
+    let json = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "validate",
+            "src/lib.rs",
+            "--from",
+            &proposal,
+            "--compile",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(!json.status.success());
+    assert!(
+        stderr_of(&json).contains("--compile reports as text"),
+        "{}",
+        stderr_of(&json)
+    );
+}
+
 /// `refs --symbol NAME --in DIR` answers for this checkout and the other one; `--in` needs a
 /// name (#375).
 #[tokio::test]

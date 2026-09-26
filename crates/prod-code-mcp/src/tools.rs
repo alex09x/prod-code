@@ -724,7 +724,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "properties": {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute); may be a new file" },
                     "new_text": { "type": "string", "description": "The complete proposed content of the file" },
-                    "compile": { "type": "boolean", "description": "Also run the project's check command (`cargo check` for Rust, `go build`, `tsc`, ...) on the proposed text in a private shadow copy on the node, and report the compiler's errors: the analyzer does not check everything the compiler does (rust-analyzer runs no borrow checker: a reference to a local, E0515, or a use after a move, E0382, passes without it). Slower: a build, warm on the node" }
+                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
                 },
                 "required": ["path", "new_text"]
             }),
@@ -755,7 +755,7 @@ pub fn list_tools() -> Vec<McpTool> {
                         "items": { "type": "string" },
                         "description": "Unchanged files to diagnose against the proposed edits (optional)"
                     },
-                    "compile": { "type": "boolean", "description": "Also run the project's check command (`cargo check` for Rust, `go build`, `tsc`, ...) on the proposed text in a private shadow copy on the node, and report the compiler's errors: the analyzer does not check everything the compiler does (rust-analyzer runs no borrow checker: a reference to a local, E0515, or a use after a move, E0382, passes without it). Slower: a build, warm on the node" }
+                    "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
                 },
                 "required": ["edits"]
             }),
@@ -4022,6 +4022,14 @@ async fn handle_diagnostics(
         McpToolCallResult::error(text)
     })
 }
+
+/// What `compile: true` adds to a validation, in the schema of both validate tools.
+const COMPILE_DESCRIPTION: &str = "Also run the project's check command (`cargo check` for Rust, \
+     `go build`, `tsc`, ...) on the proposed text in a private shadow copy on the node, and report \
+     the compiler's errors: the analyzer does not check everything the compiler does (rust-analyzer \
+     runs no borrow checker, so a reference to a local, E0515, or a use after a move, E0382, passes \
+     without it; nor does it report a private function of another crate, E0603). Slower: a build, \
+     warm on the node";
 
 /// Runs the checkout's check command (`cargo check` for Rust, `go build`, `tsc`, ...) in a
 /// shadow copy on the node that holds the proposed texts, for `compile: true`. The analyzer's

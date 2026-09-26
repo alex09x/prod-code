@@ -9,6 +9,10 @@
   every answer comes under its checkout's directory with a total; one that fails says why
   without hiding the others. A field of a shared dependency's type used by two services: 107 + 93
   = 200 references in 3.1–7.1 s in one call, where it took two calls from two directories.
+- **`prod-code validate --compile`** (#376), what `compile: true` is for the MCP tools (#364):
+  the project's check command runs on the proposed text in a shadow copy on the node, with
+  `--with` and `--diff` too. A test calling another crate's private function validated as clean;
+  with `--compile`, 3 × E0603 in 10.4 s. The `compile` description now names that case.
 
 ### Fixed
 - **References of a dependency's item asked at its declaration** (#373). `refs --symbol` lands on
