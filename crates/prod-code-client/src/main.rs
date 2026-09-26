@@ -51,9 +51,18 @@ enum Commands {
     /// Run as Model Context Protocol (MCP) server for AI coding agents.
     Mcp,
     /// Probe the status and latency of the gateway this checkout is placed on.
-    Status,
+    Status {
+        /// One JSON object: the gateway's status as sent, the address, the round trip and
+        /// whether the node is healthy
+        #[arg(long)]
+        json: bool,
+    },
     /// Show every configured gateway node, its status, and where this checkout is placed.
-    Cluster,
+    Cluster {
+        /// One JSON object: the gossip view, each node's status or error, and the placement
+        #[arg(long)]
+        json: bool,
+    },
     /// Push current worktree delta to remote storage over 10G LAN.
     Sync {
         /// Optional subpath to sync (defaults to entire workspace).
@@ -1169,9 +1178,9 @@ async fn main() -> Result<()> {
     let cwd_engine = lsp_engine.or(cwd_engine);
     startup.mark("engine_project");
 
-    if matches!(cli.command, Some(Commands::Cluster)) {
+    if let Some(Commands::Cluster { json }) = cli.command {
         startup.report();
-        return run_cluster(&remotes, &placement_key, cwd_engine).await;
+        return run_cluster(&remotes, &placement_key, cwd_engine, json).await;
     }
 
     // A Go module whose cgo includes macOS headers builds only on macOS; a Linux node would
@@ -1241,8 +1250,8 @@ async fn main() -> Result<()> {
         Commands::Lsp { .. } => run_lsp_bridge(remote, lsp_engine).await,
         // `status` is about the node you name, not about where this checkout is placed.
         // The node this checkout is placed on, not the first address configured (#329).
-        Commands::Status => run_status_probe(remote).await,
-        Commands::Cluster => run_cluster(&remotes, &placement_key, cwd_engine).await,
+        Commands::Status { json } => run_status_probe(remote, json).await,
+        Commands::Cluster { json } => run_cluster(&remotes, &placement_key, cwd_engine, json).await,
         Commands::Metrics { since, json } => run_metrics(&remotes, since, json).await,
         Commands::ReportIssue { .. } => unreachable!("handled before placement"),
         Commands::Mcp => run_mcp_server(remote).await,
@@ -3240,8 +3249,29 @@ async fn run_report_issue(
     Ok(())
 }
 
+/// A gateway's status as one JSON object for scripts (#398): the fields as the gateway sent
+/// them, plus the address asked, the round trip, and whether the node is healthy and if not why.
+fn status_snapshot(
+    remote: SocketAddr,
+    rtt: std::time::Duration,
+    status: &prod_code_protocol::StatusResponse,
+) -> serde_json::Value {
+    let mut snapshot = serde_json::to_value(status).unwrap_or_default();
+    if let Some(object) = snapshot.as_object_mut() {
+        let pressure = status.host.pressure();
+        object.insert("remote".into(), serde_json::json!(remote.to_string()));
+        object.insert(
+            "rtt_ms".into(),
+            serde_json::json!(rtt.as_secs_f64() * 1000.0),
+        );
+        object.insert("healthy".into(), serde_json::json!(pressure.is_none()));
+        object.insert("pressure".into(), serde_json::json!(pressure));
+    }
+    snapshot
+}
+
 /// Query remote gateway for health and status snapshot.
-async fn run_status_probe(remote: SocketAddr) -> Result<()> {
+async fn run_status_probe(remote: SocketAddr, json: bool) -> Result<()> {
     let start = std::time::Instant::now();
     let stream = prod_code_protocol::transport::connect(remote)
         .await
@@ -3253,6 +3283,10 @@ async fn run_status_probe(remote: SocketAddr) -> Result<()> {
 
     if let Some(msg) = framed.next().await {
         match msg? {
+            WireMessage::StatusResponse(resp) if json => {
+                let snapshot = status_snapshot(remote, rtt, &resp);
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            }
             WireMessage::StatusResponse(resp) => {
                 let hours = resp.uptime_seconds / 3600;
                 let minutes = (resp.uptime_seconds % 3600) / 60;
@@ -3823,12 +3857,62 @@ async fn run_rename(
     Ok(())
 }
 
+/// The cluster as one JSON object for scripts (#398): the gossip view of the first node that
+/// answers, each configured node's status snapshot or the error it gave, and where the checkout
+/// is placed.
+async fn cluster_snapshot(
+    nodes: &[SocketAddr],
+    workspace_name: &str,
+    engine: Option<&str>,
+) -> serde_json::Value {
+    let mut gossip = serde_json::Value::Null;
+    for node in nodes {
+        if let Ok(view) = prod_code_mcp::cluster::cluster_view(*node).await {
+            gossip = serde_json::to_value(view).unwrap_or_default();
+            break;
+        }
+    }
+    let mut listed = Vec::new();
+    for node in nodes {
+        let started = std::time::Instant::now();
+        listed.push(match prod_code_mcp::cluster::node_status(*node).await {
+            Ok(status) => {
+                let mut snapshot = status_snapshot(*node, started.elapsed(), &status);
+                snapshot["up"] = serde_json::json!(true);
+                snapshot
+            }
+            Err(e) => serde_json::json!({
+                "remote": node.to_string(),
+                "up": false,
+                "error": format!("{e:#}"),
+            }),
+        });
+    }
+    let home = prod_code_mcp::cluster::rendezvous_order(nodes, workspace_name)
+        .first()
+        .map(|n| n.to_string());
+    serde_json::json!({
+        "gossip": gossip,
+        "nodes": listed,
+        "workspace": workspace_name,
+        "engine": engine,
+        "home": home,
+        "placed_on": prod_code_mcp::cluster::remembered_node(workspace_name).map(|n| n.to_string()),
+    })
+}
+
 /// Show every gateway node and the placement of the current checkout.
 async fn run_cluster(
     nodes: &[SocketAddr],
     workspace_name: &str,
     engine: Option<&str>,
+    json: bool,
 ) -> Result<()> {
+    if json {
+        let snapshot = cluster_snapshot(nodes, workspace_name, engine).await;
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        return Ok(());
+    }
     println!("⚡ prod-code cluster ({} node(s))", nodes.len());
     println!("────────────────────────────────────────────────────");
     // The gossip view of the first node that answers: what every node holds.

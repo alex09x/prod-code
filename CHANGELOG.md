@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **`prod-code status --json` and `prod-code cluster --json`** (#398). `status --json` prints the
+  gateway's status as one JSON object, with the fields as the gateway sent them: engines, sessions,
+  running commands, host memory and disk. It adds `remote`, `rtt_ms`, `healthy` and `pressure`.
+  `cluster --json` prints the gossip view, each configured node's snapshot (or `up: false` and
+  the error it gave), and the checkout's `home` and `placed_on` nodes. A script no longer parses
+  aligned text to learn whether a node is running a build.
 - **Placement keeps new workspaces off a node short of memory or disk** (#396). A gateway's status
   and gossip carry what its host has left: memory available and total (`MemAvailable` on Linux,
   the kernel's free percentage on macOS) and the free share of the workspaces filesystem. A node
