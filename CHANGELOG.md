@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.17 — 2026-09-26
+
 ### Added
 - **A new worktree's copy takes the main copy's `node_modules`** (#412). Before, a copy seeded
   from the main checkout's copy got the sources and Rust's `target/debug` (#278), but no
