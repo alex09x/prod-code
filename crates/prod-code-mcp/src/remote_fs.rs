@@ -49,31 +49,9 @@ pub fn is_external(root: &Path, file_path: &str) -> bool {
 /// `file://` URI or plain path to a plain path. Only a URI is percent-decoded: a plain path is
 /// already decoded, and a file named `100%41.rs` must not turn into `100A.rs`.
 pub fn uri_to_path(uri: &str) -> String {
-    if let Some(path) = prod_code_protocol::path::file_uri_path(uri) {
-        return path.to_string_lossy().into_owned();
-    }
-    match uri.strip_prefix("file://") {
-        Some(raw) => percent_decode(raw),
-        None => uri.to_string(),
-    }
-}
-
-fn percent_decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&text[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    prod_code_protocol::path::uri_or_path(uri)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Lines `line - context ..= line + context` of `text` (1-based `line`), numbered, with the
@@ -132,6 +110,7 @@ mod tests {
         );
         assert_eq!(uri_to_path("/w/100%41.rs"), "/w/100%41.rs");
         assert_eq!(uri_to_path("untitled:Untitled-1"), "untitled:Untitled-1");
+        assert_eq!(uri_to_path("file://remote/tmp/%€"), "remote/tmp/%€");
     }
 
     #[test]
