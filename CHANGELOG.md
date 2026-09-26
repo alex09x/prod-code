@@ -10,6 +10,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
+  earlier writes and resource operations when a later step fails (#425). Paths are checked
+  again after directory moves, and deleted files do not survive as hidden backup files.
+  Rust module refactors send text changes before file moves, matching LSP ordering.
 - Impact-based CI falls back to the full suite when deleted files, unreadable diffs,
   unattributed changes, failed hierarchy queries or a depth limit leave the selection
   incomplete (#434). It includes directly changed tests, all call-hierarchy items and
