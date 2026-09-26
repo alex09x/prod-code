@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.3.18 — 2026-09-26
+
 ### Changed
 - **The dev and test profiles keep line tables only, in the objects** (#421). With
   `split-debuginfo = "unpacked"` and incremental builds, rustc wrote a `.dwo` file per codegen
