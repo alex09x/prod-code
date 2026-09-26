@@ -164,7 +164,7 @@ impl BackendWorker {
 
     /// Perform the one-time LSP initialize handshake with the backend worker.
     async fn initialize_backend(&self, workspace_root: &Path) -> Result<()> {
-        let ws_str = workspace_root.to_string_lossy().to_string();
+        let ws_uri = prod_code_protocol::path::file_uri(workspace_root);
         let ws_name = workspace_root
             .file_name()
             .and_then(|n| n.to_str())
@@ -176,11 +176,11 @@ impl BackendWorker {
             "method": "initialize",
             "params": {
                 "processId": null,
-                "rootUri": format!("file://{}", ws_str),
+                "rootUri": ws_uri,
                 "workspaceFolders": [
                     {
                         "name": ws_name,
-                        "uri": format!("file://{}", ws_str)
+                        "uri": ws_uri
                     }
                 ],
                 "capabilities": {
@@ -239,7 +239,7 @@ impl BackendWorker {
         });
         self.send_lsp(&initialized.to_string()).await?;
 
-        tracing::info!(workspace = %ws_str, "Backend language server initialized and warm");
+        tracing::info!(workspace = %workspace_root.display(), "Backend language server initialized and warm");
         Ok(())
     }
 

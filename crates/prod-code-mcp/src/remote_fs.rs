@@ -46,10 +46,16 @@ pub fn is_external(root: &Path, file_path: &str) -> bool {
     !Path::new(file_path).starts_with(&root)
 }
 
-/// `file://` URI or plain path to a plain path.
+/// `file://` URI or plain path to a plain path. Only a URI is percent-decoded: a plain path is
+/// already decoded, and a file named `100%41.rs` must not turn into `100A.rs`.
 pub fn uri_to_path(uri: &str) -> String {
-    let raw = uri.strip_prefix("file://").unwrap_or(uri);
-    percent_decode(raw)
+    if let Some(path) = prod_code_protocol::path::file_uri_path(uri) {
+        return path.to_string_lossy().into_owned();
+    }
+    match uri.strip_prefix("file://") {
+        Some(raw) => percent_decode(raw),
+        None => uri.to_string(),
+    }
 }
 
 fn percent_decode(text: &str) -> String {
@@ -115,6 +121,17 @@ mod tests {
     #[test]
     fn uri_to_path_accepts_a_plain_path_without_the_file_prefix() {
         assert_eq!(uri_to_path("/already/a/path.rs"), "/already/a/path.rs");
+    }
+
+    #[test]
+    fn uri_to_path_decodes_a_uri_once_and_a_plain_path_never() {
+        // A literal `%41` in a file name is `%2541` in its URI, and stays `%41` in the path.
+        assert_eq!(
+            uri_to_path("file:///w/my%20app%20%231/100%2541%20%C3%BC.rs"),
+            "/w/my app #1/100%41 ü.rs"
+        );
+        assert_eq!(uri_to_path("/w/100%41.rs"), "/w/100%41.rs");
+        assert_eq!(uri_to_path("untitled:Untitled-1"), "untitled:Untitled-1");
     }
 
     #[test]

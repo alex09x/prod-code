@@ -261,7 +261,7 @@ pub fn watched_events(root: &Path, changes: &[(PathBuf, WatchedChange)]) -> Vec<
         .iter()
         .filter(|(path, _)| path.starts_with(root))
         .map(|(path, kind)| {
-            serde_json::json!({ "uri": format!("file://{}", path.display()), "type": *kind as u8 })
+            serde_json::json!({ "uri": prod_code_protocol::path::file_uri(path), "type": *kind as u8 })
         })
         .collect()
 }

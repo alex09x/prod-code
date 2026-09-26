@@ -26,6 +26,7 @@ use prod_code_protocol::{
     HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION, PathTranslator, PeerInfo,
     PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
+    path::{file_uri, uri_or_path},
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -1488,7 +1489,7 @@ async fn rename_with_references_open(
             })
             .unwrap_or_default();
         for uri in uris.into_iter().filter(|u| *u != own_uri).take(MAX_OPENED) {
-            let path = PathBuf::from(uri.trim_start_matches("file://"));
+            let path = uri_or_path(&uri);
             let Ok(text) = tokio::fs::read_to_string(&path).await else {
                 continue;
             };
@@ -1553,7 +1554,7 @@ fn hierarchy_item_json(item: &prod_code_engine_rust::HierarchyItem) -> serde_jso
     serde_json::json!({
         "name": item.name,
         "kind": lsp_symbol_kind(&item.kind),
-        "uri": format!("file://{}", item.path.display()),
+        "uri": file_uri(&item.path),
         "range": lsp_range(item.line, item.col, item.end_line, item.end_col),
         "selectionRange": lsp_range(item.line, item.col, item.line, item.col + item.name.chars().count() as u32),
     })
@@ -1626,7 +1627,7 @@ fn hierarchy_query(
                 .iter()
                 .map(|t| {
                     serde_json::json!({
-                        "uri": format!("file://{}", t.path.display()),
+                        "uri": file_uri(&t.path),
                         "range": lsp_range(t.line, t.col, t.line, t.col),
                     })
                 })
@@ -1645,7 +1646,7 @@ fn hierarchy_query(
 fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serde_json::Value {
     let mut changes = Vec::new();
     for created in &outcome.created {
-        let uri = format!("file://{}", created.path.display());
+        let uri = file_uri(&created.path);
         changes.push(
             serde_json::json!({ "kind": "create", "uri": uri, "options": { "overwrite": false } }),
         );
@@ -1656,7 +1657,7 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
     }
     for file in &outcome.files {
         changes.push(serde_json::json!({
-            "textDocument": { "uri": format!("file://{}", file.path.display()), "version": null },
+            "textDocument": { "uri": file_uri(&file.path), "version": null },
             "edits": [ {
                 "range": { "start": { "line": 0, "character": 0 }, "end": { "line": file.old_line_count, "character": 0 } },
                 "newText": file.new_text
@@ -1666,8 +1667,8 @@ fn workspace_edit_json(outcome: &prod_code_engine_rust::RefactorOutcome) -> serd
     for mv in &outcome.moves {
         changes.push(serde_json::json!({
             "kind": "rename",
-            "oldUri": format!("file://{}", mv.from.display()),
-            "newUri": format!("file://{}", mv.to.display()),
+            "oldUri": file_uri(&mv.from),
+            "newUri": file_uri(&mv.to),
             "options": { "overwrite": false }
         }));
     }
@@ -3093,10 +3094,12 @@ async fn on_client_message(
                         })
                         .and_then(|u| u.as_str())
                         .unwrap_or("");
-                    let file = std::path::Path::new(uri.trim_start_matches("file://"))
+                    let path = uri_or_path(uri);
+                    let file = path
                         .strip_prefix(&meta.engine_root)
-                        .map(|p| p.to_string_lossy().into_owned())
-                        .unwrap_or_else(|_| uri.trim_start_matches("file://").to_string());
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
                     let pos = params.and_then(|p| {
                         p.get("position")
                             .or_else(|| p.get("range").and_then(|r| r.get("start")))
@@ -3295,7 +3298,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(&uri);
                                 if let Some(text) = params
                                     .get("textDocument")
                                     .and_then(|td| td.get("text"))
@@ -3339,7 +3342,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(&uri);
                                 let first = params
                                     .get("contentChanges")
                                     .and_then(|c| c.as_array())
@@ -3385,7 +3388,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+                                let file_path = uri_or_path(&uri);
                                 let mut engine = engine_lock.lock().await;
                                 if let Err(e) =
                                     engine.clear_session_overlay(view.session_id, &file_path)
@@ -3994,7 +3997,7 @@ fn lsp_call_hierarchy(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
     let method_name = hm.to_string();
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -4101,7 +4104,7 @@ fn lsp_safe_delete(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4189,8 +4192,8 @@ fn lsp_structural_replace(
         .get("scope")
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| PathBuf::from(s.trim_start_matches("file://")));
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+        .map(uri_or_path);
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4285,7 +4288,7 @@ fn lsp_rename(
         .and_then(|n| n.as_str())
         .unwrap_or("")
         .to_string();
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4393,7 +4396,7 @@ fn lsp_assists(
         .get("subtype")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4520,7 +4523,7 @@ fn lsp_workspace_symbol(
                 "name": s.name,
                 "kind": lsp_symbol_kind(&s.kind),
                 "location": {
-                    "uri": format!("file://{}", s.path.display()),
+                    "uri": file_uri(&s.path),
                     "range": {
                         "start": { "line": s.line.saturating_sub(1), "character": s.col.saturating_sub(1) },
                         "end": { "line": s.end_line.max(s.line).saturating_sub(1), "character": 0 }
@@ -4549,7 +4552,7 @@ fn lsp_document_symbol(
         .and_then(|u| u.as_str())
         .unwrap_or("")
         .to_string();
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4685,7 +4688,7 @@ fn lsp_references(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4759,7 +4762,7 @@ fn lsp_references(
 
         let locations: Vec<_> = refs.into_iter().map(|t| {
             serde_json::json!({
-                "uri": format!("file://{}", t.path.display()),
+                "uri": file_uri(&t.path),
                 "range": {
                     "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
@@ -4800,7 +4803,7 @@ fn lsp_definition(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4874,7 +4877,7 @@ fn lsp_definition(
 
         let locations: Vec<_> = defs.into_iter().map(|t| {
             serde_json::json!({
-                "uri": format!("file://{}", t.path.display()),
+                "uri": file_uri(&t.path),
                 "range": {
                     "start": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) },
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
@@ -4915,7 +4918,7 @@ fn lsp_hover(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = PathBuf::from(uri.trim_start_matches("file://"));
+    let file_path = uri_or_path(&uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -5123,7 +5126,7 @@ fn publish_rust_diagnostics(
                 let note = serde_json::json!({
                     "jsonrpc": "2.0",
                     "method": "textDocument/publishDiagnostics",
-                    "params": { "uri": format!("file://{}", path.display()), "diagnostics": diagnostics }
+                    "params": { "uri": file_uri(&path), "diagnostics": diagnostics }
                 });
                 let client_note = translator_task.translate_lsp_to_client(&note.to_string());
                 let _ = out_tx_task.send(WireMessage::LspPayload(client_note)).await;
