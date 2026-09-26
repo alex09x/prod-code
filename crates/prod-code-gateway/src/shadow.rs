@@ -15,6 +15,7 @@ use prod_code_protocol::{
     FileDelta, ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse,
     WireMessage,
 };
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -341,43 +342,186 @@ where
     })
 }
 
-/// Verifies that the requested hypothesis environment does not conflict with overlay mount
-/// namespace isolation. Sccache requires client-side mode (`SCCACHE_CLIENT_SIDE=1`) to compile
-/// inside the overlay mount namespace; error logging and distributed compilation cause sccache
-/// to ignore client-side mode and compile on the daemon or remote nodes, escaping the namespace.
+/// Why an overlay hypothesis must not run, or `None`. An sccache daemon started outside the
+/// hypothesis's mount namespace compiles against the real workspace, so sccache has to stay in
+/// client-side mode, where the wrapper process inside the namespace compiles (#426).
 fn check_isolation_conflicts(job: &Job) -> Option<String> {
-    if job.env.iter().any(|(k, v)| {
-        k == "SCCACHE_CLIENT_SIDE"
-            && (v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("no"))
-    }) {
-        return Some(
-            "cannot run overlay shadow: SCCACHE_CLIENT_SIDE is disabled, which breaks mount namespace isolation"
-                .to_string(),
-        );
+    let var = |key: &str| effective_var(&job.env, key);
+    sccache_client_side(&var, &job.workspace, &job.files)
+        .err()
+        .map(|why| format!("cannot run an overlay shadow: {why}"))
+}
+
+/// A variable as the overlay command sees it: the request's env wins over the gateway's, and
+/// `SCCACHE_CLIENT_SIDE` is the `1` that `run_overlay` sets unless the request overrides it.
+fn effective_var(env: &[(String, String)], key: &str) -> Option<OsString> {
+    if let Some((_, value)) = env.iter().rev().find(|(k, _)| k == key) {
+        return Some(value.into());
     }
-    if job.env.iter().any(|(k, _)| k == "SCCACHE_ERROR_LOG")
-        || std::env::var_os("SCCACHE_ERROR_LOG").is_some()
+    if key == "SCCACHE_CLIENT_SIDE" {
+        return Some("1".into());
+    }
+    std::env::var_os(key)
+}
+
+/// `Ok` when an sccache client started with these variables compiles in client-side mode,
+/// resolved as sccache 0.17 `Config::load` does: a non-empty `SCCACHE_CLIENT_SIDE` wins over
+/// the config file's `client_side_mode`, and the mode is off while `SCCACHE_LOG` is set or the
+/// config file names `dist.scheduler_url`. Distributed compilation is configured only in that
+/// file, never through the environment.
+fn sccache_client_side(
+    var: &dyn Fn(&str) -> Option<OsString>,
+    workspace: &Path,
+    files: &[FileDelta],
+) -> std::result::Result<(), String> {
+    // sccache reads the variable with `env::var(..).ok()` and ignores an empty value.
+    let from_env = match var("SCCACHE_CLIENT_SIDE")
+        .and_then(|v| v.into_string().ok())
+        .filter(|v| !v.is_empty())
     {
-        return Some(
-            "cannot run overlay shadow with SCCACHE_ERROR_LOG: sccache disables client-side mode and breaks mount namespace isolation"
+        None => None,
+        Some(v) => match v.to_lowercase().as_str() {
+            "true" | "on" | "1" => Some(true),
+            "false" | "off" | "0" => {
+                return Err(
+                    "SCCACHE_CLIENT_SIDE turns sccache's client-side mode off, and \
+                            sccache would compile in its daemon outside the hypothesis's \
+                            mount namespace"
+                        .to_string(),
+                );
+            }
+            _ => {
+                return Err(
+                    "SCCACHE_CLIENT_SIDE is not one of true, on, 1 (sccache rejects \
+                            any value other than true, on, 1, false, off, 0)"
+                        .to_string(),
+                );
+            }
+        },
+    };
+    if var("SCCACHE_LOG").is_some() {
+        return Err(
+            "SCCACHE_LOG is set, and sccache turns client-side mode off while it logs; \
+                    unset it for shadow runs"
                 .to_string(),
         );
     }
-    if job
-        .env
-        .iter()
-        .any(|(k, _)| k == "SCCACHE_DIST" || k.starts_with("SCCACHE_DIST_"))
-        || std::env::vars_os().any(|(k, _)| {
-            let s = k.to_string_lossy();
-            s == "SCCACHE_DIST" || s.starts_with("SCCACHE_DIST_")
+    let path = sccache_config_path(var)?;
+    let (scheduler, from_file) = match sccache_config_content(&path, workspace, files)? {
+        Some(bytes) => parse_sccache_config(&path, &bytes)?,
+        None => (false, false),
+    };
+    if scheduler {
+        return Err(format!(
+            "the sccache config {} sets dist.scheduler_url; distributed compilation runs \
+             outside the hypothesis's mount namespace and is not supported in shadow runs",
+            path.display()
+        ));
+    }
+    if !from_env.unwrap_or(from_file) {
+        return Err(format!(
+            "sccache's client-side mode is off: SCCACHE_CLIENT_SIDE is empty and the config {} \
+             does not set client_side_mode = true",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+/// The config file sccache reads: `SCCACHE_CONF`, otherwise the Linux config directory of
+/// the `directories` crate (`$XDG_CONFIG_HOME` when absolute, else `$HOME/.config`).
+fn sccache_config_path(
+    var: &dyn Fn(&str) -> Option<OsString>,
+) -> std::result::Result<PathBuf, String> {
+    if let Some(conf) = var("SCCACHE_CONF") {
+        let path = PathBuf::from(conf);
+        if !path.is_absolute() {
+            return Err(
+                "SCCACHE_CONF must be an absolute path in shadow runs: sccache \
+                        resolves a relative one against each compiler's working directory"
+                    .to_string(),
+            );
+        }
+        return Ok(path);
+    }
+    let config_home = var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            var("HOME")
+                .filter(|h| !h.is_empty())
+                .map(|h| PathBuf::from(h).join(".config"))
         })
-    {
-        return Some(
-            "cannot run overlay shadow with distributed sccache: compilation runs outside mount namespace isolation"
-                .to_string(),
-        );
+        .ok_or(
+            "cannot locate the sccache config: none of SCCACHE_CONF, XDG_CONFIG_HOME and \
+                HOME is set",
+        )?;
+    Ok(config_home.join("sccache").join("config"))
+}
+
+/// The config file's bytes as the hypothesis sees them (`None`: no file). Inside the workspace
+/// the hypothesis's own files shadow the copy on disk; the run script deletes after mounting,
+/// so deleting the file or a parent directory wins over proposed content.
+fn sccache_config_content(
+    path: &Path,
+    workspace: &Path,
+    files: &[FileDelta],
+) -> std::result::Result<Option<Vec<u8>>, String> {
+    if let Ok(rel) = path.strip_prefix(workspace) {
+        let mut proposed = None;
+        for file in files {
+            let Some(p) = safe_relative(&file.relative_path) else {
+                continue;
+            };
+            match &file.content {
+                None if rel.starts_with(&p) => return Ok(None),
+                Some(bytes) if rel == p => proposed = Some(bytes.clone()),
+                _ => {}
+            }
+        }
+        if proposed.is_some() {
+            return Ok(proposed);
+        }
     }
-    None
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!(
+            "cannot read the sccache config {}: {}",
+            path.display(),
+            e.kind()
+        )),
+    }
+}
+
+/// `(dist.scheduler_url is set, client_side_mode)` from a config file: JSON when its extension
+/// is `json`, TOML otherwise, as sccache decides. Parser messages are not passed on because
+/// they quote the file, which can hold cache credentials.
+fn parse_sccache_config(path: &Path, bytes: &[u8]) -> std::result::Result<(bool, bool), String> {
+    let invalid = |what: &str| format!("the sccache config {} {what}", path.display());
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid("is not UTF-8 text"))?;
+    let value: serde_json::Value = if path.extension().is_some_and(|e| e == "json") {
+        serde_json::from_str(text).map_err(|_| invalid("is not valid JSON"))?
+    } else {
+        toml::from_str::<toml::Table>(text)
+            .ok()
+            .and_then(|table| serde_json::to_value(table).ok())
+            .ok_or_else(|| invalid("is not valid TOML"))?
+    };
+    let root = value.as_object().ok_or_else(|| invalid("is not a table"))?;
+    let scheduler = match root.get("dist") {
+        None => false,
+        Some(serde_json::Value::Object(dist)) => {
+            dist.get("scheduler_url").is_some_and(|url| !url.is_null())
+        }
+        Some(_) => return Err(invalid("has a `dist` that is not a table")),
+    };
+    let client_side = match root.get("client_side_mode") {
+        None => false,
+        Some(serde_json::Value::Bool(on)) => *on,
+        Some(_) => return Err(invalid("has a `client_side_mode` that is not a boolean")),
+    };
+    Ok((scheduler, client_side))
 }
 
 /// Runs one hypothesis as an overlay shadow: its files go to a fresh upper directory, the
@@ -387,6 +531,7 @@ pub async fn run_overlay(
     cancel: tokio::sync::watch::Receiver<bool>,
 ) -> ShadowHypothesisResult {
     if let Some(err) = check_isolation_conflicts(&job) {
+        tracing::info!(hypothesis = %job.name, reason = %err, "🌓 [SHADOW] hypothesis refused");
         return failed(&job.name, err);
     }
     let dir = job
@@ -886,197 +1031,622 @@ mod tests {
         assert_eq!(std::fs::read_dir(shadow.path()).unwrap().count(), 0);
     }
 
+    /// `sccache` on PATH or in `~/.cargo/bin`.
+    fn find_sccache() -> Option<PathBuf> {
+        let on_path = std::process::Command::new("sh")
+            .args(["-c", "command -v sccache"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+        on_path.filter(|p| p.is_file()).or_else(|| {
+            let home = std::env::var_os("HOME")?;
+            let p = PathBuf::from(home).join(".cargo/bin/sccache");
+            p.is_file().then_some(p)
+        })
+    }
+
+    /// The regression of #426 on a real node: a proposed source file and a proposed build
+    /// script compile through sccache inside the hypothesis's mount namespace, and the build
+    /// script's output, the rlib and the test binary exist only in the shadow. It fails, rather
+    /// than skips, without sccache or overlay support:
+    /// `cargo test -p prod-code-gateway shadow -- --ignored --nocapture` on a Linux build node.
     #[tokio::test]
-    async fn overlay_hypotheses_compile_proposed_source_with_rustc_wrapper() {
+    #[ignore = "needs sccache and unprivileged overlay mounts; run with --ignored on a Linux node"]
+    async fn overlay_hypotheses_compile_proposed_source_through_sccache() {
         if let Some(reason) = overlay_unavailable() {
-            eprintln!("skipped: {reason}");
-            return;
+            panic!("this test needs overlay shadows: {reason}");
         }
+        let sccache = find_sccache().expect("this test needs sccache on PATH or in ~/.cargo/bin");
+        // A daemon started from inside the namespace would outlive the hypothesis; start it
+        // here so the wrapper only connects to it, as it does on a node with warm builds.
+        let _ = std::process::Command::new(&sccache)
+            .arg("--start-server")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
         let ws = tempfile::tempdir().unwrap();
         let shadow = tempfile::tempdir().unwrap();
-
-        // Configure sccache as rustc-wrapper if present on the system
-        let sccache_path = {
-            let output = std::process::Command::new("which")
-                .arg("sccache")
-                .output()
-                .ok();
-            output
-                .and_then(|o| {
-                    if o.status.success() {
-                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                        let p = PathBuf::from(s);
-                        p.is_file().then_some(p)
-                    } else {
-                        None
-                    }
-                })
-                .or_else(|| {
-                    std::env::var("HOME").ok().and_then(|home| {
-                        let p = PathBuf::from(home).join(".cargo/bin/sccache");
-                        p.is_file().then_some(p)
-                    })
-                })
-        };
-
-        if let Some(wrapper) = &sccache_path {
-            std::fs::create_dir_all(ws.path().join(".cargo")).unwrap();
-            std::fs::write(
-                ws.path().join(".cargo/config.toml"),
-                format!("[build]\nrustc-wrapper = {:?}\n", wrapper),
-            )
-            .unwrap();
+        // Outside the workspace, so what the wrapper records survives the shadow.
+        let tools = tempfile::tempdir().unwrap();
+        let wrapper = tools.path().join("record-sccache");
+        let log = tools.path().join("wrapper.log");
+        std::fs::write(
+            &wrapper,
+            "#!/bin/sh\n\"$SHADOW_TEST_SCCACHE\" \"$@\"\nrc=$?\n\
+             echo \"rc=$rc client_side=${SCCACHE_CLIENT_SIDE-unset} mntns=$(readlink /proc/self/ns/mnt) $*\" \
+             >> \"$SHADOW_TEST_WRAPPER_LOG\"\nexit $rc\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-
         std::fs::write(
             ws.path().join("Cargo.toml"),
-            r#"[package]
-name = "shadow-regress"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-"#,
+            "[package]\nname = \"shadow-regress\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-
         std::fs::write(
             ws.path().join("build.rs"),
-            r#"fn main() {
-    println!("cargo:rustc-env=SHADOW_BUILD_RS_VAL=from_build_rs");
-}
-"#,
+            "fn main() {\n    println!(\"cargo:rustc-env=SHADOW_BUILD_RS_VAL=base\");\n}\n",
         )
         .unwrap();
-
         std::fs::create_dir_all(ws.path().join("src")).unwrap();
-        std::fs::write(
-            ws.path().join("src/lib.rs"),
-            r#"pub fn message() -> String {
-    format!("base:{}", env!("SHADOW_BUILD_RS_VAL"))
-}
+        let base_lib = "pub fn message() -> String {\n    format!(\"base:{}\", env!(\"SHADOW_BUILD_RS_VAL\"))\n}\n";
+        std::fs::write(ws.path().join("src/lib.rs"), base_lib).unwrap();
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn check_output() {
-        assert_eq!(message(), "hypothesis:from_build_rs");
-    }
+        let proposed_build = r#"fn main() {
+    let out = std::env::var("OUT_DIR").unwrap();
+    std::fs::write(format!("{out}/marker.txt"), "marker:proposed-build-script\n").unwrap();
+    println!("cargo:rustc-env=SHADOW_BUILD_RS_VAL=proposed");
 }
-"#,
-        )
-        .unwrap();
-
-        let hypothesis_lib = r#"pub fn message() -> String {
+"#;
+        let proposed_lib = r#"pub fn message() -> String {
     format!("hypothesis:{}", env!("SHADOW_BUILD_RS_VAL"))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
-    fn check_output() {
-        assert_eq!(message(), "hypothesis:from_build_rs");
+    fn sees_the_proposed_source_and_build_script() {
+        assert_eq!(super::message(), "hypothesis:proposed");
     }
 }
 "#;
-
+        let script = "set -e\n\
+             cargo build --quiet\n\
+             cargo test --quiet\n\
+             ls target/debug/deps/libshadow_regress-*.rlib\n\
+             cat target/debug/build/shadow-regress-*/out/marker.txt\n";
+        let mut hypothesis = job(
+            ws.path(),
+            shadow.path(),
+            "sccache",
+            vec![
+                delta("src/lib.rs", Some(proposed_lib)),
+                delta("build.rs", Some(proposed_build)),
+            ],
+            &["sh", "-c", script],
+        );
+        hypothesis.timeout = Duration::from_secs(600);
+        let target = ws.path().join("target");
+        for (k, v) in [
+            ("RUSTC_WRAPPER", wrapper.to_str().unwrap()),
+            ("SHADOW_TEST_SCCACHE", sccache.to_str().unwrap()),
+            ("SHADOW_TEST_WRAPPER_LOG", log.to_str().unwrap()),
+            // sccache exits on CARGO_INCREMENTAL=1 and cannot cache incremental builds.
+            ("CARGO_INCREMENTAL", "0"),
+            ("CARGO_TARGET_DIR", target.to_str().unwrap()),
+        ] {
+            hypothesis.env.push((k.to_string(), v.to_string()));
+        }
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let argv = [
-            "sh",
-            "-c",
-            "cargo test --quiet 2>&1 && ls target/debug/deps/*.rlib",
-        ];
-        let result = run_overlay(
-            job(
-                ws.path(),
-                shadow.path(),
-                "regress",
-                vec![delta("src/lib.rs", Some(hypothesis_lib))],
-                &argv,
-            ),
-            rx,
-        )
-        .await;
-
-        assert_eq!(
-            result.exit_code,
-            Some(0),
-            "compilation failed: error={:?} output={}",
-            result.error,
-            output(&result)
-        );
+        let result = run_overlay(hypothesis, rx).await;
         let out = output(&result);
-        assert!(
-            out.contains("1 passed") || out.contains("test result: ok"),
-            "test output missing expected pass: {out}"
+        assert_eq!(result.exit_code, Some(0), "{:?} {out}", result.error);
+        assert!(out.contains("test result: ok. 1 passed"), "{out}");
+        assert!(out.contains("libshadow_regress-"), "{out}");
+        assert!(out.contains("marker:proposed-build-script"), "{out}");
+
+        // Nothing reached the workspace copy: no target directory, the base files unchanged.
+        assert!(!target.exists(), "the build escaped the shadow");
+        assert_eq!(
+            std::fs::read_to_string(ws.path().join("src/lib.rs")).unwrap(),
+            base_lib
         );
         assert!(
-            out.contains(".rlib"),
-            "output must include compiled rlib artifact: {out}"
+            std::fs::read_to_string(ws.path().join("build.rs"))
+                .unwrap()
+                .contains("=base")
         );
 
-        // Verify base workspace remains untouched
-        assert!(
-            !ws.path().join("target").exists(),
-            "target artifacts must not be written to the base workspace"
+        // sccache itself ran for the build script and the library, inside another mount
+        // namespace, with client-side mode on, and succeeded.
+        let recorded = std::fs::read_to_string(&log).expect("the wrapper was never invoked");
+        let own_ns = std::fs::read_link("/proc/self/ns/mnt").unwrap();
+        let own_ns = format!("mntns={}", own_ns.display());
+        for krate in ["build_script_build", "shadow_regress"] {
+            let calls: Vec<&str> = recorded
+                .lines()
+                .filter(|l| l.contains(&format!("--crate-name {krate} ")))
+                .collect();
+            assert!(!calls.is_empty(), "no sccache call for {krate}: {recorded}");
+            for call in calls {
+                assert!(call.starts_with("rc=0 client_side=1 mntns="), "{call}");
+                assert!(
+                    !call.contains(&own_ns),
+                    "compiled outside the shadow: {call}"
+                );
+            }
+        }
+        for line in recorded.lines() {
+            let crate_name = line
+                .split("--crate-name ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .unwrap_or("-");
+            eprintln!(
+                "wrapper: {} crate={crate_name}",
+                line.split(' ').take(3).collect::<Vec<_>>().join(" ")
+            );
+        }
+    }
+
+    /// `sccache_client_side` with exactly these variables and nothing from the process.
+    fn verdict(
+        vars: &[(&str, &str)],
+        workspace: &Path,
+        files: &[FileDelta],
+    ) -> std::result::Result<(), String> {
+        let var = |key: &str| {
+            vars.iter()
+                .rev()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| OsString::from(v))
+        };
+        sccache_client_side(&var, workspace, files)
+    }
+
+    fn refused(verdict: std::result::Result<(), String>, needle: &str) {
+        let why = verdict.expect_err("expected a refusal");
+        assert!(why.contains(needle), "{why:?} does not mention {needle:?}");
+    }
+
+    const SCHEDULER_TOML: &str = "[dist]\nscheduler_url = \"https://scheduler.invalid\"\n[dist.auth]\ntype = \"token\"\ntoken = \"hunter2\"\n";
+
+    #[test]
+    fn sccache_client_side_values_that_are_not_on_are_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let h = home.path().to_str().unwrap();
+        for on in ["1", "true", "TRUE", "on", "On"] {
+            verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", on)], ws.path(), &[])
+                .unwrap_or_else(|e| panic!("{on}: {e}"));
+        }
+        for off in ["0", "false", "FALSE", "off", "Off"] {
+            refused(
+                verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", off)], ws.path(), &[]),
+                "turns sccache's client-side mode off",
+            );
+        }
+        // sccache fails on these, so they cannot silently disable it either.
+        for bad in ["no", "yes", "2", " 1", "enabled"] {
+            refused(
+                verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", bad)], ws.path(), &[]),
+                "is not one of true, on, 1",
+            );
+        }
+        // Empty or unset falls back to the config file, which does not enable it.
+        refused(
+            verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", "")], ws.path(), &[]),
+            "client_side_mode = true",
         );
-        let base_content = std::fs::read_to_string(ws.path().join("src/lib.rs")).unwrap();
-        assert!(
-            base_content.contains("base:"),
-            "base src/lib.rs must remain untouched"
+        refused(
+            verdict(&[("HOME", h)], ws.path(), &[]),
+            "SCCACHE_CLIENT_SIDE is empty",
+        );
+    }
+
+    #[test]
+    fn sccache_log_disables_client_side_mode_but_error_log_does_not() {
+        let home = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let h = home.path().to_str().unwrap();
+        let base = [("HOME", h), ("SCCACHE_CLIENT_SIDE", "1")];
+        refused(
+            verdict(
+                &[base[0], base[1], ("SCCACHE_LOG", "debug")],
+                ws.path(),
+                &[],
+            ),
+            "SCCACHE_LOG",
+        );
+        refused(
+            verdict(&[base[0], base[1], ("SCCACHE_LOG", "")], ws.path(), &[]),
+            "SCCACHE_LOG",
+        );
+        // Only the daemon's stderr goes there; the client-side mode is unaffected.
+        verdict(
+            &[base[0], base[1], ("SCCACHE_ERROR_LOG", "/tmp/sccache.log")],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sccache_scheduler_in_the_default_config_is_refused() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let (h, x) = (home.path().to_str().unwrap(), xdg.path().to_str().unwrap());
+        let home_conf = home.path().join(".config/sccache/config");
+        std::fs::create_dir_all(home_conf.parent().unwrap()).unwrap();
+        std::fs::write(&home_conf, SCHEDULER_TOML).unwrap();
+        let why =
+            verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", "1")], ws.path(), &[]).unwrap_err();
+        assert!(why.contains("dist.scheduler_url"), "{why}");
+        assert!(why.contains(&home_conf.display().to_string()), "{why}");
+        assert!(!why.contains("hunter2"), "credentials leaked: {why}");
+        // A relative XDG_CONFIG_HOME is ignored, as the directories crate does.
+        refused(
+            verdict(
+                &[
+                    ("HOME", h),
+                    ("XDG_CONFIG_HOME", "rel"),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                ws.path(),
+                &[],
+            ),
+            "dist.scheduler_url",
+        );
+        // An absolute XDG_CONFIG_HOME replaces ~/.config.
+        verdict(
+            &[
+                ("HOME", h),
+                ("XDG_CONFIG_HOME", x),
+                ("SCCACHE_CLIENT_SIDE", "1"),
+            ],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+        std::fs::create_dir_all(xdg.path().join("sccache")).unwrap();
+        std::fs::write(xdg.path().join("sccache/config"), SCHEDULER_TOML).unwrap();
+        refused(
+            verdict(
+                &[("XDG_CONFIG_HOME", x), ("SCCACHE_CLIENT_SIDE", "1")],
+                ws.path(),
+                &[],
+            ),
+            "dist.scheduler_url",
+        );
+        // A dist section without a scheduler is local compilation.
+        std::fs::write(
+            &home_conf,
+            "[dist]\ncache_dir = \"/tmp/x\"\n[cache.disk]\ndir = \"/tmp/c\"\n",
+        )
+        .unwrap();
+        verdict(&[("HOME", h), ("SCCACHE_CLIENT_SIDE", "1")], ws.path(), &[]).unwrap();
+    }
+
+    #[test]
+    fn sccache_conf_overrides_the_default_config() {
+        let home = tempfile::tempdir().unwrap();
+        let conf = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let h = home.path().to_str().unwrap();
+        let home_conf = home.path().join(".config/sccache/config");
+        std::fs::create_dir_all(home_conf.parent().unwrap()).unwrap();
+        std::fs::write(&home_conf, SCHEDULER_TOML).unwrap();
+        // An explicit safe config wins over the default one with a scheduler.
+        let safe = conf.path().join("safe.toml");
+        std::fs::write(
+            &safe,
+            "client_side_mode = true\n[cache.disk]\ndir = \"/tmp/c\"\n",
+        )
+        .unwrap();
+        let s = safe.to_str().unwrap();
+        verdict(
+            &[
+                ("HOME", h),
+                ("SCCACHE_CONF", s),
+                ("SCCACHE_CLIENT_SIDE", "1"),
+            ],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+        // With SCCACHE_CLIENT_SIDE empty the file's client_side_mode decides.
+        verdict(
+            &[
+                ("HOME", h),
+                ("SCCACHE_CONF", s),
+                ("SCCACHE_CLIENT_SIDE", ""),
+            ],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+        // A non-empty variable wins over the file.
+        refused(
+            verdict(
+                &[("SCCACHE_CONF", s), ("SCCACHE_CLIENT_SIDE", "off")],
+                ws.path(),
+                &[],
+            ),
+            "client-side mode off",
+        );
+        // A missing SCCACHE_CONF file is no config, as for sccache.
+        let missing = conf.path().join("missing.toml");
+        verdict(
+            &[
+                ("SCCACHE_CONF", missing.to_str().unwrap()),
+                ("SCCACHE_CLIENT_SIDE", "1"),
+            ],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+        // JSON by extension: a null scheduler is none, a string one is distributed.
+        let json = conf.path().join("conf.json");
+        let j = json.to_str().unwrap();
+        std::fs::write(
+            &json,
+            r#"{"dist": {"scheduler_url": null}, "client_side_mode": true}"#,
+        )
+        .unwrap();
+        verdict(
+            &[("SCCACHE_CONF", j), ("SCCACHE_CLIENT_SIDE", "")],
+            ws.path(),
+            &[],
+        )
+        .unwrap();
+        std::fs::write(&json, r#"{"dist": {"scheduler_url": "https://s.invalid"}}"#).unwrap();
+        refused(
+            verdict(
+                &[("SCCACHE_CONF", j), ("SCCACHE_CLIENT_SIDE", "1")],
+                ws.path(),
+                &[],
+            ),
+            "dist.scheduler_url",
+        );
+        // Relative or empty paths depend on each compiler's working directory.
+        for rel in ["sccache.toml", ""] {
+            refused(
+                verdict(
+                    &[("SCCACHE_CONF", rel), ("SCCACHE_CLIENT_SIDE", "1")],
+                    ws.path(),
+                    &[],
+                ),
+                "SCCACHE_CONF must be an absolute path",
+            );
+        }
+        refused(
+            verdict(&[("SCCACHE_CLIENT_SIDE", "1")], ws.path(), &[]),
+            "cannot locate the sccache config",
+        );
+    }
+
+    #[test]
+    fn invalid_or_unreadable_sccache_configs_are_refused_without_their_content() {
+        let conf = tempfile::tempdir().unwrap();
+        let ws = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "bad.toml",
+                "token = \"hunter2\"\n[dist\n",
+                "is not valid TOML",
+            ),
+            ("bad.json", "{\"token\": \"hunter2\",", "is not valid JSON"),
+            ("list.json", "[\"hunter2\"]", "is not a table"),
+            (
+                "dist.toml",
+                "dist = \"hunter2\"\n",
+                "`dist` that is not a table",
+            ),
+            (
+                "mode.toml",
+                "client_side_mode = \"hunter2\"\n",
+                "not a boolean",
+            ),
+        ];
+        for (name, content, needle) in cases {
+            let path = conf.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            let why = verdict(
+                &[
+                    ("SCCACHE_CONF", path.to_str().unwrap()),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                ws.path(),
+                &[],
+            )
+            .unwrap_err();
+            assert!(why.contains(needle), "{name}: {why}");
+            assert!(!why.contains("hunter2"), "{name}: content leaked: {why}");
+        }
+        let binary = conf.path().join("binary");
+        std::fs::write(&binary, [0xff, 0xfe, 0x00]).unwrap();
+        refused(
+            verdict(
+                &[
+                    ("SCCACHE_CONF", binary.to_str().unwrap()),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                ws.path(),
+                &[],
+            ),
+            "is not UTF-8 text",
+        );
+        // A directory where the file should be cannot be read.
+        refused(
+            verdict(
+                &[
+                    ("SCCACHE_CONF", conf.path().to_str().unwrap()),
+                    ("SCCACHE_CLIENT_SIDE", "1"),
+                ],
+                ws.path(),
+                &[],
+            ),
+            "cannot read the sccache config",
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = conf.path().join("locked.toml");
+            std::fs::write(&locked, SCHEDULER_TOML).unwrap();
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Root reads it anyway; the refusal is only observable for other users.
+            if std::fs::read(&locked).is_err() {
+                refused(
+                    verdict(
+                        &[
+                            ("SCCACHE_CONF", locked.to_str().unwrap()),
+                            ("SCCACHE_CLIENT_SIDE", "1"),
+                        ],
+                        ws.path(),
+                        &[],
+                    ),
+                    "cannot read the sccache config",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_proposed_sccache_config_inside_the_workspace_is_what_counts() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join("ci")).unwrap();
+        let path = ws.path().join("ci/sccache.toml");
+        let p = path.to_str().unwrap();
+        let vars = [("SCCACHE_CONF", p), ("SCCACHE_CLIENT_SIDE", "1")];
+        std::fs::write(&path, "[cache.disk]\ndir = \"/tmp/c\"\n").unwrap();
+        verdict(&vars, ws.path(), &[]).unwrap();
+        refused(
+            verdict(
+                &vars,
+                ws.path(),
+                &[delta("ci/sccache.toml", Some(SCHEDULER_TOML))],
+            ),
+            "dist.scheduler_url",
+        );
+        refused(
+            verdict(
+                &vars,
+                ws.path(),
+                &[delta("./ci/sccache.toml", Some("[dist"))],
+            ),
+            "is not valid TOML",
+        );
+        std::fs::write(&path, SCHEDULER_TOML).unwrap();
+        refused(verdict(&vars, ws.path(), &[]), "dist.scheduler_url");
+        verdict(
+            &vars,
+            ws.path(),
+            &[delta("ci/sccache.toml", Some("client_side_mode = true\n"))],
+        )
+        .unwrap();
+        // Deletions run after the upper directory is mounted, so they win over content.
+        verdict(&vars, ws.path(), &[delta("ci/sccache.toml", None)]).unwrap();
+        verdict(
+            &vars,
+            ws.path(),
+            &[
+                delta("ci/sccache.toml", Some(SCHEDULER_TOML)),
+                delta("ci", None),
+            ],
+        )
+        .unwrap();
+        // Other proposed files leave the one on disk in force.
+        refused(
+            verdict(&vars, ws.path(), &[delta("ci/other.toml", Some(""))]),
+            "dist.scheduler_url",
+        );
+    }
+
+    #[test]
+    fn effective_env_is_the_request_over_the_gateway() {
+        let env = vec![
+            ("PATH".to_string(), "/first".to_string()),
+            ("PATH".to_string(), "/last".to_string()),
+        ];
+        assert_eq!(effective_var(&env, "PATH"), Some(OsString::from("/last")));
+        assert_eq!(effective_var(&[], "PATH"), std::env::var_os("PATH"));
+        // run_overlay sets SCCACHE_CLIENT_SIDE=1 unless the request overrides it.
+        assert_eq!(
+            effective_var(&[], "SCCACHE_CLIENT_SIDE"),
+            Some(OsString::from("1"))
+        );
+        let off = vec![("SCCACHE_CLIENT_SIDE".to_string(), String::new())];
+        assert_eq!(
+            effective_var(&off, "SCCACHE_CLIENT_SIDE"),
+            Some(OsString::new())
         );
     }
 
     #[tokio::test]
-    async fn overlay_hypotheses_reject_isolation_conflicts() {
+    async fn overlay_hypotheses_refuse_sccache_settings_before_running() {
         let ws = tempfile::tempdir().unwrap();
         let shadow = tempfile::tempdir().unwrap();
+        let conf = tempfile::tempdir().unwrap();
+        let safe = conf.path().join("safe.toml");
+        std::fs::write(&safe, "").unwrap();
+        let safe = safe.to_str().unwrap();
+        let in_ws = ws.path().join("sccache.toml");
+        let in_ws = in_ws.to_str().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let argv = ["sh", "-c", "echo ok"];
-
-        // 1. SCCACHE_ERROR_LOG in job env
-        let mut j1 = job(ws.path(), shadow.path(), "err_log", vec![], &argv);
-        j1.env.push((
-            "SCCACHE_ERROR_LOG".to_string(),
-            "/tmp/sccache.log".to_string(),
-        ));
-        let r1 = run_overlay(j1, rx.clone()).await;
-        assert!(r1.exit_code.is_none());
-        assert!(
-            r1.error
-                .as_deref()
-                .unwrap_or_default()
-                .contains("SCCACHE_ERROR_LOG")
-        );
-
-        // 2. SCCACHE_CLIENT_SIDE=0 in job env
-        let mut j2 = job(ws.path(), shadow.path(), "client_side_zero", vec![], &argv);
-        j2.env
-            .push(("SCCACHE_CLIENT_SIDE".to_string(), "0".to_string()));
-        let r2 = run_overlay(j2, rx.clone()).await;
-        assert!(r2.exit_code.is_none());
-        assert!(
-            r2.error
-                .as_deref()
-                .unwrap_or_default()
-                .contains("SCCACHE_CLIENT_SIDE")
-        );
-
-        // 3. Distributed sccache in job env
-        let mut j3 = job(ws.path(), shadow.path(), "dist", vec![], &argv);
-        j3.env.push((
-            "SCCACHE_DIST_ADDR".to_string(),
-            "127.0.0.1:10600".to_string(),
-        ));
-        let r3 = run_overlay(j3, rx).await;
-        assert!(r3.exit_code.is_none());
-        assert!(
-            r3.error
-                .as_deref()
-                .unwrap_or_default()
-                .contains("distributed sccache")
-        );
+        // Would leave a file in the shadow root if the command ran.
+        let argv = ["sh", "-c", "echo ran"];
+        let cases = [
+            (
+                "log",
+                vec![("SCCACHE_CONF", safe), ("SCCACHE_LOG", "info")],
+                vec![],
+                "SCCACHE_LOG",
+            ),
+            (
+                "empty",
+                vec![("SCCACHE_CONF", safe), ("SCCACHE_CLIENT_SIDE", "")],
+                vec![],
+                "SCCACHE_CLIENT_SIDE is empty",
+            ),
+            (
+                "no",
+                vec![("SCCACHE_CONF", safe), ("SCCACHE_CLIENT_SIDE", "no")],
+                vec![],
+                "SCCACHE_CLIENT_SIDE is not one of",
+            ),
+            (
+                "proposed-scheduler",
+                vec![("SCCACHE_CONF", in_ws)],
+                vec![delta("sccache.toml", Some(SCHEDULER_TOML))],
+                "dist.scheduler_url",
+            ),
+        ];
+        for (name, env, files, needle) in cases {
+            let mut j = job(ws.path(), shadow.path(), name, files, &argv);
+            j.env = env
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let r = run_overlay(j, rx.clone()).await;
+            assert!(
+                r.exit_code.is_none() && r.output_tail.is_none(),
+                "{name} ran"
+            );
+            let why = r.error.unwrap_or_default();
+            assert!(
+                why.starts_with("cannot run an overlay shadow: "),
+                "{name}: {why}"
+            );
+            assert!(why.contains(needle), "{name}: {why}");
+            assert!(!why.contains("hunter2"), "{name}: {why}");
+        }
+        // Refused before staging: nothing was created under the shadow root.
+        assert_eq!(std::fs::read_dir(shadow.path()).unwrap().count(), 0);
     }
 }
