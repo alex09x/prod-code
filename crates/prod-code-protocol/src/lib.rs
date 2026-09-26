@@ -8,7 +8,7 @@ pub mod transport;
 
 pub use codec::ProdCodeCodec;
 pub use messages::{
-    ANALYZER_PANIC_CODE, ClusterResponse, DenseStatus, ExecChanges, ExecChunk, ExecExit,
+    ANALYZER_PANIC_CODE, AuthToken, ClusterResponse, DenseStatus, ExecChanges, ExecChunk, ExecExit,
     ExecMetric, ExecRequest, ExecUsage, FileDelta, FileStamp, HandshakeRequest, HandshakeResponse,
     HostResources, LoadedWorkspaceInfo, MEMORY_PRESSURE_USED, MetricsRequest, MetricsResponse,
     NodeGossip, PROTOCOL_VERSION, PURPOSE_EDITOR, PURPOSE_VALIDATION, PeerInfo, PlaceRequest,

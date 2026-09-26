@@ -171,7 +171,15 @@ pub struct ServerState {
     pub shadow_root: PathBuf,
     /// Per-workspace declaration indexes for `code_search`.
     pub search_indexes: search::SearchIndexes,
+    /// The token every connection must open with (#402); `None` takes every connection.
+    pub auth_token: Option<String>,
 }
+
+/// How long a connection to a gateway that requires a token may take to send it.
+const AUTH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What a connection without the cluster's token is told before it is closed.
+const AUTH_REFUSED: &str = "this gateway requires the cluster's connection token: set PROD_CODE_AUTH_TOKEN, or put the token in the file PROD_CODE_AUTH_TOKEN_FILE names or in ~/.config/prod-code/auth-token";
 
 /// Who a session belongs to, for metrics.
 pub struct SessionMeta {
@@ -232,6 +240,7 @@ impl ServerState {
             cluster: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             metrics: Arc::new(metrics::Metrics::new(metrics_dir)),
             engine_allowlist: Vec::new(),
+            auth_token: None,
         }
     }
 
@@ -2388,9 +2397,37 @@ pub async fn handle_client(
 ) -> Result<()> {
     let mut framed = Framed::new(socket, ProdCodeCodec::new());
 
+    // A gateway with a token serves nothing, not even its status, to a connection that does
+    // not open with it (#402).
+    if let Some(expected) = state.auth_token.as_deref() {
+        let first = tokio::time::timeout(AUTH_WAIT, framed.next())
+            .await
+            .ok()
+            .flatten();
+        let presented = match &first {
+            Some(Ok(WireMessage::Auth(token))) => Some(token),
+            _ => None,
+        };
+        if !presented.is_some_and(|token| token.matches(expected)) {
+            tracing::warn!(
+                %addr,
+                presented = presented.is_some(),
+                "🔒 [AUTH] closed a connection without the cluster's token"
+            );
+            let _ = framed
+                .send(WireMessage::Disconnect {
+                    reason: AUTH_REFUSED.to_string(),
+                })
+                .await;
+            return Ok(());
+        }
+    }
+
     while let Some(msg_res) = framed.next().await {
         let msg = msg_res?;
         match msg {
+            // A token sent to a gateway that requires none, or sent twice, changes nothing.
+            WireMessage::Auth(_) => {}
             WireMessage::StatusRequest => {
                 let status = state.status().await;
                 framed.send(WireMessage::StatusResponse(status)).await?;
@@ -5063,8 +5100,13 @@ async fn gossip_loop(state: Arc<ServerState>) {
             tokio::spawn(async move {
                 let reply = tokio::time::timeout(std::time::Duration::from_secs(3), async {
                     let addr: SocketAddr = peer.parse().ok()?;
-                    let stream = TcpStream::connect(addr).await.ok()?;
-                    let _ = stream.set_nodelay(true);
+                    // Peers share the cluster's token with the clients (#402).
+                    let stream = prod_code_protocol::transport::connect_with(
+                        addr,
+                        state.auth_token.as_deref(),
+                    )
+                    .await
+                    .ok()?;
                     let mut framed = Framed::new(stream, ProdCodeCodec::new());
                     framed.send(WireMessage::Gossip(own)).await.ok()?;
                     match framed.next().await {
@@ -5179,6 +5221,12 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     if !state.engine_allowlist.is_empty() {
         tracing::info!(engines = ?state.engine_allowlist, "serving only the listed engines");
     }
+    // The same token the clients send, from the same place; its value is never logged.
+    state.auth_token = prod_code_protocol::transport::auth_token();
+    tracing::info!(
+        required = state.auth_token.is_some(),
+        "connection token (PROD_CODE_AUTH_TOKEN, PROD_CODE_AUTH_TOKEN_FILE or ~/.config/prod-code/auth-token)"
+    );
     if let Some(dir) = cli.shadow_dir.clone() {
         state.shadow_root = dir;
     }
@@ -5420,6 +5468,58 @@ mod tests {
         assert_eq!(evict_after(1800, true), Some(Duration::from_secs(300)));
         assert_eq!(evict_after(120, true), Some(Duration::from_secs(120)));
         assert_eq!(evict_after(0, true), Some(Duration::from_secs(300)));
+    }
+
+    /// The first answer `state` gives a connection that opens with `token`, if any, and asks for
+    /// the status.
+    async fn status_answer(state: Arc<ServerState>, token: Option<&str>) -> WireMessage {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serve = tokio::spawn(async move {
+            let (socket, peer) = listener.accept().await.unwrap();
+            handle_client(socket, peer, state).await
+        });
+        let stream = prod_code_protocol::transport::connect_with(addr, token)
+            .await
+            .unwrap();
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+        framed.send(WireMessage::StatusRequest).await.unwrap();
+        let answer = framed.next().await.unwrap().unwrap();
+        drop(framed);
+        let _ = serve.await;
+        answer
+    }
+
+    /// A gateway with a token closes every connection that does not open with it and says
+    /// why, and serves one that does; a gateway without one ignores a token it is sent (#402).
+    #[tokio::test]
+    async fn a_gateway_with_a_token_serves_only_connections_that_open_with_it() {
+        let storage = tempfile::tempdir().unwrap();
+        let mut guarded = ServerState::new(storage.path().join("guarded"));
+        guarded.auth_token = Some("s3cret".to_string());
+        let guarded = Arc::new(guarded);
+        for token in [None, Some("wrong"), Some("s3cre")] {
+            match status_answer(Arc::clone(&guarded), token).await {
+                WireMessage::Disconnect { reason } => {
+                    assert!(reason.contains("PROD_CODE_AUTH_TOKEN"), "{reason}")
+                }
+                other => panic!("served with {token:?}: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            status_answer(Arc::clone(&guarded), Some("s3cret")).await,
+            WireMessage::StatusResponse(_)
+        ));
+
+        let open = Arc::new(ServerState::new(storage.path().join("open")));
+        assert!(matches!(
+            status_answer(Arc::clone(&open), Some("anything")).await,
+            WireMessage::StatusResponse(_)
+        ));
+        assert!(matches!(
+            status_answer(open, None).await,
+            WireMessage::StatusResponse(_)
+        ));
     }
 
     /// An editor is offered what the language server on the node offers, but always asked for
