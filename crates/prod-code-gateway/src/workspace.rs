@@ -20,8 +20,7 @@ pub type RustEngines = Arc<std::sync::Mutex<Vec<Arc<Mutex<prod_code_engine_rust:
 
 /// Loads the in-process Rust engine of a root, on a blocking thread; tests put a slow one in
 /// its place.
-pub type RustLoader =
-    Arc<dyn Fn(&Path) -> Result<prod_code_engine_rust::RustEngine> + Send + Sync>;
+pub type RustLoader = Arc<dyn Fn(&Path) -> Result<prod_code_engine_rust::RustEngine> + Send + Sync>;
 
 /// A loaded base workspace shared across multiple sessions/worktrees.
 pub struct SharedWorkspace {
@@ -1649,7 +1648,9 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn simultaneous_new_engines_load_only_while_memory_lasts() {
         let manager = manager_on(vec![host(80, 100)]);
-        manager.insert_ready_for_test(loaded("/srv/ws/warm", 0)).await;
+        manager
+            .insert_ready_for_test(loaded("/srv/ws/warm", 0))
+            .await;
         let start = Arc::new(tokio::sync::Barrier::new(6));
         let loads: Vec<_> = (0..6)
             .map(|i| {
@@ -1678,7 +1679,11 @@ mod tests {
             assert!(refusal.contains("another node"), "{refusal}");
         }
         assert_eq!(manager.admission().reserved_bytes(), 4 << 30);
-        assert_eq!(manager.loaded_count().await, 3, "no refused load is left behind");
+        assert_eq!(
+            manager.loaded_count().await,
+            3,
+            "no refused load is left behind"
+        );
 
         let warm = manager
             .get_or_load(Path::new("/srv/ws/warm"), "text")
@@ -1824,7 +1829,10 @@ mod tests {
             2 << 30,
             "the running load keeps its reservation"
         );
-        assert!(manager.is_loaded(&root).await, "the load is still in flight");
+        assert!(
+            manager.is_loaded(&root).await,
+            "the load is still in flight"
+        );
 
         let follower = attach();
         gate.send(()).unwrap();
@@ -1839,7 +1847,11 @@ mod tests {
             1,
             "only the follower's session is counted"
         );
-        assert_eq!(admission.reserved_bytes(), 0, "returned once the load ended");
+        assert_eq!(
+            admission.reserved_bytes(),
+            0,
+            "returned once the load ended"
+        );
         assert!(manager.get_loaded(&root).await.is_some());
     }
 
@@ -1876,7 +1888,12 @@ mod tests {
         // The leader holds one receiver of the load's broadcast; the follower adds another.
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                let subscribed = match manager.workspaces.read().await.get(&WorkspaceKey(root.clone())) {
+                let subscribed = match manager
+                    .workspaces
+                    .read()
+                    .await
+                    .get(&WorkspaceKey(root.clone()))
+                {
                     Some(LoadState::Loading(tx)) => tx.receiver_count() >= 2,
                     _ => false,
                 };
@@ -1898,14 +1915,24 @@ mod tests {
                 .err()
                 .map(|err| format!("{err:#}"))
         };
-        let leader_err = answered(leader).await.expect("the leader is told it failed");
+        let leader_err = answered(leader)
+            .await
+            .expect("the leader is told it failed");
         assert!(leader_err.contains("panicked"), "{leader_err}");
-        let follower_err = answered(follower).await.expect("the follower is told it failed");
+        let follower_err = answered(follower)
+            .await
+            .expect("the follower is told it failed");
         assert!(follower_err.contains("panicked"), "{follower_err}");
-        assert!(!manager.is_loaded(&root).await, "no Loading entry is left behind");
+        assert!(
+            !manager.is_loaded(&root).await,
+            "no Loading entry is left behind"
+        );
         assert_eq!(manager.admission().reserved_bytes(), 0);
 
-        let ws = manager.get_or_load(&root, "text").await.expect("loaded afresh");
+        let ws = manager
+            .get_or_load(&root, "text")
+            .await
+            .expect("loaded afresh");
         assert_eq!(ws.active_sessions.load(Ordering::Relaxed), 1);
     }
 
@@ -1945,9 +1972,16 @@ mod tests {
             .await
             .expect("the second session was answered")
             .unwrap();
-        assert!(!validated, "the scripted load fails: validation stays on the main engine");
+        assert!(
+            !validated,
+            "the scripted load fails: validation stays on the main engine"
+        );
         assert_eq!(loads.load(Ordering::SeqCst), 1, "one load for both");
-        assert_eq!(admission.reserved_bytes(), 0, "returned once the load ended");
+        assert_eq!(
+            admission.reserved_bytes(),
+            0,
+            "returned once the load ended"
+        );
     }
 
     /// A validation engine the host has no memory for is not loaded, and not remembered as
@@ -1964,10 +1998,22 @@ mod tests {
             Duration::ZERO,
         ));
         let ws = loaded("/srv/ws/validated", 0);
-        assert!(ws.validation_engine(&admission, Arc::clone(&load)).await.is_none());
+        assert!(
+            ws.validation_engine(&admission, Arc::clone(&load))
+                .await
+                .is_none()
+        );
         assert_eq!(loads.load(Ordering::SeqCst), 0, "refused before loading");
-        assert!(ws.validation_engine(&admission, Arc::clone(&load)).await.is_none());
-        assert_eq!(loads.load(Ordering::SeqCst), 1, "asked again once memory is back");
+        assert!(
+            ws.validation_engine(&admission, Arc::clone(&load))
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "asked again once memory is back"
+        );
         assert_eq!(admission.reserved_bytes(), 0);
     }
 

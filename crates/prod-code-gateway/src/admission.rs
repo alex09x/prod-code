@@ -139,7 +139,11 @@ fn limit_bytes(total: u64) -> u64 {
 impl Admission {
     /// Admission against this host's memory; `reserve_mib` of 0 keeps the per-engine defaults.
     pub fn host(reserve_mib: u64) -> Self {
-        Self::with_probe(Arc::new(crate::memory::system_memory), reserve_mib, LOAD_SETTLE)
+        Self::with_probe(
+            Arc::new(crate::memory::system_memory),
+            reserve_mib,
+            LOAD_SETTLE,
+        )
     }
 
     /// Admission against the memory `probe` reports.
@@ -271,13 +275,17 @@ mod tests {
         let first = admission.try_reserve("rust").expect("first fits");
         let _second = admission.try_reserve("go").expect("second fits");
         assert_eq!(admission.reserved_bytes(), 4 * GIB);
-        let refused = admission.try_reserve("rust").expect_err("third passes the limit");
+        let refused = admission
+            .try_reserve("rust")
+            .expect_err("third passes the limit");
         assert_eq!(refused.reserved, 4 * GIB);
         assert_eq!(refused.loads, 2);
         assert_eq!(refused.excess(), GIB);
         drop(first);
         assert_eq!(admission.reserved_bytes(), 2 * GIB);
-        let _third = admission.try_reserve("rust").expect("fits once one is returned");
+        let _third = admission
+            .try_reserve("rust")
+            .expect("fits once one is returned");
     }
 
     /// Admissions racing on one snapshot never share its headroom: of eight simultaneous
@@ -348,7 +356,9 @@ mod tests {
             LOAD_SETTLE,
         ));
         assert_eq!(full.reserve_for("rust"), u64::MAX);
-        let shortfall = full.try_reserve("rust").expect_err("nothing holds u64::MAX bytes");
+        let shortfall = full
+            .try_reserve("rust")
+            .expect_err("nothing holds u64::MAX bytes");
         assert!(shortfall.excess() > 0);
         let text = CapacityRefused {
             shortfall,
@@ -358,13 +368,21 @@ mod tests {
         assert!(text.starts_with("capacity: "), "{text}");
         assert_eq!(full.reserved_bytes(), 0);
 
-        let unknown = Arc::new(Admission::with_probe(Arc::new(|| None), u64::MAX, LOAD_SETTLE));
+        let unknown = Arc::new(Admission::with_probe(
+            Arc::new(|| None),
+            u64::MAX,
+            LOAD_SETTLE,
+        ));
         let mut held: Vec<_> = (0..2)
             .map(|_| unknown.try_reserve("rust").expect("unknown host admits"))
             .collect();
         assert_eq!(unknown.reserved_bytes(), u64::MAX);
         drop(held.pop());
-        assert_eq!(unknown.reserved_bytes(), u64::MAX, "the other is still held");
+        assert_eq!(
+            unknown.reserved_bytes(),
+            u64::MAX,
+            "the other is still held"
+        );
         assert_eq!(unknown.ledger().loads, 1);
         drop(held);
         assert_eq!(unknown.reserved_bytes(), 0);
@@ -412,12 +430,26 @@ mod tests {
             .try_reserve("rust")
             .unwrap()
             .release_after_settling();
-        assert_eq!(admission.reserved_bytes(), GIB, "held while the load settles");
+        assert_eq!(
+            admission.reserved_bytes(),
+            GIB,
+            "held while the load settles"
+        );
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(admission.reserved_bytes(), 0);
-        admission.try_reserve("rust").unwrap().release_after_settling();
+        admission
+            .try_reserve("rust")
+            .unwrap()
+            .release_after_settling();
         let unbounded = Arc::new(Admission::unbounded());
-        unbounded.try_reserve("rust").unwrap().release_after_settling();
-        assert_eq!(unbounded.reserved_bytes(), 0, "no settle time, returned at once");
+        unbounded
+            .try_reserve("rust")
+            .unwrap()
+            .release_after_settling();
+        assert_eq!(
+            unbounded.reserved_bytes(),
+            0,
+            "no settle time, returned at once"
+        );
     }
 }
