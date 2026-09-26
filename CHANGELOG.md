@@ -10,6 +10,11 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- MCP sessions serialize queries per workspace instead of holding one process-wide lock
+  across network operations (#430). Opening a session has a three-minute deadline; pooled
+  queries include queueing, sync and loading in their total budget (three minutes normally,
+  five for diagnostics, fifteen for structural replacement). Timed-out or cancelled queries
+  discard their connection, and a timeout is not immediately replayed.
 - The coverage gate rejects empty or malformed reports, invalid percentages and requested
   files missing from the measurements (#427). A source file is reported as having no code
   only when the report explicitly records zero regions. Files outside the repository,
