@@ -12,6 +12,14 @@
   disk has room for twice their size. The trees are the worktree's own afterwards.
 
 ### Fixed
+- **`prod-code check` works in a new worktree of a CMake project** (#416). The worktree's seeded
+  copy took the main copy's `build/`. `cmake` then refused the old `CMakeCache.txt`, and the
+  `compile_commands.json` there, which names the main copy's sources, kept the configure step
+  that would have written a correct one from running, so clangd in the worktree took its flags
+  and headers from the other copy. A seeded copy now takes the sources and no per-node cache:
+  `build/`, `.build`, `.cache` (clangd's index, keyed by the old paths), `dist`,
+  `__pycache__`, `DerivedData`, and the rest. The caches that are safe to move keep being seeded
+  on purpose: `target/debug`, `node_modules`, virtual environments.
 - **Seeding a worktree copy no longer doubles a Python virtual environment** (#414). The copy
   resolved every symlink. `.venv/lib64 -> lib` became a second full copy of site-packages,
   `bin/python` a copy of the interpreter, and the venv's scripts still started the main copy's

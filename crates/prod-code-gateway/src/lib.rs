@@ -718,19 +718,18 @@ fn free_disk_bytes(path: &std::path::Path) -> Option<u64> {
     Some(free)
 }
 
+/// Copies the sources of the seed copy `src` into the new copy `dst`: every per-node cache
+/// (`is_node_cache`) stays behind. Some of them hold the seed copy's absolute paths. A CMake
+/// `build/` made the new worktree's `check` fail on the old `CMakeCache.txt`, and its
+/// `compile_commands.json` pointed clangd at the other copy's sources (#416). The caches that are
+/// safe to move are seeded on purpose: `seed_build_cache` and `seed_dependency_trees`.
 fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<usize> {
     let mut copied = 0;
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str == ".git"
-            || name_str == "target"
-            || name_str == "node_modules"
-            || name_str == workspace::LAST_USED_MARKER
-            || name_str == workspace::STALE_MARKER
-        {
+        if is_node_cache(&name.to_string_lossy()) {
             continue;
         }
         let from = entry.path();
@@ -5981,6 +5980,34 @@ mod tests {
             "{activate}"
         );
         assert!(!activate.contains(&format!("'{old}'")), "{activate}");
+    }
+
+    /// A seeded copy takes the sources and none of the seed's per-node caches: not its CMake
+    /// `build/` with the seed's `CMakeCache.txt` and `compile_commands.json`, not clangd's index,
+    /// not SwiftPM's `.build` (#416).
+    #[test]
+    fn a_seeded_copy_takes_no_build_directory_holding_the_seeds_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let (seed, fresh) = (dir.path().join("seed"), dir.path().join("fresh"));
+        for rel in [
+            "CMakeLists.txt",
+            "src/main.cpp",
+            "build/CMakeCache.txt",
+            "build/compile_commands.json",
+            ".cache/clangd/index/main.cpp.1A2B.idx",
+            "lib/.build/debug.yaml",
+            "tests/__pycache__/test_a.cpython-312.pyc",
+        ] {
+            let path = seed.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, rel).unwrap();
+        }
+        assert_eq!(copy_tree(&seed, &fresh).unwrap(), 2);
+        assert!(fresh.join("CMakeLists.txt").is_file());
+        assert!(fresh.join("src/main.cpp").is_file());
+        for cache in ["build", ".cache", "lib/.build", "tests/__pycache__"] {
+            assert!(!fresh.join(cache).exists(), "{cache} was copied");
+        }
     }
 
     /// No build cache, or not enough room for two of it, leaves the new copy without one.
