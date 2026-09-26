@@ -446,6 +446,48 @@ async fn cli_reports_cluster_membership_and_placement() {
     );
 }
 
+/// `status --json` is the gateway's status as it sent it, with the address, the round trip and
+/// the health verdict (#398).
+#[tokio::test]
+async fn cli_reports_status_as_json() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let out = run_cli(&ws, gw.addr, &["status", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&stdout_of(&out)).expect("status --json is one JSON object");
+    assert_eq!(snapshot["remote"], gw.addr.to_string());
+    assert!(snapshot["rtt_ms"].as_f64().is_some(), "{snapshot}");
+    assert_eq!(snapshot["uptime_seconds"], 7265);
+    assert_eq!(
+        snapshot["running_commands"][0]["command"],
+        "cargo test --workspace"
+    );
+    assert_eq!(snapshot["host"]["storage_free_millis"], 412);
+    assert_eq!(snapshot["healthy"], false);
+    assert_eq!(snapshot["pressure"], "memory 95% used");
+}
+
+/// `cluster --json` holds the gossip view, every configured node's status and the checkout's
+/// placement (#398).
+#[tokio::test]
+async fn cli_reports_cluster_as_json() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+    let out = run_cli(&ws, gw.addr, &["cluster", "--json"]).await;
+    assert!(out.status.success(), "{}", stderr_of(&out));
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&stdout_of(&out)).expect("cluster --json is one JSON object");
+    assert!(snapshot["gossip"]["nodes"].is_array(), "{snapshot}");
+    let node = &snapshot["nodes"][0];
+    assert_eq!(node["remote"], gw.addr.to_string());
+    assert_eq!(node["up"], true);
+    assert_eq!(node["healthy"], false);
+    assert_eq!(node["detected_engines"][1], "go");
+    assert!(snapshot["workspace"].is_string(), "{snapshot}");
+    assert_eq!(snapshot["home"], gw.addr.to_string());
+}
+
 #[tokio::test]
 async fn cli_reports_metrics_in_human_readable_and_json_formats() {
     let ws = make_workspace();
