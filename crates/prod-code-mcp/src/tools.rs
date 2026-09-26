@@ -681,7 +681,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_impact".to_string(),
-            description: "Blast radius of the uncommitted changes (or of the commits since a base ref): the functions the diff touches, every function that calls them (transitively, through the analyzer's call hierarchy) and the tests among those callers, plus the exact test command that runs only the affected tests."
+            description: "Blast radius of the uncommitted changes (or of the commits since a base ref): the functions the diff touches, every function that calls them (transitively, through the analyzer's call hierarchy) and the tests among those callers (and changed tests themselves), plus the exact test command that runs only the affected tests. What it could not establish (a deleted file, a failed or unreadable analyzer answer, callers left beyond the depth limit) is listed as incomplete analysis: run the whole suite then."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -862,7 +862,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_dead_code".to_string(),
-            description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped."
+            description: "Unreferenced functions, methods and types across the checkout, found through the analyzer's references (not text search). Exported/public symbols are counted separately unless include_exported is set; tests and entry points are skipped. A symbol whose references the analyzer failed to answer for is listed as unverified, never as dead."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",

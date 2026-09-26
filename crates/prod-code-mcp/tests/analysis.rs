@@ -10,7 +10,7 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_mcp::dead_code::{self, DeadCodeReport, DeadItem};
 use prod_code_mcp::dossier::{self, DossierReport, FailureDossier, FailureSite, Suspect};
-use prod_code_mcp::impact::{self, ImpactReport, Symbol};
+use prod_code_mcp::impact::{self, CiRun, Gap, ImpactReport, Symbol};
 use prod_code_protocol::{
     ExecChunk, ExecExit, ExecRequest, HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec,
     SyncProbeResponse, SyncResponse, WireMessage,
@@ -325,6 +325,7 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
         unattributed_files: vec!["Cargo.toml".to_string()],
         index: None,
         reaches: vec![],
+        incomplete: vec![],
     };
 
     let text = report.render();
@@ -356,6 +357,7 @@ async fn impact_report_render_says_when_no_test_reaches_the_change() {
         unattributed_files: vec![],
         index: None,
         reaches: vec![],
+        incomplete: vec![],
     };
 
     let text = report.render();
@@ -384,6 +386,7 @@ async fn impact_report_says_when_the_index_could_not_be_built() {
         unattributed_files: vec![],
         index: Some(build(ok)),
         reaches: vec![],
+        incomplete: vec![],
     };
 
     let built = report(true).render();
@@ -579,6 +582,380 @@ async fn analyze_reports_a_change_outside_any_function_as_unattributed() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// impact: what the analysis could not establish decides the CI run (#434)
+// ---------------------------------------------------------------------------------------------
+
+/// One incoming call from `name`, declared (0-based) at `line` of the file at `uri`.
+fn call_from(name: &str, uri: &str, line: u64) -> serde_json::Value {
+    serde_json::json!({
+        "from": {
+            "name": name,
+            "uri": uri,
+            "selectionRange": { "start": { "line": line, "character": 7 } }
+        }
+    })
+}
+
+/// A script for [`IMPACT_LIB`]: its three functions, a call-hierarchy item for `helper` and
+/// `wrapper` (none for the test), and `incoming` answering for the item it is given.
+fn impact_script(
+    lib: &std::path::Path,
+    incoming: impl Fn(&str, &str) -> serde_json::Value + Send + Sync + 'static,
+) -> Answer {
+    let uri = format!("file://{}", lib.display());
+    Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("helper", 12, 1, 3, 8),
+            answers::document_symbol("wrapper", 12, 5, 7, 8),
+            answers::document_symbol("it_calls_wrapper", 12, 12, 14, 8),
+        ]),
+        "textDocument/prepareCallHierarchy" => {
+            let id = match params.pointer("/position/line").and_then(|l| l.as_u64()) {
+                Some(0) => "helper",
+                Some(4) => "wrapper",
+                _ => return serde_json::json!([]),
+            };
+            serde_json::json!([{ "name": id, "uri": uri, "_id": id }])
+        }
+        "callHierarchy/incomingCalls" => incoming(
+            params
+                .pointer("/item/_id")
+                .and_then(|i| i.as_str())
+                .unwrap_or(""),
+            &uri,
+        ),
+        _ => serde_json::Value::Null,
+    })
+}
+
+/// `helper` is called by `wrapper`, which the test calls: the test is found by its attribute.
+fn the_real_callers(id: &str, uri: &str) -> serde_json::Value {
+    match id {
+        "helper" => serde_json::json!([call_from("wrapper", uri, 4)]),
+        "wrapper" => serde_json::json!([call_from("it_calls_wrapper", uri, 11)]),
+        _ => serde_json::json!([]),
+    }
+}
+
+fn selecting(tests: &[&str]) -> CiRun {
+    let mut command: Vec<String> = ["cargo", "test", "--workspace", "--"]
+        .iter()
+        .map(|w| w.to_string())
+        .collect();
+    command.extend(tests.iter().map(|t| t.to_string()));
+    CiRun::Selected(command)
+}
+
+/// A deleted source file is a gap: whatever called its functions changed with it, and no
+/// analyzer can be asked about a file that is gone. Before, the diff parser dropped the file
+/// and `impact --ci` ran nothing.
+#[tokio::test]
+async fn a_deleted_file_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", IMPACT_LIB),
+        ("src/gone.rs", "pub fn gone() -> i32 {\n    1\n}\n"),
+    ]);
+    let root = ws.root();
+    std::fs::remove_file(ws.path("src/gone.rs")).expect("delete");
+
+    let lines = impact::changed_lines(&root, None).expect("diff parses");
+    assert_eq!(lines.get("src/gone.rs"), Some(&vec![]), "{lines:?}");
+
+    let remote = ScriptedGateway::start_arc(no_lsp()).await.addr();
+    let report = impact::analyze(remote, &root, None, 4)
+        .await
+        .expect("analysis runs");
+
+    assert_eq!(report.changed_files, vec!["src/gone.rs".to_string()]);
+    assert_eq!(
+        report.incomplete,
+        vec![Gap::Deleted {
+            file: "src/gone.rs".to_string()
+        }]
+    );
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(
+        decision.why.contains("src/gone.rs was deleted"),
+        "{}",
+        decision.why
+    );
+    assert!(report.render().contains("incomplete analysis"));
+}
+
+const MIXED_LIB: &str = "pub const LIMIT: i32 = 1;\n\npub fn helper(x: i32) -> i32 {\n    x + LIMIT\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_calls_helper() {\n        assert_eq!(super::helper(1), 2);\n    }\n}\n";
+
+/// A change to a function and to a module-level constant in one file: the function's tests are
+/// found, but the constant may be used anywhere, so the file still needs the whole suite. Each
+/// hunk is judged on its own; before, one changed function vouched for the whole file. A new
+/// function added with the blank line before it is inside a function, and so is the selection.
+#[tokio::test]
+async fn a_module_level_change_beside_a_function_change_runs_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", MIXED_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    let uri = format!("file://{}", lib.display());
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("helper", 12, 3, 5, 8),
+            answers::document_symbol("it_calls_helper", 12, 10, 12, 8),
+            answers::document_symbol("extra", 12, 15, 17, 8),
+        ]),
+        "textDocument/prepareCallHierarchy" => {
+            let id = match params.pointer("/position/line").and_then(|l| l.as_u64()) {
+                Some(2) => "helper",
+                Some(14) => "extra",
+                _ => return serde_json::json!([]),
+            };
+            serde_json::json!([{ "name": id, "uri": uri, "_id": id }])
+        }
+        "callHierarchy/incomingCalls" => match params.pointer("/item/_id").and_then(|i| i.as_str())
+        {
+            Some("helper") => serde_json::json!([call_from("it_calls_helper", &uri, 9)]),
+            _ => serde_json::json!([]),
+        },
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+    let body = MIXED_LIB.replace("x + LIMIT", "x + LIMIT + 0");
+
+    ws.write(
+        "src/lib.rs",
+        &body.replace("LIMIT: i32 = 1", "LIMIT: i32 = 2"),
+    );
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(report.changed, vec![sym("helper", "src/lib.rs", 3, 8)]);
+    assert_eq!(
+        report.tests,
+        vec![sym("it_calls_helper", "src/lib.rs", 10, 8)]
+    );
+    assert_eq!(report.unattributed_files, vec!["src/lib.rs".to_string()]);
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(
+        decision.why.contains("outside any function"),
+        "{}",
+        decision.why
+    );
+
+    // The function alone: its test is the selection.
+    ws.write("src/lib.rs", &body);
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert!(report.unattributed_files.is_empty());
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_helper"]));
+
+    // A new function with the blank line that separates it is not module-level code.
+    ws.write(
+        "src/lib.rs",
+        &format!("{body}\npub fn extra() -> i32 {{\n    3\n}}\n"),
+    );
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(
+        report.changed,
+        vec![
+            sym("helper", "src/lib.rs", 3, 8),
+            sym("extra", "src/lib.rs", 15, 8)
+        ]
+    );
+    assert!(
+        report.unattributed_files.is_empty(),
+        "{:?}",
+        report.unattributed_files
+    );
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_helper"]));
+
+    // A removed constant took something at module level with it.
+    ws.write(
+        "src/lib.rs",
+        &body.replace("pub const LIMIT: i32 = 1;\n", ""),
+    );
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(report.unattributed_files, vec!["src/lib.rs".to_string()]);
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+}
+
+/// A changed test is an affected test, whatever calls it. Before, only callers were tests, so
+/// an edit to a test alone selected nothing and `impact --ci` ran nothing.
+#[tokio::test]
+async fn a_directly_changed_test_is_selected() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    ws.write(
+        "src/lib.rs",
+        &IMPACT_LIB.replace(
+            "assert_eq!(wrapper(), 42);",
+            "assert_eq!(wrapper(), 42, \"the answer\");",
+        ),
+    );
+    let remote =
+        ScriptedGateway::start_arc(impact_script(&ws.path("src/lib.rs"), the_real_callers))
+            .await
+            .addr();
+
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+
+    let test = sym("it_calls_wrapper", "src/lib.rs", 12, 8);
+    assert_eq!(report.changed, vec![test.clone()]);
+    assert_eq!(report.tests, vec![test.clone()]);
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(
+        report.reaches,
+        vec![impact::Reach {
+            test: test.clone(),
+            changed: test,
+            hops: 0
+        }]
+    );
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_wrapper"]));
+}
+
+/// A call-hierarchy request that fails is not "no callers": the function's tests are unknown,
+/// and CI runs the whole suite. Before, the error read as an empty answer and CI ran nothing.
+/// A failed symbol listing is a gap of its own.
+#[tokio::test]
+async fn a_failed_request_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+
+    let remote = ScriptedGateway::start_arc(impact_script(&lib, |id, _| match id {
+        "helper" => answers::failure("the analyzer crashed"),
+        _ => serde_json::json!([]),
+    }))
+    .await
+    .addr();
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert_eq!(report.changed, vec![sym("helper", "src/lib.rs", 1, 8)]);
+    assert!(report.tests.is_empty());
+    match report.incomplete.as_slice() {
+        [Gap::Callers { symbol, error }] => {
+            assert_eq!(symbol.name, "helper");
+            assert!(error.contains("the analyzer crashed"), "{error}");
+        }
+        other => panic!("one gap expected: {other:?}"),
+    }
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(
+        decision.why.contains("the callers of helper"),
+        "{}",
+        decision.why
+    );
+    assert!(
+        report
+            .render()
+            .contains("affected tests: unknown (the analysis is incomplete)"),
+        "{}",
+        report.render()
+    );
+
+    let remote = ScriptedGateway::start(|method, _| match method {
+        "textDocument/documentSymbol" => answers::failure("the analyzer is gone"),
+        _ => serde_json::Value::Null,
+    })
+    .await
+    .addr();
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    match report.incomplete.as_slice() {
+        [Gap::Symbols { file, error }] => {
+            assert_eq!(file, "src/lib.rs");
+            assert!(error.contains("the analyzer is gone"), "{error}");
+        }
+        other => panic!("one gap expected: {other:?}"),
+    }
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+}
+
+/// An answer that is not the shape the protocol gives it (an object for a list, a call without
+/// its caller, a string for the items) is not "no callers" either.
+#[tokio::test]
+async fn a_malformed_reply_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+
+    for bad in [
+        serde_json::json!({ "calls": 1 }),
+        serde_json::json!([{ "fromRanges": [] }]),
+        serde_json::json!([{ "from": { "name": "wrapper" } }]),
+    ] {
+        let answer = bad.clone();
+        let remote = ScriptedGateway::start_arc(impact_script(&lib, move |id, _| match id {
+            "helper" => answer.clone(),
+            _ => serde_json::json!([]),
+        }))
+        .await
+        .addr();
+        let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+        match report.incomplete.as_slice() {
+            [Gap::Callers { symbol, error }] => {
+                assert_eq!(symbol.name, "helper", "{bad}");
+                assert!(error.contains("cannot read"), "{bad}: {error}");
+            }
+            other => panic!("{bad}: one gap expected: {other:?}"),
+        }
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite, "{bad}");
+    }
+
+    let remote = ScriptedGateway::start_arc(Arc::new(|method, _| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("helper", 12, 1, 3, 8)])
+        }
+        "textDocument/prepareCallHierarchy" => serde_json::json!("helper"),
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+    let report = impact::analyze(remote, &root, None, 4).await.expect("runs");
+    assert!(
+        matches!(report.incomplete.as_slice(), [Gap::Callers { error, .. }] if error.contains("prepareCallHierarchy")),
+        "{:?}",
+        report.incomplete
+    );
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+}
+
+/// The walk stops at the depth limit; a function there that still has callers not yet seen is
+/// a gap, since a test may lie beyond it. Before, the walk stopped silently and CI ran nothing.
+#[tokio::test]
+async fn a_walk_cut_by_the_depth_limit_makes_ci_run_the_whole_suite() {
+    let ws = Workspace::new(&[("Cargo.toml", CARGO_TOML), ("src/lib.rs", IMPACT_LIB)]);
+    let root = ws.root();
+    let lib = ws.path("src/lib.rs");
+    ws.write("src/lib.rs", &IMPACT_LIB.replace("x + 1", "x + 2"));
+    let remote = ScriptedGateway::start_arc(impact_script(&lib, the_real_callers))
+        .await
+        .addr();
+
+    let report = impact::analyze(remote, &root, None, 1).await.expect("runs");
+    assert!(report.tests.is_empty());
+    assert_eq!(
+        report.incomplete,
+        vec![Gap::Depth {
+            symbol: sym("wrapper", "src/lib.rs", 5, 8),
+            depth: 1
+        }]
+    );
+    let decision = report.ci_decision();
+    assert_eq!(decision.run, CiRun::WholeSuite);
+    assert!(
+        decision.why.contains("stopped at depth 1"),
+        "{}",
+        decision.why
+    );
+
+    // One level more reaches the test, and nothing is left beyond it.
+    let report = impact::analyze(remote, &root, None, 2).await.expect("runs");
+    assert!(report.incomplete.is_empty(), "{:?}", report.incomplete);
+    assert_eq!(report.ci_decision().run, selecting(&["it_calls_wrapper"]));
+}
+
+// ---------------------------------------------------------------------------------------------
 // dead_code::find_dead_code
 // ---------------------------------------------------------------------------------------------
 
@@ -715,6 +1092,128 @@ async fn find_dead_code_stops_at_the_file_limit_and_marks_the_scan_truncated() {
     assert!(report.truncated);
 }
 
+/// [`DEAD_LIB`] with the analyzer failing in every way it can: a request that fails, a `null`
+/// (no symbol searched for), an answer of the wrong shape, and a second file whose symbols
+/// cannot be listed. Only the successful empty list makes a symbol unreferenced. `safe_deletes`
+/// counts the deletions pruning asks for.
+async fn failing_dead_code_gateway(
+    safe_deletes: Arc<std::sync::atomic::AtomicUsize>,
+) -> SocketAddr {
+    ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            if uri.ends_with("other.rs") {
+                answers::failure("documentSymbol timed out")
+            } else {
+                dead_symbols()
+            }
+        }
+        "textDocument/references" => {
+            match params.pointer("/position/line").and_then(|l| l.as_u64()) {
+                Some(0) => serde_json::json!([{ "uri": "file:///x.rs", "range": {} }]),
+                Some(2) => answers::failure("references failed"),
+                Some(4) => serde_json::Value::Null,
+                Some(9) => serde_json::json!({ "unexpected": true }),
+                _ => serde_json::json!([]),
+            }
+        }
+        "prodCode/safeDelete" => {
+            safe_deletes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            serde_json::Value::Null
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr()
+}
+
+/// An error or an unreadable answer is not proof that nothing references a symbol: it is
+/// unverified, not dead, and pruning keeps it (#435). Before, each of them read as zero
+/// references, and `private_unreferenced` and `plain_method` were listed dead.
+#[tokio::test]
+async fn a_symbol_the_analyzer_could_not_answer_for_is_unverified_not_dead() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", DEAD_LIB),
+        ("src/other.rs", "fn lonely() {}\n"),
+    ]);
+    let root = ws.root();
+    let safe_deletes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let remote = failing_dead_code_gateway(Arc::clone(&safe_deletes)).await;
+
+    let report = dead_code::find_dead_code(remote, &root, false, 100)
+        .await
+        .expect("scan runs");
+
+    assert!(report.dead.is_empty(), "{:?}", report.dead);
+    assert_eq!(report.exported_unreferenced, 0);
+    let methods: Vec<&str> = report
+        .methods_unreferenced
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    assert_eq!(
+        methods,
+        ["draw"],
+        "the successful empty answer still counts"
+    );
+    let unverified: Vec<(&str, Option<&str>)> = report
+        .unverified
+        .iter()
+        .map(|u| (u.file.as_str(), u.name.as_deref()))
+        .collect();
+    assert_eq!(
+        unverified,
+        [
+            ("src/lib.rs", Some("private_unreferenced")),
+            ("src/lib.rs", Some("public_unreferenced")),
+            ("src/lib.rs", Some("plain_method")),
+            ("src/other.rs", None),
+        ]
+    );
+    assert!(report.unverified[0].reason.contains("references failed"));
+    assert!(report.unverified[1].reason.contains("null"));
+    assert!(report.unverified[2].reason.contains("cannot read"));
+    assert!(
+        report.unverified[3]
+            .reason
+            .contains("documentSymbol timed out")
+    );
+    assert_eq!(report.files_scanned, 1);
+    assert!(!report.complete());
+    let text = report.render();
+    assert!(text.contains("4 could not be checked"), "{text}");
+    assert!(
+        text.contains("private_unreferenced  src/lib.rs:3:4"),
+        "{text}"
+    );
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["unverified"].as_array().map(|a| a.len()), Some(4));
+
+    let pruned = prod_code_mcp::prune::prune_orphans(remote, &root, 100, true, false)
+        .await
+        .expect("prune runs");
+    assert!(pruned.removed.is_empty(), "{:?}", pruned.removed);
+    assert!(!pruned.applied);
+    assert_eq!(pruned.unverified.len(), 4);
+    assert_eq!(
+        safe_deletes.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing unverified is offered for deletion"
+    );
+    assert_eq!(ws.read("src/lib.rs"), DEAD_LIB);
+    let text = pruned.render();
+    assert!(
+        text.contains("kept private_unreferenced (src/lib.rs:3): its references are unknown"),
+        "{text}"
+    );
+    assert!(text.contains("kept everything in src/other.rs"), "{text}");
+    assert!(text.contains("nothing proven orphaned"), "{text}");
+}
+
 /// [`DeadCodeReport::render`] names every dead symbol, flags the exported ones, lists the
 /// methods that might still be reached through a trait, and reports the truncation.
 #[tokio::test]
@@ -741,6 +1240,7 @@ async fn dead_code_report_render_covers_every_section() {
         }],
         exported_unreferenced: 2,
         truncated: true,
+        unverified: vec![],
     };
 
     let text = report.render();

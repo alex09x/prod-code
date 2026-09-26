@@ -1,5 +1,9 @@
 //! Dead-code scan (roadmap 8.6): functions, methods and types nobody references, found by
 //! asking the analyzer for the references of every symbol in the checkout.
+//!
+//! Only a successful answer with an empty list of references makes a symbol dead. A request
+//! that failed, a `null` (the analyzer found no symbol there to search for) or an answer of
+//! another shape leaves the symbol unverified, never dead, and so out of reach of pruning (#435).
 
 use crate::session::LspSession;
 use anyhow::{Result, anyhow};
@@ -30,9 +34,32 @@ pub struct DeadCodeReport {
     /// Exported symbols without references that were not listed (`include_exported` off).
     pub exported_unreferenced: usize,
     pub truncated: bool,
+    /// Files and symbols the analyzer could not answer for: nothing is known about them, so
+    /// none is listed as dead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unverified: Vec<Unverified>,
+}
+
+/// A file whose symbols, or a symbol whose references, the analyzer did not establish.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Unverified {
+    pub file: String,
+    /// The symbol; `None` when the file's symbols could not be listed at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 1-based line and column of the symbol's name; 0 for a whole file.
+    pub line: u32,
+    pub col: u32,
+    pub reason: String,
 }
 
 impl DeadCodeReport {
+    /// Whether every source file and every symbol was judged: nothing cut by the file limit,
+    /// nothing the analyzer failed to answer.
+    pub fn complete(&self) -> bool {
+        !self.truncated && self.unverified.is_empty()
+    }
+
     pub fn render(&self) -> String {
         let mut out = format!(
             "dead code scan ({}): {} file(s), {} symbol(s) checked, {} unreferenced\n",
@@ -77,7 +104,36 @@ impl DeadCodeReport {
         if self.truncated {
             out.push_str("scan truncated by the file limit\n");
         }
+        if !self.unverified.is_empty() {
+            out.push_str(&format!(
+                "{} could not be checked (the analyzer failed or gave no usable answer), so none is listed as dead:\n",
+                self.unverified.len()
+            ));
+            for u in &self.unverified {
+                out.push_str(&match &u.name {
+                    Some(name) => format!(
+                        "  • {name}  {}:{}:{}: {}\n",
+                        u.file, u.line, u.col, u.reason
+                    ),
+                    None => format!("  • {}: {}\n", u.file, u.reason),
+                });
+            }
+        }
         out
+    }
+}
+
+/// How many references a `textDocument/references` answer lists, or why it says nothing about
+/// them. Only a list, empty or not, is an answer; `null` is what an analyzer gives when it
+/// found no symbol at the position to search from.
+pub fn reference_count(answer: Result<serde_json::Value>) -> std::result::Result<usize, String> {
+    match answer {
+        Ok(serde_json::Value::Array(found)) => Ok(found.len()),
+        Ok(serde_json::Value::Null) => {
+            Err("textDocument/references answered null: no symbol was searched for".to_string())
+        }
+        Ok(other) => Err(crate::impact::unreadable("textDocument/references", &other)),
+        Err(e) => Err(format!("{e:#}")),
     }
 }
 
@@ -223,28 +279,52 @@ pub async fn find_dead_code(
         methods_unreferenced: Vec::new(),
         exported_unreferenced: 0,
         truncated,
+        unverified: Vec::new(),
+    };
+    let whole_file = |file: &str, reason: String| Unverified {
+        file: file.to_string(),
+        name: None,
+        line: 0,
+        col: 0,
+        reason,
     };
     for rel in &files {
         let abs = root.join(rel);
-        let Ok(text) = std::fs::read_to_string(&abs) else {
-            continue;
+        let text = match std::fs::read_to_string(&abs) {
+            Ok(text) => text,
+            Err(e) => {
+                report
+                    .unverified
+                    .push(whole_file(rel, format!("it cannot be read: {e}")));
+                continue;
+            }
         };
         let lines: Vec<&str> = text.lines().collect();
         let uri = session.uri_for(&abs)?;
-        let symbols = session
+        let symbols = match session
             .query(
                 &abs,
                 "textDocument/documentSymbol",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
             .await
-            .unwrap_or(serde_json::Value::Null);
+        {
+            Ok(serde_json::Value::Array(symbols)) => symbols,
+            // No symbols to judge, and so none listed dead.
+            Ok(serde_json::Value::Null) => Vec::new(),
+            Ok(other) => {
+                let reason = crate::impact::unreadable("textDocument/documentSymbol", &other);
+                report.unverified.push(whole_file(rel, reason));
+                continue;
+            }
+            Err(e) => {
+                report.unverified.push(whole_file(rel, format!("{e:#}")));
+                continue;
+            }
+        };
         report.files_scanned += 1;
         let mut candidates = Vec::new();
-        collect(
-            symbols.as_array().map(|a| a.as_slice()).unwrap_or(&[]),
-            &mut candidates,
-        );
+        collect(&symbols, &mut candidates);
         for (name, kind, line, col) in candidates {
             let bare = name.split('(').next().unwrap_or(&name);
             if matches!(
@@ -269,9 +349,20 @@ pub async fn find_dead_code(
                         "context": { "includeDeclaration": false }
                     }),
                 )
-                .await
-                .unwrap_or(serde_json::Value::Null);
-            let count = refs.as_array().map(|a| a.len()).unwrap_or(0);
+                .await;
+            let count = match reference_count(refs) {
+                Ok(count) => count,
+                Err(reason) => {
+                    report.unverified.push(Unverified {
+                        file: rel.clone(),
+                        name: Some(name),
+                        line,
+                        col,
+                        reason,
+                    });
+                    continue;
+                }
+            };
             if count == 0 {
                 let item = DeadItem {
                     name,
@@ -313,5 +404,26 @@ mod tests {
         assert!(in_trait_impl("impl Shape for Circle"));
         assert!(!in_trait_impl("impl Circle"));
         assert!(!is_test_path("rust", "src/lib.rs"));
+    }
+
+    #[test]
+    fn only_a_list_counts_references() {
+        assert_eq!(reference_count(Ok(serde_json::json!([]))), Ok(0));
+        assert_eq!(reference_count(Ok(serde_json::json!([{}, {}]))), Ok(2));
+        assert!(
+            reference_count(Ok(serde_json::Value::Null))
+                .unwrap_err()
+                .contains("null")
+        );
+        assert!(
+            reference_count(Ok(serde_json::json!({ "uri": "x" })))
+                .unwrap_err()
+                .contains("cannot read")
+        );
+        assert!(
+            reference_count(Err(anyhow!("textDocument/references failed: boom")))
+                .unwrap_err()
+                .contains("boom")
+        );
     }
 }
