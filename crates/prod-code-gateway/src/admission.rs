@@ -46,8 +46,16 @@ pub struct Admission {
 
 #[derive(Default)]
 struct Ledger {
-    reserved: u64,
+    /// Wider than any reservation, so that however large a configured one is, returning it
+    /// takes back exactly what it added.
+    reserved: u128,
     loads: usize,
+}
+
+impl Ledger {
+    fn reserved_bytes(&self) -> u64 {
+        u64::try_from(self.reserved).unwrap_or(u64::MAX)
+    }
 }
 
 /// Memory held for one admitted load; returned when dropped.
@@ -73,7 +81,11 @@ pub struct Shortfall {
 impl Shortfall {
     /// Bytes that would have to be freed for the engine to fit under the limit.
     pub fn excess(&self) -> u64 {
-        let committed = self.total.saturating_sub(self.available) + self.reserved + self.needed;
+        let committed = self
+            .total
+            .saturating_sub(self.available)
+            .saturating_add(self.reserved)
+            .saturating_add(self.needed);
         committed.saturating_sub(limit_bytes(self.total))
     }
 }
@@ -134,7 +146,8 @@ impl Admission {
     pub fn with_probe(probe: MemoryProbe, reserve_mib: u64, settle: Duration) -> Self {
         Self {
             probe,
-            reserve_override: (reserve_mib > 0).then(|| reserve_mib * MIB),
+            // A reservation past what any host has refuses every new engine, and says so.
+            reserve_override: (reserve_mib > 0).then(|| reserve_mib.saturating_mul(MIB)),
             settle,
             ledger: Mutex::new(Ledger::default()),
         }
@@ -153,7 +166,7 @@ impl Admission {
 
     /// Bytes held for loads admitted and not yet settled.
     pub fn reserved_bytes(&self) -> u64 {
-        self.ledger().reserved
+        self.ledger().reserved_bytes()
     }
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
@@ -174,7 +187,7 @@ impl Admission {
                 engine: engine.to_string(),
                 available: available.min(total),
                 total,
-                reserved: ledger.reserved,
+                reserved: ledger.reserved_bytes(),
                 loads: ledger.loads,
                 needed,
             };
@@ -182,7 +195,7 @@ impl Admission {
                 return Err(shortfall);
             }
         }
-        ledger.reserved += needed;
+        ledger.reserved = ledger.reserved.saturating_add(u128::from(needed));
         ledger.loads += 1;
         Ok(Reservation {
             admission: Arc::clone(self),
@@ -217,7 +230,7 @@ impl std::fmt::Debug for Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         let mut ledger = self.admission.ledger();
-        ledger.reserved = ledger.reserved.saturating_sub(self.bytes);
+        ledger.reserved = ledger.reserved.saturating_sub(u128::from(self.bytes));
         ledger.loads = ledger.loads.saturating_sub(1);
     }
 }
@@ -322,6 +335,39 @@ mod tests {
         assert_eq!(defaults.reserve_for("cpp"), GIB);
         assert_eq!(defaults.reserve_for("text"), 256 * MIB);
         assert_eq!(Admission::host(512).reserve_for("rust"), 512 * MIB);
+    }
+
+    /// A configured reservation past any host saturates instead of overflowing: a known host
+    /// refuses every new engine with the usual message, an unknown one still admits, and
+    /// returning one of two such reservations leaves the other counted in full.
+    #[test]
+    fn a_reservation_past_any_host_saturates_and_refuses() {
+        let full = Arc::new(Admission::with_probe(
+            scripted_probe(vec![host(10, 100)]),
+            u64::MAX,
+            LOAD_SETTLE,
+        ));
+        assert_eq!(full.reserve_for("rust"), u64::MAX);
+        let shortfall = full.try_reserve("rust").expect_err("nothing holds u64::MAX bytes");
+        assert!(shortfall.excess() > 0);
+        let text = CapacityRefused {
+            shortfall,
+            reclaimed: 0,
+        }
+        .to_string();
+        assert!(text.starts_with("capacity: "), "{text}");
+        assert_eq!(full.reserved_bytes(), 0);
+
+        let unknown = Arc::new(Admission::with_probe(Arc::new(|| None), u64::MAX, LOAD_SETTLE));
+        let mut held: Vec<_> = (0..2)
+            .map(|_| unknown.try_reserve("rust").expect("unknown host admits"))
+            .collect();
+        assert_eq!(unknown.reserved_bytes(), u64::MAX);
+        drop(held.pop());
+        assert_eq!(unknown.reserved_bytes(), u64::MAX, "the other is still held");
+        assert_eq!(unknown.ledger().loads, 1);
+        drop(held);
+        assert_eq!(unknown.reserved_bytes(), 0);
     }
 
     /// The refusal names capacity as the cause, the figures, and both ways forward.
