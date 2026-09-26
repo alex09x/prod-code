@@ -71,7 +71,12 @@ impl Root {
         } else {
             trimmed.to_string()
         };
-        let uri = file_uri(Path::new(&path)).trim_end_matches('/').to_string();
+        let encoded = file_uri(Path::new(&path));
+        let uri = if path == "/" {
+            encoded
+        } else {
+            encoded.trim_end_matches('/').to_string()
+        };
         Self { path, uri }
     }
 
@@ -98,6 +103,11 @@ impl Root {
         if !self.usable() {
             return None;
         }
+        if self.path == "/" {
+            return value
+                .strip_prefix("file://")
+                .filter(|rest| rest.starts_with('/'));
+        }
         let rest = value.strip_prefix(self.uri.as_str())?;
         (rest.is_empty() || rest.starts_with(['/', '?', '#'])).then_some(rest)
     }
@@ -114,6 +124,9 @@ impl Root {
 
 /// The plain path `value` moved from under `from` to under `to`.
 fn map_path(value: &str, from: &Root, to: &Root) -> Option<String> {
+    if !to.usable() {
+        return None;
+    }
     Some(to.join_path(from.rest_of_path(value)?))
 }
 
@@ -125,7 +138,11 @@ fn map_uri(value: &str, from: &Root, to: &Root) -> Option<String> {
     }
     // The usual case keeps the rest exactly as the peer encoded it.
     if let Some(rest) = from.rest_of_uri(value) {
-        return Some(format!("{}{rest}", to.uri));
+        return Some(if to.path == "/" {
+            format!("file:///{}", rest.trim_start_matches('/'))
+        } else {
+            format!("{}{rest}", to.uri)
+        });
     }
     // The same root encoded another way: `%7E` for `~`, lower-case escapes, `localhost`.
     let url = Url::parse(value).ok()?;
@@ -170,9 +187,9 @@ fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
             }
             None => false,
         },
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |changed, item| translate_value(item, from, to) | changed),
+        Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
+            translate_value(item, from, to) | changed
+        }),
         Value::Object(map) => {
             let mut changed = false;
             let uri_keys: Vec<(String, String)> = map
@@ -224,14 +241,12 @@ impl PathTranslator {
 
     /// Translate a local client filesystem path to the remote server filesystem path.
     pub fn to_server_path(&self, client_path: &str) -> String {
-        map_path(client_path, &self.client, &self.server)
-            .unwrap_or_else(|| client_path.to_string())
+        map_path(client_path, &self.client, &self.server).unwrap_or_else(|| client_path.to_string())
     }
 
     /// Translate a remote server filesystem path back to the local client filesystem path.
     pub fn to_client_path(&self, server_path: &str) -> String {
-        map_path(server_path, &self.server, &self.client)
-            .unwrap_or_else(|| server_path.to_string())
+        map_path(server_path, &self.server, &self.client).unwrap_or_else(|| server_path.to_string())
     }
 
     /// Translate a local client URI (`file:///Users/...`) to a remote server URI (`file:///srv/...`).
@@ -362,7 +377,10 @@ mod tests {
         assert_eq!(dc[0]["oldUri"], "file:///Users/dev/app/src/old.rs");
         assert_eq!(dc[0]["newUri"], "file:///Users/dev/app/src/new.rs");
         assert_eq!(dc[1]["uri"], "file:///Users/dev/app/src/fresh.rs");
-        assert_eq!(dc[2]["textDocument"]["uri"], "file:///Users/dev/app/src/b.rs");
+        assert_eq!(
+            dc[2]["textDocument"]["uri"],
+            "file:///Users/dev/app/src/b.rs"
+        );
         assert_eq!(dc[2]["edits"][0]["newText"], "file:///srv/ws/app/src/b.rs");
         let args = &r["command"]["arguments"];
         assert_eq!(args[0], "file:///Users/dev/app/src/main.rs");
@@ -385,16 +403,30 @@ mod tests {
         ] {
             assert_eq!(t.to_client_uri(uri), uri);
         }
-        assert_eq!(t.to_client_path("relative/srv/ws/app"), "relative/srv/ws/app");
+        assert_eq!(
+            t.to_client_path("relative/srv/ws/app"),
+            "relative/srv/ws/app"
+        );
         let empty = PathTranslator::new("", "/srv/ws/app");
         assert_eq!(empty.to_server_path("/etc/hosts"), "/etc/hosts");
-        assert_eq!(empty.to_server_uri("file:///etc/hosts"), "file:///etc/hosts");
+        assert_eq!(
+            empty.to_server_uri("file:///etc/hosts"),
+            "file:///etc/hosts"
+        );
+        assert_eq!(empty.to_client_path("/srv/ws/app/a.rs"), "/srv/ws/app/a.rs");
+        assert_eq!(
+            empty.to_client_uri("file:///srv/ws/app/a.rs"),
+            "file:///srv/ws/app/a.rs"
+        );
     }
 
     #[test]
     fn roots_with_trailing_separators_map_like_those_without() {
         let t = PathTranslator::new("/Users/dev/app/", "/srv/ws/app//");
-        assert_eq!(t.to_server_path("/Users/dev/app/src/x.rs"), "/srv/ws/app/src/x.rs");
+        assert_eq!(
+            t.to_server_path("/Users/dev/app/src/x.rs"),
+            "/srv/ws/app/src/x.rs"
+        );
         assert_eq!(t.to_server_path("/Users/dev/app"), "/srv/ws/app");
         assert_eq!(t.to_server_path("/Users/dev/app2"), "/Users/dev/app2");
         assert_eq!(
@@ -405,6 +437,20 @@ mod tests {
         assert_eq!(root.to_server_path("/a/b.rs"), "/srv/ws/app/a/b.rs");
         assert_eq!(root.to_client_path("/srv/ws/app/a/b.rs"), "/a/b.rs");
         assert_eq!(root.to_client_path("/srv/ws/app"), "/");
+        assert_eq!(
+            root.to_server_uri("file:///a/b.rs"),
+            "file:///srv/ws/app/a/b.rs"
+        );
+        assert_eq!(root.to_server_uri("file:///"), "file:///srv/ws/app/");
+        assert_eq!(
+            root.to_client_uri("file:///srv/ws/app/a/b.rs"),
+            "file:///a/b.rs"
+        );
+        assert_eq!(root.to_client_uri("file:///srv/ws/app"), "file:///");
+        assert_eq!(
+            root.to_client_uri("file:///srv/ws/app?query#fragment"),
+            "file:///?query#fragment"
+        );
     }
 
     #[test]
@@ -464,7 +510,8 @@ mod tests {
 
     #[test]
     fn source_text_of_did_open_and_did_change_is_not_rewritten() {
-        let source = "const ROOT: &str = \"/Users/dev/app\";\n// see file:///Users/dev/app/src/lib.rs\n";
+        let source =
+            "const ROOT: &str = \"/Users/dev/app\";\n// see file:///Users/dev/app/src/lib.rs\n";
         let open = serde_json::json!({ "jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
             "textDocument": { "uri": "file:///Users/dev/app/src/lib.rs", "languageId": "rust", "version": 1, "text": source }
         } });

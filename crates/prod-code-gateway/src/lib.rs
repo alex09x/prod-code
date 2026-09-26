@@ -3298,7 +3298,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = uri_or_path(&uri);
+                                let file_path = uri_or_path(uri);
                                 if let Some(text) = params
                                     .get("textDocument")
                                     .and_then(|td| td.get("text"))
@@ -3342,7 +3342,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = uri_or_path(&uri);
+                                let file_path = uri_or_path(uri);
                                 let first = params
                                     .get("contentChanges")
                                     .and_then(|c| c.as_array())
@@ -3388,7 +3388,7 @@ async fn on_client_message(
                                     .and_then(|td| td.get("uri"))
                                     .and_then(|u| u.as_str())
                                     .unwrap_or("");
-                                let file_path = uri_or_path(&uri);
+                                let file_path = uri_or_path(uri);
                                 let mut engine = engine_lock.lock().await;
                                 if let Err(e) =
                                     engine.clear_session_overlay(view.session_id, &file_path)
@@ -3997,7 +3997,7 @@ fn lsp_call_hierarchy(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
     let method_name = hm.to_string();
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -4104,7 +4104,7 @@ fn lsp_safe_delete(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4193,7 +4193,7 @@ fn lsp_structural_replace(
         .and_then(|s| s.as_str())
         .filter(|s| !s.is_empty())
         .map(uri_or_path);
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4396,7 +4396,7 @@ fn lsp_assists(
         .get("subtype")
         .and_then(|v| v.as_u64())
         .map(|v| v as usize);
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4688,7 +4688,7 @@ fn lsp_references(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4803,7 +4803,7 @@ fn lsp_definition(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
@@ -4918,7 +4918,7 @@ fn lsp_hover(
         .and_then(|p| p.get("character"))
         .and_then(|c| c.as_u64())
         .unwrap_or(0) as u32;
-    let file_path = uri_or_path(&uri);
+    let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;

@@ -10,6 +10,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Path translation rewrites URI and path fields without changing source, edit text or
+  documentation (#438). File URIs encode spaces, Unicode, `#` and `%` consistently,
+  compare complete path components, and decode a URI exactly once.
 - Multi-file refactors apply LSP edits in order, interpret columns as UTF-16 and roll back
   earlier writes and resource operations when a later step fails (#425). Paths are checked
   again after directory moves, and deleted files do not survive as hidden backup files.
