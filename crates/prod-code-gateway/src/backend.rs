@@ -5,9 +5,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 
 /// Managed backend worker running a language server process on the host.
 pub struct BackendWorker {
@@ -17,6 +18,8 @@ pub struct BackendWorker {
     broadcast_tx: broadcast::Sender<String>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     pub open_files: Arc<RwLock<HashSet<String>>>,
+    is_alive: Arc<AtomicBool>,
+    closed: Arc<Notify>,
     _child: Arc<Mutex<Child>>,
 }
 
@@ -60,6 +63,10 @@ impl BackendWorker {
         let tx_clone = tx.clone();
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_writer = stdin_arc.clone();
+        let is_alive = Arc::new(AtomicBool::new(true));
+        let reader_alive = Arc::clone(&is_alive);
+        let closed = Arc::new(Notify::new());
+        let reader_closed = Arc::clone(&closed);
 
         // Background reader loop: reads Content-Length frames from language server stdout
         tokio::spawn(async move {
@@ -141,6 +148,8 @@ impl BackendWorker {
                     Err(_) => break,
                 }
             }
+            reader_alive.store(false, Ordering::Release);
+            reader_closed.notify_one();
             tracing::info!("Backend worker reader loop terminated");
         });
 
@@ -151,13 +160,19 @@ impl BackendWorker {
             broadcast_tx: tx,
             capabilities: Arc::new(RwLock::new(None)),
             open_files: Arc::new(RwLock::new(HashSet::new())),
+            is_alive,
+            closed,
             _child: Arc::new(Mutex::new(child)),
         };
 
         // Perform backend initialization handshake so the backend is warm and ready
-        if let Err(e) = worker.initialize_backend(workspace_root).await {
-            tracing::warn!(error = %e, "Initial backend handshake error (will proceed anyway)");
-        }
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            worker.initialize_backend(workspace_root),
+        )
+        .await
+        .context("Timeout initializing backend language server")?
+        .context("Failed to initialize backend language server")?;
 
         Ok(worker)
     }
@@ -207,28 +222,31 @@ impl BackendWorker {
         let mut rx = self.subscribe();
         self.send_lsp(&init_req.to_string()).await?;
 
-        // Wait for initialize response (id = 1)
-        let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
-        while tokio::time::Instant::now() < deadline {
-            let remaining = deadline - tokio::time::Instant::now();
-            match tokio::time::timeout(remaining, rx.recv()).await {
-                Ok(Ok(json)) => {
-                    let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) else {
-                        continue;
-                    };
-                    if val.get("id").and_then(|id| id.as_i64()) == Some(1) {
-                        if let Some(caps) = val.get("result").and_then(|r| r.get("capabilities")) {
-                            *self.capabilities.write().await = Some(caps.clone());
-                        }
-                        break;
-                    }
-                }
-                Ok(Err(_)) => {}
-                Err(_) => {
-                    tracing::warn!("Timeout waiting for backend initialize response, continuing");
-                    break;
-                }
+        // Server requests have their own IDs and may collide with our initialize request.
+        // Only a response with the complete capabilities object establishes a usable server.
+        loop {
+            anyhow::ensure!(self.is_alive(), "backend exited during initialization");
+            let message = tokio::select! {
+                _ = self.closed.notified() => anyhow::bail!("backend exited during initialization"),
+                message = rx.recv() => message.context("backend initialization response stream closed")?,
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&message) else {
+                continue;
+            };
+            if value.get("method").is_some()
+                || value.get("id").and_then(serde_json::Value::as_u64) != Some(1)
+            {
+                continue;
             }
+            if let Some(error) = value.get("error") {
+                anyhow::bail!("backend refused initialization: {error}");
+            }
+            let capabilities = value
+                .pointer("/result/capabilities")
+                .filter(|capabilities| capabilities.is_object())
+                .context("backend initialize response has no capabilities object")?;
+            *self.capabilities.write().await = Some(capabilities.clone());
+            break;
         }
 
         // Send initialized notification
@@ -243,6 +261,11 @@ impl BackendWorker {
         Ok(())
     }
 
+    /// False after the managed language server's output has ended.
+    pub fn is_alive(&self) -> bool {
+        self.is_alive.load(Ordering::Acquire)
+    }
+
     /// Subscribe to raw LSP frames produced by this backend worker.
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.broadcast_tx.subscribe()
@@ -250,7 +273,17 @@ impl BackendWorker {
 
     /// Send an LSP JSON-RPC message into the backend language server's stdin.
     pub async fn send_lsp(&self, json_payload: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.is_alive(),
+            "{} backend process has exited",
+            self.engine
+        );
         let mut stdin = self.stdin.lock().await;
+        anyhow::ensure!(
+            self.is_alive(),
+            "{} backend process has exited",
+            self.engine
+        );
         let header = format!("Content-Length: {}\r\n\r\n", json_payload.len());
         stdin.write_all(header.as_bytes()).await?;
         stdin.write_all(json_payload.as_bytes()).await?;
