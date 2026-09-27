@@ -31,7 +31,7 @@
 
 use crate::signature::{Modifiers, Param, SignatureChange};
 use anyhow::{Context, Result};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -39,10 +39,11 @@ use std::path::{Path, PathBuf};
 pub const GOPLS_VERSION: &str = "v0.23.0";
 
 /// The part of the requirement that a refusal leaves open, so that it stays visible.
-const STILL_OPEN: &str = "Go signature changes here are limited to reordering the named \
-     parameters of a declared function or method, and removing the ones its body provably does \
-     not use, through gopls; adding parameters, removing a used one, changing parameter or result \
-     types, changing results, and rewriting function values remain open requirements";
+const STILL_OPEN: &str = "Go signature changes here are limited to reordering named parameters, \
+     removing ones proven unused, and adding explicitly typed primitive parameters with literal \
+     arguments to ordinary non-generic functions; receiver methods, variadics, generic functions, \
+     combined additions with removals, reorders or type changes, changing results, and rewriting \
+     function values remain open requirements";
 
 /// A parameter as the declaration declares it, flattened out of Go's grouping: `a, b int` is two.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +145,9 @@ pub async fn change_with(
             decl.name
         ))
     })?;
+    if request.iter().any(|p| matches!(p, Param::Add { .. })) {
+        return add_parameters(remote, root, file, text, decl, declared, request, apply).await;
+    }
     let order = permutation(&declared, request)?;
     let arity = declared.len();
     let variadic = declared.last().is_some_and(|p| p.ty.starts_with("..."));
@@ -537,6 +541,714 @@ pub async fn change_with(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Addition {
+    /// How many old parameters precede this one.
+    boundary: usize,
+    name: String,
+    ty: String,
+    value: String,
+}
+
+/// Adds explicitly typed primitive parameters to an ordinary function. Unlike reorders and
+/// removals, gopls has no native edit for this shape, so its complete reference answer is used as
+/// the proof obligation and the adapter makes insertion-only edits itself.
+#[allow(clippy::too_many_arguments)]
+async fn add_parameters(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: String,
+    decl: Decl,
+    declared: Vec<GoParam>,
+    request: &[Param],
+    apply: bool,
+) -> Result<SignatureChange> {
+    anyhow::ensure!(
+        decl.receiver.is_none(),
+        "{}",
+        refusal(format!(
+            "adding parameters to the receiver method `{}` is not supported",
+            decl.name
+        ))
+    );
+    anyhow::ensure!(
+        !decl.generic,
+        "{}",
+        refusal(format!(
+            "adding parameters to the generic function `{}` is not supported",
+            decl.name
+        ))
+    );
+    anyhow::ensure!(
+        !declared.iter().any(|p| p.ty.starts_with("...")),
+        "{}",
+        refusal(format!(
+            "adding parameters to the variadic function `{}` is not supported",
+            decl.name
+        ))
+    );
+    let body_open = body_open(&text, decl.close + 1).with_context(|| {
+        refusal(format!(
+            "adding parameters to `{}` is refused because it has no body here (an assembly or \
+             external declaration cannot be proven safe)",
+            decl.name
+        ))
+    })?;
+    let body = (
+        body_open,
+        closing(&text, body_open)
+            .with_context(|| refusal(format!("the body of `{}` does not close", decl.name)))?,
+    );
+    let additions = addition_plan(&declared, request)?;
+    for added in &additions {
+        let captures: Vec<String> = identifier_uses(&text, body.0, body.1, &added.name)
+            .into_iter()
+            .map(|at| position(root, file, &text, at))
+            .collect();
+        if !captures.is_empty() {
+            return Err(refusal(format!(
+                "adding `{}` is refused because it would shadow existing references in the body \
+                 of `{}` at {}",
+                added.name,
+                decl.name,
+                captures.join(", ")
+            )));
+        }
+    }
+
+    let canonical_root = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    let (originals, calls) = function_reference_evidence(
+        remote,
+        root,
+        file,
+        &canonical_root,
+        &text,
+        &decl,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "cannot prove every reference to `{}` is a supported direct call or its declaration; \
+             nothing was written",
+            decl.name
+        )
+    })?;
+    let arity = declared.len();
+    for call in &calls {
+        anyhow::ensure!(
+            call.args.len() == arity
+                && !call
+                    .args
+                    .last()
+                    .is_some_and(|arg| arg.trim_end().ends_with("...")),
+            "{}",
+            refusal(format!(
+                "{}: the call passes {} argument(s) and `{}` declares {arity}, so the insertion \
+                 cannot be reconciled exactly",
+                call.at,
+                call.args.len(),
+                decl.name
+            ))
+        );
+    }
+
+    let groups = addition_groups(&additions);
+    let mut edits: BTreeMap<PathBuf, Vec<TextEdit>> = BTreeMap::new();
+    let declaration_edits = insertion_edits(&text, decl.open, decl.close, arity, &groups, true)
+        .map_err(|why| {
+            refusal(format!(
+                "the declaration of `{}` cannot be extended safely: {why}",
+                decl.name
+            ))
+        })?;
+    edits
+        .entry(file.to_path_buf())
+        .or_default()
+        .extend(declaration_edits);
+    for call in &calls {
+        let old = &originals[&call.path];
+        let call_edits = insertion_edits(old, call.open, call.close, arity, &groups, false)
+            .map_err(|why| refusal(format!("{} cannot be extended safely: {why}", call.at)))?;
+        edits
+            .entry(call.path.clone())
+            .or_default()
+            .extend(call_edits);
+    }
+    for list in edits.values_mut() {
+        list.sort_by_key(|(start, end, _)| (*start, *end));
+        for pair in list.windows(2) {
+            anyhow::ensure!(
+                pair[0].1 <= pair[1].0 && !(pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1),
+                "the insertion plan for `{}` overlaps itself; nothing was written",
+                decl.name
+            );
+        }
+    }
+
+    let mut rewritten = BTreeMap::new();
+    for (path, list) in &edits {
+        let old = &originals[path];
+        let new = splice(old, list);
+        anyhow::ensure!(
+            comments(old) == comments(&new),
+            "{}: adding parameters would drop or change a comment; nothing was written",
+            display(root, path)
+        );
+        rewritten.insert(path.clone(), new);
+    }
+
+    let expected_params = requested_go_params(&declared, &additions);
+    let new_decl = edits
+        .get(file)
+        .and_then(|list| map_offset(list, decl.func_at))
+        .and_then(|at| header(&rewritten[file], at))
+        .context("the inserted declaration cannot be read back; nothing was written")?;
+    let got_params =
+        parameters(&rewritten[file][new_decl.open + 1..new_decl.close]).map_err(|why| {
+            anyhow::anyhow!(
+                "the inserted declaration cannot be read back: {why}; nothing was written"
+            )
+        })?;
+    anyhow::ensure!(
+        new_decl.name == decl.name
+            && new_decl.receiver == decl.receiver
+            && new_decl.results == decl.results
+            && got_params == expected_params,
+        "the insertion did not produce exactly the requested declaration of `{}`; nothing was written",
+        decl.name
+    );
+    for call in &calls {
+        let list = &edits[&call.path];
+        let open = map_offset(list, call.open)
+            .context("an inserted call cannot be located again; nothing was written")?;
+        let new = &rewritten[&call.path];
+        let close =
+            closing(new, open).context("an inserted call does not close; nothing was written")?;
+        let got = split_list(&strip_comments(&new[open + 1..close]));
+        let expected = requested_arguments(&call.args, request);
+        anyhow::ensure!(
+            got.len() == expected.len()
+                && got
+                    .iter()
+                    .zip(&expected)
+                    .all(|(actual, expected)| canonical(actual) == canonical(expected)),
+            "{}: the insertion wrote ({}) instead of exactly ({}); nothing was written",
+            call.at,
+            got.join(", "),
+            expected.join(", ")
+        );
+    }
+
+    let proposal: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(path, source)| (path.clone(), source.clone()))
+        .collect();
+    let compiler = crate::verify::compile_go_shadow(remote, root, file, &proposal)
+        .await
+        .context(
+            "the complete Go proposal could not be compiled in its private shadow; nothing was written",
+        )?;
+    anyhow::ensure!(
+        compiler.passed,
+        "the changed Go project does not compile; nothing was written, and `force` does not \
+         override this:\n{}",
+        compiler.output.trim()
+    );
+
+    let mut applied = false;
+    if apply {
+        for (path, old) in &originals {
+            let now = std::fs::read_to_string(path).unwrap_or_default();
+            anyhow::ensure!(
+                now == *old,
+                "{} changed while the addition was planned and compiled; nothing was written",
+                display(root, path)
+            );
+        }
+        crate::refactor::apply_workspace_edit(
+            root,
+            &crate::signature::whole_file_edit(&rewritten),
+        )?;
+        applied = true;
+    }
+
+    let signature = format!(
+        "func({}){}",
+        list_text(&expected_params),
+        suffix(&decl.results)
+    );
+    let new_signature = normalize(&rewritten[file][new_decl.open + 1..new_decl.close]);
+    Ok(SignatureChange {
+        symbol: decl.name,
+        root: root.to_path_buf(),
+        file: display(root, file),
+        old_signature: normalize(&text[decl.open + 1..decl.close]),
+        new_signature,
+        rule: signature,
+        rewritten: rewritten
+            .into_iter()
+            .map(|(path, source)| (path.to_string_lossy().into_owned(), source))
+            .collect(),
+        unmatched: Vec::new(),
+        unexpected: Vec::new(),
+        diagnostics: Vec::new(),
+        applied,
+        returns: None,
+        visibility: None,
+        asyncness: None,
+        not_async: Vec::new(),
+    })
+}
+
+/// The only addition shape supported in this increment: every old parameter is retained once in
+/// its original order, with one or more new parameters inserted between them.
+fn addition_plan(declared: &[GoParam], request: &[Param]) -> Result<Vec<Addition>> {
+    let mut old_at = 0usize;
+    let mut additions = Vec::new();
+    let mut new_names = BTreeSet::new();
+    for item in request {
+        match item {
+            Param::Keep(name) => {
+                let expected = declared.get(old_at).map(|p| p.name.as_str());
+                anyhow::ensure!(
+                    expected == Some(name.as_str()),
+                    "{}",
+                    refusal(format!(
+                        "an addition must retain every old parameter exactly once in its declared \
+                         order; expected {} next, got `{name}`",
+                        expected.map_or("no more old parameters".to_string(), |n| format!("`{n}`"))
+                    ))
+                );
+                old_at += 1;
+            }
+            Param::Add { name, ty, value } => {
+                anyhow::ensure!(
+                    go_identifier(name),
+                    "{}",
+                    refusal(format!("`{name}` is not an ordinary Go parameter name"))
+                );
+                anyhow::ensure!(
+                    !declared.iter().any(|p| p.name == *name) && new_names.insert(name.clone()),
+                    "{}",
+                    refusal(format!(
+                        "the added parameter `{name}` duplicates another parameter"
+                    ))
+                );
+                let ty = ty.trim();
+                anyhow::ensure!(
+                    primitive_type(ty),
+                    "{}",
+                    refusal(format!(
+                        "the type of added `{name}` must be an ordinary primitive spelling, not \
+                         `{ty}`"
+                    ))
+                );
+                let value = value.trim();
+                anyhow::ensure!(
+                    scalar_literal(value),
+                    "{}",
+                    refusal(format!(
+                        "the argument for added `{name}` must be one numeric, string or rune \
+                         literal, not `{value}`"
+                    ))
+                );
+                additions.push(Addition {
+                    boundary: old_at,
+                    name: name.clone(),
+                    ty: ty.to_string(),
+                    value: value.to_string(),
+                });
+            }
+        }
+    }
+    anyhow::ensure!(
+        old_at == declared.len(),
+        "{}",
+        refusal(format!(
+            "an addition must retain every old parameter exactly once in its declared order; \
+             {} would be removed",
+            declared[old_at..]
+                .iter()
+                .map(|p| format!("`{}`", p.name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    );
+    anyhow::ensure!(!additions.is_empty(), "there is no parameter to add");
+    Ok(additions)
+}
+
+fn go_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        && !matches!(
+            name,
+            "break"
+                | "default"
+                | "func"
+                | "interface"
+                | "select"
+                | "case"
+                | "defer"
+                | "go"
+                | "map"
+                | "struct"
+                | "chan"
+                | "else"
+                | "goto"
+                | "package"
+                | "switch"
+                | "const"
+                | "fallthrough"
+                | "if"
+                | "range"
+                | "type"
+                | "continue"
+                | "for"
+                | "import"
+                | "return"
+                | "var"
+        )
+        && name != "_"
+}
+
+fn primitive_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "string"
+            | "byte"
+            | "rune"
+            | "int"
+            | "int8"
+            | "int16"
+            | "int32"
+            | "int64"
+            | "uint"
+            | "uint8"
+            | "uint16"
+            | "uint32"
+            | "uint64"
+            | "uintptr"
+            | "float32"
+            | "float64"
+            | "complex64"
+            | "complex128"
+    )
+}
+
+fn scalar_literal(value: &str) -> bool {
+    if value.is_empty() || !is_literal(value) || is_func_literal(value) {
+        return false;
+    }
+    match value.as_bytes()[0] {
+        quote @ (b'"' | b'\'' | b'`') => {
+            value.len() >= 2 && value.as_bytes().last() == Some(&quote)
+        }
+        _ => true,
+    }
+}
+
+fn addition_groups(additions: &[Addition]) -> BTreeMap<usize, Vec<&Addition>> {
+    let mut groups: BTreeMap<usize, Vec<&Addition>> = BTreeMap::new();
+    for addition in additions {
+        groups.entry(addition.boundary).or_default().push(addition);
+    }
+    groups
+}
+
+fn requested_go_params(declared: &[GoParam], additions: &[Addition]) -> Vec<GoParam> {
+    let groups = addition_groups(additions);
+    let mut out = Vec::with_capacity(declared.len() + additions.len());
+    for boundary in 0..=declared.len() {
+        if let Some(group) = groups.get(&boundary) {
+            out.extend(group.iter().map(|added| GoParam {
+                name: added.name.clone(),
+                ty: added.ty.clone(),
+            }));
+        }
+        if let Some(old) = declared.get(boundary) {
+            out.push(old.clone());
+        }
+    }
+    out
+}
+
+fn requested_arguments(old: &[String], request: &[Param]) -> Vec<String> {
+    let mut old_at = 0usize;
+    let mut out = Vec::with_capacity(request.len());
+    for item in request {
+        match item {
+            Param::Keep(_) => {
+                out.push(old[old_at].clone());
+                old_at += 1;
+            }
+            Param::Add { value, .. } => out.push(value.trim().to_string()),
+        }
+    }
+    out
+}
+
+/// Zero-length edits that insert each group at its boundary. Every original byte remains where it
+/// was; an existing comma becomes the separator before a middle or trailing insertion.
+fn insertion_edits(
+    text: &str,
+    open: usize,
+    close: usize,
+    arity: usize,
+    groups: &BTreeMap<usize, Vec<&Addition>>,
+    declaration: bool,
+) -> std::result::Result<Vec<TextEdit>, String> {
+    let commas = top_level_commas(text, open + 1, close);
+    let trailing = commas
+        .last()
+        .copied()
+        .filter(|comma| strip_comments(&text[comma + 1..close]).trim().is_empty());
+    if arity == 0 {
+        if !strip_comments(&text[open + 1..close]).trim().is_empty() {
+            return Err("the empty list contains text that cannot be attributed".to_string());
+        }
+    } else if commas.len() + usize::from(trailing.is_none()) != arity {
+        return Err("the list's comma structure does not match its arity".to_string());
+    }
+    let mut out = Vec::new();
+    for (&boundary, group) in groups {
+        if boundary > arity {
+            return Err(format!(
+                "insertion boundary {boundary} is past arity {arity}"
+            ));
+        }
+        if declaration && boundary > 0 && boundary < arity {
+            let start = if boundary == 1 {
+                open + 1
+            } else {
+                commas[boundary - 2] + 1
+            };
+            let end = commas[boundary - 1];
+            if !parameter_piece_has_type(&text[start..end]) {
+                return Err(format!(
+                    "inserting after grouped parameter {} would change that old parameter's type",
+                    boundary
+                ));
+            }
+        }
+        let inserted = group
+            .iter()
+            .map(|added| {
+                if declaration {
+                    format!("{} {}", added.name, added.ty)
+                } else {
+                    added.value.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (at, replacement) = if arity == 0 {
+            (open + 1, inserted)
+        } else if boundary == 0 {
+            (open + 1, format!("{inserted}, "))
+        } else if boundary < arity {
+            (commas[boundary - 1] + 1, format!(" {inserted},"))
+        } else if let Some(comma) = trailing {
+            if !comments(&text[comma + 1..close]).is_empty() {
+                return Err(
+                    "a trailing comment makes the last insertion's meaning ambiguous".to_string(),
+                );
+            }
+            (comma + 1, format!(" {inserted},"))
+        } else {
+            (close, format!(", {inserted}"))
+        };
+        out.push((at, at, replacement));
+    }
+    Ok(out)
+}
+
+fn top_level_commas(text: &str, from: usize, to: usize) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    let (mut depth, mut at) = (0i32, from);
+    let mut out = Vec::new();
+    while at < to {
+        if let Some(end) = skip_opaque(bytes, at) {
+            at = end;
+            continue;
+        }
+        match bytes[at] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => out.push(at),
+            _ => {}
+        }
+        at += 1;
+    }
+    out
+}
+
+fn parameter_piece_has_type(piece: &str) -> bool {
+    let piece = strip_comments(piece);
+    let piece = piece.trim();
+    let word_end = piece
+        .bytes()
+        .position(|byte| !is_ident_byte(byte))
+        .unwrap_or(piece.len());
+    let word = &piece[..word_end];
+    let rest = piece[word_end..].trim();
+    let keyword = matches!(word, "chan" | "func" | "map" | "struct" | "interface");
+    !word.is_empty()
+        && !keyword
+        && piece[word_end..].starts_with(|c: char| c.is_whitespace())
+        && !rest.is_empty()
+}
+
+/// gopls's complete reference answer for the function. The declaration must occur exactly once;
+/// every other location must be current, inside the checkout and a direct call.
+async fn function_reference_evidence(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    canonical_root: &Path,
+    declaration_text: &str,
+    decl: &Decl,
+) -> Result<(BTreeMap<PathBuf, String>, Vec<Call>)> {
+    let (line, character) = line_col_utf16(declaration_text, decl.name_at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line, "character": character },
+        "context": { "includeDeclaration": true },
+    });
+    let mut answer = serde_json::Value::Null;
+    for attempt in 0..=crate::impact::COLD_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(crate::impact::COLD_WAIT).await;
+        }
+        answer = crate::tools::execute_lsp_query(
+            remote,
+            root,
+            file,
+            "textDocument/references",
+            params.clone(),
+        )
+        .await
+        .context("gopls could not list the function's references")?;
+        if answer.as_array().is_some_and(|entries| !entries.is_empty()) {
+            break;
+        }
+    }
+    let entries = answer
+        .as_array()
+        .filter(|entries| !entries.is_empty())
+        .with_context(|| {
+            format!(
+                "gopls listed no location, not even the declaration of `{}`: {answer}",
+                decl.name
+            )
+        })?;
+    let mut originals = BTreeMap::new();
+    originals.insert(file.to_path_buf(), declaration_text.to_string());
+    let mut calls = Vec::new();
+    let mut declarations = 0usize;
+    let mut seen = BTreeSet::new();
+    for entry in entries {
+        let number = |end: &str, key: &str| {
+            entry
+                .pointer(&format!("/range/{end}/{key}"))
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value < u32::MAX)
+        };
+        let (Some(uri), Some(line), Some(column), Some(end_line), Some(end_column)) = (
+            entry.get("uri").and_then(|value| value.as_str()),
+            number("start", "line"),
+            number("start", "character"),
+            number("end", "line"),
+            number("end", "character"),
+        ) else {
+            anyhow::bail!("a function reference is malformed: {entry}");
+        };
+        let uri = url::Url::parse(uri).context("a function reference has an invalid URI")?;
+        anyhow::ensure!(
+            uri.scheme() == "file" && uri.query().is_none() && uri.fragment().is_none(),
+            "a function reference is not a plain file URI: {uri}"
+        );
+        let reported = uri
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("a function reference is not a local file URI: {uri}"))?;
+        ensure_inside(canonical_root, &reported)?;
+        let path = originals
+            .keys()
+            .find(|known| same_file(known, &reported))
+            .cloned()
+            .unwrap_or(reported);
+        if !originals.contains_key(&path) {
+            originals.insert(
+                path.clone(),
+                std::fs::read_to_string(&path).with_context(|| {
+                    format!("cannot read {}; nothing was written", path.display())
+                })?,
+            );
+        }
+        let source = &originals[&path];
+        let offset = offset_at(source, line, column)
+            .filter(|at| ident_at(source, *at) == Some(decl.name.as_str()))
+            .with_context(|| {
+                format!(
+                    "{}:{}:{} is not on `{}`; the reference is stale",
+                    display(root, &path),
+                    line + 1,
+                    column + 1,
+                    decl.name
+                )
+            })?;
+        anyhow::ensure!(
+            offset_at(source, end_line, end_column) == offset.checked_add(decl.name.len()),
+            "{}:{}:{} does not span exactly `{}`; the reference is stale or malformed",
+            display(root, &path),
+            line + 1,
+            column + 1,
+            decl.name
+        );
+        anyhow::ensure!(
+            seen.insert((path.clone(), offset)),
+            "{}:{}:{} is listed more than once",
+            display(root, &path),
+            line + 1,
+            column + 1
+        );
+        if same_file(&path, file) && offset == decl.name_at {
+            declarations += 1;
+            continue;
+        }
+        let at = format!("{}:{}:{}", display(root, &path), line + 1, column + 1);
+        let (open, close) = call_parens(source, offset).with_context(|| {
+            format!(
+                "`{}` is used as a value or another unsupported shape at {at}",
+                decl.name
+            )
+        })?;
+        calls.push(Call {
+            path,
+            at,
+            open,
+            close,
+            args: split_list(&strip_comments(&source[open + 1..close])),
+        });
+    }
+    anyhow::ensure!(
+        declarations == 1,
+        "gopls listed the declaration of `{}` {declarations} times instead of exactly once",
+        decl.name
+    );
+    Ok((originals, calls))
+}
+
 /// An error that says why, that nothing was written, and what stays open.
 fn refusal(why: String) -> anyhow::Error {
     anyhow::anyhow!("{why}; nothing was written. {STILL_OPEN}")
@@ -756,7 +1468,11 @@ fn is_literal(e: &str) -> bool {
                 || b == b'.'
                 || (matches!(b, b'+' | b'-')
                     && i > 0
-                    && matches!(nb[i - 1], b'e' | b'E' | b'p' | b'P'))
+                    && if n.starts_with("0x") || n.starts_with("0X") {
+                        matches!(nb[i - 1], b'p' | b'P')
+                    } else {
+                        matches!(nb[i - 1], b'e' | b'E')
+                    })
         });
     }
     is_func_literal(e)
@@ -2285,5 +3001,21 @@ mod removal_evidence_validation_tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod literal_expression_regression {
+    #[test]
+    fn hexadecimal_digits_do_not_introduce_decimal_exponent_signs() {
+        for literal in [
+            "0x1e", "-0X1E", "0x1p+2", "0X1P-2", "1e+2", "-1E-2", "0x1p+2i",
+        ] {
+            assert!(super::is_literal(literal), "{literal}");
+        }
+        for expression in ["0x1e+2", "0x1E-2", "0x1e+counter", "0X1E-value"] {
+            assert!(!super::is_literal(expression), "{expression}");
+            assert!(!super::scalar_literal(expression), "{expression}");
+        }
     }
 }

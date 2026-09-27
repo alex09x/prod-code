@@ -975,7 +975,7 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with its call sites: Rust reorders, adds and removes
-    /// parameters; Go reorders named ones and removes provably unused ones.
+    /// parameters; Go reorders, removes provably unused ones and adds typed literal parameters.
     ///
     /// Rust: refuses changes to argument evaluation or destruction order (including possible
     /// Deref coercions).
@@ -988,7 +988,12 @@ enum Commands {
     /// Dropped arguments must be literals or simple variables; calls, selectors, indexing,
     /// receives, conversions and operators are refused because their evaluation can matter.
     /// Every call and the declaration must match exactly, and the result is type-checked.
-    /// Refused for Go without writing, whatever `--force` says: adding a parameter, `--returns`,
+    /// Go additions retain every old parameter in order and use explicit primitive types with
+    /// numeric/string/rune literals. Only ordinary non-generic free functions are supported;
+    /// methods, variadics, grouped-parameter interior insertion and combined changes refuse.
+    /// Packages and test callers must compile on the node before preview or apply. This preserves
+    /// the node's build flags and does not require Go on the client.
+    /// Refused for Go without writing, whatever `--force` says: arbitrary added values, `--returns`,
     /// `--visibility`, `--async`, `--verify`, unnamed or `_` parameters, any generic removal,
     /// a generic function that has calls, a function used as a value, an unreconciled call,
     /// and uncertain argument reordering (`true`, `false` and `nil` count as variables).
@@ -996,7 +1001,8 @@ enum Commands {
         /// The function, by name (`validate_texts`, `Session::open_text`, `Price`, `Cart.Add`).
         symbol: String,
         /// One entry of the new parameter list, in order: `name` keeps it, `name: Type = expr`
-        /// adds it (Rust); a declared parameter that is not listed is removed. Go requires proof
+        /// adds it (Go: primitive type and numeric/string/rune literal only); an omitted parameter
+        /// is removed. Go requires proof
         /// that a removed parameter is unused and dropping its arguments is safe. Repeat the flag.
         #[arg(
             long = "param",

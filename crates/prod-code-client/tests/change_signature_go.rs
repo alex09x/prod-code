@@ -4,10 +4,111 @@
 //! language request goes to a real `gopls` and diagnostics are the real Go compiler's (see
 //! `prod_code_testkit::gopls`). `go` and `gopls` are required: without them this test fails.
 
+use futures_util::{SinkExt, StreamExt};
+use prod_code_protocol::{
+    ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, WireMessage,
+};
 use prod_code_testkit::gopls::{GoModule, GoplsBridge, require_go_toolchain};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::process::Output;
+use tokio::net::TcpListener;
+use tokio_util::codec::Framed;
+
+async fn with_compiler_shadow(upstream: SocketAddr) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind proxy");
+    let addr = listener.local_addr().expect("proxy address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((client, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let server = tokio::net::TcpStream::connect(upstream)
+                    .await
+                    .expect("connect scripted gateway");
+                let mut client = Framed::new(client, ProdCodeCodec::new());
+                let mut server = Framed::new(server, ProdCodeCodec::new());
+                loop {
+                    tokio::select! {
+                        incoming = client.next() => match incoming {
+                            Some(Ok(WireMessage::ShadowRunRequest(req))) => {
+                                client.send(WireMessage::ShadowRunResponse(mock_compile(req)))
+                                    .await.expect("send compiler response");
+                            }
+                            Some(Ok(message)) => {
+                                server.send(message).await.expect("forward to scripted gateway");
+                            }
+                            _ => return,
+                        },
+                        outgoing = server.next() => match outgoing {
+                            Some(Ok(message)) => {
+                                client.send(message).await.expect("forward to client");
+                            }
+                            _ => return,
+                        },
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
+    let expected = [
+        "go",
+        "test",
+        "-c",
+        "-mod=readonly",
+        "-o",
+        ".prod-code-testbins/",
+        "./...",
+    ];
+    let malformed = req.command.iter().map(String::as_str).ne(expected)
+        || req.timeout_secs != 120
+        || req.parallel != 1
+        || req.tail_bytes != 16 * 1024
+        || req.env != [("GOTOOLCHAIN".into(), "local".into())]
+        || req.hypotheses.len() != 1
+        || req.hypotheses[0].name != "go-compiler-verification"
+        || req.hypotheses[0].files.is_empty()
+        || req.hypotheses[0].files.iter().any(|file| {
+            !file.relative_path.ends_with(".go") || file.content.as_ref().is_none_or(Vec::is_empty)
+        });
+    if malformed {
+        return ShadowRunResponse {
+            server_workspace_root: req.client_workspace_root,
+            mode: String::new(),
+            results: Vec::new(),
+            error: Some("malformed compiler shadow request".into()),
+        };
+    }
+    let proposal = req.hypotheses[0]
+        .files
+        .iter()
+        .filter_map(|file| file.content.as_deref())
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let proposal = String::from_utf8_lossy(&proposal);
+    let fails = proposal.contains("bad string") && proposal.contains("Keep(1, 2, 1)");
+    let output = fails.then(|| b"cannot use 1 as string value in argument to Keep\n".to_vec());
+    ShadowRunResponse {
+        server_workspace_root: req.client_workspace_root,
+        mode: "overlay".into(),
+        results: vec![ShadowHypothesisResult {
+            name: "go-compiler-verification".into(),
+            exit_code: Some(if fails { 1 } else { 0 }),
+            duration_ms: 1,
+            timed_out: false,
+            error: None,
+            output_len: output.as_ref().map_or(0, |text| text.len() as u64),
+            output_tail: output,
+        }],
+        error: None,
+    }
+}
 
 const LIB: &str = r#"package main
 
@@ -82,7 +183,7 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
     let before = module.run();
     let untouched = module.snapshot();
     let bridge = GoplsBridge::start(&module).await;
-    let remote = bridge.addr();
+    let remote = with_compiler_shadow(bridge.addr()).await;
     let root = module.root();
     let reorder = [
         "change-signature",
@@ -106,7 +207,8 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         "Go (a `.go` file, through gopls v0.23.0)",
         "permutation of the named",
         "variadic parameter stays last",
-        "adding a parameter",
+        "adds typed literal parameters",
+        "compile on the node before preview or apply",
         "removes provably unused ones",
         "--remove-all",
         "generic function that has calls",
@@ -238,6 +340,45 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         before,
         "the reordered program prints something else"
     );
+
+    // The existing CLI syntax for typed additions reaches the Go adapter too. The quoted value
+    // contains delimiters, and `force` cannot bypass any safety check (this one is valid).
+    let added = cli(
+        root,
+        home.path(),
+        remote,
+        &[
+            "change-signature",
+            "Price",
+            "--param",
+            "label",
+            "--param",
+            "unit",
+            "--param",
+            "qty",
+            "--param",
+            "discount",
+            "--param",
+            "currency: string = \"USD,)\"",
+            "--apply",
+            "--force",
+        ],
+    )
+    .await;
+    let text = said(&added);
+    assert!(added.status.success(), "{text}");
+    assert!(text.contains("[applied to 2 file(s)]"), "{text}");
+    assert!(
+        module
+            .read("lib.go")
+            .contains("discount float64, currency string) (total int, err error)")
+    );
+    assert!(
+        module
+            .read("main.go")
+            .contains("Price(\"first\", 250, q, 0.1, \"USD,)\")")
+    );
+    assert_eq!(module.run(), before, "the added literal changed behaviour");
 }
 
 /// Real gopls edits for both partial removal and an explicitly empty list through the CLI.
