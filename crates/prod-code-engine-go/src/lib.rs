@@ -163,6 +163,27 @@ fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> StdMutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn validate_initialize_response(
+    response: &serde_json::Value,
+    server: &str,
+) -> Result<serde_json::Value> {
+    let envelope = response
+        .as_object()
+        .context("initialize response must be a JSON object")?;
+    if envelope.contains_key("error") {
+        anyhow::bail!("{server} refused initialization: {}", envelope["error"]);
+    }
+    let result = envelope
+        .get("result")
+        .filter(|result| result.is_object())
+        .context("initialize response has no successful result object")?;
+    result
+        .get("capabilities")
+        .filter(|capabilities| capabilities.is_object())
+        .cloned()
+        .context("initialize response has no capabilities object")
+}
+
 impl GoEngine {
     /// Launch a new managed Go engine for the given workspace root.
     pub async fn load(workspace_root: &Path, config: GoConfig) -> Result<Self> {
@@ -479,9 +500,17 @@ impl GoEngine {
 
         let resp = self.send_request("initialize", init_params).await?;
 
-        if let Some(caps) = resp.get("result").and_then(|r| r.get("capabilities")) {
+        let capabilities = match validate_initialize_response(&resp, "gopls") {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                *self.capabilities.write().await = None;
+                self.retire_generation();
+                return Err(error);
+            }
+        };
+        {
             let mut guard = self.capabilities.write().await;
-            *guard = Some(caps.clone());
+            *guard = Some(capabilities);
         }
 
         // Send initialized notification as required by LSP spec
@@ -490,6 +519,12 @@ impl GoEngine {
         self.readiness.started();
 
         Ok(resp)
+    }
+
+    fn retire_generation(&self) {
+        self.is_alive.store(false, Ordering::Release);
+        let _ = lock_unpoisoned(&self._child).start_kill();
+        lock_unpoisoned(&self.pending_requests).clear();
     }
 
     /// The package loading gopls is still doing, if any (#391).
@@ -738,6 +773,7 @@ import json, os, sys, threading, time
 
 LOCK = threading.Lock()
 SEEN = []
+INITIALIZE_COUNT = 0
 SEEN_FILE = os.environ.get("FAKE_SEEN_FILE")
 if os.environ.get("FAKE_PID_FILE"):
     with open(os.environ["FAKE_PID_FILE"], "w") as pid_file:
@@ -787,7 +823,15 @@ while True:
         with open(SEEN_FILE, "a") as seen:
             seen.write(method + "\n")
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {"hoverProvider": True}}})
+        INITIALIZE_COUNT += 1
+        later = os.environ.get("FAKE_INITIALIZE_AFTER_FIRST")
+        if INITIALIZE_COUNT > 1 and later:
+            response = json.loads(later)
+            response.update({"jsonrpc": "2.0", "id": message["id"]})
+            send(response)
+        else:
+            capabilities = {} if os.environ.get("FAKE_EMPTY_CAPABILITIES") else {"hoverProvider": True}
+            send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": capabilities}})
     elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
         os.close(0)
         threading.Event().wait()
@@ -818,6 +862,8 @@ while True:
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"contents": "healthy"}})
     elif method == "prodCode/delay":
         threading.Timer(0.4, send, ({"jsonrpc": "2.0", "id": message["id"], "result": "late"},)).start()
+    elif method == "prodCode/silence":
+        pass
     elif method == "prodCode/seen":
         send({"jsonrpc": "2.0", "id": message["id"], "result": SEEN})
     elif method == "prodCode/queuedAfterRetirement":
@@ -892,13 +938,84 @@ while True:
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_capabilities_are_valid_but_bad_initialize_retires_its_owned_gopls() {
+        let (dir, engine) = fake_engine(
+            Some(("FAKE_EMPTY_CAPABILITIES", "1")),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert_eq!(
+            *engine.capabilities.read().await,
+            Some(serde_json::json!({}))
+        );
+        engine
+            .send_request("textDocument/hover", serde_json::json!({}))
+            .await
+            .expect("an empty capability object still initializes a working server");
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
+
+        for response in [
+            serde_json::json!({"error":{"code":-32000,"message":"refused"}}),
+            serde_json::json!({"result":{"capabilities":{}},"error":{"code":-32000,"message":"also refused"}}),
+            serde_json::json!({}),
+            serde_json::json!({"result":null}),
+            serde_json::json!({"result":[]}),
+            serde_json::json!({"result":{}}),
+            serde_json::json!({"result":{"capabilities":null}}),
+            serde_json::json!({"result":{"capabilities":[]}}),
+        ] {
+            let response = response.to_string();
+            let (dir, engine) = fake_engine(
+                Some(("FAKE_INITIALIZE_AFTER_FIRST", &response)),
+                Duration::from_secs(2),
+            )
+            .await;
+            let waiting = {
+                let engine = Arc::clone(&engine);
+                tokio::spawn(async move {
+                    engine
+                        .send_request("prodCode/silence", serde_json::json!({}))
+                        .await
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let error = engine
+                .initialize()
+                .await
+                .expect_err("an invalid initialize envelope is refused");
+            assert!(format!("{error:#}").contains("initializ"), "{error:#}");
+            assert!(!engine.is_alive());
+            assert!(engine.capabilities.read().await.is_none());
+            assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+            let waiting_error = tokio::time::timeout(Duration::from_secs(2), waiting)
+                .await
+                .expect("the retired generation wakes pending requests")
+                .expect("request task")
+                .expect_err("a pending request does not survive retirement");
+            assert!(format!("{waiting_error:#}").contains("prodCode/silence"));
+            let refused = engine
+                .send_request("textDocument/hover", serde_json::json!({}))
+                .await
+                .expect_err("the retained engine refuses later requests");
+            assert!(format!("{refused:#}").contains("exited before request"));
+            let seen = std::fs::read_to_string(dir.path().join("seen")).expect("request log");
+            assert_eq!(
+                seen.lines()
+                    .filter(|method| *method == "initialized")
+                    .count(),
+                1,
+                "{seen}"
+            );
+            assert_process_exits(&dir.path().join("pid")).await;
+        }
+    }
+
     #[tokio::test]
     async fn test_go_engine_lifecycle_if_available() {
-        let gopls = find_gopls_binary(None);
-        if gopls.is_none() {
-            eprintln!("Skipping GoEngine live test: gopls not found in PATH or standard dirs");
-            return;
-        }
+        find_gopls_binary(None).expect("a source-built gopls is required for this native test");
 
         let dir = tempdir().unwrap();
         let go_mod = "module example.com/demo\n\ngo 1.22\n";
@@ -951,10 +1068,7 @@ func main() {
     /// the function, however soon it is asked: taken as it came, it was empty (#391).
     #[tokio::test]
     async fn the_first_symbol_search_of_a_fresh_gopls_finds_the_function() {
-        if find_gopls_binary(None).is_none() {
-            eprintln!("Skipping: gopls not found");
-            return;
-        }
+        find_gopls_binary(None).expect("a source-built gopls is required for this native test");
         // Not `tempdir()`: its `.tmp` name is a directory Go tools skip, and gopls then finds the
         // module's symbols in no package, only in the opened file once it has loaded it.
         let dir = tempfile::Builder::new()
@@ -1008,7 +1122,9 @@ func main() {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn writer_lock_timeout_never_sends_the_expired_request() {
-        let (dir, engine) = fake_engine(None, Duration::from_millis(100)).await;
+        // Coverage instrumentation makes a fresh Python handshake slower than ordinary test
+        // code, while the occupied writer still exercises the same request deadline path.
+        let (dir, engine) = fake_engine(None, Duration::from_secs(1)).await;
         let writer = engine.stdin.lock().await;
         let waiting = {
             let engine = Arc::clone(&engine);

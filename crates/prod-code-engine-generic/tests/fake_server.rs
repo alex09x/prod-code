@@ -21,6 +21,7 @@ const SERVER: &str = r#"
 import json, os, sys, threading, time
 
 LOCK = threading.Lock()
+INITIALIZE_COUNT = 0
 if os.environ.get("FAKE_PID_FILE"):
     with open(os.environ["FAKE_PID_FILE"], "w") as pid_file:
         pid_file.write(str(os.getpid()))
@@ -94,9 +95,15 @@ while True:
     if method == "textDocument/didOpen":
         LINES[message["params"]["textDocument"]["uri"]] = len(message["params"]["textDocument"]["text"].splitlines())
     if method == "initialize":
-        send({"jsonrpc": "2.0", "id": message["id"], "result": {
-            "capabilities": {"hoverProvider": True, "diagnosticProvider": {"interFileDependencies": False}}
-        }})
+        INITIALIZE_COUNT += 1
+        later = os.environ.get("FAKE_INITIALIZE_AFTER_FIRST")
+        if INITIALIZE_COUNT > 1 and later:
+            response = json.loads(later)
+            response.update({"jsonrpc": "2.0", "id": message["id"]})
+            send(response)
+        else:
+            capabilities = {} if os.environ.get("FAKE_EMPTY_CAPABILITIES") else {"hoverProvider": True, "diagnosticProvider": {"interFileDependencies": False}}
+            send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": capabilities}})
     elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
         os.close(0)
         threading.Event().wait()
@@ -442,6 +449,92 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         Some("the fake server answered"),
         "the answer was matched to the request: {hover}"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_capabilities_are_valid_but_bad_initialize_retires_its_owned_server() {
+    let (dir, script) = workspace();
+    let mut empty = config(&script);
+    empty
+        .env
+        .insert("FAKE_EMPTY_CAPABILITIES".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), empty)
+        .await
+        .expect("an empty capability object is valid");
+    engine
+        .send_request("textDocument/hover", serde_json::json!({}))
+        .await
+        .expect("an empty capability object still permits queries");
+    drop(engine);
+
+    for response in [
+        serde_json::json!({"error":{"code":-32000,"message":"refused"}}),
+        serde_json::json!({"result":{"capabilities":{}},"error":{"code":-32000,"message":"also refused"}}),
+        serde_json::json!({}),
+        serde_json::json!({"result":null}),
+        serde_json::json!({"result":[]}),
+        serde_json::json!({"result":{}}),
+        serde_json::json!({"result":{"capabilities":null}}),
+        serde_json::json!({"result":{"capabilities":[]}}),
+    ] {
+        let (dir, script) = workspace();
+        let pid_file = dir.path().join("pid");
+        let seen_file = dir.path().join("seen");
+        let mut settings = config(&script);
+        settings
+            .env
+            .insert("FAKE_INITIALIZE_AFTER_FIRST".into(), response.to_string());
+        settings.env.insert(
+            "FAKE_PID_FILE".into(),
+            pid_file.to_string_lossy().into_owned(),
+        );
+        settings.env.insert(
+            "FAKE_SEEN_FILE".into(),
+            seen_file.to_string_lossy().into_owned(),
+        );
+        let engine = std::sync::Arc::new(
+            GenericLspEngine::spawn(dir.path(), settings)
+                .await
+                .expect("the initial valid handshake starts the server"),
+        );
+        let waiting = {
+            let engine = std::sync::Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("prodCode/silence", serde_json::json!({}))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let error = engine
+            .initialize()
+            .await
+            .expect_err("an invalid initialize envelope is refused");
+        assert!(format!("{error:#}").contains("initializ"), "{error:#}");
+        assert!(!engine.is_alive());
+        assert!(!engine.accepts_documents());
+        let waiting_error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("the retired generation wakes pending requests")
+            .expect("request task")
+            .expect_err("a pending request does not survive retirement");
+        assert!(format!("{waiting_error:#}").contains("prodCode/silence"));
+        let refused = engine
+            .send_request("textDocument/hover", serde_json::json!({}))
+            .await
+            .expect_err("the retained engine refuses later requests");
+        assert!(format!("{refused:#}").contains("exited before request"));
+        let seen = std::fs::read_to_string(seen_file).expect("request log");
+        assert_eq!(
+            seen.lines()
+                .filter(|method| *method == "initialized")
+                .count(),
+            1,
+            "{seen}"
+        );
+        assert_process_exits(&pid_file).await;
+    }
 }
 
 /// A server that checks with fallback settings reports nothing on the probe line until it
