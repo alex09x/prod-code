@@ -515,15 +515,24 @@ async fn cancelling_a_session_helper_does_not_detach_its_owned_task() {
         pending::<()>().await;
         Ok(())
     });
-    let forced_cleanup = task.abort_handle();
-    started_rx.await.expect("owned task started");
-    let helper = tokio::spawn(
-        Session {
-            editor: None,
-            task: Some(task),
+    struct AbortOnDrop(tokio::task::AbortHandle);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
         }
-        .finish(),
-    );
+    }
+    let forced_cleanup = task.abort_handle();
+    let _task_abort = AbortOnDrop(forced_cleanup.clone());
+    let session = Session {
+        editor: None,
+        task: Some(task),
+    };
+    tokio::time::timeout(WAIT, started_rx)
+        .await
+        .expect("owned task readiness is bounded")
+        .expect("owned task started");
+    let helper = tokio::spawn(session.finish());
+    let _helper_abort = AbortOnDrop(helper.abort_handle());
     tokio::time::sleep(Duration::from_millis(50)).await;
     helper.abort();
     let helper_result = helper.await;

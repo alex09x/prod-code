@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- Go and generic adapters periodically probe initialized idle language servers (#590).
+  Valid late replies reset the failure streak; private probe state stays bounded. Three
+  consecutive idle response timeouts retire the generation, while ordinary work defers
+  probing. Native Go/Python/C++/TypeScript checks observe matching replies.
+- Go safe-delete also supports named value/pointer receiver methods (#567). Interface
+  obligations, promoted methods and embeddings through nested structures or aliases refuse
+  without writing, including with force. Constant-array receiver types remain supported;
+  named array fields remain distinct from instantiated alias embeddings.
 - Go safe-delete supports ordinary unexported, ASCII-named, non-generic top-level functions
   with bodies (#550). Exact gopls declaration/reference evidence and remote package/test
   compilation precede the write. Used functions, generated or linked sources, uncertain

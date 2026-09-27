@@ -10,7 +10,7 @@ use prod_code_protocol::readiness::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
@@ -18,7 +18,7 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
 /// Configuration for the managed Go engine.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GoConfig {
     /// Optional explicit path to the `gopls` binary.
     pub gopls_path: Option<PathBuf>,
@@ -28,7 +28,27 @@ pub struct GoConfig {
     pub extra_env: HashMap<String, String>,
     /// Build flags / tags (e.g. `["-tags=integration"]`).
     pub build_flags: Vec<String>,
+    /// How often an idle initialized server is asked a private dispatch-only probe. `None`
+    /// disables probes; the default is deliberately conservative for normal workspaces.
+    pub health_probe_interval: Option<Duration>,
 }
+
+impl Default for GoConfig {
+    fn default() -> Self {
+        Self {
+            gopls_path: None,
+            shared_cache_dir: None,
+            extra_env: HashMap::new(),
+            build_flags: Vec::new(),
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+}
+
+const DEFAULT_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_IDLE_PROBE_TIMEOUTS: usize = 3;
+const HEALTH_PROBE_METHOD: &str = "prodCode/healthProbe";
+const HEALTH_PROBE_ID_PREFIX: &str = "prod-code-health:";
 
 /// Discovers the `gopls` executable on the host system.
 pub fn find_gopls_binary(explicit: Option<&Path>) -> Option<PathBuf> {
@@ -88,7 +108,7 @@ fn normalize_diagnostic_response(method: &str, reply: &mut serde_json::Value) {
 pub struct GoEngine {
     workspace_root: PathBuf,
     stdin: Arc<Mutex<ChildStdin>>,
-    next_req_id: AtomicU64,
+    next_req_id: Arc<AtomicU64>,
     pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     broadcast_tx: broadcast::Sender<String>,
@@ -98,7 +118,70 @@ pub struct GoEngine {
     /// ended as progress (#391).
     readiness: Arc<Readiness>,
     request_timeout: Duration,
+    ordinary_activity: Arc<AtomicUsize>,
+    ordinary_epoch: Arc<AtomicU64>,
+    probe_state: Arc<StdMutex<ProbeState>>,
+    next_probe_id: Arc<AtomicU64>,
+    health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>>,
+    _health_probe: Option<HealthProbeTask>,
     _child: Arc<StdMutex<Child>>,
+}
+
+struct HealthProbeTask(tokio::task::JoinHandle<()>);
+
+impl Drop for HealthProbeTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+struct OrdinaryActivity {
+    active: Arc<AtomicUsize>,
+}
+
+impl OrdinaryActivity {
+    fn begin(active: &Arc<AtomicUsize>, epoch: &Arc<AtomicU64>) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        epoch.fetch_add(1, Ordering::AcqRel);
+        Self {
+            active: Arc::clone(active),
+        }
+    }
+}
+
+impl Drop for OrdinaryActivity {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct ProbePending {
+    id: String,
+    pending: Weak<StdMutex<Option<HealthProbePending>>>,
+}
+
+impl Drop for ProbePending {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.upgrade() {
+            let mut pending = lock_unpoisoned(&pending);
+            if pending.as_ref().is_some_and(|slot| slot.id == self.id) {
+                pending.take();
+            }
+        }
+    }
+}
+
+struct HealthProbePending {
+    id: String,
+    response: oneshot::Sender<serde_json::Value>,
+}
+
+#[derive(Default)]
+struct ProbeState {
+    consecutive_timeouts: usize,
+    valid_evidence_epoch: u64,
+    latest_valid_sequence: u64,
+    valid_completions: u64,
 }
 
 struct PendingRequest {
@@ -184,6 +267,63 @@ fn validate_initialize_response(
         .context("initialize response has no capabilities object")
 }
 
+fn health_probe_sequence(response: &serde_json::Value, next_probe_id: u64) -> Option<u64> {
+    let suffix = response
+        .get("id")?
+        .as_str()?
+        .strip_prefix(HEALTH_PROBE_ID_PREFIX)?;
+    let sequence = suffix.parse::<u64>().ok()?;
+    (sequence != 0 && sequence < next_probe_id && sequence.to_string() == suffix)
+        .then_some(sequence)
+}
+
+fn valid_health_response(response: &serde_json::Value, id: &str) -> bool {
+    let Some(envelope) = response.as_object() else {
+        return false;
+    };
+    if envelope.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0")
+        || envelope.get("id").and_then(|value| value.as_str()) != Some(id)
+        || envelope.contains_key("method")
+    {
+        return false;
+    }
+    match (envelope.get("result"), envelope.get("error")) {
+        (Some(_), None) => true,
+        (None, Some(error)) => {
+            error.get("code").and_then(|value| value.as_i64()).is_some()
+                && error
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+        }
+        _ => false,
+    }
+}
+
+async fn retire_health_generation(
+    child: &Weak<StdMutex<Child>>,
+    pending: &Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    health_pending: &Weak<StdMutex<Option<HealthProbePending>>>,
+    is_alive: &Weak<AtomicBool>,
+    capabilities: &Weak<RwLock<Option<serde_json::Value>>>,
+) {
+    if let Some(is_alive) = is_alive.upgrade() {
+        is_alive.store(false, Ordering::Release);
+    }
+    if let Some(child) = child.upgrade() {
+        let _ = lock_unpoisoned(&child).start_kill();
+    }
+    if let Some(pending) = pending.upgrade() {
+        lock_unpoisoned(&pending).clear();
+    }
+    if let Some(health_pending) = health_pending.upgrade() {
+        lock_unpoisoned(&health_pending).take();
+    }
+    if let Some(capabilities) = capabilities.upgrade() {
+        *capabilities.write().await = None;
+    }
+}
+
 struct InitializationGuard<'a> {
     engine: &'a GoEngine,
     complete: bool,
@@ -217,6 +357,10 @@ impl GoEngine {
         config: GoConfig,
         request_timeout: Duration,
     ) -> Result<Self> {
+        if config.health_probe_interval == Some(Duration::ZERO) {
+            anyhow::bail!("gopls health probe interval must be greater than zero");
+        }
+        let health_probe_interval = config.health_probe_interval;
         let gopls_bin = find_gopls_binary(config.gopls_path.as_deref())
             .ok_or_else(|| anyhow::anyhow!("gopls executable not found on host"))?;
 
@@ -276,6 +420,14 @@ impl GoEngine {
         let pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
+        let health_probe_pending = Arc::new(StdMutex::new(None::<HealthProbePending>));
+        let health_probe_pending_reader = Arc::clone(&health_probe_pending);
+        let next_probe_id = Arc::new(AtomicU64::new(1));
+        let next_probe_id_reader = Arc::clone(&next_probe_id);
+        let probe_state = Arc::new(StdMutex::new(ProbeState::default()));
+        let probe_state_reader = Arc::clone(&probe_state);
+        let ordinary_activity = Arc::new(AtomicUsize::new(0));
+        let ordinary_epoch = Arc::new(AtomicU64::new(0));
 
         let child = Arc::new(StdMutex::new(child));
         let child_writer = Arc::downgrade(&child);
@@ -286,6 +438,8 @@ impl GoEngine {
         let is_alive_reader = Arc::clone(&is_alive);
         let readiness = Arc::new(Readiness::new(ReadySignal::Progress));
         let readiness_reader = Arc::clone(&readiness);
+        let capabilities = Arc::new(RwLock::new(None));
+        let capabilities_reader = Arc::clone(&capabilities);
         let auto_reply_timeout = request_timeout;
 
         // Background reader loop: decodes LSP frames and routes responses to oneshot channels
@@ -312,9 +466,41 @@ impl GoEngine {
                         {
                             let mut pending = lock_unpoisoned(&pending_clone);
                             if let Some(tx) = pending.remove(&id) {
+                                lock_unpoisoned(&probe_state_reader).consecutive_timeouts = 0;
                                 let _ = tx.send(val.clone());
                                 continue;
                             }
+                        } else if val.get("method").is_none()
+                            && let Some(sequence) = health_probe_sequence(
+                                &val,
+                                next_probe_id_reader.load(Ordering::Acquire),
+                            )
+                        {
+                            let id = id_val.as_str().expect("health ids are strings");
+                            let response = {
+                                let mut pending = lock_unpoisoned(&health_probe_pending_reader);
+                                if pending.as_ref().is_some_and(|slot| slot.id == id) {
+                                    pending.take().map(|slot| slot.response)
+                                } else {
+                                    None
+                                }
+                            };
+                            if valid_health_response(&val, id) {
+                                let mut state = lock_unpoisoned(&probe_state_reader);
+                                state.valid_evidence_epoch =
+                                    state.valid_evidence_epoch.wrapping_add(1);
+                                state.consecutive_timeouts = 0;
+                                if sequence > state.latest_valid_sequence {
+                                    state.latest_valid_sequence = sequence;
+                                    state.valid_completions += 1;
+                                }
+                            }
+                            if let Some(response) = response {
+                                let _ = response.send(val.clone());
+                            }
+                            // All issued health ids stay recognizable without retaining them,
+                            // so even very late or malformed probe traffic remains private.
+                            continue;
                         }
 
                         // Server-initiated request requiring auto-reply
@@ -402,6 +588,8 @@ impl GoEngine {
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the timeout (#355).
             lock_unpoisoned(&pending_clone).clear();
+            lock_unpoisoned(&health_probe_pending_reader).take();
+            *capabilities_reader.write().await = None;
             if let Some(child) = child_writer.upgrade() {
                 let _ = lock_unpoisoned(&child).start_kill();
                 for _ in 0..200 {
@@ -418,21 +606,30 @@ impl GoEngine {
             tracing::info!("gopls background reader loop stopped");
         });
 
-        let engine = Self {
+        let mut engine = Self {
             workspace_root: workspace_root.to_path_buf(),
             stdin: stdin_arc,
-            next_req_id: AtomicU64::new(1),
+            next_req_id: Arc::new(AtomicU64::new(1)),
             pending_requests,
-            capabilities: Arc::new(RwLock::new(None)),
+            capabilities,
             broadcast_tx: bcast_tx,
             is_alive,
             readiness,
             request_timeout,
+            ordinary_activity,
+            ordinary_epoch,
+            probe_state,
+            next_probe_id,
+            health_probe_pending,
+            _health_probe: None,
             _child: child,
         };
 
         // Initialize gopls with workspace root
         engine.initialize().await?;
+        if let Some(interval) = health_probe_interval {
+            engine.start_health_probe(interval);
+        }
 
         Ok(engine)
     }
@@ -478,8 +675,187 @@ impl GoEngine {
         Ok(())
     }
 
+    fn start_health_probe(&mut self, interval: Duration) {
+        let stdin = Arc::downgrade(&self.stdin);
+        let pending = Arc::downgrade(&self.pending_requests);
+        let next_probe_id = Arc::downgrade(&self.next_probe_id);
+        let health_pending = Arc::downgrade(&self.health_probe_pending);
+        let child = Arc::downgrade(&self._child);
+        let is_alive = Arc::downgrade(&self.is_alive);
+        let capabilities = Arc::downgrade(&self.capabilities);
+        let readiness = Arc::downgrade(&self.readiness);
+        let ordinary_activity = Arc::downgrade(&self.ordinary_activity);
+        let ordinary_epoch = Arc::downgrade(&self.ordinary_epoch);
+        let probe_state = Arc::downgrade(&self.probe_state);
+        let response_timeout = self.request_timeout;
+
+        self._health_probe = Some(HealthProbeTask(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(interval).await;
+
+                let Some(alive) = is_alive.upgrade() else {
+                    break;
+                };
+                if !alive.load(Ordering::Acquire) {
+                    break;
+                }
+                let Some(activity) = ordinary_activity.upgrade() else {
+                    break;
+                };
+                let Some(ready) = readiness.upgrade() else {
+                    break;
+                };
+                let Some(pending_requests) = pending.upgrade() else {
+                    break;
+                };
+                if activity.load(Ordering::Acquire) != 0
+                    || ready.busy().is_some()
+                    || !lock_unpoisoned(&pending_requests).is_empty()
+                {
+                    continue;
+                }
+
+                let Some(stdin) = stdin.upgrade() else {
+                    break;
+                };
+                let Ok(mut writer) = stdin.try_lock() else {
+                    continue;
+                };
+                // An ordinary operation may have started while the probe acquired stdin.
+                if !alive.load(Ordering::Acquire)
+                    || activity.load(Ordering::Acquire) != 0
+                    || ready.busy().is_some()
+                    || !lock_unpoisoned(&pending_requests).is_empty()
+                {
+                    continue;
+                }
+
+                let Some(health_pending_slot) = health_pending.upgrade() else {
+                    break;
+                };
+                let Some(ids_allocator) = next_probe_id.upgrade() else {
+                    break;
+                };
+                let Some(epoch) = ordinary_epoch.upgrade() else {
+                    break;
+                };
+                let activity_before_wait = epoch.load(Ordering::Acquire);
+                let Some(state) = probe_state.upgrade() else {
+                    break;
+                };
+                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
+                let sequence = ids_allocator.fetch_add(1, Ordering::AcqRel);
+                let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
+                let payload = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": &id,
+                    "method": HEALTH_PROBE_METHOD,
+                    "params": {}
+                });
+                let body = payload.to_string();
+                let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+                let (tx, rx) = oneshot::channel();
+                *lock_unpoisoned(&health_pending_slot) = Some(HealthProbePending {
+                    id: id.clone(),
+                    response: tx,
+                });
+                let probe_pending = ProbePending {
+                    id: id.clone(),
+                    pending: health_pending.clone(),
+                };
+                let mut frame_write = FrameWrite {
+                    child: child.clone(),
+                    pending: pending.clone(),
+                    is_alive: is_alive.clone(),
+                    started: true,
+                    complete: false,
+                };
+                let deadline = tokio::time::Instant::now() + response_timeout;
+                let wrote =
+                    match tokio::time::timeout_at(deadline, writer.write_all(frame.as_bytes()))
+                        .await
+                    {
+                        Ok(Ok(())) => matches!(
+                            tokio::time::timeout_at(deadline, writer.flush()).await,
+                            Ok(Ok(()))
+                        ),
+                        _ => false,
+                    };
+                if !wrote {
+                    // A write may have put only a prefix on the stream. Retire before the
+                    // writer unlocks so no ordinary frame can follow that prefix.
+                    frame_write.retire();
+                    frame_write.complete = true;
+                    drop(writer);
+                    retire_health_generation(
+                        &child,
+                        &pending,
+                        &health_pending,
+                        &is_alive,
+                        &capabilities,
+                    )
+                    .await;
+                    break;
+                }
+                frame_write.complete = true;
+                drop(frame_write);
+                drop(writer);
+                drop(stdin);
+                drop(health_pending_slot);
+                drop(pending_requests);
+
+                match tokio::time::timeout_at(deadline, rx).await {
+                    Ok(Ok(response)) if valid_health_response(&response, &id) => {}
+                    Ok(Ok(_)) => {
+                        retire_health_generation(
+                            &child,
+                            &pending,
+                            &health_pending,
+                            &is_alive,
+                            &capabilities,
+                        )
+                        .await;
+                        break;
+                    }
+                    Ok(Err(_)) => break,
+                    Err(_) => {
+                        drop(probe_pending);
+                        let became_active = activity.load(Ordering::Acquire) != 0
+                            || epoch.load(Ordering::Acquire) != activity_before_wait
+                            || ready.busy().is_some();
+                        if became_active {
+                            continue;
+                        }
+                        let should_retire = {
+                            let mut state = lock_unpoisoned(&state);
+                            if state.valid_evidence_epoch != evidence_before_wait {
+                                false
+                            } else {
+                                state.consecutive_timeouts += 1;
+                                state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS
+                            }
+                        };
+                        if should_retire {
+                            retire_health_generation(
+                                &child,
+                                &pending,
+                                &health_pending,
+                                &is_alive,
+                                &capabilities,
+                            )
+                            .await;
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+        })));
+    }
+
     /// Perform the one-time LSP initialize handshake with `gopls`.
     pub async fn initialize(&self) -> Result<serde_json::Value> {
+        let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         let mut handshake = InitializationGuard {
             engine: self,
             complete: false,
@@ -543,6 +919,7 @@ impl GoEngine {
         self.is_alive.store(false, Ordering::Release);
         let _ = lock_unpoisoned(&self._child).start_kill();
         lock_unpoisoned(&self.pending_requests).clear();
+        lock_unpoisoned(&self.health_probe_pending).take();
     }
 
     /// The package loading gopls is still doing, if any (#391).
@@ -559,6 +936,7 @@ impl GoEngine {
         if !self.is_alive.load(Ordering::Acquire) {
             anyhow::bail!("gopls process has exited before request '{method}'");
         }
+        let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         // A question answered from the index waits until gopls has loaded its packages (#391).
         let busy = if needs_index(method) {
             self.readiness.wait(INDEX_WAIT).await
@@ -627,11 +1005,23 @@ impl GoEngine {
         self.is_alive.load(Ordering::Relaxed)
     }
 
+    /// Number of distinct scheduled health probes answered with a valid JSON-RPC envelope.
+    #[doc(hidden)]
+    pub fn health_probe_completions(&self) -> u64 {
+        lock_unpoisoned(&self.probe_state).valid_completions
+    }
+
+    #[cfg(test)]
+    fn retained_health_responses(&self) -> usize {
+        usize::from(lock_unpoisoned(&self.health_probe_pending).is_some())
+    }
+
     /// Send an asynchronous JSON-RPC notification to `gopls`.
     pub async fn send_notification(&self, method: &str, params: serde_json::Value) -> Result<()> {
         if !self.is_alive.load(Ordering::Acquire) {
             anyhow::bail!("gopls process has exited before notification '{method}'");
         }
+        let _activity = OrdinaryActivity::begin(&self.ordinary_activity, &self.ordinary_epoch);
         let deadline = tokio::time::Instant::now() + self.request_timeout;
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
@@ -891,6 +1281,20 @@ while True:
         threading.Timer(0.4, send, ({"jsonrpc": "2.0", "id": message["id"], "result": "late"},)).start()
     elif method == "prodCode/silence":
         pass
+    elif method == "prodCode/healthProbe":
+        health = os.environ.get("FAKE_HEALTH", "error")
+        if health == "silence":
+            pass
+        elif health == "success":
+            send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+        elif health == "malformed":
+            send({"jsonrpc": "2.0", "id": message["id"], "unexpected": True})
+        elif health == "delay":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "result": None},)).start()
+        elif health == "delay-malformed":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "unexpected": True},)).start()
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "unknown method"}})
     elif method == "prodCode/seen":
         send({"jsonrpc": "2.0", "id": message["id"], "result": SEEN})
     elif method == "prodCode/queuedAfterRetirement":
@@ -902,6 +1306,15 @@ while True:
         mode: Option<(&str, &str)>,
         timeout: Duration,
     ) -> (tempfile::TempDir, Arc<GoEngine>) {
+        fake_engine_with_probe(mode, timeout, DEFAULT_HEALTH_PROBE_INTERVAL).await
+    }
+
+    #[cfg(unix)]
+    async fn fake_engine_with_probe(
+        mode: Option<(&str, &str)>,
+        timeout: Duration,
+        probe_interval: Duration,
+    ) -> (tempfile::TempDir, Arc<GoEngine>) {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempdir().expect("tempdir");
@@ -912,6 +1325,7 @@ while True:
         let mut config = GoConfig {
             gopls_path: Some(script),
             shared_cache_dir: Some(dir.path().join("cache")),
+            health_probe_interval: Some(probe_interval),
             ..Default::default()
         };
         config.extra_env.insert(
@@ -929,6 +1343,26 @@ while True:
             .await
             .expect("the fake gopls starts");
         (dir, Arc::new(engine))
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_gopls_probe_count(path: &Path, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let seen = std::fs::read_to_string(path).unwrap_or_default();
+                if seen
+                    .lines()
+                    .filter(|method| *method == HEALTH_PROBE_METHOD)
+                    .count()
+                    >= count
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the scheduled probes reach fake gopls");
     }
 
     #[cfg(unix)]
@@ -979,6 +1413,204 @@ while True:
         if let Some(path) = &found {
             assert!(path.exists());
         }
+    }
+
+    #[tokio::test]
+    async fn zero_health_probe_interval_is_rejected_before_spawn() {
+        let config = GoConfig {
+            health_probe_interval: Some(Duration::ZERO),
+            ..Default::default()
+        };
+        let error = match GoEngine::load(Path::new("."), config).await {
+            Ok(_) => panic!("a zero interval would create an unbounded poll loop"),
+            Err(error) => error,
+        };
+        assert!(
+            format!("{error:#}").contains("greater than zero"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn matching_health_successes_and_errors_are_private_dispatch_evidence() {
+        for health in ["success", "error"] {
+            let (dir, engine) = fake_engine_with_probe(
+                Some(("FAKE_HEALTH", health)),
+                Duration::from_millis(80),
+                Duration::from_millis(20),
+            )
+            .await;
+            let mut subscriber = engine.subscribe();
+            let seen_file = dir.path().join("seen");
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let seen = std::fs::read_to_string(&seen_file).unwrap_or_default();
+                    if seen
+                        .lines()
+                        .filter(|method| *method == HEALTH_PROBE_METHOD)
+                        .count()
+                        >= 2
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("two probes run after readiness settles");
+            assert!(
+                engine.is_alive(),
+                "{health} replies keep the generation alive"
+            );
+            let seen = std::fs::read_to_string(seen_file).unwrap();
+            assert!(
+                seen.lines()
+                    .filter(|method| *method == HEALTH_PROBE_METHOD)
+                    .count()
+                    >= 2,
+                "{seen}"
+            );
+            assert!(
+                matches!(
+                    subscriber.try_recv(),
+                    Err(broadcast::error::TryRecvError::Empty)
+                ),
+                "probe replies are not broadcast"
+            );
+            drop(engine);
+            assert_process_exits(&dir.path().join("pid")).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay")),
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+        )
+        .await;
+        let mut subscriber = engine.subscribe();
+        wait_for_gopls_probe_count(&dir.path().join("seen"), 4).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.health_probe_completions() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("at least two delayed matching replies are validated");
+        assert!(
+            engine.is_alive(),
+            "late valid replies reset the failure streak"
+        );
+        assert!(matches!(
+            subscriber.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_malformed_probe_responses_do_not_reset_failures() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay-malformed")),
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("three timeouts retire despite late malformed traffic");
+        assert_eq!(engine.health_probe_completions(), 0);
+        let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap();
+        assert_eq!(
+            seen.lines()
+                .filter(|method| *method == HEALTH_PROBE_METHOD)
+                .count(),
+            3,
+            "{seen}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busy_probe_timeouts_retain_at_most_one_response_slot() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "silence")),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        let seen = dir.path().join("seen");
+        for count in 1..=20 {
+            wait_for_gopls_probe_count(&seen, count).await;
+            engine
+                .send_notification("prodCode/activity", serde_json::json!({}))
+                .await
+                .expect("ordinary activity overlaps the probe wait");
+            assert!(engine.retained_health_responses() <= 1);
+        }
+        wait_for_gopls_probe_count(&seen, 21).await;
+        assert!(
+            engine.is_alive(),
+            "busy deferrals do not become timeout failures"
+        );
+        assert_eq!(engine.retained_health_responses(), 1);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn three_idle_probe_response_timeouts_retire_the_owned_gopls() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "silence")),
+            Duration::from_millis(40),
+            Duration::from_millis(20),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("three idle response timeouts retire gopls");
+        assert!(engine.capabilities.read().await.is_none());
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+        assert_process_exits(&dir.path().join("pid")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_during_a_probe_response_wait_kills_the_exact_owned_gopls() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "silence")),
+            Duration::from_secs(10),
+            Duration::from_millis(20),
+        )
+        .await;
+        let seen_file = dir.path().join("seen");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if std::fs::read_to_string(&seen_file)
+                    .unwrap_or_default()
+                    .lines()
+                    .any(|method| method == HEALTH_PROBE_METHOD)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the probe reaches gopls");
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
     }
 
     #[cfg(unix)]
@@ -1177,8 +1809,20 @@ func main() {
         std::fs::write(dir.path().join("go.mod"), go_mod).unwrap();
         std::fs::write(dir.path().join("main.go"), main_go).unwrap();
 
-        let config = GoConfig::default();
+        let config = GoConfig {
+            health_probe_interval: Some(Duration::from_millis(100)),
+            ..Default::default()
+        };
         let engine = GoEngine::load(dir.path(), config).await.unwrap();
+        #[cfg(unix)]
+        let native_pid_file = {
+            let native_pid = lock_unpoisoned(&engine._child)
+                .id()
+                .expect("owned native gopls PID");
+            let path = dir.path().join("native-gopls.pid");
+            std::fs::write(&path, native_pid.to_string()).unwrap();
+            path
+        };
 
         let file_path = dir.path().join("main.go");
         let file_uri = format!("file://{}", file_path.to_string_lossy());
@@ -1196,6 +1840,31 @@ func main() {
         let hover = engine.hover(&file_uri, 4, 6).await.unwrap();
         assert!(hover.is_some(), "Expected hover documentation for Greet");
 
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while engine.busy().is_some() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("gopls becomes idle before dispatch probes");
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while engine.health_probe_completions() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("gopls answers at least two scheduled probes");
+        let hover_after_probes = engine.hover(&file_uri, 4, 6).await.unwrap();
+        assert!(
+            hover_after_probes.is_some(),
+            "Expected hover after at least two scheduled dispatch probes"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            main_go,
+            "native probing never mutates the fixture source"
+        );
+
         // 4. Definition of 'Greet'
         let def = engine.definition(&file_uri, 9, 8).await.unwrap();
         assert!(def.is_some(), "Expected definition jump for Greet");
@@ -1204,6 +1873,9 @@ func main() {
         let refs = engine.references(&file_uri, 4, 6).await.unwrap();
         assert!(refs.is_array());
         assert!(refs.as_array().unwrap().len() >= 2);
+        drop(engine);
+        #[cfg(unix)]
+        assert_process_exits(&native_pid_file).await;
     }
 
     /// The first `workspace/symbol` of a fresh gopls waits for its package loading and finds
@@ -1633,6 +2305,100 @@ func main() {
             assert!(!engine.is_alive());
             assert_process_exits(&dir.path().join("pid")).await;
         }
+    }
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn primary_delayed_probe_without_ordinary_traffic_stays_alive() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay")),
+            Duration::from_millis(40),
+            Duration::from_millis(60),
+        )
+        .await;
+        let seen_file = dir.path().join("seen");
+        let observation = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let seen = std::fs::read_to_string(&seen_file).unwrap_or_default();
+                let scheduled = seen
+                    .lines()
+                    .filter(|method| *method == HEALTH_PROBE_METHOD)
+                    .count();
+                if !engine.is_alive() || scheduled >= 5 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        let seen = std::fs::read_to_string(&seen_file).expect("probe log");
+        let scheduled = seen
+            .lines()
+            .filter(|method| *method == HEALTH_PROBE_METHOD)
+            .count();
+        let alive = engine.is_alive();
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
+        assert!(
+            alive,
+            "valid matching delayed probe replies must keep the responsive generation alive without ordinary traffic: {seen}"
+        );
+        assert!(
+            observation.is_ok(),
+            "scheduled probes must settle within their absolute observation budget: {seen}"
+        );
+        assert!(
+            scheduled >= 5,
+            "five scheduled probes reached the controlled server: {seen}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocked_scheduled_probe_write_retires_its_exact_owned_child() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_STOP_READING", "1")),
+            Duration::from_millis(80),
+            Duration::from_millis(50),
+        )
+        .await;
+        let mut writer = engine.stdin.lock().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap_or_default();
+                if seen.lines().any(|method| method == "initialized") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("controlled child stops reading after initialization");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(30);
+        loop {
+            match tokio::time::timeout_at(deadline, writer.write(&[b'x'; 8192])).await {
+                Ok(Ok(0)) => panic!("the owned pipe unexpectedly closed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("filling the controlled pipe failed: {error}"),
+                Err(_) => break,
+            }
+        }
+        drop(writer);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the complete probe write budget retires the stalled stream");
+        let refusal = engine
+            .send_notification("prodCode/afterRetirement", serde_json::json!({}))
+            .await;
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
+        assert!(
+            refusal.is_err(),
+            "a queued notification cannot reuse the retired probe stream"
+        );
     }
 }
 

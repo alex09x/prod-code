@@ -350,8 +350,9 @@ enum Commands {
         subtype: Option<u64>,
     },
     /// Delete an unreferenced item at its 1-based declaration-name position. Go support is
-    /// limited to ordinary unexported, non-generic top-level functions with bodies, and writes
-    /// only after remote compilation under the active Go build flags (not all platforms):
+    /// limited to ordinary unexported, non-generic functions or named value/pointer receiver
+    /// methods with bodies. Interface obligations and embedding refuse; writes require remote
+    /// compilation under the active Go build flags (not all platforms):
     /// prod-code safe-delete <file> <line> <col>
     SafeDelete { file: PathBuf, line: u32, col: u32 },
     /// Rename the symbol at 1-based <line> <col> across the workspace and apply the edits

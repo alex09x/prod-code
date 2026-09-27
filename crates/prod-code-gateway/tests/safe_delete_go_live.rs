@@ -34,6 +34,7 @@ impl Gateway {
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
             .env("PROD_CODE_STORAGE", storage.path())
+            .env("PROD_CODE_SHADOW_ROOT", storage.path().join("owned-shadow"))
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env_remove("RUST_LOG")
@@ -173,10 +174,16 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(directory).expect("read fixture") {
             let path = entry.expect("fixture entry").path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
             if path.is_dir() {
+                files.insert(
+                    format!(
+                        "{}/",
+                        path.strip_prefix(root)
+                            .expect("directory below root")
+                            .to_string_lossy()
+                    ),
+                    Vec::new(),
+                );
                 visit(root, &path, files);
             } else {
                 files.insert(
@@ -300,9 +307,9 @@ async fn tool(
     }
 }
 
-async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
+async fn wait_for_gopls(addr: SocketAddr, root: &Path, needle: &str, expected: &str) {
     let source = std::fs::read_to_string(root.join("project/main.go")).expect("fixture source");
-    let offset = source.find("unused").expect("unused declaration");
+    let offset = source.find(needle).expect("declaration needle");
     let before = &source[..offset];
     let args = serde_json::json!({
         "path": "project/main.go",
@@ -318,7 +325,7 @@ async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
     for _ in 0..60 {
         let (_, text) = tool(addr, root, "code_hover", args.clone()).await;
         answer = text;
-        if answer.contains("func unused") {
+        if answer.contains(expected) {
             return;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -329,6 +336,26 @@ async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
 const SOURCE: &str = "package main\n\ntype Mystruct struct{ value string }\n\nfunc unused() Mystruct { return Mystruct{value: `unused } {`} }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() { println(keep(`same`)) }\n";
 const TEST: &str = "package main\n\nimport `testing`\n\nfunc TestKeep(t *testing.T) {\n\tif keep(`x`) != `x!` { t.Fatal(`keep`) }\n}\n";
 const COMPILE_FAIL_SOURCE: &str = "package main\n\nimport `strings`\n\nfunc unused() string { return strings.TrimSpace(` x `) }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() {}\n";
+const METHOD_VALUE_SOURCE: &str = "package main\n\ntype item struct{ value string }\n\nfunc (value item) unusedValue() string { return value.value }\n\nfunc main() {}\n";
+const METHOD_POINTER_SOURCE: &str = "package main\n\ntype item struct{ value string }\n\nfunc (value *item) unusedPointer() string { return value.value }\n\nfunc main() {}\n";
+const METHOD_USES_SOURCE: &str = "package main\n\ntype item struct{}\n\nfunc (value item) direct() {}\nfunc (value item) recursive() { value.recursive() }\nfunc (value item) methodValue() {}\nfunc (value *item) methodExpression() {}\n\nfunc uses(value item) {\n\tvalue.direct()\n\t_ = value.methodValue\n\t_ = (*item).methodExpression\n}\nfunc main() {}\n";
+const METHOD_INTERFACES_SOURCE: &str = "package main\n\ntype item struct{}\n\nfunc (value item) localContract() {}\nfunc (value item) asserted() {}\n\ntype local interface { localContract() }\nvar _ local = item{}\nfunc runtime(value any) { _, _ = value.(interface { asserted() }) }\nfunc main() {}\n";
+const EMPTY_TEST: &str = "package main\n";
+
+fn tool_position(source: &str, needle: &str) -> (u32, u32) {
+    let offset = source.find(needle).expect("tool position needle");
+    let before = &source[..offset];
+    (
+        before.matches('\n').count() as u32 + 1,
+        before
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .encode_utf16()
+            .count() as u32
+            + 1,
+    )
+}
 
 async fn sentinel_child() {
     let root = PathBuf::from(std::env::var_os(SENTINEL_ROOT).expect("sentinel root"));
@@ -355,7 +382,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     let (_cli_dir, cli_root) = checkout(SOURCE, TEST);
     let cli_project = cli_root.join("project");
     let before = behaviour(&cli_project);
-    wait_for_gopls(gateway.addr, &cli_root).await;
+    wait_for_gopls(gateway.addr, &cli_root, "unused", "func unused").await;
 
     let fake_bin = tempfile::tempdir().expect("fake client bin");
     let fake_go = fake_bin.path().join("go");
@@ -398,7 +425,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     let (_mcp_dir, mcp_root) = checkout(SOURCE, TEST);
     let mcp_project = mcp_root.join("project");
     let before = behaviour(&mcp_project);
-    wait_for_gopls(gateway.addr, &mcp_root).await;
+    wait_for_gopls(gateway.addr, &mcp_root, "unused", "func unused").await;
     let (ok, output) = tool(
         gateway.addr,
         &mcp_root,
@@ -417,6 +444,368 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         "MCP deletion changed behavior"
     );
 
+    let (_value_dir, value_root) = checkout(METHOD_VALUE_SOURCE, EMPTY_TEST);
+    let value_project = value_root.join("project");
+    let before = behaviour(&value_project);
+    wait_for_gopls(
+        gateway.addr,
+        &value_root,
+        "unusedValue",
+        "func (value item) unusedValue",
+    )
+    .await;
+    let (ok, output) = cli(
+        &value_root,
+        gateway.addr,
+        &["safe-delete", "project/main.go", "5", "19"],
+    );
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert!(
+        !std::fs::read_to_string(value_project.join("main.go"))
+            .unwrap()
+            .contains("unusedValue")
+    );
+    assert_eq!(
+        behaviour(&value_project),
+        before,
+        "value-method CLI deletion changed behavior"
+    );
+
+    let (_pointer_dir, pointer_root) = checkout(METHOD_POINTER_SOURCE, EMPTY_TEST);
+    let pointer_project = pointer_root.join("project");
+    let before = behaviour(&pointer_project);
+    wait_for_gopls(
+        gateway.addr,
+        &pointer_root,
+        "unusedPointer",
+        "func (value *item) unusedPointer",
+    )
+    .await;
+    let (line, character) = tool_position(METHOD_POINTER_SOURCE, "unusedPointer");
+    let (ok, output) = tool(
+        gateway.addr,
+        &pointer_root,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": "project/main.go",
+            "line": line,
+            "character": character
+        }),
+    )
+    .await;
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert!(
+        !std::fs::read_to_string(pointer_project.join("main.go"))
+            .unwrap()
+            .contains("unusedPointer")
+    );
+    assert_eq!(
+        behaviour(&pointer_project),
+        before,
+        "pointer-method MCP deletion changed behavior"
+    );
+
+    for (source, method, through_cli) in [
+        (
+            "package main\n\ntype item []int\n\nfunc (value item) unusedSliceValue() int { return len(value) }\n\nfunc main() {}\n",
+            "unusedSliceValue",
+            true,
+        ),
+        (
+            "package main\n\ntype item [2]int\n\nfunc (value *item) unusedArrayPointer() int { return 0 }\n\nfunc main() {}\n",
+            "unusedArrayPointer",
+            false,
+        ),
+        (
+            "package main\n\ntype (\n\titem [2]int\n)\n\nfunc (value item) unusedGroupedArrayValue() int { return len(value) }\n\nfunc main() {}\n",
+            "unusedGroupedArrayValue",
+            true,
+        ),
+        (
+            "package main\n\ntype (\n\titem []int\n)\n\nfunc (value *item) unusedGroupedSlicePointer() int { return 0 }\n\nfunc main() {}\n",
+            "unusedGroupedSlicePointer",
+            false,
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype outer struct { item item }\n\nfunc (value item) unusedNamedField() int { return 0 }\n\nfunc main() {}\n",
+            "unusedNamedField",
+            false,
+        ),
+    ] {
+        let (_method_dir, method_root) = checkout(source, EMPTY_TEST);
+        let method_project = method_root.join("project");
+        let before = behaviour(&method_project);
+        wait_for_gopls(gateway.addr, &method_root, method, "func (value").await;
+        let (line, character) = tool_position(source, method);
+        let (ok, output) = if through_cli {
+            let line = line.to_string();
+            let character = character.to_string();
+            cli(
+                &method_root,
+                gateway.addr,
+                &["safe-delete", "project/main.go", &line, &character],
+            )
+        } else {
+            tool(
+                gateway.addr,
+                &method_root,
+                "code_safe_delete",
+                serde_json::json!({
+                    "path": "project/main.go",
+                    "line": line,
+                    "character": character
+                }),
+            )
+            .await
+        };
+        assert!(
+            ok && output.contains("compiler-verified"),
+            "{method}: {output}"
+        );
+        let written = std::fs::read_to_string(method_project.join("main.go")).unwrap();
+        assert!(!written.contains(method), "{written}");
+        assert_eq!(
+            behaviour(&method_project),
+            before,
+            "{method} deletion changed behavior"
+        );
+    }
+
+    let constant_source = "package main\n\nconst Count = 2\ntype item [Count*2]int\n\nfunc (value item) unusedConstantArray() int { return len(value) }\n\nfunc main() {}\n";
+    let (_constant_dir, constant_root) = checkout(constant_source, EMPTY_TEST);
+    let constant_project = constant_root.join("project");
+    let before = behaviour(&constant_project);
+    let mut expected = snapshot(&constant_root);
+    expected.insert(
+        "project/main.go".into(),
+        constant_source
+            .replace(
+                "func (value item) unusedConstantArray() int { return len(value) }",
+                "",
+            )
+            .into_bytes(),
+    );
+    wait_for_gopls(
+        gateway.addr,
+        &constant_root,
+        "unusedConstantArray",
+        "func (value item) unusedConstantArray",
+    )
+    .await;
+    let (line, character) = tool_position(constant_source, "unusedConstantArray");
+    let (ok, output) = cli(
+        &constant_root,
+        gateway.addr,
+        &[
+            "safe-delete",
+            "project/main.go",
+            &line.to_string(),
+            &character.to_string(),
+        ],
+    );
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert_eq!(
+        snapshot(&constant_root),
+        expected,
+        "constant array CLI deletion snapshot"
+    );
+    assert_eq!(
+        behaviour(&constant_project),
+        before,
+        "constant array CLI deletion changed behavior"
+    );
+
+    let alias_source = "package main\n\ntype item struct{}\ntype (\n\tdirect = (((item)))\n\ttransitive = ((direct))\n\t別名 = (transitive)\n)\ntype outer struct { 別名 }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let (_alias_dir, alias_root) = checkout(alias_source, EMPTY_TEST);
+    let alias_project = alias_root.join("project");
+    let _ = behaviour(&alias_project);
+    wait_for_gopls(
+        gateway.addr,
+        &alias_root,
+        "hidden",
+        "func (value item) hidden",
+    )
+    .await;
+    let untouched = snapshot(&alias_root);
+    let (line, character) = tool_position(alias_source, "hidden");
+    let (ok, output) = cli(
+        &alias_root,
+        gateway.addr,
+        &[
+            "safe-delete",
+            "project/main.go",
+            &line.to_string(),
+            &character.to_string(),
+        ],
+    );
+    assert!(
+        !ok && output.contains("embedded or promoted") && output.contains("project/main.go"),
+        "{output}"
+    );
+    assert_eq!(
+        snapshot(&alias_root),
+        untouched,
+        "parenthesized alias CLI refusal wrote"
+    );
+
+    for (source, through_cli) in [
+        (
+            "package main\n\ntype item struct{}\ntype outer struct { field struct { item } }\n\nfunc (value item) hidden() {}\nfunc main() {}\n",
+            true,
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype alias = item\ntype outer struct { alias }\n\nfunc (value item) hidden() {}\nfunc main() {}\n",
+            false,
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype outer struct { named int /* field boundary\n*/ item }\n\nfunc (value item) hidden() {}\nfunc main() {}\n",
+            true,
+        ),
+    ] {
+        let (_refusal_dir, refusal_root) = checkout(source, EMPTY_TEST);
+        wait_for_gopls(
+            gateway.addr,
+            &refusal_root,
+            "hidden",
+            "func (value item) hidden",
+        )
+        .await;
+        let untouched = snapshot(&refusal_root);
+        let (line, character) = tool_position(source, "hidden");
+        let (ok, output) = if through_cli {
+            let line = line.to_string();
+            let character = character.to_string();
+            cli(
+                &refusal_root,
+                gateway.addr,
+                &["safe-delete", "project/main.go", &line, &character],
+            )
+        } else {
+            tool(
+                gateway.addr,
+                &refusal_root,
+                "code_safe_delete",
+                serde_json::json!({
+                    "path": "project/main.go",
+                    "line": line,
+                    "character": character
+                }),
+            )
+            .await
+        };
+        assert!(!ok && output.contains("embedded or promoted"), "{output}");
+        assert_eq!(
+            snapshot(&refusal_root),
+            untouched,
+            "embedding refusal wrote"
+        );
+    }
+
+    let instantiated_source = "package main\n\ntype item struct{}\ntype alias[T any] = item\ntype outer struct { alias[int] }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let (_instantiated_dir, instantiated_root) = checkout(instantiated_source, EMPTY_TEST);
+    std::fs::write(
+        instantiated_root.join("go.work"),
+        "go 1.24\n\nuse ./project\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instantiated_root.join("project/go.mod"),
+        "module example.com/gosafedelete\n\ngo 1.24\n",
+    )
+    .unwrap();
+    let _ = behaviour(&instantiated_root.join("project"));
+    wait_for_gopls(
+        gateway.addr,
+        &instantiated_root,
+        "hidden",
+        "func (value item) hidden",
+    )
+    .await;
+    let (line, character) = tool_position(instantiated_source, "hidden");
+    for force in [false, true] {
+        let untouched = snapshot(&instantiated_root);
+        let (ok, output) = tool(
+            gateway.addr,
+            &instantiated_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go", "line": line, "character": character, "force": force
+            }),
+        )
+        .await;
+        assert!(!ok && output.contains("embedded or promoted"), "{output}");
+        assert_eq!(
+            snapshot(&instantiated_root),
+            untouched,
+            "instantiated alias refusal wrote"
+        );
+    }
+
+    let (_uses_dir, uses_root) = checkout(METHOD_USES_SOURCE, EMPTY_TEST);
+    wait_for_gopls(
+        gateway.addr,
+        &uses_root,
+        "direct",
+        "func (value item) direct",
+    )
+    .await;
+    for method in ["direct", "recursive", "methodValue", "methodExpression"] {
+        let untouched = snapshot(&uses_root);
+        let (line, character) = tool_position(METHOD_USES_SOURCE, method);
+        let (ok, output) = tool(
+            gateway.addr,
+            &uses_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go",
+                "line": line,
+                "character": character,
+                "force": true
+            }),
+        )
+        .await;
+        assert!(
+            !ok && output.contains("still referenced"),
+            "{method}: {output}"
+        );
+        assert_eq!(snapshot(&uses_root), untouched, "{method} refusal wrote");
+    }
+
+    let (_interfaces_dir, interfaces_root) = checkout(METHOD_INTERFACES_SOURCE, EMPTY_TEST);
+    wait_for_gopls(
+        gateway.addr,
+        &interfaces_root,
+        "localContract",
+        "func (value item) localContract",
+    )
+    .await;
+    for method in ["localContract", "asserted"] {
+        let untouched = snapshot(&interfaces_root);
+        let (line, character) = tool_position(METHOD_INTERFACES_SOURCE, method);
+        let (ok, output) = tool(
+            gateway.addr,
+            &interfaces_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go",
+                "line": line,
+                "character": character,
+                "force": true
+            }),
+        )
+        .await;
+        assert!(
+            !ok && (output.contains("implementation evidence")
+                || output.contains("local interface obligation")),
+            "{method}: {output}"
+        );
+        assert_eq!(
+            snapshot(&interfaces_root),
+            untouched,
+            "{method} refusal wrote"
+        );
+    }
+
     let (_failure_dir, failure_root) = checkout(COMPILE_FAIL_SOURCE, TEST);
     let (baseline_compiles, baseline_output) = run(
         &failure_root.join("project"),
@@ -427,7 +816,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         baseline_compiles,
         "refusal fixture must compile before deletion: {baseline_output}"
     );
-    wait_for_gopls(gateway.addr, &failure_root).await;
+    wait_for_gopls(gateway.addr, &failure_root, "unused", "func unused").await;
     let untouched = snapshot(&failure_root);
     let (ok, output) = cli(
         &failure_root,
