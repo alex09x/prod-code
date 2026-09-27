@@ -6261,7 +6261,8 @@ fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str]) -> bool 
         .collect();
     let ends_with = |qualifiers: &[&str]| {
         (qualifiers.is_empty() && segments.is_empty())
-            || (!qualifiers.is_empty() && segments.len() >= qualifiers.len()
+            || (!qualifiers.is_empty()
+                && segments.len() >= qualifiers.len()
                 && segments[segments.len() - qualifiers.len()..]
                     .iter()
                     .zip(qualifiers)
@@ -6315,7 +6316,8 @@ fn cargo_manifest_names(manifest: std::path::PathBuf, candidate: &str) -> bool {
     }
     let wanted = candidate.replace('-', "_");
     ["package", "lib"].into_iter().any(|section| {
-        manifest.get(section)
+        manifest
+            .get(section)
             .and_then(|table| table.get("name"))
             .and_then(toml::Value::as_str)
             .is_some_and(|name| name.replace('-', "_").eq_ignore_ascii_case(&wanted))

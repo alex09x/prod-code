@@ -33,6 +33,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Qualified symbol lookup requires the requested owner path before using path hints (#489).
+  Missing members cannot select another type or module, including methods reported as functions.
+  Outline fallback preserves unindexed members; crate aliases come from parsed Cargo metadata.
 - Python validation keeps one pyright document identity across baseline and proposal sessions
   (#466). Closing a validation restores the current disk text through a monotonic document
   change; later proposals no longer split `builtins.str` from `str`. Generic validation uses a

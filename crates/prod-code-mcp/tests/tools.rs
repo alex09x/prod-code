@@ -5102,37 +5102,59 @@ async fn primary_review_function_kind_still_has_a_type_owner() {
 #[tokio::test]
 async fn primary_review_crate_root_qualifier_does_not_select_a_nested_function() {
     let ws = workspace();
-    write(&ws, "Cargo.toml", "[package]\nname = \"actual-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"actual-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
     write(&ws, "src/lib.rs", "pub mod child;\n");
     let file = write(&ws, "src/child.rs", "pub fn run() {}\n");
     commit(&ws);
     let hit_file = file.clone();
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
-        "workspace/symbol" if params["query"] == "run" => serde_json::json!([answers::symbol("run",12,&hit_file,1,8)]),
+        "workspace/symbol" if params["query"] == "run" => {
+            serde_json::json!([answers::symbol("run", 12, &hit_file, 1, 8)])
+        }
         "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
         _ => serde_json::Value::Null,
-    })).await;
+    }))
+    .await;
     for symbol in ["crate::run", "actual_crate::run"] {
-        let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),symbol,None).await;
-        assert!(hit.is_err(), "root qualifier must not match a nested declaration: {symbol}: {hit:?}");
+        let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), symbol, None).await;
+        assert!(
+            hit.is_err(),
+            "root qualifier must not match a nested declaration: {symbol}: {hit:?}"
+        );
     }
-    let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),"crate::child::run",None).await.unwrap();
-    assert_eq!(hit.path,file);
+    let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "crate::child::run", None)
+        .await
+        .unwrap();
+    assert_eq!(hit.path, file);
 }
 
 #[tokio::test]
 async fn primary_review_crate_name_is_read_as_toml_including_comments() {
     let ws = workspace();
-    write(&ws, "Cargo.toml", "[package] # package metadata\nname = \"actual-crate\" # crate name\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package] # package metadata\nname = \"actual-crate\" # crate name\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
     write(&ws, "src/lib.rs", "pub mod child;\n");
     let file = write(&ws, "src/child.rs", "pub fn run() {}\n");
     commit(&ws);
     let hit_file = file.clone();
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
-        "workspace/symbol" if params["query"] == "run" => serde_json::json!([answers::symbol("run",12,&hit_file,1,8)]),
+        "workspace/symbol" if params["query"] == "run" => {
+            serde_json::json!([answers::symbol("run", 12, &hit_file, 1, 8)])
+        }
         "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
         _ => serde_json::Value::Null,
-    })).await;
-    let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),"actual_crate::child::run",None).await.expect("valid TOML comments cannot hide the real crate name");
-    assert_eq!(hit.path,file);
+    }))
+    .await;
+    let hit =
+        prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "actual_crate::child::run", None)
+            .await
+            .expect("valid TOML comments cannot hide the real crate name");
+    assert_eq!(hit.path, file);
 }
