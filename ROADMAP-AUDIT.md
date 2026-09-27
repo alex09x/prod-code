@@ -158,6 +158,8 @@ contracts.
   a timed-out audit, and required repairs to initially passing implementation candidates.
 - Preserve process exit status when collecting logs; document ignored tests and rerun required
   integration scenarios with their prerequisites available.
+- Test fixtures own child processes before readiness/output waits and bound cleanup of the exact
+  child group and readers; a leader exit does not prove pipe-holding descendants are gone.
 - Compare equivalent benchmark setup, including whether the origin and copies are cold or warm.
 - Keep released dependency bumps within version/lockfile changes and existing consumer checks.
 
