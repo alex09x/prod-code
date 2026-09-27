@@ -70,6 +70,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Gateway handshake and shared-session resources retire on errors and cancellation (#583).
+  Workspace and worktree ownership remains held until the canceled session's overlays are
+  restored, preserving independent sessions and subsequent single-owner behavior.
 - Go and generic language-server adapters reject unsuccessful or malformed initialization
   replies (#572). Failure, timeout or cancellation retires the owned server generation,
   clears pending requests and capabilities, and ends generic document acceptance; ordinary
