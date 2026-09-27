@@ -57,23 +57,33 @@ async fn wait_for_retirement(
     .expect("session ownership retired");
 }
 
-/// Keeps a helper task joined even when the test exercises its cancellation path.
+/// Owns cancellation until the join has actually finished, including early test failure.
 struct OwnedTask<T> {
-    task: JoinHandle<T>,
+    task: Option<JoinHandle<T>>,
+}
+
+impl<T> Drop for OwnedTask<T> {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
 }
 
 impl<T: Send + 'static> OwnedTask<T> {
     fn spawn(task: impl Future<Output = T> + Send + 'static) -> Self {
         Self {
-            task: tokio::spawn(task),
+            task: Some(tokio::spawn(task)),
         }
     }
 
-    async fn abort_and_join(self) {
-        self.task.abort();
-        let result = tokio::time::timeout(Duration::from_secs(5), self.task)
+    async fn abort_and_join(mut self) {
+        let task = self.task.as_mut().expect("owned task");
+        task.abort();
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
             .await
             .expect("aborted helper task joins");
+        self.task.take();
         let Err(error) = result else {
             panic!("aborted helper task must not complete");
         };
@@ -83,12 +93,93 @@ impl<T: Send + 'static> OwnedTask<T> {
         );
     }
 
-    async fn join(self) -> T {
-        tokio::time::timeout(Duration::from_secs(30), self.task)
-            .await
-            .expect("owned helper task joins")
-            .expect("owned helper task does not panic")
+    async fn join(mut self) -> T {
+        // Keep the handle in self while awaiting: a timeout or canceled join must still abort it.
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            self.task.as_mut().expect("owned task"),
+        )
+        .await
+        .expect("owned helper task joins");
+        self.task.take();
+        result.expect("owned helper task does not panic")
     }
+}
+
+struct RetirementSignal(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for RetirementSignal {
+    fn drop(&mut self) {
+        if let Some(retired) = self.0.take() {
+            let _ = retired.send(());
+        }
+    }
+}
+
+#[tokio::test]
+async fn dropping_a_helper_retires_its_task_before_runtime_shutdown() {
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (retired, retirement) = tokio::sync::oneshot::channel();
+    let owner = OwnedTask::spawn(async move {
+        let _retirement = RetirementSignal(Some(retired));
+        let _ = started.send(());
+        std::future::pending::<()>().await;
+    });
+    let abort = owner.task.as_ref().expect("owned task").abort_handle();
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .expect("helper starts")
+        .expect("readiness sender remains owned");
+    drop(owner);
+    let retired_without_rescue = tokio::time::timeout(Duration::from_millis(100), retirement)
+        .await
+        .is_ok();
+    // The RED must clean up the exact task too, before its assertion panics.
+    abort.abort();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !abort.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact helper retired");
+    assert!(
+        retired_without_rescue,
+        "dropping OwnedTask detached a live helper"
+    );
+}
+
+#[tokio::test]
+async fn canceling_a_join_retires_the_joined_helper() {
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (retired, retirement) = tokio::sync::oneshot::channel();
+    let helper = OwnedTask::spawn(async move {
+        let _retirement = RetirementSignal(Some(retired));
+        let _ = started.send(());
+        std::future::pending::<()>().await;
+    });
+    let abort = helper.task.as_ref().expect("owned task").abort_handle();
+    let joining = OwnedTask::spawn(async move { helper.join().await });
+    tokio::time::timeout(Duration::from_secs(5), ready)
+        .await
+        .expect("helper starts")
+        .expect("readiness sender remains owned");
+    joining.abort_and_join().await;
+    let retired_without_rescue = tokio::time::timeout(Duration::from_secs(1), retirement)
+        .await
+        .is_ok();
+    abort.abort();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !abort.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact joined helper retired");
+    assert!(
+        retired_without_rescue,
+        "canceling a join detached its helper"
+    );
 }
 
 /// The accept helper owns every accepted session through its JoinSet, rather than handing
@@ -155,6 +246,45 @@ impl OwnedSessionServer {
         let _ = self.shutdown.take().expect("shutdown sender").send(());
         self.accept.join().await;
     }
+}
+
+#[tokio::test]
+async fn dropping_the_accept_helper_retires_accepted_sessions() {
+    let storage = tempfile::tempdir().expect("storage");
+    let state = Arc::new(ServerState::new(storage.path().to_path_buf()));
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("address");
+    let mut server = OwnedSessionServer::start(listener, state);
+    let accept = server
+        .accept
+        .task
+        .as_ref()
+        .expect("accept task")
+        .abort_handle();
+    let client = TcpStream::connect(address).await.expect("client");
+    let session = server.next_task().await;
+    drop(server);
+    let outcome = tokio::time::timeout(Duration::from_secs(1), async {
+        while !accept.is_finished() || !session.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    // Retain exact capabilities for cleanup even if this regression fails.
+    accept.abort();
+    session.abort();
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !accept.is_finished() || !session.is_finished() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("exact accept and session tasks retired");
+    assert!(
+        outcome.is_ok(),
+        "dropping the accept helper detached accepted work"
+    );
 }
 
 #[tokio::test]
