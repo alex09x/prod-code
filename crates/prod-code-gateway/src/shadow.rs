@@ -25,7 +25,7 @@ use prod_code_protocol::{
 };
 use std::ffi::{OsStr, OsString};
 use std::fs::{File, OpenOptions};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
@@ -125,18 +125,51 @@ fn storage_identity(storage_root: &Path) -> PathBuf {
     if let Ok(canonical) = storage_root.canonicalize() {
         return canonical;
     }
-    if let (Some(parent), Some(name)) = (storage_root.parent(), storage_root.file_name())
-        && let Ok(canonical_parent) = parent.canonicalize()
-    {
-        return canonical_parent.join(name);
-    }
-    if storage_root.is_absolute() {
+    let absolute = if storage_root.is_absolute() {
         storage_root.to_path_buf()
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(storage_root)
+    };
+    let mut identity = PathBuf::new();
+    let mut unresolved = false;
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => identity.push(prefix.as_os_str()),
+            Component::RootDir => identity.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::Normal(name) => {
+                if unresolved {
+                    identity.push(name);
+                    continue;
+                }
+                let candidate = identity.join(name);
+                match candidate.canonicalize() {
+                    Ok(canonical) => identity = canonical,
+                    Err(_) => {
+                        identity = candidate;
+                        unresolved = true;
+                    }
+                }
+            }
+            Component::ParentDir => {
+                if unresolved {
+                    identity.pop();
+                    continue;
+                }
+                let candidate = identity.join("..");
+                match candidate.canonicalize() {
+                    Ok(canonical) => identity = canonical,
+                    Err(_) => {
+                        identity = candidate;
+                        unresolved = true;
+                    }
+                }
+            }
+        }
     }
+    identity
 }
 
 /// Exclusive ownership of one shadow namespace. The lock file is never replaced or swept, so
