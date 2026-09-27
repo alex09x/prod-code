@@ -190,7 +190,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_safe_delete".to_string(),
-            description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. At a parameter of a function, the parameter is removed together with its argument at every call site (the same rewrite as `code_change_signature`), refused while the body still uses it, and type-checked before it is written. The edit is written into the checkout."
+            description: "Delete the item at a 1-based declaration-name position only when the analyzer proves it unreferenced. Rust items retain analyzer safe-delete behavior, and Rust parameters retain the code_change_signature rewrite. For Go, this writes only an ordinary unexported, ASCII-named, non-generic top-level function with a body: gopls must report exactly its declaration and no use, the range must match current source, and the complete proposal must compile remotely before it is applied. Go compiler verification uses the active Go build flags and is not an all-platform reachability proof; force bypasses none of these checks. Imports are not cleaned automatically."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -198,7 +198,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line of the item's name" },
                     "character": { "type": "integer", "description": "1-based column of the item's name" },
-                    "force": { "type": "boolean", "description": "For a parameter: remove it even when the body uses it or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Rust parameter compatibility option; it never bypasses Go safe-delete checks" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -5493,6 +5493,31 @@ async fn handle_safe_delete(
         .and_then(|v| v.as_u64())
         .context("Missing 'character' argument")? as u32;
     let file_path = resolve_file_path(workspace_root, path_str);
+    // Go has no analyzer safe-delete request. Its narrow compiler-verified planner must run
+    // before the Rust parameter scanner can mistake Go syntax for a parameter.
+    if file_path
+        .extension()
+        .is_some_and(|extension| extension == "go")
+    {
+        return Ok(
+            match crate::safe_delete_go::delete_function(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+            )
+            .await
+            {
+                Ok(deleted) => McpToolCallResult::text(format!(
+                    "deleted unreferenced Go function {}; compiler-verified under the active Go build flags; 1 path updated:\n{}",
+                    deleted.name,
+                    deleted.path.display()
+                )),
+                Err(error) => McpToolCallResult::error(format!("safe delete refused: {error:#}")),
+            },
+        );
+    }
     // A parameter goes from the declaration and from every call at once, through
     // `change_signature`, which refuses while the body still uses it.
     let text = std::fs::read_to_string(&file_path).unwrap_or_default();
