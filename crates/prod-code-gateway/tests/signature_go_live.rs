@@ -137,8 +137,23 @@ func FreeValueResult(n int) int    { return n }
 type ResultValue struct{}
 type ResultPointer struct{}
 
+func makeResultValue(tag string) ResultValue {
+	trace = append(trace, tag)
+	return ResultValue{}
+}
+
+func makeResultPointer(tag string) *ResultPointer {
+	trace = append(trace, tag)
+	return &ResultPointer{}
+}
+
 func (value ResultValue) ValueResult(n int) int { return 7 }
+
 func (pointer *ResultPointer) PointerResult(n int) int { return 7 }
+
+func (value ResultValue) ReceiverBodyMismatch(n int) int { return n }
+
+func (value ResultValue) ReceiverTestCaller(n int) int { return n }
 
 var savedResult = FreeValueResult
 "#;
@@ -151,9 +166,7 @@ func main() {
 	note, prio := "fragile", 2
 	fmt.Println(Ship(3, "glass", 1, "LA"), Ship(mark("m", 2), note, prio, "NY")) // Ship(1, "x", 2, "y")
 	fmt.Println(Count(mark("count", 1)))
-	value := ResultValue{}
-	pointer := ResultPointer{}
-	fmt.Println(value.ValueResult(mark("value result", 2)), pointer.PointerResult(mark("pointer result", 3)))
+	fmt.Println(makeResultValue("value receiver").ValueResult(mark("value result", 2)), makeResultPointer("pointer receiver").PointerResult(mark("pointer result", 3)))
 	fmt.Println(Drop(1, mark("call", 2)), note, prio, trace)
 }
 "#;
@@ -180,6 +193,14 @@ func TestReceiverResultCallers(t *testing.T) {
 	pointer := ResultPointer{}
 	if value.ValueResult(1) != 7 || pointer.PointerResult(2) != 7 {
 		t.Fatal("receiver result")
+	}
+}
+
+func TestReceiverResultCallerType(t *testing.T) {
+	var value ResultValue
+	var got int = value.ReceiverTestCaller(1)
+	if got != 1 {
+		t.Fatal("typed receiver caller")
 	}
 }
 
@@ -377,11 +398,11 @@ fn symlink_checkout() -> (tempfile::TempDir, PathBuf) {
         ),
         (
             "project/lib.go",
-            "package main\n\nfunc RequestedShadow(n int) int { return n }\nfunc OldShadow(n int) int64 { return n }\n",
+            "package main\n\nfunc RequestedShadow(n int) int { return n }\nfunc OldShadow(n int) int64 { return n }\ntype Meter struct{}\nfunc (meter Meter) ResultRequestedShadow(n int) int { return n }\nfunc (meter Meter) ResultOldShadow(n int) int64 { return n }\n",
         ),
         (
             "project/main_test.go",
-            "package main\n\nimport \"testing\"\n\nfunc TestLinkedSourceCompiles(t *testing.T) {\n\tvar got interface{} = OldShadow(1)\n\tif got == nil { t.Fatal(\"linked source was not loaded\") }\n}\n",
+            "package main\n\nimport \"testing\"\n\nfunc TestLinkedSourceCompiles(t *testing.T) {\n\tvar meter Meter\n\tvar got interface{} = OldShadow(1)\n\tvar method interface{} = meter.ResultOldShadow(2)\n\tif got == nil || method == nil { t.Fatal(\"linked source was not loaded\") }\n}\n",
         ),
         (
             "project/shadow_source.txt",
@@ -619,6 +640,48 @@ async fn client_sentinel_scenario() {
         before_refusal,
         "result compiler refusal wrote"
     );
+    let (receiver_ok, receiver_result) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "ValueResult",
+            "--param",
+            "n",
+            "--returns",
+            "int",
+            "--apply",
+            "--force",
+        ],
+    );
+    assert!(
+        receiver_ok && receiver_result.contains("[applied to 1 file(s)]"),
+        "{receiver_result}"
+    );
+    let restored = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "ValueResult",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+            "--apply",
+            "--force",
+        ],
+    );
+    assert!(
+        restored.0 && restored.1.contains("[applied to 1 file(s)]"),
+        "{}",
+        restored.1
+    );
+    assert_eq!(
+        snapshot(&root),
+        before_refusal,
+        "receiver result sentinel round trip changed bytes"
+    );
     let (refused, refused_addition) = cli(
         &root,
         addr,
@@ -757,8 +820,8 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     assert!(
         after_result
             .0
-            .contains("[Ship(3,LA) m Ship(2,NY) count call]"),
-        "free-function argument trace was not observed: {after_result:?}"
+            .contains("[Ship(3,LA) m Ship(2,NY) count value receiver value result pointer receiver pointer result call]"),
+        "function and receiver evaluation trace was not observed: {after_result:?}"
     );
     // Exercise non-no-op MCP preview/apply against the same real compiler as well. Restoring
     // the original result must restore every source byte before the CLI reapplies its change.
@@ -829,8 +892,15 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
             "int64",
         ],
     );
-    assert!(value_preview_ok && value_preview.contains("nothing was written"), "{value_preview}");
-    assert_eq!(snapshot(&root), receiver_untouched, "value receiver preview wrote");
+    assert!(
+        value_preview_ok && value_preview.contains("nothing was written"),
+        "{value_preview}"
+    );
+    assert_eq!(
+        snapshot(&root),
+        receiver_untouched,
+        "value receiver preview wrote"
+    );
     let (value_apply_ok, value_apply) = cli(
         &root,
         addr,
@@ -845,6 +915,26 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         ],
     );
     assert!(value_apply_ok, "{value_apply}");
+    let value_applied = snapshot(&root);
+    let (value_noop_ok, value_noop) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "ValueResult",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+            "--apply",
+            "--force",
+        ],
+    );
+    assert!(
+        value_noop_ok && value_noop.contains("nothing was written"),
+        "{value_noop}"
+    );
+    assert_eq!(snapshot(&root), value_applied, "value receiver no-op wrote");
     let pointer_preview = tool(
         addr,
         &root,
@@ -864,16 +954,45 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     )
     .await;
     assert!(!pointer_apply.starts_with("error: "), "{pointer_apply}");
+    let pointer_applied = snapshot(&root);
+    let pointer_noop = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "PointerResult", "params": ["n"], "returns": "int64",
+            "apply": true, "force": true
+        }),
+    )
+    .await;
+    assert!(
+        !pointer_noop.starts_with("error: ") && pointer_noop.contains("nothing was written"),
+        "{pointer_noop}"
+    );
+    assert_eq!(
+        snapshot(&root),
+        pointer_applied,
+        "pointer receiver no-op wrote"
+    );
     let receiver_lib = std::fs::read_to_string(project.join("lib.go")).expect("receiver lib");
     assert!(
         receiver_lib.contains("func (value ResultValue) ValueResult(n int) int64 { return 7 }")
-            && receiver_lib.contains("func (pointer *ResultPointer) PointerResult(n int) int64 { return 7 }"),
+            && receiver_lib
+                .contains("func (pointer *ResultPointer) PointerResult(n int) int64 { return 7 }"),
         "{receiver_lib}"
     );
     for path in ["project/main.go", "project/main_test.go"] {
-        assert_eq!(snapshot(&root)[path], receiver_untouched[path], "receiver result touched {path}");
+        assert_eq!(
+            snapshot(&root)[path],
+            receiver_untouched[path],
+            "receiver result touched {path}"
+        );
     }
-    assert_eq!(behaviour(&project), before, "receiver result conversion changed behavior");
+    assert_eq!(
+        behaviour(&project),
+        before,
+        "receiver result conversion changed behavior"
+    );
     let untouched = snapshot(&root);
 
     // A no-op still lists complete references and compiles packages plus test callers remotely.
@@ -899,6 +1018,8 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     for (symbol, returns, reason) in [
         ("BodyMismatch", "string", "does not compile"),
         ("TestCaller", "int64", "does not compile"),
+        ("ReceiverBodyMismatch", "string", "does not compile"),
+        ("ReceiverTestCaller", "int64", "does not compile"),
         (
             "RequestedShadow",
             "uint64",
@@ -1010,6 +1131,14 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         .replace(
             "func Count(n int) int { return 7 }",
             "func Count(n int) int64 { return 7 }"
+        )
+        .replace(
+            "func (value ResultValue) ValueResult(n int) int { return 7 }",
+            "func (value ResultValue) ValueResult(n int) int64 { return 7 }"
+        )
+        .replace(
+            "func (pointer *ResultPointer) PointerResult(n int) int { return 7 }",
+            "func (pointer *ResultPointer) PointerResult(n int) int64 { return 7 }"
         ),
         "only the requested signature tokens changed"
     );
@@ -1126,7 +1255,12 @@ async fn linked_go_source_refuses_result_replacement_without_writing() {
     }
     assert!(hover.contains("RequestedShadow"), "gopls load: {hover}");
 
-    for (symbol, returns) in [("RequestedShadow", "int64"), ("OldShadow", "string")] {
+    for (symbol, returns) in [
+        ("RequestedShadow", "int64"),
+        ("OldShadow", "string"),
+        ("ResultRequestedShadow", "int64"),
+        ("ResultOldShadow", "string"),
+    ] {
         let refused = tool(
             gateway.addr,
             &root,
@@ -1270,8 +1404,30 @@ func (meter Meter) Direct(n int) string { return fmt.Sprint(n) }
 func (meter Meter) Dynamic(n int) string { return fmt.Sprint(n) }
 func (meter Meter) Capture(existing int) string { captured := existing; return fmt.Sprint(captured) }
 
+func (meter Meter) ResultBodyMismatch(n int) int { return n }
+func (meter Meter) ResultTestCaller(n int) int { return n }
+func (meter Meter) ResultValue(n int) int { return n }
+func (meter Meter) ResultExpression(n int) int { return n }
+func (meter *Meter) ResultPointer(n int) int { return n }
+func (meter Meter) ResultDirect(n int) int { return n }
+func (meter Meter) ResultDynamic(n int) int { return n }
+func (meter Meter) ResultCombine(a, b int) int { return a + b }
+func (meter Meter) ResultVariadic(xs ...int) int { return len(xs) }
+
+type (
+	uint64 = interface{}
+	byte = interface{}
+)
+func (meter Meter) ResultRequestedShadow(n int) int { return n }
+func (meter Meter) ResultOldShadow(n int) byte { return n }
+
 type Box[T any] struct{ value T }
 func (box Box[T]) Generic(n int) T { return box.value }
+
+type ResultBox[T any] struct{}
+func (box ResultBox[T]) ResultGenericReceiver(n int) int { return n }
+func ResultGenericFunction[T any](n int) int { return n }
+func ResultVariadicFunction(xs ...int) int { return len(xs) }
 
 func (meter Meter) Compile(n int) string { return fmt.Sprint(n) }
 "#;
@@ -1280,6 +1436,8 @@ const PUBLIC_REFUSAL_INTERFACES: &str = r#"package main
 
 type Directer interface { Direct(int) string }
 type Dynamicer interface { Dynamic(int) string }
+type ResultDirecter interface { ResultDirect(int) int }
+type ResultDynamicer interface { ResultDynamic(int) int }
 "#;
 
 const PUBLIC_REFUSAL_MAIN: &str = r#"package main
@@ -1295,6 +1453,17 @@ func main() {
 	_, dynamic := any(meter).(Dynamicer)
 	_, stringer := any(meter).(fmt.Stringer)
 	box := Box[int]{value: 7}
+	resultValue := meter.ResultValue
+	resultExpression := Meter.ResultExpression
+	resultPointer := (*Meter).ResultPointer
+	var resultDirect ResultDirecter = meter
+	resultDynamic, _ := any(meter).(ResultDynamicer)
+	_ = resultValue
+	_ = resultExpression
+	_ = resultPointer
+	_ = resultDirect.ResultDirect(8)
+	_ = resultDynamic.ResultDynamic(9)
+	_ = meter.ResultCombine(1, 2)
 	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), direct.Direct(4), dynamic, box.Generic(5), meter.Capture(6), meter.Compile(7), stringer)
 }
 "#;
@@ -1309,7 +1478,7 @@ async fn receiver_refusals_run_through_the_source_built_gateway() {
     std::fs::write(project.join("main.go"), PUBLIC_REFUSAL_MAIN).unwrap();
     std::fs::write(
         project.join("main_test.go"),
-        "package main\nimport \"testing\"\nfunc TestFixture(t *testing.T) {}\n",
+        "package main\nimport \"testing\"\nfunc TestFixture(t *testing.T) { var meter Meter; var got int = meter.ResultTestCaller(1); if got != 1 { t.Fatal(got) } }\n",
     )
     .unwrap();
     let before = behaviour(&project);
@@ -1409,6 +1578,115 @@ async fn receiver_refusals_run_through_the_source_built_gateway() {
             "{needle}: {refused}"
         );
         assert_eq!(snapshot(&root), untouched, "refusal wrote: {needle}");
+    }
+    for (needle, params, returns, reason) in [
+        (
+            "ResultBodyMismatch(n",
+            serde_json::json!(["n"]),
+            "string",
+            "does not compile",
+        ),
+        (
+            "ResultTestCaller(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "does not compile",
+        ),
+        (
+            "String()",
+            serde_json::json!([]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        (
+            "ResultValue(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "used as a value",
+        ),
+        (
+            "ResultExpression(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "method expression",
+        ),
+        (
+            "ResultPointer(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "method expression",
+        ),
+        (
+            "ResultDirect(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        (
+            "ResultDynamic(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        (
+            "ResultGenericReceiver(n",
+            serde_json::json!(["n"]),
+            "int64",
+            "not an ordinary named value",
+        ),
+        (
+            "ResultVariadic(xs",
+            serde_json::json!(["xs"]),
+            "int64",
+            "variadic function",
+        ),
+        (
+            "ResultGenericFunction[T",
+            serde_json::json!(["n"]),
+            "int64",
+            "generic function",
+        ),
+        (
+            "ResultVariadicFunction(xs",
+            serde_json::json!(["xs"]),
+            "int64",
+            "variadic function",
+        ),
+        (
+            "ResultCombine(a",
+            serde_json::json!(["b", "a"]),
+            "int64",
+            "parameter list exactly unchanged",
+        ),
+        (
+            "ResultRequestedShadow(n",
+            serde_json::json!(["n"]),
+            "uint64",
+            "primitive type identity cannot be proven",
+        ),
+        (
+            "ResultOldShadow(n",
+            serde_json::json!(["n"]),
+            "string",
+            "primitive type identity cannot be proven",
+        ),
+    ] {
+        let (line, character) = position(needle);
+        let refused = tool(
+            gateway.addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "path": "project/lib.go", "line": line, "character": character,
+                "params": params, "returns": returns, "apply": true, "force": true
+            }),
+        )
+        .await;
+        assert!(
+            refused.starts_with("error: ") && refused.contains(reason),
+            "{needle}: {refused}"
+        );
+        assert_eq!(snapshot(&root), untouched, "result refusal wrote: {needle}");
     }
     assert_eq!(behaviour(&project), before, "refusals changed execution");
 }

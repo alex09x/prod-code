@@ -8,7 +8,8 @@
 //! the declared parameters reordered, some of them left out (adding one, changing a type or the
 //! results is refused), and rewrites every call by inlining a wrapper. A deliberately narrow
 //! result replacement is performed here instead: it changes only one primitive result token of
-//! an ordinary free function, then proves every direct caller with the remote Go compiler.
+//! an ordinary free function or named value/pointer receiver method, then proves every direct
+//! caller with the remote Go compiler.
 //! That inliner runs with
 //! effect analysis switched off, so `f(mark(a), mark(b))` comes back as `f(mark(b), mark(a))`,
 //! and the argument of a removed parameter is dropped whatever it does: `f(1, g())` becomes
@@ -554,8 +555,8 @@ pub async fn change_with(
 }
 
 /// Replaces the sole unnamed primitive result of an ordinary free function or named value/pointer
-/// receiver method. gopls cannot make
-/// this edit, and a result change can make an otherwise untouched caller ill typed, so the
+/// receiver method. gopls cannot make this edit, and a result change can make an otherwise
+/// untouched caller ill typed, so the
 /// reference proof and compiler-shadow gate are mandatory even for a preview and even for a
 /// no-op request.
 #[allow(clippy::too_many_arguments)]

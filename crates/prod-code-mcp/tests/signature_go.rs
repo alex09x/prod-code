@@ -100,7 +100,9 @@ fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
         .copied()
         .collect::<Vec<_>>();
     let proposal = String::from_utf8_lossy(&proposal);
-    let fails = proposal.contains("bad string");
+    let fails = proposal.contains("bad string")
+        || proposal.contains("BodyMismatch(n int) string { return n }")
+        || proposal.contains("TestCaller(n int) int64 { return n }");
     let output = fails.then(|| b"cannot use 1 as string value in argument to Keep\n".to_vec());
     ShadowRunResponse {
         server_workspace_root: req.client_workspace_root,
@@ -1051,11 +1053,11 @@ async fn unnamed_primitive_receiver_results_are_replaced_without_touching_direct
         ("go.mod", "module example.com/receiverresult\n\ngo 1.22\n"),
         (
             "lib.go",
-            "package main\n\ntype Value struct{}\ntype Pointer struct{}\n\nfunc (value Value) ValueResult(n int) int { return 7 }\nfunc (pointer *Pointer) PointerResult(n int) int { return 7 }\n",
+            "package main\n\nvar trace []string\nfunc mark(tag string, n int) int { trace = append(trace, tag); return n }\ntype Value struct{}\ntype Pointer struct{}\nfunc makeValue(tag string) Value { trace = append(trace, tag); return Value{} }\nfunc makePointer(tag string) *Pointer { trace = append(trace, tag); return &Pointer{} }\n\nfunc (value Value) ValueResult(n int) int { return 7 }\nfunc (pointer *Pointer) PointerResult(n int) int { return 7 }\n",
         ),
         (
             "main.go",
-            "package main\n\nimport \"fmt\"\n\nfunc main() { value := Value{}; pointer := Pointer{}; fmt.Println(value.ValueResult(1), pointer.PointerResult(2)) }\n",
+            "package main\n\nimport \"fmt\"\n\nfunc main() { fmt.Println(makeValue(\"value receiver\").ValueResult(mark(\"value argument\", 1)), makePointer(\"pointer receiver\").PointerResult(mark(\"pointer argument\", 2)), trace) }\n",
         ),
         (
             "main_test.go",
@@ -1066,42 +1068,53 @@ async fn unnamed_primitive_receiver_results_are_replaced_without_touching_direct
     let untouched = fixture.snapshot();
     let bridge = GoplsBridge::start(&fixture).await;
     let remote = with_compiler_shadow(bridge.addr()).await;
-    let modifiers = Modifiers {
-        returns: Some("int64".into()),
-        ..Default::default()
-    };
     for (needle, method) in [
         ("ValueResult(n", "ValueResult"),
         ("PointerResult(n", "PointerResult"),
     ] {
         let before_preview = fixture.snapshot();
-        let preview = change_with(
+        let (line, character) = at(&fixture, "lib.go", needle);
+        let preview = prod_code_mcp::tools::execute_tool(
             remote,
-            &fixture,
-            "lib.go",
-            needle,
-            &[Param::Keep("n".into())],
-            &modifiers,
-            false,
+            fixture.root(),
+            "code_change_signature",
+            json!({
+                "path": "lib.go", "line": line, "character": character,
+                "params": ["n"], "returns": "int64"
+            }),
         )
         .await
         .unwrap_or_else(|error| panic!("{method} preview: {error:#}"));
-        assert!(!preview.applied);
-        assert_eq!(preview.returns, Some(("int".into(), "int64".into())));
-        assert_eq!(preview.rewritten.len(), 1, "only {method}'s result token changes");
+        let preview = text_of(&preview);
+        assert!(preview.contains("returns: `int` → `int64`"), "{preview}");
+        assert!(preview.contains("nothing was written"), "{preview}");
         assert_eq!(fixture.snapshot(), before_preview, "{method} preview wrote");
-        let applied = change_with(
+        let applied = prod_code_mcp::tools::execute_tool(
             remote,
-            &fixture,
-            "lib.go",
-            needle,
-            &[Param::Keep("n".into())],
-            &modifiers,
-            true,
+            fixture.root(),
+            "code_change_signature",
+            json!({
+                "path": "lib.go", "line": line, "character": character,
+                "params": ["n"], "returns": "int64", "apply": true
+            }),
         )
         .await
         .unwrap_or_else(|error| panic!("{method} apply: {error:#}"));
-        assert!(applied.applied);
+        assert!(text_of(&applied).contains("[applied to 1 file(s)]"));
+        let after_apply = fixture.snapshot();
+        let no_op = prod_code_mcp::tools::execute_tool(
+            remote,
+            fixture.root(),
+            "code_change_signature",
+            json!({
+                "path": "lib.go", "line": line, "character": character,
+                "params": ["n"], "returns": "int64", "apply": true, "force": true
+            }),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method} no-op: {error:#}"));
+        assert!(text_of(&no_op).contains("nothing was written"));
+        assert_eq!(fixture.snapshot(), after_apply, "{method} no-op wrote");
     }
     let lib = fixture.read("lib.go");
     assert!(
@@ -1112,12 +1125,19 @@ async fn unnamed_primitive_receiver_results_are_replaced_without_touching_direct
         lib.contains("func (pointer *Pointer) PointerResult(n int) int64 { return 7 }"),
         "{lib}"
     );
-    assert_eq!(fixture.read("main.go").as_bytes(), untouched["main.go"].as_slice());
+    assert_eq!(
+        fixture.read("main.go").as_bytes(),
+        untouched["main.go"].as_slice()
+    );
     assert_eq!(
         fixture.read("main_test.go").as_bytes(),
         untouched["main_test.go"].as_slice()
     );
-    assert_eq!(fixture.run(), before, "receiver and direct-caller evaluation changed");
+    assert_eq!(
+        fixture.run(),
+        before,
+        "receiver and direct-caller evaluation changed"
+    );
 }
 
 fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
@@ -1186,8 +1206,9 @@ async fn public_result_refusal(
 }
 
 /// Result replacement accepts only a single unshadowed primitive result on an ordinary,
-/// non-generic, non-variadic free function. These refusals exercise the public MCP boundary with
-/// a real gopls where it can answer, and preserve every fixture byte even under force.
+/// non-generic, non-variadic free function or named value/pointer receiver method. These refusals
+/// exercise the public MCP boundary with a real gopls where it can answer, and preserve every
+/// fixture byte even under force.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn public_mcp_refuses_unsafe_result_replacements_and_preserves_every_byte() {
     require_go_toolchain();
@@ -1293,6 +1314,7 @@ var saved = Value
     ]);
     let (line, character) = at(&evidence, "lib.go", "Evidence(n");
     for answer in [
+        answers::failure("reference evidence unavailable"),
         json!([]),
         json!([{ "uri": uri(&evidence.path("lib.go")) }]),
         json!([{
@@ -1319,6 +1341,178 @@ var saved = Value
                 "params": ["n"], "returns": "int64", "apply": true, "force": true
             }),
             "cannot prove every reference",
+        )
+        .await;
+    }
+}
+
+/// Receiver result replacements keep the same narrow contract as free functions: every receiver
+/// and reference must be ordinary, interface obligations must be absent, the parameter list stays
+/// byte-for-byte equivalent, and the compiler must accept bodies plus test-only callers. `force`
+/// bypasses none of these checks and every refusal preserves the complete checkout snapshot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_mcp_refuses_unsafe_receiver_result_replacements_and_preserves_every_byte() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        (
+            "go.mod",
+            "module example.com/receiverresultrefusal\n\ngo 1.22\n",
+        ),
+        (
+            "lib.go",
+            r#"package main
+
+import "fmt"
+
+type Meter struct{}
+
+func (meter Meter) BodyMismatch(n int) int { return n }
+func (meter Meter) TestCaller(n int) int { return n }
+func (meter Meter) Local(n int) int { return n }
+func (meter Meter) Dynamic(n int) int { return n }
+func (meter Meter) Value(n int) int { return n }
+func (meter Meter) Expression(n int) int { return n }
+func (meter *Meter) PointerExpression(n int) int { return n }
+func (meter Meter) Combine(a, b int) int { return a + b }
+func (meter Meter) Variadic(xs ...int) int { return len(xs) }
+func (meter Meter) String() string { return "meter" }
+
+type Box[T any] struct{ value T }
+func (box Box[T]) GenericReceiver(n int) int { return n }
+
+func GenericFunction[T any](n int) int { return n }
+func VariadicFunction(xs ...int) int { return len(xs) }
+
+var _ = fmt.Sprint
+"#,
+        ),
+        (
+            "interfaces.go",
+            "package main\n\ntype Localer interface { Local(int) int }\ntype Dynamicer interface { Dynamic(int) int }\n",
+        ),
+        (
+            "main.go",
+            r#"package main
+
+import "fmt"
+
+func main() {
+	meter := Meter{}
+	value := meter.Value
+	expression := Meter.Expression
+	pointer := (*Meter).PointerExpression
+	var local Localer = meter
+	var dynamic Dynamicer = meter
+	box := Box[int]{value: 7}
+	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), local.Local(4), dynamic.Dynamic(5), box.GenericReceiver(6), meter.Combine(7, 8), meter.String())
+}
+"#,
+        ),
+        (
+            "main_test.go",
+            "package main\n\nimport \"testing\"\n\nfunc TestTypedReceiverCaller(t *testing.T) { var meter Meter; var got int = meter.TestCaller(1); if got != 1 { t.Fatal(got) } }\n",
+        ),
+    ]);
+    let before = fixture.run();
+    assert!(before.contains("1 2 3 4 5 6 15 meter"), "{before}");
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+
+    for (needle, params, returns, said) in [
+        ("BodyMismatch(n", json!(["n"]), "string", "does not compile"),
+        ("TestCaller(n", json!(["n"]), "int64", "does not compile"),
+        (
+            "Local(n",
+            json!(["n"]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        (
+            "Dynamic(n",
+            json!(["n"]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        (
+            "String()",
+            json!([]),
+            "int64",
+            "interface implementation evidence",
+        ),
+        ("Value(n", json!(["n"]), "int64", "used as a value"),
+        ("Expression(n", json!(["n"]), "int64", "method expression"),
+        (
+            "PointerExpression(n",
+            json!(["n"]),
+            "int64",
+            "method expression",
+        ),
+        (
+            "GenericReceiver(n",
+            json!(["n"]),
+            "int64",
+            "not an ordinary named value",
+        ),
+        ("Variadic(xs", json!(["xs"]), "int64", "variadic function"),
+        (
+            "GenericFunction[T",
+            json!(["n"]),
+            "int64",
+            "generic function",
+        ),
+        (
+            "VariadicFunction(xs",
+            json!(["xs"]),
+            "int64",
+            "variadic function",
+        ),
+        (
+            "Combine(a",
+            json!(["b", "a"]),
+            "int64",
+            "parameter list exactly unchanged",
+        ),
+    ] {
+        public_result_refusal(remote, &fixture, needle, params, returns, &[], said).await;
+    }
+    assert_eq!(
+        fixture.run(),
+        before,
+        "receiver-result refusals changed behavior"
+    );
+
+    let shadowed = GoModule::new(&[
+        (
+            "go.mod",
+            "module example.com/receiverresultshadow\n\ngo 1.22\n",
+        ),
+        (
+            "lib.go",
+            r#"package main
+
+type (
+	uint64 = interface{}
+	byte = interface{}
+)
+
+type Meter struct{}
+func (meter Meter) RequestedShadow(n int) int { return n }
+func (meter Meter) OldShadow(n int) byte { return n }
+"#,
+        ),
+        ("main.go", "package main\nfunc main() {}\n"),
+    ]);
+    let bridge = GoplsBridge::start(&shadowed).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+    for (needle, returns) in [("RequestedShadow(n", "uint64"), ("OldShadow(n", "string")] {
+        public_result_refusal(
+            remote,
+            &shadowed,
+            needle,
+            json!(["n"]),
+            returns,
+            &[],
+            "primitive type identity cannot be proven",
         )
         .await;
     }
@@ -1498,9 +1692,10 @@ async fn public_mcp_refuses_unsafe_receiver_changes_and_preserves_every_byte() {
     );
 }
 
-/// Receiver additions ask the implementation relation before function references. A transport
-/// error or malformed evidence is a refusal, but gopls's ordinary `null` result remains a valid
-/// empty relation so regular methods stay available through the public MCP boundary.
+/// Receiver additions and result replacements ask the implementation relation before function
+/// references. A transport error or malformed evidence is a refusal, but gopls's ordinary `null`
+/// result remains a valid empty relation so regular methods stay available through the public MCP
+/// boundary.
 #[tokio::test]
 async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
     let fixture = GoModule::new(&[
@@ -1540,6 +1735,10 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
         "path": "lib.go", "line": line, "character": character,
         "params": ["qty", "extra: int = 0"], "apply": true, "force": true
     });
+    let result_args = json!({
+        "path": "lib.go", "line": line, "character": character,
+        "params": ["qty"], "returns": "int64", "apply": true, "force": true
+    });
     let untouched = fixture.snapshot();
     let external = json!([{
         "uri": "file:///runtime/interface.go",
@@ -1565,6 +1764,7 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
         })
         .await;
         public_go_refusal(gateway.addr(), &fixture, args.clone(), said).await;
+        public_go_refusal(gateway.addr(), &fixture, result_args.clone(), said).await;
         assert_eq!(fixture.snapshot(), untouched, "{said} wrote");
     }
 
@@ -1595,6 +1795,20 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
         untouched,
         "a null implementation preview wrote"
     );
+    let result_preview = prod_code_mcp::tools::execute_tool(
+        remote,
+        fixture.root(),
+        "code_change_signature",
+        json!({
+            "path": "lib.go", "line": line, "character": character,
+            "params": ["qty"], "returns": "int64", "apply": false, "force": true
+        }),
+    )
+    .await
+    .expect("a null implementation result permits an ordinary receiver result replacement");
+    let rendered = text_of(&result_preview);
+    assert!(rendered.contains("returns: `int` → `int64`"), "{rendered}");
+    assert_eq!(fixture.snapshot(), untouched, "a result preview wrote");
 }
 
 /// The public MCP tool `code_change_signature` reaches the Go adapter through
