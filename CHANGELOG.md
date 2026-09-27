@@ -29,6 +29,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
+  to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
+  missing/malformed items, error responses and uncached unchanged reports stay refused.
 - Edit validation treats Rust `unlinked-file` reports as missing semantic evidence (#467),
   including when the same hint existed before the edit. Read-only diagnostics retain the hint.
   Missing, malformed or uncached `unchanged` diagnostic reports fail validation (#470), and
