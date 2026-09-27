@@ -129,6 +129,31 @@ pub struct Pair<T> {
     pub right: T,
 }
 
+pub struct Packet<'a, T: Clone, const N: usize>
+where
+    T: PartialEq,
+{
+    pub label: &'a str,
+    pub payload: T,
+    pub bytes: [u8; N],
+    pub nested: std::option::Option<Vec<T>>,
+}
+
+pub struct Defaults<T: Clone = String, const N: usize = 4>
+where
+    T: PartialEq,
+{
+    pub value: T,
+    pub bytes: [u8; N],
+}
+
+pub struct SelfBound<T>
+where
+    Self: Sized,
+{
+    pub value: T,
+}
+
 pub struct Point(pub i32, pub i32);
 
 pub struct Taken {
@@ -189,6 +214,43 @@ pub fn run() {
 const PRINTED: &str = "n 3 Just(5) 4 Endpoint { host: \"h\", port: 80 } 3 7 [\"a\", \"b\"]\n\
 match | `Config` field `match` was never set\n\
 name | `Config` field `name` was never set\n";
+
+const PACKET_USAGE: &str = r#"use crate::settings::{Packet, PacketBuilder, PacketBuilderError};
+
+pub fn run() {
+    let packet: Packet<'_, String, 3> = PacketBuilder::new()
+        .nested(Some(vec!["nested".to_string()]))
+        .bytes([1, 2, 3])
+        .payload("payload".to_string())
+        .label("label")
+        .build()
+        .expect("every field is set");
+    println!("{} {} {:?} {:?}", packet.label, packet.payload, packet.bytes, packet.nested);
+
+    let missing: Result<Packet<'_, String, 3>, PacketBuilderError> = PacketBuilder::new()
+        .nested(None)
+        .payload("payload".to_string())
+        .label("label")
+        .build();
+    let error = match missing {
+        Err(error) => error,
+        Ok(_) => panic!("missing bytes unexpectedly built"),
+    };
+    println!("{}", error);
+}
+"#;
+
+const DEFAULT_USAGE: &str = r#"use crate::settings::{Defaults, DefaultsBuilder};
+
+pub fn run() {
+    let value: Defaults = DefaultsBuilder::new()
+        .value("default".to_string())
+        .bytes([4, 3, 2, 1])
+        .build()
+        .expect("defaults remain legal");
+    println!("{} {:?}", value.value, value.bytes);
+}
+"#;
 
 /// A committed checkout, not in a dot-directory (some tools pass over hidden ones).
 fn checkout() -> (tempfile::TempDir, PathBuf) {
@@ -289,6 +351,24 @@ async fn verified(addr: SocketAddr, root: &Path, request: &BuilderRequest<'_>) -
     );
 }
 
+async fn rejected(addr: SocketAddr, root: &Path, request: &BuilderRequest<'_>) -> BuilderPreview {
+    let mut last = String::from("never asked");
+    for _ in 0..120 {
+        match builder::preview(addr, root, request).await {
+            Ok(preview) if matches!(preview.verification, Verification::Rejected { .. }) => {
+                return preview;
+            }
+            Ok(preview) => last = preview.render(),
+            Err(err) => last = format!("{err:#}"),
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    panic!(
+        "no rejected verdict from the analyzer for `{}`:\n{last}",
+        request.symbol
+    );
+}
+
 fn compile_and_run(files: &[(&str, &str)]) -> String {
     let dir = tempfile::Builder::new()
         .prefix("builder-run-")
@@ -359,6 +439,69 @@ async fn rust_analyzer_verifies_a_generated_builder_that_compiles_and_runs() {
     ]);
     assert_eq!(printed, PRINTED);
 
+    let packet = verified(gateway.addr, &root, &request("Packet")).await;
+    assert_eq!(
+        packet
+            .plan
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.ty.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("label", "&'a str"),
+            ("payload", "T"),
+            ("bytes", "[u8; N]"),
+            ("nested", "std::option::Option<Vec<T>>"),
+        ]
+    );
+    assert!(
+        packet.plan.code.contains(
+            "pub struct PacketBuilder<'a, T: Clone, const N: usize> where T: PartialEq, {"
+        )
+    );
+    assert!(packet.plan.code.contains(
+        "impl<'a, T: Clone, const N: usize> PacketBuilder<'a, T, N> where T: PartialEq, {"
+    ));
+    assert!(
+        packet
+            .plan
+            .code
+            .contains("Result<Packet<'a, T, N>, PacketBuilderError>")
+    );
+    let printed = compile_and_run(&[
+        ("main.rs", main),
+        ("settings.rs", &packet.plan.file_text),
+        ("usage.rs", PACKET_USAGE),
+    ]);
+    assert_eq!(
+        printed,
+        "label payload [1, 2, 3] Some([\"nested\"])\n`Packet` field `bytes` was never set\n"
+    );
+
+    let defaults = verified(gateway.addr, &root, &request("Defaults")).await;
+    assert!(defaults.plan.code.contains(
+        "pub struct DefaultsBuilder<T: Clone = String, const N: usize = 4> where T: PartialEq, {"
+    ));
+    assert!(
+        defaults
+            .plan
+            .code
+            .contains("impl<T: Clone, const N: usize> DefaultsBuilder<T, N> where T: PartialEq, {")
+    );
+    assert!(!defaults.plan.code.contains("impl<T: Clone ="));
+    assert!(
+        !defaults
+            .plan
+            .code
+            .contains("impl<T: Clone, const N: usize =")
+    );
+    let printed = compile_and_run(&[
+        ("main.rs", main),
+        ("settings.rs", &defaults.plan.file_text),
+        ("usage.rs", DEFAULT_USAGE),
+    ]);
+    assert_eq!(printed, "default [4, 3, 2, 1]\n");
+
     // A struct in an inline module: the builder goes into that module, indented like it, and
     // the analyzer checks it there.
     let nested = verified(gateway.addr, &root, &request("Endpoint")).await;
@@ -378,8 +521,11 @@ async fn rust_analyzer_verifies_a_generated_builder_that_compiles_and_runs() {
 
     // Refusals, each with its reason, none of them writing anything.
     for (request, expected) in [
-        (request("Pair"), "generic parameters"),
         (request("Point"), "tuple struct"),
+        (
+            request("SelfBound"),
+            "where clause of `SelfBound` spells `Self`",
+        ),
         (
             request("Taken"),
             "`TakenBuilder` is already declared in this workspace",
@@ -418,4 +564,24 @@ async fn rust_analyzer_verifies_a_generated_builder_that_compiles_and_runs() {
         assert!(err.contains(expected), "{expected}\n=> {err}");
     }
     assert_eq!(snapshot(&root), before, "a refusal writes nothing");
+
+    let (_bad_dir, bad_root) = checkout();
+    let bad_path = bad_root.join("src/settings.rs");
+    let bad_source =
+        format!("{SETTINGS}\n\npub struct BadField {{\n    pub value: MissingType,\n}}\n");
+    std::fs::write(&bad_path, bad_source).expect("write the bad-field fixture");
+    let bad_before = snapshot(&bad_root);
+    let bad = rejected(gateway.addr, &bad_root, &request("BadField")).await;
+    assert!(
+        bad.diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.contains("MissingType")),
+        "{}",
+        bad.render()
+    );
+    assert_eq!(
+        snapshot(&bad_root),
+        bad_before,
+        "a rejected preview writes nothing"
+    );
 }
