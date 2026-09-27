@@ -83,6 +83,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Shared gateway sessions bound output queues and socket writes (#598). A connected peer
+  that stops reading cannot hold its session handler indefinitely; cancellation retires
+  the exact writer, and other sessions continue answering.
 - Shadow hypotheses use a storage-specific namespace with exclusive gateway ownership (#591).
   Startup cleanup cannot sweep another running gateway's hypotheses. Canonical aliases,
   including absent-path `..` traversal and symlinks after it, contend on one stable lock
