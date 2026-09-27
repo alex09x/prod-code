@@ -46,6 +46,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Divergent-worktree benchmarks cap each initial workspace sync and complete session setup at
+  300 seconds (#519). Silent peers produce contextual errors and their connections close; the
+  separate 30-second hover budget and query error accounting are unchanged.
 - Rust trait extraction resolves method-body cursors to the innermost enclosing impl item
   (#514), skipping opaque `impl Trait` type syntax, raw identifiers and closed nested impls.
   Local impls inside parenthesized and array block expressions remain supported; macro and
