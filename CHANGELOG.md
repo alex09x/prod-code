@@ -31,6 +31,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Relative source paths passed to library diagnostics and validation select their engine
+  relative to the supplied checkout, so nested Python files in Rust projects reach Python
+  instead of failing in the Rust VFS (#488). Absolute paths retain the same behavior.
 - Missing or stale diagnostic publications return an explicit unavailable error through
   diagnostics, edit validation and code actions (#471). Empty reports remain valid when
   published for the current text. Explicit versions must match exactly, so a delayed higher
