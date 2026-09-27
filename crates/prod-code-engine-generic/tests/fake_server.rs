@@ -1474,3 +1474,97 @@ async fn retained_documents_restore_disk_text_and_reopen_as_changes() {
 
     assert_eq!(std::fs::read_to_string(file).unwrap(), "baseline\n");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_closing_one_session_preserves_the_other_session_text() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("retained.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    for (session, text) in [(7, "proposal one\n"), (8, "proposal two\n")] {
+        engine.send_session_notification(session,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":text}})).await.unwrap();
+    }
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "proposal two\n"
+    );
+    engine.close_session(7).await;
+    let current = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        current[0]["message"], "proposal two\n",
+        "closing another client discarded the active overlay"
+    );
+    engine.close_session(8).await;
+}
+
+#[tokio::test]
+#[ignore = "requires basedpyright"]
+async fn primary_review_closed_python_document_follows_later_disk_changes() {
+    for retain in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let file = root.join("value.py");
+        let good = "def answer():\n    return 1\n";
+        std::fs::write(&file, good).unwrap();
+        let mut settings = GenericLspConfig::for_python();
+        settings.retain_open_documents = retain;
+        let engine = GenericLspEngine::spawn(&root, settings).await.unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_notification("textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":good}})).await.unwrap();
+        assert!(
+            !engine
+                .current_diagnostics_for(&uri, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .iter()
+                .any(|d| d["severity"] == 1)
+        );
+        let consumer = root.join("consumer.py");
+        let consumer_text = "import value\nnumber: int = value.answer()\n";
+        std::fs::write(&consumer, consumer_text).unwrap();
+        let consumer_uri = url::Url::from_file_path(&consumer).unwrap().to_string();
+        engine.send_notification("textDocument/didOpen",serde_json::json!({"textDocument":{"uri":consumer_uri,"languageId":"python","version":1,"text":consumer_text}})).await.unwrap();
+        assert!(
+            !engine
+                .current_diagnostics_for(&consumer_uri, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .iter()
+                .any(|d| d["severity"] == 1)
+        );
+        engine
+            .send_notification(
+                "textDocument/didClose",
+                serde_json::json!({"textDocument":{"uri":uri}}),
+            )
+            .await
+            .unwrap();
+        std::fs::write(&file, "def answer():\n    return \"bad\"\n").unwrap();
+        engine
+            .send_notification(
+                "workspace/didChangeWatchedFiles",
+                serde_json::json!({"changes":[{"uri":uri,"type":2}]}),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let report = engine
+            .current_diagnostics_for(&consumer_uri, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(
+            report.iter().any(|d| d["severity"] == 1),
+            "retain={retain}: disk type error disappeared: {report:?}"
+        );
+    }
+}
