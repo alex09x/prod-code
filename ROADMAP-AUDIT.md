@@ -15,7 +15,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 1.3 Editor client | `prod-code lsp` bridges the editor to a remote language server and exits unsuccessfully on disconnect. | Recovery is an editor restart, not in-process replay of LSP state. Zero-allocation hot paths are not established by the recorded evidence. |
 | 1.4 Gateway | Session registry, command execution and JSON status in `gateway/src/lib.rs`. | The #433 repair reserves memory for concurrent new engines; this is admission control, not a hard limit on later analyzer growth. |
 | 2.1 Rust database | In-process analyzer and per-workspace resident databases in `engine-rust/src/lib.rs`. | Distinct worktrees retain distinct databases; memory is not a single shared dependency database. |
-| 2.2 Direct edits | Single-owner editing and divergent-worktree benchmark exist. The 2026-09-27 rerun completed the supplied 1,280-hover comparison with all successful-answer isolation checks passing and unchanged source-fixture path/content snapshots. | The original cold workload had 32 timeouts ([#408](https://github.com/alex09x/prod-code/issues/408)), which were not reproduced in the earlier baseline comparison; do not claim a 32-to-0 fix. The rerun still had 40 errors under seed capacity pressure and a 29,406.42 ms first-hover maximum with sufficient headroom. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for pressure and near-budget cold first responses. |
+| 2.2 Direct edits | Single-owner editing and divergent-worktree benchmark exist. The 2026-09-27 rerun completed the supplied 1,280-hover comparison with all successful-answer isolation checks passing and unchanged original fixture Git HEAD, tracked-file count and porcelain status. | The original cold workload had 32 timeouts ([#408](https://github.com/alex09x/prod-code/issues/408)), on the older deployed 0.3.15 gateway, which were not reproduced on `bf71e7d`; do not claim a 32-to-0 fix. The rerun still had 40 errors under seed capacity pressure and a 29,406.42 ms first-hover maximum with sufficient headroom. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for pressure and near-budget cold first responses. |
 | 2.3 File IDs | Explicit file-ID mask and edition-aware conversion in the Rust engine. | Existing tests cover the implementation; this audit did not exhaust all upstream analyzer ID states. |
 | 2.4 Observability | Request timing, host memory/disk snapshots and pressure logging. | The observed OOM motivated reservation-based admission (#433); production rollout and monitoring remain separate from passing injected-pressure tests. |
 | 3.1 Detection | Manifest and nested-project detection in `gateway/src/detect.rs` and MCP sync. Relative session hints resolve against the supplied checkout (#488). | Framework support still depends on the installed server, project configuration and build index. |
@@ -55,14 +55,14 @@ Paths shortened above are under `crates/prod-code-*`. The main integration evide
 the gateway live tests, MCP orchestration/analysis tests, native parameter tests and client CLI
 tests. Unit and mock coverage complements real-server checks; it does not replace them.
 
-## Checkbox reconciliation
-
 ## 2026-09-27 cold-load rerun
 
 The rerun used an unnamed 1,284-tracked-file Rust repository (1,251 synced files), 16
 diverged worktrees, 64 persistent clients, 1,280 hovers, four isolation groups, release
 builds, the same 128-core ARM Linux node, Rust 1.97.1, and the same SSH loopback tunnel for
-each comparison. The origin was prepared before the query wave, so full wall time and query
+each comparison. Baseline source: `bf71e7d89ed1f46c0f8112012016860216047ece`; audited
+source: `58e7f538af87f86b5ef9d01078824c603d2d7c9a`. The audited revision prepared the
+origin before the query wave, so full wall time and query
 wave wall time are separate. “Cold” means fresh private gateway/storage, not wiped OS,
 toolchain, package or compiler caches.
 
@@ -75,23 +75,22 @@ toolchain, package or compiler caches.
 | Current cold, sufficient disk headroom | 237.185 s | 55.86 s | 0 | 8.07 ms | 28,815.07 ms |
 | Current warm after headroom cold | 81.667 s | 0.84 s | 0 | 24.64 ms | 34.68 ms |
 
-All successful-answer isolation checks passed, source-fixture path and content snapshots
-were unchanged in all runs, and owned gateway/storage cleanup completed in all runs. The
+All successful-answer isolation checks passed, the original fixture's Git HEAD, tracked-file
+count and porcelain status were unchanged in all runs, and owned gateway/storage cleanup completed in all runs. The
 capacity-pressure run exited 1; all other runs exited 0. The headroom run started with
 246,192,762,880 bytes free of 980,122,034,176 and seeded all 16 copies. Its first-hover
-maximum was 29,406.42 ms, close to the 30 s budget. Two final cache copies were denied by
+maximum was 29,406.42 ms, close to the 30 s budget. In the capacity-pressure run, two final cache copies were denied by
 the existing 20%-free safeguard, preserving disk; subsequent unseeded loads took 67 s and
-74 s. The historical 32 timeouts from the older deployed gateway were not reproduced in
-the earlier baseline comparison; this rerun must not be described as a 32-to-0 fix.
+74 s. The historical 32 timeouts from the older deployed 0.3.15 gateway were not reproduced in
+the `bf71e7d` comparison; this rerun must not be described as a 32-to-0 fix.
 
 This is one A/B run per condition, so it provides no statistical speedup guarantee and no
 native-test runtime speedup claim. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for capacity pressure and near-budget
 cold first responses. [#516](https://github.com/alex09x/prod-code/issues/516) remains open for the broader roadmap; these observations do not
 complete an entire phase. Native helpers now exercise production logging defaults (#521),
-without a measured runtime-improvement claim. Full proposal validation for documentation
-may return unsupported non-source diagnostics; the documentation check therefore records
-that limitation and relies on static whole-diff and no-private-data checks. No Rust
-compilation is warranted for these documentation-only changes.
+without a measured runtime-improvement claim.
+
+## Checkbox reconciliation
 
 The following 14 checkboxes changed from `[x]` to `[~]` (#480). Their delivered behavior and recorded
 evidence remain above; the original mechanism or required scope remains open.
