@@ -55,6 +55,41 @@ Paths shortened above are under `crates/prod-code-*`. The main integration evide
 the gateway live tests, MCP orchestration/analysis tests, native parameter tests and client CLI
 tests. Unit and mock coverage complements real-server checks; it does not replace them.
 
+## Checkbox reconciliation
+
+The following checkboxes changed from `[x]` to `[~]`. Their delivered behavior and recorded
+evidence remain above; the original mechanism or required scope remains open.
+
+- **1.1**: length framing, compatibility defaults and loopback TCP do not implement NUL framing,
+  negotiated capabilities/version, or Unix-socket/named-pipe transport.
+- **1.3**: editor restart is not in-process reconnect, and the record does not establish
+  zero-allocation hot paths.
+- **3.3**: exit detection and request timeouts are not the specified periodic health ping.
+- **3.6**: copied virtual environments and bundled typeshed are not a shared virtual-environment
+  stub cache.
+- **5.1**: client-directed placement avoids, rather than implements, the gateway dispatcher and
+  `WireMessage::Redirect` mechanism.
+- **5.2**: seed-address gossip/cache discovery is a substitute for, not an implementation of,
+  DNS/mDNS/SRV publication.
+- **5.4**: per-workspace out-of-process macro servers are not a sandboxed shared worker farm.
+- **6.3**: seeded per-worktree artifacts and per-user caches are not a shared read-only dependency
+  artifact cache.
+- **7.1 `extract_function`**: token-matched copies, with optional other-file search, are not
+  automatic workspace-wide structural duplicate detection.
+- **7.1 `extract_trait` / `extract_interface`**: imports for moved methods do not update caller
+  type annotations, and generic implementations are refused.
+- **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
+  the promised general `for`/`while` iterator/fold transformation.
+- **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM storage
+  is optional, not the specified in-memory RAM workspace mechanism.
+- **7.5**: `code_dead_code` counts references; it is not whole-program reachability.
+- **7.6**: planning and direct all-or-rollback writes are not an atomic multi-repository
+  `WorkspaceEdit`.
+
+Other completed checkboxes remain unchanged when their stated language/input restrictions have
+attributable implementation and verification evidence; this reconciliation does not turn a lack
+of a fresh audit rerun into a failure.
+
 ## Remaining feature scope
 
 The custom Rust-only operations still need independently specified ports to Go, TypeScript,
