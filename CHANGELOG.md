@@ -31,6 +31,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Linux overlay shadow commands drop mount-time namespace capabilities before running (#491),
+  so read-only files are refused as in ordinary execution. Overlay support now requires
+  `setpriv` on the gateway PATH; the capability probe reports when it is unavailable.
 - Multi-file Rust validation checks candidate definitions before warning about a removed
   name (#483). Relocated declarations and names that resolve in the complete proposal no
   longer count as stale callers; unresolved uses and malformed definition evidence still warn.
