@@ -380,8 +380,8 @@ fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
     let at = |idx: usize| chars.get(idx).map(|&(_, c)| c);
     let offset = |idx: usize| chars.get(idx).map_or(text.len(), |&(o, _)| o);
-    let ident_start = |c: char| c == '_' || c.is_alphabetic();
-    let ident_char = |c: char| c == '_' || c.is_alphanumeric();
+    let ident_start = |c: char| c == '_' || unicode_ident::is_xid_start(c);
+    let ident_char = |c: char| c == '_' || unicode_ident::is_xid_continue(c);
 
     let mut tokens = Vec::new();
     let mut i = 0;
@@ -534,6 +534,9 @@ fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
 
 /// Whether `line` mentions `name` as a whole identifier.
 fn mentions_identifier(line: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
     let bytes = line.as_bytes();
     let mut from = 0;
     while let Some(pos) = line[from..].find(name) {
@@ -1739,5 +1742,21 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
         assert_eq!(reports[0].warnings, 1);
         assert_eq!(reports[0].items[0].line, 3);
         assert_eq!(reports[0].items[0].col, 11);
+    }
+}
+
+#[cfg(test)]
+mod identifier_boundary_regressions {
+    #[test]
+    fn combining_marks_remain_in_the_identifier() {
+        let tokens = super::rust_code_identifiers(
+            "fn run() { covers\u{0301}(); r#covers\u{0301}(); covers(); }",
+        );
+        let names: Vec<_> = tokens.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["fn", "run", "covers\u{0301}", "covers\u{0301}", "covers"]
+        );
+        assert!(!super::mentions_identifier("covers()", ""));
     }
 }

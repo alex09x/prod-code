@@ -251,7 +251,7 @@ pub fn work() {}
 "#;
 
     const LIVE_CALLER: &str = r#"pub fn call() {
-    covers();
+    crate::covers();
 }
 "#;
 
@@ -310,6 +310,21 @@ pub fn work() {}
     }
     assert!(loaded, "analyzer loaded the workspace");
 
+    let compiled = std::process::Command::new("cargo")
+        .args(["check", "--quiet"])
+        .current_dir(&root)
+        .output()
+        .expect("compiler checks the original fixture");
+    assert!(
+        compiled.status.success(),
+        "the original caller must compile: {}",
+        String::from_utf8_lossy(&compiled.stderr)
+    );
+    let baseline = prod_code_mcp::diagnostics::diagnostics(remote, &root, &caller_file)
+        .await
+        .expect("valid original caller diagnostics");
+    assert_eq!(baseline.errors, 0, "{}", baseline.render());
+
     let edits = vec![(lib.clone(), LIVE_LIB_PROPOSED.to_string())];
     let also_check = vec![workspace_file.clone(), caller_file.clone()];
 
@@ -337,11 +352,10 @@ pub fn work() {}
         reports[1].render()
     );
 
-    let caller_flagged = reports[2].warnings == 1
-        || reports[2].items.iter().any(|d| {
-            d.code.as_deref() == Some(STALE_REFERENCE)
-                || d.note.as_deref().is_some_and(|n| n.contains("covers"))
-        });
+    let caller_flagged = reports[2].items.iter().any(|d| {
+        d.code.as_deref() == Some(STALE_REFERENCE)
+            || d.note.as_deref().is_some_and(|n| n.contains("covers"))
+    });
     assert!(
         caller_flagged,
         "caller.rs must flag real removed call: {}",
