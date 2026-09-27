@@ -13,8 +13,8 @@ use prod_code_mcp::signature::{Modifiers, Param, SignatureChange};
 use prod_code_protocol::{
     ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, WireMessage,
 };
-use prod_code_testkit::{ScriptedGateway, answers};
 use prod_code_testkit::gopls::{GoModule, GoplsBridge, require_go_toolchain, uri};
+use prod_code_testkit::{ScriptedGateway, answers};
 use serde_json::json;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -1177,7 +1177,10 @@ async fn public_mcp_refuses_unsafe_receiver_changes_and_preserves_every_byte() {
 #[tokio::test]
 async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
     let fixture = GoModule::new(&[
-        ("go.mod", "module example.com/implementationevidence\n\ngo 1.22\n"),
+        (
+            "go.mod",
+            "module example.com/implementationevidence\n\ngo 1.22\n",
+        ),
         (
             "lib.go",
             "package main\n\ntype Meter struct{}\n\nfunc (meter Meter) Add(qty int) int { return qty }\n",
@@ -1189,7 +1192,9 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
     ]);
     let location = |rel: &str, needle: &str| {
         let text = fixture.read(rel);
-        let offset = text.find(needle).unwrap_or_else(|| panic!("{needle} in {rel}"));
+        let offset = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} in {rel}"));
         let before = &text[..offset];
         let line = before.matches('\n').count() as u32;
         let character = before.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
@@ -1214,8 +1219,14 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
         "range": { "start": { "line": 0, "character": 0 } }
     }]);
     for (implementation, said) in [
-        (answers::failure("implementation unavailable"), "could not list"),
-        (json!({ "uri": uri(&fixture.path("lib.go")) }), "no file or start"),
+        (
+            answers::failure("implementation unavailable"),
+            "could not list",
+        ),
+        (
+            json!({ "uri": uri(&fixture.path("lib.go")) }),
+            "no file or start",
+        ),
         (external, "interface implementation evidence"),
     ] {
         let declaration = declaration.clone();
@@ -1251,8 +1262,12 @@ async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
     .await
     .expect("a null implementation result permits an ordinary receiver method");
     let rendered = text_of(&preview);
-    assert!(rendered.contains("func Add(qty int, extra int) int"), "{rendered}");
-    assert_eq!(fixture.snapshot(), untouched, "a null implementation preview wrote");
+    assert!(rendered.contains("now: (qty int, extra int)"), "{rendered}");
+    assert_eq!(
+        fixture.snapshot(),
+        untouched,
+        "a null implementation preview wrote"
+    );
 }
 
 /// The public MCP tool `code_change_signature` reaches the Go adapter through

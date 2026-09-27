@@ -31,7 +31,7 @@ impl Gateway {
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
-            .env("RUST_LOG", "info")
+            .env_remove("RUST_LOG")
             .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -841,12 +841,12 @@ async fn receiver_refusals_run_through_the_source_built_gateway() {
         (
             "Direct(n",
             serde_json::json!(["n", "extra: int = 0"]),
-            "interface declaration",
+            "interface implementation evidence",
         ),
         (
             "Dynamic(n",
             serde_json::json!(["n", "extra: int = 0"]),
-            "interface declaration",
+            "interface implementation evidence",
         ),
         (
             "Generic(n",
