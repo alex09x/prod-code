@@ -695,10 +695,10 @@ pub fn load_sync_cache(root: &Path) -> SyncCache {
 
 pub fn load_sync_cache_for(root: &Path, node: &str) -> SyncCache {
     let path = cache_file_path(root, node);
-    if let Ok(data) = std::fs::read(&path) {
-        if let Ok(cache) = serde_json::from_slice::<SyncCache>(&data) {
-            return cache;
-        }
+    if let Ok(data) = std::fs::read(&path)
+        && let Ok(cache) = serde_json::from_slice::<SyncCache>(&data)
+    {
+        return cache;
     }
     SyncCache::default()
 }
@@ -1827,16 +1827,16 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
             (false, raw_path.trim_matches('"'), None)
         };
 
-        if let Some(old) = old_path {
-            if !old.starts_with(".git") {
-                deltas.push(FileDelta {
-                    relative_path: old.to_string(),
-                    content: None,
-                    is_executable: false,
-                });
-                if cache.files.remove(old).is_some() {
-                    cache_modified = true;
-                }
+        if let Some(old) = old_path
+            && !old.starts_with(".git")
+        {
+            deltas.push(FileDelta {
+                relative_path: old.to_string(),
+                content: None,
+                is_executable: false,
+            });
+            if cache.files.remove(old).is_some() {
+                cache_modified = true;
             }
         }
 
@@ -1854,38 +1854,38 @@ fn collect_git_dirty_files(root: &Path, use_cache: bool) -> Result<Vec<FileDelta
             if cache.files.remove(rel_path).is_some() {
                 cache_modified = true;
             }
-        } else if full_path.is_file() {
-            if let Ok(metadata) = full_path.metadata() {
-                let size = metadata.len();
-                if size > MAX_FILE_SIZE {
+        } else if full_path.is_file()
+            && let Ok(metadata) = full_path.metadata()
+        {
+            let size = metadata.len();
+            if size > MAX_FILE_SIZE {
+                continue;
+            }
+            if rel_path.ends_with(".json") && size > MAX_JSON_CONFIG_SIZE {
+                continue;
+            }
+
+            #[cfg(unix)]
+            let is_executable = {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let is_executable = false;
+
+            if let Ok(content) = std::fs::read(&full_path) {
+                let entry = sync_file_entry(&metadata, &content);
+                if cache.files.get(rel_path) == Some(&entry) {
+                    // File was already synced and has not changed.
                     continue;
                 }
-                if rel_path.ends_with(".json") && size > MAX_JSON_CONFIG_SIZE {
-                    continue;
-                }
-
-                #[cfg(unix)]
-                let is_executable = {
-                    use std::os::unix::fs::PermissionsExt;
-                    metadata.permissions().mode() & 0o111 != 0
-                };
-                #[cfg(not(unix))]
-                let is_executable = false;
-
-                if let Ok(content) = std::fs::read(&full_path) {
-                    let entry = sync_file_entry(&metadata, &content);
-                    if cache.files.get(rel_path) == Some(&entry) {
-                        // File was already synced and has not changed.
-                        continue;
-                    }
-                    deltas.push(FileDelta {
-                        relative_path: rel_path.to_string(),
-                        content: Some(content),
-                        is_executable,
-                    });
-                    cache.files.insert(rel_path.to_string(), entry);
-                    cache_modified = true;
-                }
+                deltas.push(FileDelta {
+                    relative_path: rel_path.to_string(),
+                    content: Some(content),
+                    is_executable,
+                });
+                cache.files.insert(rel_path.to_string(), entry);
+                cache_modified = true;
             }
         }
     }
@@ -1999,10 +1999,11 @@ fn walk_dir(target_dir: &Path, canonical_root: &Path, deltas: &mut Vec<FileDelta
             continue;
         }
 
-        if let Ok(metadata) = entry.metadata() {
-            if rel_path.ends_with(".json") && metadata.len() > MAX_JSON_CONFIG_SIZE {
-                continue;
-            }
+        if let Ok(metadata) = entry.metadata()
+            && rel_path.ends_with(".json")
+            && metadata.len() > MAX_JSON_CONFIG_SIZE
+        {
+            continue;
         }
 
         if let Ok(content) = std::fs::read(path) {
