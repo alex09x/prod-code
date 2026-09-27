@@ -5,11 +5,11 @@
 //! field's type as written, every field required, and `build` naming the first one that was never
 //! set. So nothing here guesses. The declaration is located with the analyzer's document symbols
 //! and read from the file (hover elides fields past the tenth), the fields are read from its
-//! tokens, and every shape the generator cannot be sure of — generic parameters, tuple and unit
-//! structs, enums, unions, `cfg`-dependent fields, attribute macros that may rewrite the struct,
-//! `Self` in a field type — is refused with the reason. A name the builder would introduce that is
-//! already taken in the file, in the workspace index or (when verifying) in the scope the builder
-//! would be inserted into is refused as well.
+//! tokens, and every shape the generator cannot be sure of — tuple and unit structs, enums,
+//! unions, `cfg`-dependent fields, attribute macros that may rewrite the struct, unsupported const
+//! expressions, and `Self` where it would change meaning — is refused with the reason. A name the
+//! builder would introduce that is already taken in the file, in the workspace index or (when
+//! verifying) in the scope the builder would be inserted into is refused as well.
 //!
 //! This is a preview: nothing is written. Verification places the builder right after the
 //! declaration in an in-memory overlay, next to a deliberate error. The analyzer's silence about
@@ -503,11 +503,24 @@ pub fn plan(
 struct Declaration {
     name: String,
     visibility: String,
+    generics: Generics,
+    where_clause: String,
     fields: Vec<BuilderField>,
     first_line: u32,
     last_line: u32,
     indent: String,
     notes: Vec<String>,
+}
+
+/// Generic syntax copied to the builder declaration and adapted for its impl and type uses.
+#[derive(Debug, Clone, Default)]
+struct Generics {
+    /// The declaration's `<...>`, including legal type and const defaults.
+    declaration: String,
+    /// The impl's `<...>`, with type and const defaults removed as Rust requires.
+    impl_declaration: String,
+    /// The original type's arguments, containing parameter names only.
+    arguments: String,
 }
 
 /// Reads the declaration whose name is token `name_at`, refusing every shape it cannot be sure of.
@@ -578,15 +591,23 @@ fn read_declaration(src: &Source<'_>, name_at: usize) -> Result<Declaration> {
             "`#[{path}]` is taken for a derive helper; if it is an attribute macro that changes the fields, only verification can show it"
         ));
     }
-    let open = name_at + 1;
+    let mut next = name_at + 1;
+    let generics = if src.is(next, "<") {
+        let (generics, close) = read_generics(src, next, &name)?;
+        next = close + 1;
+        generics
+    } else {
+        Generics::default()
+    };
+    let (where_clause, open) = if src.is(next, "where") {
+        let open = struct_body_after_where(src, next, &name)?;
+        validate_rebound_syntax(src, next, open, &name, "where clause")?;
+        (src.spell(next, open), open)
+    } else {
+        (String::new(), next)
+    };
     if !src.is(open, "{") {
         match src.tokens.get(open).map(|_| src.t(open)) {
-            Some("<") => bail!(
-                "`{name}` has generic parameters; a builder is generated only for a non-generic struct"
-            ),
-            Some("where") => bail!(
-                "`{name}` has a `where` clause; a builder is generated only for a non-generic struct"
-            ),
             Some("(") => bail!(
                 "`{name}` is a tuple struct; a builder is generated only for a struct with named fields"
             ),
@@ -646,12 +667,266 @@ fn read_declaration(src: &Source<'_>, name_at: usize) -> Result<Declaration> {
     Ok(Declaration {
         name,
         visibility,
+        generics,
+        where_clause,
         fields,
         first_line: src.line(begin),
         last_line: src.line(close),
         indent,
         notes,
     })
+}
+
+/// Reads `<...>` and derives each spelling Rust needs without changing bounds or defaults.
+fn read_generics(src: &Source<'_>, open: usize, owner: &str) -> Result<(Generics, usize)> {
+    let close = close_angle(src, open)
+        .with_context(|| format!("the generic parameters of `{owner}` are not closed"))?;
+    validate_rebound_syntax(src, open + 1, close, owner, "generic parameters")?;
+    let mut parameters = Vec::new();
+    let mut from = open + 1;
+    let mut brackets = 0i32;
+    let mut angles = 0i32;
+    for i in open + 1..=close {
+        let split = if i == close {
+            true
+        } else {
+            match src.t(i) {
+                "(" | "[" | "{" if src.tokens[i].kind == Kind::Punct => brackets += 1,
+                ")" | "]" | "}" if src.tokens[i].kind == Kind::Punct => brackets -= 1,
+                "<" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles += 1,
+                ">" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles -= 1,
+                _ => {}
+            }
+            src.is(i, ",") && brackets == 0 && angles == 0
+        };
+        if split {
+            if from == i {
+                if i != close {
+                    bail!(
+                        "`{owner}` has an empty generic parameter on line {}",
+                        src.line(i)
+                    );
+                }
+            } else {
+                parameters.push(read_generic_parameter(src, from, i, owner)?);
+            }
+            from = i + 1;
+        }
+    }
+    if parameters.is_empty() {
+        bail!("`{owner}` has an empty generic parameter list");
+    }
+    Ok((
+        Generics {
+            declaration: src.spell(open, close + 1),
+            impl_declaration: format!(
+                "<{}>",
+                parameters
+                    .iter()
+                    .map(|p| p.impl_parameter.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            arguments: format!(
+                "<{}>",
+                parameters
+                    .iter()
+                    .map(|p| p.argument.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        },
+        close,
+    ))
+}
+
+struct GenericParameter {
+    impl_parameter: String,
+    argument: String,
+}
+
+fn read_generic_parameter(
+    src: &Source<'_>,
+    from: usize,
+    to: usize,
+    owner: &str,
+) -> Result<GenericParameter> {
+    if src.is(from, "#") {
+        bail!(
+            "`{owner}` has an attributed generic parameter on line {}; attributes on generic parameters are not supported",
+            src.line(from)
+        );
+    }
+    let top_level = |needle: &str| {
+        let mut brackets = 0i32;
+        let mut angles = 0i32;
+        for i in from..to {
+            if src.is(i, needle) && brackets == 0 && angles == 0 {
+                return Some(i);
+            }
+            match src.t(i) {
+                "(" | "[" | "{" if src.tokens[i].kind == Kind::Punct => brackets += 1,
+                ")" | "]" | "}" if src.tokens[i].kind == Kind::Punct => brackets -= 1,
+                "<" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles += 1,
+                ">" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles -= 1,
+                _ => {}
+            }
+        }
+        None
+    };
+    let equals = top_level("=");
+    let parameter_end = equals.unwrap_or(to);
+    let argument = if src.tokens[from].kind == Kind::Lifetime {
+        if equals.is_some() {
+            bail!(
+                "lifetime parameter `{}` of `{owner}` cannot have a default",
+                src.t(from)
+            );
+        }
+        if from + 1 < parameter_end && !src.is(from + 1, ":") {
+            bail!(
+                "cannot read lifetime parameter `{}` of `{owner}` on line {}",
+                src.t(from),
+                src.line(from)
+            );
+        }
+        if src.is(from + 1, ":") && from + 2 >= parameter_end {
+            bail!(
+                "lifetime parameter `{}` of `{owner}` has no bound",
+                src.t(from)
+            );
+        }
+        src.t(from).to_string()
+    } else if src.is(from, "const") {
+        if from + 1 >= to || src.tokens[from + 1].kind != Kind::Ident {
+            bail!(
+                "cannot read a const parameter of `{owner}` on line {}",
+                src.line(from)
+            );
+        }
+        let colon = top_level(":").filter(|&i| i == from + 2).with_context(|| {
+            format!(
+                "cannot read const parameter `{}` of `{owner}`; expected `const NAME: TYPE`",
+                src.t(from + 1)
+            )
+        })?;
+        if colon + 1 >= parameter_end {
+            bail!(
+                "const parameter `{}` of `{owner}` has no type",
+                src.t(from + 1)
+            );
+        }
+        if let Some(eq) = equals {
+            validate_const_default(src, eq + 1, to, owner, src.t(from + 1))?;
+        }
+        src.t(from + 1).to_string()
+    } else if src.tokens[from].kind == Kind::Ident {
+        if from + 1 < parameter_end && !src.is(from + 1, ":") {
+            bail!(
+                "cannot read type parameter `{}` of `{owner}` on line {}; expected a bound or default",
+                src.t(from),
+                src.line(from)
+            );
+        }
+        if src.is(from + 1, ":") && from + 2 >= parameter_end {
+            bail!("type parameter `{}` of `{owner}` has no bound", src.t(from));
+        }
+        src.t(from).to_string()
+    } else {
+        bail!(
+            "cannot read a generic parameter of `{owner}` on line {}",
+            src.line(from)
+        );
+    };
+    Ok(GenericParameter {
+        impl_parameter: src.spell(from, parameter_end),
+        argument,
+    })
+}
+
+fn validate_const_default(
+    src: &Source<'_>,
+    from: usize,
+    to: usize,
+    owner: &str,
+    parameter: &str,
+) -> Result<()> {
+    let simple = is_literal_or_const_path(src, from, to);
+    if !simple {
+        bail!(
+            "const parameter `{parameter}` of `{owner}` has an unsupported default expression; use a literal or const path"
+        );
+    }
+    Ok(())
+}
+
+fn validate_rebound_syntax(
+    src: &Source<'_>,
+    from: usize,
+    to: usize,
+    owner: &str,
+    place: &str,
+) -> Result<()> {
+    for i in from..to {
+        if src.tokens[i].kind == Kind::Ident && src.t(i) == "Self" {
+            bail!(
+                "the {place} of `{owner}` spells `Self` (line {}), which would name the builder inside its impl; spell `{owner}` explicitly",
+                src.line(i)
+            );
+        }
+        if src.is(i, "!") && i > from && src.tokens[i - 1].kind == Kind::Ident {
+            bail!(
+                "the {place} of `{owner}` invokes a macro on line {}; macro-expanded generic syntax is not supported",
+                src.line(i)
+            );
+        }
+        if src.is(i, "{") {
+            bail!(
+                "the {place} of `{owner}` has an unsupported const expression on line {}; const blocks are not supported",
+                src.line(i)
+            );
+        }
+    }
+    Ok(())
+}
+
+fn close_angle(src: &Source<'_>, open: usize) -> Option<usize> {
+    let mut angles = 0i32;
+    let mut brackets = 0i32;
+    for i in open..src.tokens.len() {
+        match src.t(i) {
+            "(" | "[" | "{" if src.tokens[i].kind == Kind::Punct => brackets += 1,
+            ")" | "]" | "}" if src.tokens[i].kind == Kind::Punct => brackets -= 1,
+            "<" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles += 1,
+            ">" if src.tokens[i].kind == Kind::Punct && brackets == 0 => {
+                angles -= 1;
+                if angles == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn struct_body_after_where(src: &Source<'_>, from: usize, owner: &str) -> Result<usize> {
+    let mut angles = 0i32;
+    let mut brackets = 0i32;
+    for i in from + 1..src.tokens.len() {
+        match src.t(i) {
+            "{" if src.tokens[i].kind == Kind::Punct && angles == 0 && brackets == 0 => {
+                return Ok(i);
+            }
+            "(" | "[" | "{" if src.tokens[i].kind == Kind::Punct => brackets += 1,
+            ")" | "]" | "}" if src.tokens[i].kind == Kind::Punct => brackets -= 1,
+            "<" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles += 1,
+            ">" if src.tokens[i].kind == Kind::Punct && brackets == 0 => angles -= 1,
+            ";" if angles == 0 && brackets == 0 => break,
+            _ => {}
+        }
+    }
+    bail!("cannot find the body after the `where` clause of `{owner}`")
 }
 
 /// One field: tokens `from..to` of the body, between commas.
@@ -723,6 +998,7 @@ fn read_field(src: &Source<'_>, from: usize, to: usize, owner: &str) -> Result<B
             _ => {}
         }
     }
+    validate_field_type(src, ty_from, to, owner, &name)?;
     Ok(BuilderField {
         setter: name.clone(),
         ty: src.spell(ty_from, to),
@@ -730,10 +1006,70 @@ fn read_field(src: &Source<'_>, from: usize, to: usize, owner: &str) -> Result<B
     })
 }
 
+fn validate_field_type(
+    src: &Source<'_>,
+    from: usize,
+    to: usize,
+    owner: &str,
+    field: &str,
+) -> Result<()> {
+    for i in from..to {
+        if src.is(i, "!") && i > from && src.tokens[i - 1].kind == Kind::Ident {
+            bail!(
+                "the type of field `{field}` of `{owner}` invokes a macro on line {}; macro-expanded field types are not supported",
+                src.line(i)
+            );
+        }
+        if src.is(i, ";") {
+            let mut end = i + 1;
+            while end < to && !src.is(end, "]") {
+                end += 1;
+            }
+            let simple = is_literal_or_const_path(src, i + 1, end);
+            if !simple {
+                bail!(
+                    "the type of field `{field}` of `{owner}` has an unsupported const expression on line {}; array lengths must be a literal or const path",
+                    src.line(i)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_literal_or_const_path(src: &Source<'_>, from: usize, to: usize) -> bool {
+    if from + 1 == to && src.tokens[from].kind == Kind::Literal {
+        return true;
+    }
+    let mut i = from;
+    if src.is(i, "::") {
+        i += 1;
+    }
+    if i >= to || src.tokens[i].kind != Kind::Ident {
+        return false;
+    }
+    i += 1;
+    while i < to {
+        if !src.is(i, "::") || i + 1 >= to || src.tokens[i + 1].kind != Kind::Ident {
+            return false;
+        }
+        i += 2;
+    }
+    true
+}
+
 /// The builder, its error type and their impls, one line per element of the result joined with
 /// `newline`, every line indented like the declaration.
 fn render_code(decl: &Declaration, builder: &str, error: &str, newline: &str) -> String {
     let ty = &decl.name;
+    let type_use = format!("{ty}{}", decl.generics.arguments);
+    let builder_declaration = format!("{builder}{}", decl.generics.declaration);
+    let builder_use = format!("{builder}{}", decl.generics.arguments);
+    let where_suffix = if decl.where_clause.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", decl.where_clause)
+    };
     let shown = bare(ty);
     let vis = if decl.visibility.is_empty() {
         String::new()
@@ -754,7 +1090,9 @@ fn render_code(decl: &Declaration, builder: &str, error: &str, newline: &str) ->
     if snake {
         push("#[allow(non_snake_case)]".to_string());
     }
-    push(format!("{vis}struct {builder} {{"));
+    push(format!(
+        "{vis}struct {builder_declaration}{where_suffix} {{"
+    ));
     for f in &decl.fields {
         push(format!("    {}: ::core::option::Option<{}>,", f.name, f.ty));
     }
@@ -769,7 +1107,12 @@ fn render_code(decl: &Declaration, builder: &str, error: &str, newline: &str) ->
         allowed.push("non_snake_case");
     }
     push(format!("#[allow({})]", allowed.join(", ")));
-    push(format!("impl {builder} {{"));
+    let impl_prefix = if decl.generics.impl_declaration.is_empty() {
+        "impl".to_string()
+    } else {
+        format!("impl{}", decl.generics.impl_declaration)
+    };
+    push(format!("{impl_prefix} {builder_use}{where_suffix} {{"));
     push("    /// A builder with no field set.".to_string());
     push(format!("    {vis}fn new() -> Self {{"));
     if decl.fields.is_empty() {
@@ -804,7 +1147,7 @@ fn render_code(decl: &Declaration, builder: &str, error: &str, newline: &str) ->
         "    /// The `{shown}`, or the first field in declaration order that was never set."
     ));
     push(format!(
-        "    {vis}fn build(self) -> ::core::result::Result<{ty}, {error}> {{"
+        "    {vis}fn build(self) -> ::core::result::Result<{type_use}, {error}> {{"
     ));
     if decl.fields.is_empty() {
         push(format!("        ::core::result::Result::Ok({ty} {{}})"));
@@ -929,10 +1272,7 @@ async fn verify(
     let canary = [
         format!("{ind}#[allow(dead_code)]"),
         format!("{ind}fn __prod_code_scope_canary() {{"),
-        format!(
-            "{ind}    let _ = {}::new().{CANARY_METHOD}();",
-            plan.builder_name
-        ),
+        format!("{ind}    let _ = ().{CANARY_METHOD}();"),
         format!("{ind}}}"),
     ];
     let (probe, first) = insert_after(&plan.file_text, plan.code_lines.1, &canary.join(nl), nl);
@@ -1520,21 +1860,6 @@ fn other() {}
     #[test]
     fn unsupported_shapes_are_refused_with_the_reason() {
         for (text, name, expected) in [
-            (
-                "pub struct P<T> {\n    a: T,\n}\n",
-                "P",
-                "generic parameters",
-            ),
-            (
-                "pub struct P<'a> {\n    a: &'a str,\n}\n",
-                "P",
-                "generic parameters",
-            ),
-            (
-                "pub struct P where u8: Copy {\n    a: u8,\n}\n",
-                "P",
-                "`where` clause",
-            ),
             ("pub struct P(u8, u16);\n", "P", "tuple struct"),
             ("pub struct P;\n", "P", "unit struct"),
             ("pub enum P {\n    A,\n}\n", "P", "is an enum"),

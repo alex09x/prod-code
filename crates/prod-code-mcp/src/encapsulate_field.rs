@@ -508,7 +508,7 @@ pub async fn encapsulate(
     let by_value = by_value.unwrap_or_else(|| returns_by_value(&decl.ty));
 
     // Every reference outside the declaring file, classified by what it does there.
-    let (name_line, name_col) = crate::signature::line_col_at(&text, decl.name_at);
+    let (name_line, name_col) = crate::signature::position_at(&text, decl.name_at)?;
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     let (mut reads, mut writes, mut chained_reads, mut left_in_file) = (0, 0, 0, 0);

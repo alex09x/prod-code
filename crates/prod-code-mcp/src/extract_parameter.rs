@@ -689,7 +689,7 @@ async fn hover_type(
     let selected = &text[from..to];
     let start = from + (selected.len() - selected.trim_start().len());
     let end = from + selected.trim_end().len();
-    let (line, col) = crate::signature::line_col_at(text, start);
+    let (line, col) = crate::signature::line_col_at(text, start)?;
     let hover = crate::tools::execute_lsp_query(
         remote,
         root,
@@ -716,7 +716,7 @@ async fn hover_type(
         if covered
             != (
                 Some((line, col)),
-                Some(crate::signature::line_col_at(text, end)),
+                Some(crate::signature::line_col_at(text, end)?),
             )
         {
             return None;
@@ -836,17 +836,15 @@ pub async fn extract(
     // What a call site spells: gopls names a method `(*Store).Limit`, its callers write `Limit`.
     let bare = syntax.bare_name(&callee).to_string();
     let (fn_offset, open, close) = if syntax == Syntax::Rust {
+        // A byte offset in the line, not a column: text before the name can be wider in bytes
+        // than in UTF-16 units (#456).
         let fn_offset = {
-            let lines: Vec<&str> = text.lines().collect();
-            let head = lines
-                .get(fn_start as usize - 1)
+            let line_start = crate::signature::offset_of(&text, fn_start, 1)
                 .context("the declaration's first line is not in the file")?;
-            let at = head
-                .find(&format!("fn {callee}"))
-                .map(|i| i + 3)
-                .with_context(|| format!("`{callee}` is not a function"))?;
-            crate::signature::offset_of(&text, fn_start, at as u32 + 1)
-                .context("the declaration is not where the analyzer put it")?
+            let head = text[line_start..].lines().next().unwrap_or_default();
+            head.find(&format!("fn {callee}"))
+                .map(|i| line_start + i + 3)
+                .with_context(|| format!("`{callee}` is not a function"))?
         };
         let (_, open, close) = crate::signature::param_span(&text, fn_offset)
             .with_context(|| format!("`{callee}` has no parameter list"))?;
@@ -971,7 +969,7 @@ pub async fn extract(
         syntax.with_parameter(&text[open..close], &parameter),
     ));
 
-    let (fn_line, fn_col) = crate::signature::line_col_at(&text, fn_offset);
+    let (fn_line, fn_col) = crate::signature::position_at(&text, fn_offset)?;
     let mut unmatched = Vec::new();
     // A C or C++ function is usually declared in a header and defined in a source file, a
     // method in its class and defined outside it. The declaration must take the parameter too

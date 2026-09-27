@@ -4910,3 +4910,229 @@ async fn primary_review_module_path_does_not_override_a_different_member_owner()
         "a type member is not a free function of the containing module: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn invalid_rename_coordinates_are_refused_before_any_analyzer_request_or_write() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (line, character) in [
+        (0_u64, 8_u64),
+        (1, 0),
+        (u32::MAX as u64 + 2, 8),
+        (1, u32::MAX as u64 + 9),
+    ] {
+        for option in ["force", "comments", "accessors"] {
+            let ws = workspace();
+            let before = "pub fn old_name() {}\n";
+            let lib = write(&ws, "src/lib.rs", before);
+            commit(&ws);
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
+            let path = lib.clone();
+            let remote = scripted_gateway(Arc::new(move |method, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                match method {
+                    "textDocument/rename" => {
+                        answers::whole_file(&path, before, "pub fn new_name() {}\n")
+                    }
+                    "textDocument/diagnostic" => answers::no_diagnostics(),
+                    _ => serde_json::Value::Null,
+                }
+            }))
+            .await;
+            let mut args = serde_json::json!({"path": "src/lib.rs", "line": line, "character": character, "new_name": "new_name"});
+            args[option] = serde_json::json!(true);
+            let result = execute_tool(remote, &ws.root(), "code_rename", args).await;
+            assert_eq!(
+                std::fs::read_to_string(&lib).unwrap(),
+                before,
+                "{line}:{character} {option}: {result:?}"
+            );
+            let error = result.expect_err("invalid coordinate must be rejected before dispatch");
+            assert!(
+                error.to_string().contains("one-based coordinate"),
+                "{error:#}"
+            );
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                0,
+                "invalid input reached the analyzer"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn advertised_position_tools_reject_invalid_numbers_before_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let ws = rust_workspace("pub fn old_name() {}\n");
+    let before = std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let remote = scripted_gateway(Arc::new(move |_, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        serde_json::Value::Null
+    }))
+    .await;
+    for tool in prod_code_mcp::tools::list_tools() {
+        for field in ["line", "character", "end_line", "end_character"] {
+            if tool.input_schema["properties"].get(field).is_none() {
+                continue;
+            }
+            assert_eq!(tool.input_schema["properties"][field]["minimum"], 1);
+            assert_eq!(tool.input_schema["properties"][field]["maximum"], u32::MAX);
+            for invalid in [
+                serde_json::json!(0),
+                serde_json::json!(u32::MAX as u64 + 2),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("1"),
+                serde_json::Value::Null,
+            ] {
+                let mut args = serde_json::json!({"path":"src/lib.rs", "line":1, "character":8, "end_line":1, "end_character":9, "new_name":"changed", "id":"extract_variable", "force":true, "apply":true});
+                args[field] = invalid;
+                let error = execute_tool(remote, &ws.root(), &tool.name, args)
+                    .await
+                    .expect_err("invalid position must precede all other dispatch");
+                assert!(
+                    error.to_string().contains("one-based coordinate"),
+                    "{} {field}: {error:#}",
+                    tool.name
+                );
+            }
+        }
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn an_assist_refuses_partial_and_backwards_selections_without_writing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let before = "pub fn a() { 1 + 1; }\n";
+    let ws = rust_workspace(before);
+    let path = ws.root().join("src/lib.rs");
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        match method {
+            "prodCode/applyAssist" => {
+                answers::whole_file(&path, before, "pub fn a() { let x = 1 + 1; }\n")
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    for extra in [
+        serde_json::json!({"end_line":1}),
+        serde_json::json!({"end_character":14}),
+        serde_json::json!({"end_line":1,"end_character":13}),
+    ] {
+        let mut args = serde_json::json!({"path":"src/lib.rs","line":1,"character":14,"id":"extract_variable"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = execute_tool(remote, &ws.root(), "code_assist", args).await;
+        assert!(result.is_err(), "invalid selection: {result:?}");
+        assert_eq!(
+            std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap(),
+            before
+        );
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn primary_review_zero_assist_line_must_not_apply_to_first_line() {
+    let ws = workspace();
+    let before = "pub fn a() { 1 + 1; }\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => {
+            answers::whole_file(&path, before, "pub fn a() { let x = 1 + 1; }\n")
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_assist",
+        serde_json::json!({"path":"src/lib.rs","line":0,"character":14,"id":"extract_variable"}),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        before,
+        "invalid one-based line applied an action to a different position: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn primary_review_function_kind_still_has_a_type_owner() {
+    let ws = workspace();
+    let file = write(
+        &ws,
+        "src/alpha.rs",
+        "pub struct Widget; impl Widget { pub fn run() {} }\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "run" => {
+            let mut hit = answers::symbol("run", 12, &file, 1, 41);
+            hit["containerName"] = serde_json::json!("Widget");
+            serde_json::json!([hit])
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "alpha::run", None).await;
+    assert!(
+        result.is_err(),
+        "a type member is not a free function of the containing module: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn primary_review_crate_root_qualifier_does_not_select_a_nested_function() {
+    let ws = workspace();
+    write(&ws, "Cargo.toml", "[package]\nname = \"actual-crate\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(&ws, "src/lib.rs", "pub mod child;\n");
+    let file = write(&ws, "src/child.rs", "pub fn run() {}\n");
+    commit(&ws);
+    let hit_file = file.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "run" => serde_json::json!([answers::symbol("run",12,&hit_file,1,8)]),
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    })).await;
+    for symbol in ["crate::run", "actual_crate::run"] {
+        let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),symbol,None).await;
+        assert!(hit.is_err(), "root qualifier must not match a nested declaration: {symbol}: {hit:?}");
+    }
+    let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),"crate::child::run",None).await.unwrap();
+    assert_eq!(hit.path,file);
+}
+
+#[tokio::test]
+async fn primary_review_crate_name_is_read_as_toml_including_comments() {
+    let ws = workspace();
+    write(&ws, "Cargo.toml", "[package] # package metadata\nname = \"actual-crate\" # crate name\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    write(&ws, "src/lib.rs", "pub mod child;\n");
+    let file = write(&ws, "src/child.rs", "pub fn run() {}\n");
+    commit(&ws);
+    let hit_file = file.clone();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "run" => serde_json::json!([answers::symbol("run",12,&hit_file,1,8)]),
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    })).await;
+    let hit = prod_code_mcp::tools::resolve_symbol(remote,&ws.root(),"actual_crate::child::run",None).await.expect("valid TOML comments cannot hide the real crate name");
+    assert_eq!(hit.path,file);
+}

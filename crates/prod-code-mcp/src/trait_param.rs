@@ -331,7 +331,7 @@ pub async fn remove_parameter(
     {
         Owner::Trait { name } => (file.clone(), fn_at, name),
         Owner::Impl { trait_at } => {
-            let (line, col) = crate::signature::line_col_at(&text, trait_at);
+            let (line, col) = crate::signature::position_at(&text, trait_at)?;
             let answer = crate::tools::execute_lsp_query(
                 remote,
                 root,
@@ -358,7 +358,7 @@ pub async fn remove_parameter(
             (tfile, fn_at, name)
         }
     };
-    let (tl, tc) = crate::signature::line_col_at(&texts[&trait_file], trait_at);
+    let (tl, tc) = crate::signature::position_at(&texts[&trait_file], trait_at)?;
 
     // Every implementation, and every reference: calls, and the implementations' names. An
     // implementation the answer does not place would keep the parameter the trait lost (#446).

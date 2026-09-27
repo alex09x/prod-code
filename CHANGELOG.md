@@ -4,11 +4,13 @@
 
 ### Added
 - Typed Rust builder previews through `prod-code fixture --builder` and
-  `code_generate_fixture` with `builder: true` (#459). Named, nongeneric structs get
-  setters with their actual field types and a fallible `build` requiring every field.
+  `code_generate_fixture` with `builder: true` (#459, #497). Named structs, including
+  ordinary lifetime, type and const parameters with inline bounds, defaults and `where`
+  clauses, get setters with their actual field types and a fallible `build` requiring every field.
   Verification checks name collisions and the generated code; unavailable or malformed
   evidence cannot report success. Previews write no files, and `--no-verify` explicitly
-  returns an unverified draft. Factory-call rewriting, mocks and other languages remain open.
+  returns an unverified draft. `Self`-dependent bounds, macro-expanded generic syntax,
+  nontrivial const expressions, factory-call rewriting, mocks and other languages remain open.
 - Failure dossiers expose printed assertion operands in JSON and text (#445): Rust
   `assert_eq!`/`assert_ne!` retain left/right order, and supported Node assertion formats
   retain actual/expected roles. Each failure uses its own output; multiline values and
@@ -31,6 +33,21 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- All MCP tools with source positions reject zero, overflowing or malformed coordinates
+  before dispatch (#500). Selection endpoints must be supplied together and cannot precede
+  the start; CLI assist application shares the same guard. Discovery schemas advertise bounds.
+- Linux overlay shadow commands drop mount-time namespace capabilities before running (#491),
+  so read-only files are refused as in ordinary execution. Overlay support now requires
+  `setpriv` on the gateway PATH; the capability probe reports when it is unavailable.
+- Rename refuses zero and overflowing one-based coordinates before asking the analyzer or
+  writing files (#495), including forced, comment-aware and accessor renames.
+- Rust refactoring planners and the native Rust engine now convert UTF-16 source columns
+  consistently (#456), including supplementary characters and CRLF. Invalid planner positions
+  are refused before edits; the editor bridge clamps positions to valid character and line
+  boundaries. A final bare carriage return remains source text.
+- Multi-file Rust validation checks candidate definitions before warning about a removed
+  name (#483). Relocated declarations and names that resolve in the complete proposal no
+  longer count as stale callers; unresolved uses and malformed definition evidence still warn.
 - Go signature changes reject zero one-based coordinates, CRLF terminator interiors and
   UTF-16 surrogate interiors before planning or applying native edits (#486).
 - Relative source paths passed to library diagnostics and validation select their engine

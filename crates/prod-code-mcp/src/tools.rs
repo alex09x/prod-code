@@ -847,7 +847,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_generate_fixture".to_string(),
-            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only. With `builder: true`, instead generate a typed builder for a named-field, non-generic struct: one setter per field and an explicit missing-field error from build, with no guessed defaults. `builder_name` overrides TypeBuilder; `depth` is value mode only. Builder verification checks names and generated code in the declaring scope; incomplete or rejected verification is an error. `verify: false` returns an explicitly unverified draft. Unsupported shapes and name collisions are refused."
+            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only. With `builder: true`, instead generate a typed builder for a named-field struct, including ordinary lifetime, type and const parameters, defaults and bounds: one setter per field and an explicit missing-field error from build, with no guessed defaults. Self-dependent bounds, macro-expanded types and nontrivial const expressions are refused. `builder_name` overrides TypeBuilder; `depth` is value mode only. Builder verification checks names and generated code in the declaring scope; incomplete or rejected verification is an error. `verify: false` returns an explicitly unverified draft. Unsupported shapes and name collisions are refused."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -1043,6 +1043,29 @@ pub fn list_tools() -> Vec<McpTool> {
         },
     ];
     for tool in &mut tools {
+        if let Some(properties) = tool
+            .input_schema
+            .get_mut("properties")
+            .and_then(|v| v.as_object_mut())
+        {
+            for key in POSITION_ARGUMENTS {
+                if let Some(property) = properties.get_mut(key) {
+                    property["minimum"] = serde_json::json!(1);
+                    property["maximum"] = serde_json::json!(u32::MAX);
+                }
+            }
+            for key in ["end_line", "end_character"] {
+                if let Some(description) = properties
+                    .get_mut(key)
+                    .and_then(|p| p.get_mut("description"))
+                    && let Some(text) = description.as_str()
+                {
+                    *description = serde_json::json!(format!(
+                        "{text}; supply both end_line and end_character, with the end at or after the start"
+                    ));
+                }
+            }
+        }
         if SYMBOL_ADDRESSABLE.contains(&tool.name.as_str()) {
             relax_position_schema(&mut tool.input_schema);
         }
@@ -1067,6 +1090,67 @@ fn relax_position_schema(schema: &mut serde_json::Value) {
     }
 }
 
+const POSITION_ARGUMENTS: [&str; 4] = ["line", "character", "end_line", "end_character"];
+
+fn checked_position_argument(value: &serde_json::Value, name: &str) -> Result<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .with_context(|| {
+            format!(
+                "'{name}' must be a one-based coordinate in 1..={}",
+                u32::MAX
+            )
+        })
+}
+
+/// Check only position properties the tool actually advertises. Keeping this registry derived
+/// from discovery means a newly exposed position tool gets the same input contract immediately.
+fn validate_position_arguments(tool_name: &str, args: &serde_json::Value) -> Result<()> {
+    static POSITION_TOOLS: std::sync::OnceLock<Vec<(String, Vec<&'static str>)>> =
+        std::sync::OnceLock::new();
+    let positions = POSITION_TOOLS.get_or_init(|| {
+        list_tools()
+            .into_iter()
+            .filter_map(|tool| {
+                let properties = tool.input_schema.get("properties")?.as_object()?;
+                let fields: Vec<_> = POSITION_ARGUMENTS
+                    .into_iter()
+                    .filter(|name| properties.contains_key(*name))
+                    .collect();
+                (!fields.is_empty()).then_some((tool.name, fields))
+            })
+            .collect()
+    });
+    let Some((_, fields)) = positions.iter().find(|(name, _)| name == tool_name) else {
+        return Ok(());
+    };
+    for name in fields {
+        if let Some(value) = args.get(*name) {
+            checked_position_argument(value, name)?;
+        }
+    }
+    if fields.contains(&"end_line") && fields.contains(&"end_character") {
+        let end = match (args.get("end_line"), args.get("end_character")) {
+            (None, None) => return Ok(()),
+            (Some(line), Some(character)) => (
+                checked_position_argument(line, "end_line")?,
+                checked_position_argument(character, "end_character")?,
+            ),
+            _ => anyhow::bail!("a selection requires both 'end_line' and 'end_character'"),
+        };
+        if let (Some(line), Some(character)) = (args.get("line"), args.get("character")) {
+            let start = (
+                checked_position_argument(line, "line")?,
+                checked_position_argument(character, "character")?,
+            );
+            anyhow::ensure!(end >= start, "selection end precedes its start");
+        }
+    }
+    Ok(())
+}
+
 /// Execute an MCP tool call against the remote gateway.
 pub async fn execute_tool(
     remote: SocketAddr,
@@ -1074,6 +1158,8 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    // Invalid explicit positions are refused before symbol lookup, routing or any write.
+    validate_position_arguments(tool_name, &args)?;
     // Notes left by an earlier call are not this answer's (#391).
     let _ = crate::session::take_indexing_notes(workspace_root);
     if tool_name == "code_references"
@@ -1107,6 +1193,8 @@ pub async fn execute_tool(
     } else {
         args
     };
+    // Resolved symbol positions obey the same contract, including a supplied selection end.
+    validate_position_arguments(tool_name, &args)?;
     // A path in a nested project of another language goes to a node that serves it (#125).
     let remote = crate::cluster::route_for_path(
         remote,
@@ -4915,14 +5003,13 @@ async fn handle_rename(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument")? as u32;
-    let character = args
-        .get("character")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument")? as u32;
+    let line =
+        checked_position_argument(args.get("line").context("Missing 'line' argument")?, "line")?;
+    let character = checked_position_argument(
+        args.get("character")
+            .context("Missing 'character' argument")?,
+        "character",
+    )?;
     let new_name = args
         .get("new_name")
         .and_then(|v| v.as_str())
@@ -4991,7 +5078,13 @@ async fn handle_rename(
             ));
         }
         let text = std::fs::read_to_string(&file_path).unwrap_or_default();
-        let at = crate::signature::offset_of(&text, line, character).unwrap_or(0);
+        // A position on no character names no old name; the file's first word is not one.
+        let Some(at) = crate::signature::offset_of(&text, line, character) else {
+            return Ok(McpToolCallResult::error(format!(
+                "{path_str}:{line}:{character} is not a position in the file, so the old name \
+                 in comments cannot be found; nothing was written"
+            )));
+        };
         let start = text[..at]
             .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
             .map_or(0, |i| i + 1);
@@ -5437,7 +5530,7 @@ async fn handle_safe_delete(
             .iter()
             .map(|k| crate::signature::parse_param(k))
             .collect::<Result<Vec<_>>>()?;
-        let (fl, fc) = crate::signature::line_col_at(&text, fn_at);
+        let (fl, fc) = crate::signature::position_at(&text, fn_at)?;
         let change = crate::signature::change(
             remote,
             workspace_root,
@@ -6013,26 +6106,18 @@ pub async fn resolve_symbol(
 /// `Consumer::recv` must not resolve to `AsyncConsumer::recv`.
 fn qualifier_matches(root: &Path, hit: &SymbolHit, qualifiers: &[&str]) -> bool {
     let decorated = decorated_owner(&hit.name);
-    if symbol_is_type_member(hit.kind) {
-        let owner = hit
-            .container
-            .as_deref()
-            .map(owner_segments)
-            .filter(|owner| !owner.is_empty())
-            .unwrap_or(decorated);
+    let owner = hit
+        .container
+        .as_deref()
+        .map(owner_segments)
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or(decorated);
+    // rust-analyzer also labels methods as Function. A known owner constrains every kind;
+    // the containing file cannot turn an explicitly owned member into a free function.
+    if !owner.is_empty() {
         return owner_path_matches(root, &hit.path, qualifiers, &owner);
     }
-
-    if !decorated.is_empty() {
-        return owner_path_matches(root, &hit.path, qualifiers, &decorated);
-    }
-    if let Some(container) = hit.container.as_deref() {
-        let owner = owner_segments(container);
-        if !owner.is_empty() {
-            return owner_path_matches(root, &hit.path, qualifiers, &owner);
-        }
-    }
-    module_path_ends_with(root, &hit.path, qualifiers)
+    !symbol_is_type_member(hit.kind) && module_path_ends_with(root, &hit.path, qualifiers)
 }
 
 /// Kinds whose container is a type, never merely the module named by the hit's file.
@@ -6176,7 +6261,7 @@ fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str]) -> bool 
         .collect();
     let ends_with = |qualifiers: &[&str]| {
         (qualifiers.is_empty() && segments.is_empty())
-            || (segments.len() >= qualifiers.len()
+            || (!qualifiers.is_empty() && segments.len() >= qualifiers.len()
                 && segments[segments.len() - qualifiers.len()..]
                     .iter()
                     .zip(qualifiers)
@@ -6222,29 +6307,19 @@ fn cargo_manifest_names(manifest: std::path::PathBuf, candidate: &str) -> bool {
     let Ok(text) = std::fs::read_to_string(manifest) else {
         return false;
     };
+    let Ok(manifest) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
     if candidate.eq_ignore_ascii_case("crate") {
-        return true;
+        return manifest.get("package").is_some() || manifest.get("lib").is_some();
     }
     let wanted = candidate.replace('-', "_");
-    let mut names_apply = false;
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            names_apply = matches!(line, "[package]" | "[lib]");
-            continue;
-        }
-        if names_apply
-            && let Some(value) = line.strip_prefix("name").and_then(|rest| {
-                rest.trim_start()
-                    .strip_prefix('=')
-                    .map(|value| value.trim().trim_matches(['\"', '\'']))
-            })
-            && value.replace('-', "_").eq_ignore_ascii_case(&wanted)
-        {
-            return true;
-        }
-    }
-    false
+    ["package", "lib"].into_iter().any(|section| {
+        manifest.get(section)
+            .and_then(|table| table.get("name"))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|name| name.replace('-', "_").eq_ignore_ascii_case(&wanted))
+    })
 }
 
 /// How closely a symbol's name matches a query (#326): 0 the name itself, 1 a name that starts

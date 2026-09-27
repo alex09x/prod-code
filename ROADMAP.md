@@ -405,8 +405,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     in a shadow of the workspace and writes only what the compiler accepts too. The applicator is
     transactional for text edits since #70. The #425 repair extends rollback across ordered create,
     rename and delete operations, uses UTF-16 columns, rechecks containment after directory moves,
-    and removes backups from their final paths. Rust outcomes send rewrites before moves. Resource
-    operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
+    and removes backups from their final paths. Rust outcomes send rewrites before moves. The
+    #456 coordinate repair makes source positions UTF-16: planners refuse invalid line or
+    character boundaries, while the editor clamps them. CRLF is one logical break and a final
+    bare carriage return remains source text. Resource operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
     a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
@@ -482,7 +484,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Returns exact symbols, file locations, line numbers, and doc comments in < 10 ms.
 
 - [~] **8.5. Instant Test Fixture & Mock Generator (`code_generate_fixture`)** — shipped 2026-09-21: `code_generate_fixture` / `prod-code fixture` build the value from the declaration the analyzer points at (not from hover, which elides fields past the tenth), verify it in an in-memory overlay before returning it, and name every type that fell back to `Default::default()`. Rust only.
-  - Typed Rust builder previews added in #459: `prod-code fixture TYPE --builder` or `code_generate_fixture` with `builder: true`, optionally `builder_name`. Named nongeneric structs get setters with their declared field types and a fallible `build` requiring every field. Names and generated code are checked in the analyzer; missing evidence is unverified, and `--no-verify` explicitly returns a draft. No files are written. Generics, tuple/unit structs, conditional fields, general mocks, randomized generation and other languages remain open. This does not replace existing struct literals with factory or builder calls (7.1).
+  - Typed Rust builder previews added in #459 and extended in #497: `prod-code fixture TYPE --builder` or `code_generate_fixture` with `builder: true`, optionally `builder_name`. Named structs get setters with their declared field types and a fallible `build` requiring every field. Ordinary lifetime, type and const parameters preserve inline bounds, defaults and `where` clauses; impl defaults are removed and type uses contain parameter names only. Names and generated code are checked in the analyzer; missing evidence is unverified, and `--no-verify` explicitly returns a draft. No files are written. `Self`-dependent bounds, macro-expanded generic syntax, nontrivial const expressions, tuple/unit structs, conditional fields, general mocks, randomized generation and other languages remain open. This does not replace existing struct literals with factory or builder calls (7.1).
   - Compiler-backed generation of test mocks, builders, and dummy fixtures for complex data structures with dozens of fields.
   - Generates valid, type-safe, compile-ready code populated with default or randomized values in 1 step.
   - Eliminates hundreds of lines of manual boilerplate authoring and associated compiler type-mismatch errors.

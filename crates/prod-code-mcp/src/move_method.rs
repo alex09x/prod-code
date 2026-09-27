@@ -199,9 +199,10 @@ pub fn swap_names(text: &str, map: &[(&str, &str)]) -> String {
 /// The span of the item that starts at `line` (1-based) together with its doc comment and
 /// attributes, as byte offsets of its first line and of the end of its closing line.
 fn item_span(text: &str, name_at: usize, body_close: usize) -> (usize, usize) {
-    let (line, _) = crate::signature::line_col_at(text, name_at);
-    let first_line = crate::move_item::with_doc_comment(text, line);
-    let start = crate::signature::offset_of(text, first_line, 1).unwrap_or(name_at);
+    let start = crate::signature::line_col_at(text, name_at)
+        .map(|(line, _)| crate::move_item::with_doc_comment(text, line))
+        .and_then(|first_line| crate::signature::offset_of(text, first_line, 1))
+        .unwrap_or(name_at);
     let end = text[body_close..]
         .find('\n')
         .map_or(text.len(), |i| body_close + i + 1);
@@ -446,7 +447,7 @@ pub async fn move_associated_function(
     // Every path to it names the new type.
     let mut unmatched = Vec::new();
     let mut calls = 0;
-    let (nl, nc) = crate::signature::line_col_at(&text, name_at);
+    let (nl, nc) = crate::signature::position_at(&text, name_at)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
         .with_context(|| format!("cannot find the paths to `{name}`; nothing was planned"))?;
@@ -646,7 +647,7 @@ pub async fn move_method(
         + text[ty_offset..]
             .find(target_name.as_str())
             .context("the parameter's type is not in the list")?;
-    let (tl, tc) = crate::signature::line_col_at(&text, ty_at);
+    let (tl, tc) = crate::signature::position_at(&text, ty_at)?;
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
         .to_string();
@@ -719,7 +720,7 @@ pub async fn move_method(
                         .is_some_and(is_ident)
             })
             .context("the parameter's name is not in the list")?;
-    let (pl, pc) = crate::signature::line_col_at(&text, param_at);
+    let (pl, pc) = crate::signature::position_at(&text, param_at)?;
     let uses = crate::signature::references(remote, root, file, pl, pc)
         .await
         .with_context(|| {
@@ -817,7 +818,7 @@ pub async fn move_method(
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
     let mut calls = 0;
-    let (nl, nc) = crate::signature::line_col_at(&text, name_at);
+    let (nl, nc) = crate::signature::position_at(&text, name_at)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
         .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
