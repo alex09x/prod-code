@@ -64,12 +64,12 @@ async fn gateway(ws: &Workspace, verdict: Verdict) -> ScriptedGateway {
                     ("__prod_code_missing_method", "E0599", "no method __prod_code_missing_method"),
                     ("self.retries.ok_or", "E0308", "mismatched types in builder"),
                 ] {
-                    if (needle.starts_with("__") && !matches!(verdict, Verdict::Silent))
-                        || (needle.starts_with("self") && matches!(verdict, Verdict::Rejected)) {
-                        if let Some(col) = text.find(needle) {
-                            items.push(json!({"severity":1,"code":code,"message":message,
-                                "range":{"start":{"line":line,"character":col},"end":{"line":line,"character":col+needle.len()}}}));
-                        }
+                    if ((needle.starts_with("__") && !matches!(verdict, Verdict::Silent))
+                        || (needle.starts_with("self") && matches!(verdict, Verdict::Rejected)))
+                        && let Some(col) = text.find(needle)
+                    {
+                        items.push(json!({"severity":1,"code":code,"message":message,
+                            "range":{"start":{"line":line,"character":col},"end":{"line":line,"character":col+needle.len()}}}));
                     }
                 }
             }

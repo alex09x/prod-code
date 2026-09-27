@@ -147,7 +147,7 @@ Analyzer diagnostics do not include every compiler or borrow-checker check. Tool
 | `code_schema_rename` | one schema field renamed across every language that spells it differently, semantically per project |
 | `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
 | `code_codemod` | structural search and replace on the syntax tree (`pattern ==>> replacement`), as a diff or applied |
-| `code_generate_fixture` | a Rust value from its declaration, with analyzer diagnostics and explicit names for types that use a default fallback |
+| `code_generate_fixture` | a Rust value with explicit default fallbacks, or `builder: true` for a typed builder preview of a named nongeneric struct; verified by default, with no files written |
 | `code_shadow_run` | run a command once per candidate fix, each in a private shadow of the workspace, and take the winner's diff |
 
 **Run it**
