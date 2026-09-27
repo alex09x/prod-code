@@ -728,3 +728,84 @@ async fn a_real_rust_analyzer_reorder_is_refused_past_a_function_pointer() {
     );
     assert_eq!(run(&now), LIVE_PRINTED, "{now}");
 }
+
+/// A raw identifier containing the keyword `use` cannot turn a value reference into an import.
+#[tokio::test]
+async fn a_raw_use_identifier_does_not_hide_a_function_pointer() {
+    let program = APART
+        .replace("fn apply(f:", "fn apply(r#use: (), f:")
+        .replace(
+            "let through = apply(scale);",
+            "let r#use = (); let through = apply(r#use, scale);",
+        );
+    let ws = workspace(&program);
+    let main = ws.path("src/main.rs");
+    let value = spot(&program, "apply(r#use, scale)", 0, "apply(r#use, ".len());
+    let refs = [spot(&program, "scale(3, 4)", 0, 0), value];
+    let (_g, remote) = gateway(
+        &main,
+        &program,
+        &refs,
+        edited(&program, &[("scale(3, 4)", "scale(4, 3)")]),
+    )
+    .await;
+    assert_eq!(run(&program), "34 12\n");
+    for verify in [json!({}), json!({"verify": "compile"})] {
+        let mut args = json!({"path": "src/main.rs", "line": 1, "character": 8,
+            "params": ["factor", "x"], "apply": true, "force": true});
+        args.as_object_mut()
+            .unwrap()
+            .extend(verify.as_object().unwrap().clone());
+        let result = tool(remote, &ws.root(), "code_change_signature", args).await;
+        let err = result.expect_err("a raw identifier must not conceal a reference");
+        assert!(err.contains("not complete"), "{err}");
+        assert_eq!(ws.read("src/main.rs"), program);
+    }
+}
+
+#[tokio::test]
+async fn a_missing_javascript_reference_file_stops_every_apply() {
+    const JS: &str = "function build(width, height) {\n    return width + height;\n}\nconst item = build(3, 4);\n";
+    let ws = Workspace::new(&[
+        ("package.json", "{\"type\":\"module\"}"),
+        ("src/main.js", JS),
+    ]);
+    let home = ws.path("src/main.js");
+    let gone = ws.path("src/missing.js");
+    let h = home.clone();
+    let gateway = ScriptedGateway::start(move |method, args| match method {
+        "textDocument/references" => {
+            match args.pointer("/position/character").and_then(Value::as_u64) {
+                Some(9) => json!([
+                    answers::locations(&h, &[(4, 14)]).as_array().unwrap()[0].clone(),
+                    answers::locations(&gone, &[(1, 1)]).as_array().unwrap()[0].clone(),
+                ]),
+                Some(15) => answers::locations(&h, &[(2, 12)]),
+                Some(22) => answers::locations(&h, &[(2, 20)]),
+                _ => json!([]),
+            }
+        }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => Value::Null,
+    })
+    .await;
+    for force in [false, true] {
+        let result = prod_code_mcp::parameter_object::introduce(
+            gateway.addr(),
+            &ws.root(),
+            &home,
+            1,
+            10,
+            &["width".into(), "height".into()],
+            "Size",
+            "size",
+            true,
+            force,
+        )
+        .await;
+        let err = result
+            .expect_err("a missing indexed file is unknown evidence, not a proven absent caller");
+        assert!(format!("{err:#}").contains("missing.js"), "{err:#}");
+        assert_eq!(ws.read("src/main.js"), JS);
+    }
+}

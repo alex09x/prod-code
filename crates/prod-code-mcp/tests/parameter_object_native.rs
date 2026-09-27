@@ -9,7 +9,8 @@
 //! C++20 designated initialiser in a C++17 project without a word — it is an extension there —
 //! so the choice between designators and a plain aggregate is made from the standard the build
 //! declares, not from the analyzer's verdict. And sourcekit-lsp still lists a file its index
-//! knew and the checkout no longer has, a reference that has to be passed over quietly.
+//! knew and the checkout no longer has. That is incomplete evidence and must stop the rewrite
+//! until the index is refreshed; it cannot be assumed to have no remaining caller.
 
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
 use serde_json::Value;
@@ -636,7 +637,7 @@ struct Swift {
     remote: SocketAddr,
 }
 
-async fn swift() -> Swift {
+async fn swift_with_stale_reference(include_stale: bool) -> Swift {
     let ws = Workspace::new(&[
         (
             "Package.swift",
@@ -656,20 +657,24 @@ async fn swift() -> Swift {
         let at = answers::points;
         match method {
             "textDocument/references" if uri.ends_with("Home.swift") => match (line, ch) {
-                (1, 12) => spread(
-                    at,
-                    &[
-                        (&h, 18, 12),
-                        (&r, 2, 12),
-                        (&stale, 2, 12),
-                        (&o, 3, 12),
-                        (&o, 6, 15),
-                    ],
-                ),
+                (1, 12) => {
+                    let mut spots =
+                        vec![(&h as &Path, 18, 12), (&r, 2, 12), (&o, 3, 12), (&o, 6, 15)];
+                    if include_stale {
+                        spots.push((&stale, 2, 12));
+                    }
+                    spread(at, &spots)
+                }
                 (1, 32) => at(&h, &[(3, 16)]),
                 (1, 44) => at(&h, &[(3, 24)]),
                 // `draw`, then its `x` and `y`, used inside string interpolations.
-                (11, 16) => spread(at, &[(&r, 2, 61), (&stale, 2, 61), (&o, 3, 54)]),
+                (11, 16) => {
+                    let mut spots = vec![(&r as &Path, 2, 61), (&o, 3, 54)];
+                    if include_stale {
+                        spots.push((&stale, 2, 61));
+                    }
+                    spread(at, &spots)
+                }
                 (11, 38) => at(&h, &[(13, 28)]),
                 (11, 46) => at(&h, &[(13, 41)]),
                 _ => serde_json::json!([]),
@@ -711,10 +716,10 @@ async fn swift() -> Swift {
 /// A public Swift function: a public struct of `let` properties, a declaration that takes it
 /// under the label the parameters had, the body reading its fields, the memberwise initialiser
 /// passed under that label at the calls in three files, the function used as a value reported,
-/// and the index's stale entry for a file the checkout no longer has passed over.
+/// with an index that only names existing files.
 #[tokio::test]
 async fn a_swift_function_takes_a_struct_and_its_callers_pass_its_initialiser() {
-    let s = swift().await;
+    let s = swift_with_stale_reference(false).await;
     let root = s.ws.root();
     let done = bundle(
         s.remote,
@@ -764,7 +769,7 @@ async fn a_swift_function_takes_a_struct_and_its_callers_pass_its_initialiser() 
 /// it out, and the call that relied on the default leaves it out.
 #[tokio::test]
 async fn a_swift_method_gets_its_struct_above_the_type() {
-    let s = swift().await;
+    let s = swift_with_stale_reference(false).await;
     let root = s.ws.root();
     let done = bundle(
         s.remote,
@@ -792,4 +797,38 @@ async fn a_swift_method_gets_its_struct_above_the_type() {
     );
     assert!(rewritten(&done, "Other.swift").contains("c.draw(\"b\", point: Point(x: 5, y: 6))"));
     assert!(rewritten(&done, "Report.swift").contains("Canvas().draw(\"c\", point: Point(x: 9))"));
+}
+
+#[tokio::test]
+async fn a_stale_swift_index_refuses_both_functions_and_methods() {
+    let s = swift_with_stale_reference(true).await;
+    for (line, col, params, name) in [
+        (2, 13, ["width", "height"], "Size"),
+        (12, 17, ["x", "y"], "Point"),
+    ] {
+        for apply in [false, true] {
+            let result = prod_code_mcp::parameter_object::introduce(
+                s.remote,
+                &s.ws.root(),
+                &s.home,
+                line,
+                col,
+                &params.map(str::to_string),
+                name,
+                "settings",
+                apply,
+                true,
+            )
+            .await;
+            let err = result.expect_err("a missing indexed caller leaves the plan incomplete");
+            assert!(format!("{err:#}").contains("Main.swift"), "{err:#}");
+            for (file, expected) in [
+                ("Sources/Shapes/Home.swift", SWIFT_HOME),
+                ("Sources/Shapes/Other.swift", SWIFT_OTHER),
+                ("Sources/Shapes/Report.swift", SWIFT_REPORT),
+            ] {
+                assert_eq!(s.ws.read(file), expected);
+            }
+        }
+    }
 }

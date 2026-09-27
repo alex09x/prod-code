@@ -663,13 +663,18 @@ pub(crate) fn in_use_or_comment(text: &str, code: Option<&str>, at: usize) -> bo
     if code.is_some_and(|code| code.as_bytes().get(at) == Some(&b' ')) {
         return true;
     }
-    // Back over what a use tree is made of (`crate::a::{b, c::`), to the keyword in front of it.
-    let tree = text[..at].trim_end_matches(|c: char| {
-        c.is_alphanumeric() || c.is_whitespace() || matches!(c, '_' | ':' | '{' | '}' | ',' | '*')
+    // Walk the possible use-tree prefix, including raw identifiers. A keyword is a whole
+    // token: the `use` in `r#use` is an identifier, even in `take(r#use, callback)`.
+    let source = code.unwrap_or(text);
+    let tree = source[..at].trim_end_matches(|c: char| {
+        c.is_alphanumeric()
+            || c.is_whitespace()
+            || matches!(c, '_' | '#' | ':' | '{' | '}' | ',' | '*')
     });
-    text[tree.len()..at]
-        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .any(|word| word == "use")
+    source[tree.len()..at].match_indices("use").any(|(i, _)| {
+        let i = tree.len() + i;
+        names_at(source, i, "use") && !source[..i].ends_with('#')
+    })
 }
 
 /// Where the call whose callee's name is at `at` starts, as far as a rewrite may respell it: the
@@ -730,11 +735,10 @@ fn common_prefix(a: &str, b: &str) -> usize {
 /// Whether a call passing `call` comes back from the reorder `plan` exactly as it was: every
 /// argument moves to a place that held the same one. Such a call needs no rewrite.
 fn reorders_to_itself(call: &[String], plan: &[Option<usize>]) -> bool {
-    let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     call.len() == plan.len()
         && plan.iter().enumerate().all(|(j, from)| {
             from.and_then(|i| call.get(i))
-                .is_some_and(|arg| words(arg) == words(&call[j]))
+                .is_some_and(|arg| arg.trim() == call[j].trim())
         })
 }
 
@@ -3351,5 +3355,52 @@ mod tests {
         assert_eq!(locate_declaration(text, "join", "a: u16, b: u8"), None);
         let twice = "fn join(a: u8) {}\nmod m { fn join(a: u8) {} }\n";
         assert_eq!(locate_declaration(twice, "join", "a: u8"), None);
+    }
+}
+
+#[cfg(test)]
+mod raw_identifier_import_tests {
+    use super::*;
+    #[test]
+    fn raw_use_is_a_value_and_raw_module_imports_are_imports() {
+        for (text, import) in [
+            ("fn caller() { take(r#use, callee); }", false),
+            ("fn caller() { let x = Holder { r#use: callee }; }", false),
+            ("use r#type::{first, callee};", true),
+            ("use /* note */ crate::{first, callee};", true),
+            ("use other::first; fn caller() { take(callee); }", false),
+        ] {
+            let at = text.find("callee").unwrap();
+            let code = blank_comments(text);
+            assert_eq!(
+                in_use_or_comment(text, code.as_deref(), at),
+                import,
+                "{text}"
+            );
+        }
+    }
+    #[test]
+    fn raw_use_does_not_hide_an_unmatched_function_value() {
+        let old = "fn caller() { take(r#use, callee); callee(1, 2); }";
+        let new = old.replace("callee(1, 2)", "callee(2, 1)");
+        let refs = old
+            .match_indices("callee")
+            .map(|(i, _)| (1, i as u32 + 1))
+            .collect::<Vec<_>>();
+        let (unmatched, unexpected) =
+            attribute("src/lib.rs", old, &new, "callee", &refs, &|_, _| true);
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].contains("not a call"), "{unmatched:?}");
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+    }
+}
+
+#[cfg(test)]
+mod argument_spelling_tests {
+    use super::*;
+    #[test]
+    fn spaces_inside_string_literals_are_values() {
+        let args = vec![r#""a  b""#.to_string(), r#""a b""#.to_string()];
+        assert!(!reorders_to_itself(&args, &[Some(1), Some(0)]));
     }
 }

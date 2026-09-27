@@ -1314,20 +1314,6 @@ fn read_referenced(path: &Path, file: &Path, text: &str) -> Result<String> {
         .with_context(|| format!("cannot read {}; nothing was written", path.display()))
 }
 
-/// A referenced file for a language whose server answers from an index, and `None` for one the
-/// checkout does not have: sourcekit-lsp and clangd keep a file that was renamed or deleted in
-/// their index, and a file that is not there holds no call to leave behind. Any other failure to
-/// read stops the plan.
-fn read_indexed(path: &Path) -> Result<Option<String>> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(Some(text)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => {
-            Err(err).with_context(|| format!("cannot read {}; nothing was written", path.display()))
-        }
-    }
-}
-
 /// Type-checks the rewritten files together in one overlay, and writes them when that was asked
 /// for and the analyzer accepts them (or `force` says to write them regardless). Returns the
 /// errors and whether anything was written. A reference the plan did not rewrite (`unmatched`)
@@ -3468,14 +3454,7 @@ async fn introduce_in(
         .await
         .with_context(|| unlisted(&callee, root, file, line, col))?;
     for (path, rl, rc) in callers {
-        let source = if path == file {
-            text.clone()
-        } else {
-            let Some(source) = read_indexed(&path)? else {
-                continue;
-            };
-            source
-        };
+        let source = texts(&path)?;
         let place = format!("{}:{rl}:{rc}", display(root, &path));
         // As in Rust (#75): the position is trusted only when the name is there. A JavaScript
         // call left as it was would pass the old arguments to the new parameter, and only a
@@ -4201,9 +4180,8 @@ async fn introduce_c(
     let mut consumed = vec![false; uses.len()];
     for (path, rl, rc) in calls {
         if !texts.contains_key(&path) {
-            let Some(t) = read_indexed(&path)? else {
-                continue;
-            };
+            let t = std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {}; nothing was written", path.display()))?;
             texts.insert(path.clone(), t);
         }
         let source = &texts[&path];
