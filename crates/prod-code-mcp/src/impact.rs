@@ -779,6 +779,202 @@ fn collect_functions(
     Ok(())
 }
 
+/// Marks every byte in a Rust comment or literal as non-code. Test classification only needs to
+/// recognize an outer attribute, but attributes in comments, docs, or strings must never invent
+/// a runnable test. An unterminated opaque region leaves the declaration unclassifiable.
+fn rust_code(text: &str) -> std::result::Result<Vec<bool>, String> {
+    let bytes = text.as_bytes();
+    let mut code = vec![true; bytes.len()];
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let mut end = None;
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            end = Some(text[i..].find('\n').map_or(bytes.len(), |n| i + n));
+        } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < bytes.len() && depth > 0 {
+                match (bytes[j], bytes.get(j + 1)) {
+                    (b'/', Some(b'*')) => {
+                        depth += 1;
+                        j += 2;
+                    }
+                    (b'*', Some(b'/')) => {
+                        depth -= 1;
+                        j += 2;
+                    }
+                    _ => j += 1,
+                }
+            }
+            if depth != 0 {
+                return Err("the Rust source has an unterminated block comment".into());
+            }
+            end = Some(j);
+        } else {
+            let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+            let raw =
+                matches!(bytes[i], b'r' | b'b' | b'c') && (i == 0 || !ident(bytes[i - 1])) && {
+                    let r = if bytes[i] == b'r' { i } else { i + 1 };
+                    bytes.get(r) == Some(&b'r')
+                };
+            if raw {
+                let r = if bytes[i] == b'r' { i } else { i + 1 };
+                let mut quote = r + 1;
+                while bytes.get(quote) == Some(&b'#') {
+                    quote += 1;
+                }
+                if bytes.get(quote) == Some(&b'"') {
+                    let hashes = quote - r - 1;
+                    let mut j = quote + 1;
+                    while j < bytes.len() {
+                        if bytes[j] == b'"'
+                            && bytes
+                                .get(j + 1..j + 1 + hashes)
+                                .is_some_and(|tail| tail.iter().all(|b| *b == b'#'))
+                        {
+                            end = Some(j + 1 + hashes);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if end.is_none() {
+                        return Err("the Rust source has an unterminated raw string".into());
+                    }
+                }
+            }
+            if end.is_none() && matches!(bytes[i], b'"' | b'\'') {
+                let quote = bytes[i];
+                let mut j = i + 1;
+                while j < bytes.len() {
+                    if bytes[j] == b'\\' {
+                        j += 2;
+                    } else if bytes[j] == quote {
+                        end = Some(j + 1);
+                        break;
+                    } else if bytes[j] == b'\n' && quote == b'\'' {
+                        break;
+                    } else {
+                        j += 1;
+                    }
+                }
+                if quote == b'"' && end.is_none() {
+                    return Err("the Rust source has an unterminated string".into());
+                }
+            }
+        }
+        if let Some(end) = end {
+            code[i..end].fill(false);
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(code)
+}
+
+fn rust_test_attribute(text: &str, code: &[bool], start: usize, end: usize) -> bool {
+    let mut path = String::new();
+    let mut i = start + 2;
+    while i < end && text.as_bytes()[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    while i < end && code[i] {
+        let b = text.as_bytes()[i];
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b':') {
+            path.push(b as char);
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    matches!(
+        path.rsplit("::").next(),
+        Some("test" | "rstest" | "test_case")
+    )
+}
+
+fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Option<()>, String> {
+    let code = rust_code(text)?;
+    let line_start = text
+        .split_inclusive('\n')
+        .take(line.saturating_sub(1) as usize)
+        .map(str::len)
+        .sum::<usize>();
+    let line_end = text[line_start..]
+        .find('\n')
+        .map_or(text.len(), |n| line_start + n);
+    let bare = name
+        .split('(')
+        .next()
+        .unwrap_or(name)
+        .rsplit(['.', ':'])
+        .next()
+        .unwrap_or(name)
+        .trim_start_matches("r#");
+    let declaration = text[line_start..line_end]
+        .char_indices()
+        .find_map(|(offset, _)| {
+            let at = line_start + offset;
+            (text[at..].starts_with("fn")
+                && code[at..at + 2].iter().all(|is_code| *is_code)
+                && text
+                    .as_bytes()
+                    .get(at + 2)
+                    .is_some_and(u8::is_ascii_whitespace)
+                && text[at + 2..].trim_start().starts_with(bare))
+            .then_some(at)
+        });
+    let Some(declaration) = declaration else {
+        return Err(format!(
+            "the Rust declaration for {name} at line {line} cannot be classified as a runnable test"
+        ));
+    };
+    let mut item_start = 0;
+    let (mut squares, mut parens) = (0usize, 0usize);
+    for (i, is_code) in code[..declaration].iter().enumerate() {
+        if !is_code {
+            continue;
+        }
+        match text.as_bytes()[i] {
+            b'[' => squares += 1,
+            b']' => squares = squares.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b'}' | b';' if squares == 0 && parens == 0 => item_start = i + 1,
+            _ => {}
+        }
+    }
+    let mut i = item_start;
+    while i + 1 < declaration {
+        if code[i] && text.as_bytes()[i] == b'#' && code[i + 1] && text.as_bytes()[i + 1] == b'[' {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < declaration && depth > 0 {
+                if code[j] {
+                    match text.as_bytes()[j] {
+                        b'[' => depth += 1,
+                        b']' => depth -= 1,
+                        _ => {}
+                    }
+                }
+                j += 1;
+            }
+            if depth != 0 {
+                return Err(format!(
+                    "the Rust attributes before {name} at line {line} do not close"
+                ));
+            }
+            if rust_test_attribute(text, &code, i, j) {
+                return Ok(Some(()));
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(None)
+}
+
 /// What the text around a caller's declaration says about it being a test, beyond its name:
 /// a test attribute above it (`#[test]`, `#[tokio::test]`, `@Test`), a test registration it
 /// sits in (`TEST(Suite, Name)`, `TEST_F`, `TEST_CASE("…")`), or, for Python, a `test*` method
@@ -805,17 +1001,10 @@ pub fn test_marker(language: &str, text: &str, line: u32, name: &str) -> Option<
         })
     };
     match language {
-        "rust" => {
-            let attribute = |l: &str| {
-                l.starts_with("#[")
-                    && (l.contains("test]")
-                        || l.contains("test(")
-                        || l.contains("::test")
-                        || l.starts_with("#[rstest")
-                        || l.starts_with("#[test_case"))
-            };
-            (above().any(attribute) || attribute(here.trim())).then(|| name.to_string())
-        }
+        "rust" => rust_test_marker(text, line, name)
+            .ok()
+            .flatten()
+            .map(|_| name.to_string()),
         "swift" => (above().any(|l| l.starts_with("@Test")) || here.contains("@Test"))
             .then(|| name.to_string()),
         "cpp" => lines[at.saturating_sub(2)..=at]
@@ -879,9 +1068,9 @@ pub fn looks_like_test(language: &str, name: &str, file: &str) -> bool {
         .next()
         .unwrap_or(name);
     match language {
-        "rust" => {
-            name.starts_with("test") || lower.contains("/tests/") || lower.ends_with("_test.rs")
-        }
+        // Rust's test directories and conventional names contain ordinary helpers too. Rust
+        // needs an analyzer flag or an outer test attribute; see `rust_test_marker`.
+        "rust" => false,
         "go" => name.starts_with("Test") && lower.ends_with("_test.go"),
         "python" => {
             let base = lower.rsplit('/').next().unwrap_or("");
@@ -918,7 +1107,13 @@ pub fn test_command(
                 "--workspace".to_string(),
                 "--".to_string(),
             ];
-            c.extend(names.iter().map(|n| n.to_string()));
+            // rust-analyzer may qualify an integration test; libtest's filter sees the runnable
+            // leaf name, not that analyzer container.
+            c.extend(
+                names
+                    .iter()
+                    .map(|n| n.rsplit("::").next().unwrap_or(n).to_string()),
+            );
             c
         }
         "go" => {
@@ -1189,20 +1384,32 @@ pub async fn analyze(
     let mut reaches: Vec<Reach> = Vec::new();
     let mut origins: Vec<(Symbol, bool)> = Vec::with_capacity(changed.len());
     for sym in &changed {
-        let test =
-            test_name(root, &language, &sym.name, &sym.file, sym.line, false).map(|name| Symbol {
-                name,
-                ..sym.clone()
-            });
-        if let Some(test) = &test {
-            tests.insert(test.clone());
-            reaches.push(Reach {
-                test: test.clone(),
-                changed: sym.clone(),
-                hops: 0,
-            });
+        match test_name(root, &language, &sym.name, &sym.file, sym.line, false) {
+            Ok(Some(name)) => {
+                let test = Symbol {
+                    name,
+                    ..sym.clone()
+                };
+                tests.insert(test.clone());
+                reaches.push(Reach {
+                    test,
+                    changed: sym.clone(),
+                    hops: 0,
+                });
+                origins.push((sym.clone(), true));
+            }
+            Ok(None) => origins.push((sym.clone(), false)),
+            Err(error) => {
+                note(
+                    &mut incomplete,
+                    Gap::Callers {
+                        symbol: sym.clone(),
+                        error,
+                    },
+                );
+                origins.push((sym.clone(), false));
+            }
         }
-        origins.push((sym.clone(), test.is_some()));
     }
 
     // Walk incoming calls breadth-first from each changed function on its own, so every test
@@ -1316,6 +1523,9 @@ pub(crate) fn unreadable(method: &str, answer: &serde_json::Value) -> String {
 
 /// The name a test runner selects the function `name` declared at `line` of `file` by, when it
 /// is a test: flagged by the analyzer, named or placed like one, or marked as one in its source.
+/// Rust deliberately accepts only the flag or a source attribute: a helper in `tests/` is not a
+/// libtest entry. An unreadable or structurally unclassifiable Rust declaration is a gap, not
+/// evidence that no test reaches the change.
 fn test_name(
     root: &Path,
     language: &str,
@@ -1323,13 +1533,27 @@ fn test_name(
     file: &str,
     line: u32,
     flagged: bool,
-) -> Option<String> {
-    if flagged || looks_like_test(language, name, file) {
-        return Some(name.to_string());
+) -> std::result::Result<Option<String>, String> {
+    if flagged {
+        return Ok(Some(name.to_string()));
+    }
+    if language == "rust" {
+        let text = std::fs::read_to_string(root.join(file)).map_err(|e| {
+            format!(
+                "the Rust source needed to classify {name} as a runnable test cannot be read: {e}"
+            )
+        })?;
+        return rust_test_marker(&text, line, name).map(|marked| marked.map(|_| name.to_string()));
+    }
+    if looks_like_test(language, name, file) {
+        return Ok(Some(name.to_string()));
     }
     // Beyond names: an attribute, a registration macro, a `TestCase` class (#201).
-    let text = std::fs::read_to_string(root.join(file)).ok()?;
-    test_marker(language, &text, line, name)
+    let text = match std::fs::read_to_string(root.join(file)) {
+        Ok(text) => text,
+        Err(_) => return Ok(None),
+    };
+    Ok(test_marker(language, &text, line, name))
 }
 
 /// Times an empty answer from a managed language server is asked again, and the wait before
@@ -1468,7 +1692,7 @@ fn caller(
     } else {
         name.to_string()
     };
-    let is_test = match test_name(root, language, &name, &file, line, flagged) {
+    let is_test = match test_name(root, language, &name, &file, line, flagged)? {
         Some(test) => {
             name = test;
             true
@@ -1524,7 +1748,7 @@ mod tests {
             "MathTests.testAdds()",
             "Tests/MathTests/MathTests.swift"
         ));
-        assert!(looks_like_test(
+        assert!(!looks_like_test(
             "rust",
             "adds_numbers",
             "crates/a/tests/it.rs"
@@ -1603,6 +1827,14 @@ mod tests {
             Some("prices")
         );
         assert_eq!(test_marker("rust", rust, 4, "helper"), None);
+        let multiline = "// #[test]\nconst TEXT: &str = \"#[test]\";\n#[tokio::test(\n    flavor = \"current_thread\"\n)]\nasync fn qualified() {}\n#[rstest]\nfn parameterized() {}\n#[test_case(1; 2)]\nfn cases() {}\nfn test_helper() {}\n";
+        assert_eq!(
+            test_marker("rust", multiline, 6, "checks::qualified").as_deref(),
+            Some("checks::qualified")
+        );
+        assert!(test_marker("rust", multiline, 8, "parameterized").is_some());
+        assert!(test_marker("rust", multiline, 10, "cases").is_some());
+        assert_eq!(test_marker("rust", multiline, 11, "test_helper"), None);
         let swift = "@Test func adds() {}\nfunc plain() {}\n";
         assert!(test_marker("swift", swift, 1, "adds()").is_some());
         assert!(test_marker("swift", swift, 2, "plain()").is_none());
