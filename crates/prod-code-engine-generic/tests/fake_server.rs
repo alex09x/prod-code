@@ -11,7 +11,7 @@
 //! diagnostic when told to, stays silent when a test wants a timeout, and exits when told to
 //! die so that the adapter can notice.
 
-use prod_code_engine_generic::{GenericLspConfig, GenericLspEngine};
+use prod_code_engine_generic::{GenericLspConfig, GenericLspEngine, Unavailable};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -30,13 +30,15 @@ def send(message):
         sys.stdout.buffer.flush()
 
 def publish(uri, version, text):
+    publish_items(uri, version, [{
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
+        "severity": 1,
+        "message": text
+    }])
+
+def publish_items(uri, version, items):
     send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
-        "uri": uri, "version": version,
-        "diagnostics": [{
-            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 1}},
-            "severity": 1,
-            "message": text
-        }]
+        "uri": uri, "version": version, "diagnostics": items
     }})
 
 def read():
@@ -98,6 +100,13 @@ while True:
         send({"jsonrpc": "2.0", "id": message["id"], "result": {
             "contents": {"kind": "markdown", "value": "the fake server answered"}
         }})
+    elif method == "textDocument/didOpen" and "silent" in message["params"]["textDocument"]["text"]:
+        # A server that has not built the opened text yet, or never will: it publishes nothing.
+        pass
+    elif method == "textDocument/didOpen" and "late-clean" in message["params"]["textDocument"]["text"]:
+        # The build of the opened text finds nothing, and says so, for its version, a moment later.
+        document = message["params"]["textDocument"]
+        threading.Timer(0.4, publish_items, (document["uri"], document["version"], [])).start()
     elif method == "textDocument/didOpen":
         uri = message["params"]["textDocument"]["uri"]
         send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
@@ -139,7 +148,9 @@ while True:
         uri = message["params"]["textDocument"]["uri"]
         version = message["params"]["textDocument"]["version"]
         publish(uri, version - 1, "from the text before the change")
-        threading.Timer(0.3, publish, (uri, version, "from the text as changed")).start()
+        # A changed text marked `stale-only` is never built: only the old text's build arrives.
+        if "stale-only" not in message["params"]["contentChanges"][-1]["text"]:
+            threading.Timer(0.3, publish, (uri, version, "from the text as changed")).start()
     elif method == "workspace/executeCommand":
         command = message["params"].get("command", "")
         if command == "prodCode/edit":
@@ -155,6 +166,9 @@ while True:
             send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32000, "message": "the command was refused"}})
         else:
             send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+    elif method == "textDocument/didClose":
+        # What clangd does for a document just closed: clears its diagnostics, without a version.
+        publish_items(message["params"]["textDocument"]["uri"], None, [])
     elif method == "prodCode/silence":
         # Answer nothing at all, so the caller's timeout is the only way out.
         pass
@@ -362,10 +376,11 @@ async fn the_wait_for_a_semantic_check_ends_at_the_first_error_on_the_probe_line
         .await
         .expect("the fake server starts");
     let started = std::time::Instant::now();
-    assert!(
+    assert_eq!(
         engine
             .wait_for_semantic_check(&path, "swift", text, 1, Duration::from_secs(20))
-            .await
+            .await,
+        Ok(true)
     );
     assert!(
         started.elapsed() >= Duration::from_millis(500),
@@ -381,12 +396,66 @@ async fn the_wait_for_a_semantic_check_ends_at_the_first_error_on_the_probe_line
         .await
         .expect("the fake server starts");
     let started = std::time::Instant::now();
-    assert!(
-        !engine
+    assert_eq!(
+        engine
             .wait_for_semantic_check(&path, "swift", text, 1, Duration::from_secs(1))
-            .await
+            .await,
+        Ok(false),
+        "the server reported on the probe, and found nothing on its line"
     );
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+/// A server that neither answers a pull nor publishes for the probe never reported on it: the
+/// wait says so rather than that the probe found no error (#471).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_semantic_check_the_server_never_reports_on_is_an_error() {
+    let (dir, script) = workspace();
+    let path = dir.path().join("Sources/Shop/main.swift");
+    let mut pushes = config(&script);
+    pushes
+        .env
+        .insert("FAKE_NO_PULL".to_string(), "1".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), pushes)
+        .await
+        .expect("the fake server starts");
+    let err = engine
+        .wait_for_semantic_check(&path, "swift", "// silent\n", 1, Duration::from_secs(1))
+        .await
+        .expect_err("nothing was reported on the probe");
+    assert_eq!(
+        err.kind,
+        Unavailable::NotPublished { sent: Some(1) },
+        "{err}"
+    );
+    assert!(err.uri.ends_with("Sources/Shop/main.swift"), "{err}");
+
+    // A server that exited ends the wait at once.
+    let _ = engine
+        .send_notification("prodCode/die", serde_json::json!({}))
+        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && engine.is_alive() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let started = std::time::Instant::now();
+    let err = engine
+        .wait_for_semantic_check(&path, "swift", "// silent\n", 1, Duration::from_secs(30))
+        .await
+        .expect_err("an exited server reports nothing");
+    assert_eq!(err.kind, Unavailable::ServerExited, "{err}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let err = engine
+        .wait_for_semantic_check(
+            Path::new("relative.swift"),
+            "swift",
+            "",
+            0,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("a path that is no file URI is never opened");
+    assert_eq!(err.kind, Unavailable::NeverPublished, "{err}");
 }
 
 /// A server that answers a diagnostic pull is asked, whether or not it advertised one
@@ -439,7 +508,8 @@ async fn the_diagnostics_answered_are_for_the_text_last_sent() {
         .expect("didOpen is sent");
     let opened = engine
         .current_diagnostics_for(&uri, Duration::from_secs(10))
-        .await;
+        .await
+        .expect("the publication after the didOpen");
     assert!(
         opened[0]["message"]
             .as_str()
@@ -459,23 +529,26 @@ async fn the_diagnostics_answered_are_for_the_text_last_sent() {
         .expect("didChange is sent");
     let changed = engine
         .current_diagnostics_for(&uri, Duration::from_secs(10))
-        .await;
+        .await
+        .expect("the publication for version 2");
     assert_eq!(
         changed[0]["message"].as_str(),
         Some("from the text as changed"),
         "{changed:?}"
     );
     assert_eq!(
-        engine.diagnostics_for(&uri).await[0]["message"].as_str(),
+        engine.diagnostics_for(&uri).await.expect("published")[0]["message"].as_str(),
         Some("from the text as changed")
     );
 
-    // A document nothing was sent for is answered after a short wait for a first publication.
+    // A document nothing was sent for waits a short while for a first publication, and then
+    // has no report, which is not a clean one.
     let started = std::time::Instant::now();
     let none = engine
         .current_diagnostics_for("file:///never/opened.c", Duration::from_secs(60))
-        .await;
-    assert!(none.is_empty());
+        .await
+        .expect_err("nothing was published for it");
+    assert_eq!(none.kind, Unavailable::NeverPublished, "{none}");
     assert!(
         started.elapsed() < Duration::from_secs(10),
         "waited {:?}",
@@ -484,7 +557,7 @@ async fn the_diagnostics_answered_are_for_the_text_last_sent() {
 
     // What was published for a document is dropped when it is closed: the next session to
     // open it numbers its versions from 1 again, and a publication for this one's version 2
-    // would pass for its own.
+    // would pass for its own. What comes after the close is the server's clearing, empty.
     engine
         .send_notification(
             "textDocument/didClose",
@@ -492,7 +565,13 @@ async fn the_diagnostics_answered_are_for_the_text_last_sent() {
         )
         .await
         .expect("didClose is sent");
-    assert!(engine.diagnostics_for(&uri).await.is_empty());
+    assert!(
+        engine
+            .diagnostics_for(&uri)
+            .await
+            .unwrap_or_default()
+            .is_empty()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -523,7 +602,7 @@ async fn a_published_diagnostic_is_kept_for_the_file_it_belongs_to() {
         engine.diagnostics_published(&uri).await,
         "the publication was noticed"
     );
-    let items = engine.diagnostics_for(&uri).await;
+    let items = engine.diagnostics_for(&uri).await.expect("published");
     assert_eq!(items.len(), 1, "one diagnostic, for this file: {items:?}");
     assert!(
         items[0]["message"]
@@ -536,7 +615,7 @@ async fn a_published_diagnostic_is_kept_for_the_file_it_belongs_to() {
         engine
             .diagnostics_for("file:///somewhere/else.txt")
             .await
-            .is_empty(),
+            .is_none(),
         "another file has none"
     );
 }
@@ -906,6 +985,255 @@ fn python_settings_follow_the_project_into_its_virtual_environment() {
     // A section nothing knows about gets an empty object rather than a guess.
     let unknown = prod_code_engine_generic::settings_for_section(dir.path(), "ruby");
     assert_eq!(unknown, serde_json::json!({}));
+}
+
+/// Opens `text` as version 1 of the document at `uri`.
+async fn open(engine: &GenericLspEngine, uri: &str, text: &str) {
+    engine
+        .send_notification(
+            "textDocument/didOpen",
+            serde_json::json!({ "textDocument": {
+                "uri": uri, "languageId": "c", "version": 1, "text": text
+            }}),
+        )
+        .await
+        .expect("didOpen is sent");
+}
+
+/// A server that published nothing for the text opened has no report on it, and says so by
+/// document and version instead of answering with an empty list (#471); one that exited says
+/// that at once rather than at the end of the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_document_the_server_published_nothing_for_has_no_report() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/silent.c", dir.path().display());
+    open(&engine, &uri, "// silent\n").await;
+    let err = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect_err("nothing was published for version 1");
+    assert_eq!(
+        err.kind,
+        Unavailable::NotPublished { sent: Some(1) },
+        "{err}"
+    );
+    assert_eq!(err.uri, uri);
+    assert!(
+        err.to_string().contains("(version 1)") && err.waited >= Duration::from_millis(20),
+        "{err}"
+    );
+
+    let _ = engine
+        .send_notification("prodCode/die", serde_json::json!({}))
+        .await;
+    let started = std::time::Instant::now();
+    let err = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(60))
+        .await
+        .expect_err("an exited server publishes nothing");
+    assert_eq!(err.kind, Unavailable::ServerExited, "{err}");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+}
+
+/// The build of version 1, published after version 2 was sent and never followed by one for
+/// version 2, is not version 2's report (#471).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_publication_for_an_older_version_is_not_the_report_of_the_newer_one() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/a.c", dir.path().display());
+    open(&engine, &uri, "int a;\n").await;
+    engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await
+        .expect("the publication after the didOpen");
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "text": "int b; // stale-only\n" } ]
+            }),
+        )
+        .await
+        .expect("didChange is sent");
+    let err = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(600))
+        .await
+        .expect_err("only version 1 was published");
+    assert_eq!(
+        err.kind,
+        Unavailable::OlderVersion {
+            published: 1,
+            sent: 2
+        },
+        "{err}"
+    );
+    assert_eq!(
+        engine.diagnostics_for(&uri).await.expect("published")[0]["message"],
+        "from the text before the change",
+        "what was published is still there, for what it is"
+    );
+}
+
+/// Before the server has published for the text opened there is no report; once it has, its
+/// publication answers, and an empty one is a clean report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_publication_answers_and_an_empty_one_is_a_clean_report() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/clean.c", dir.path().display());
+    let started = std::time::Instant::now();
+    open(&engine, &uri, "// late-clean\n").await;
+    let early = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect_err("the server has not published yet");
+    assert_eq!(
+        early.kind,
+        Unavailable::NotPublished { sent: Some(1) },
+        "{early}"
+    );
+    let late = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await
+        .expect("the publication for version 1");
+    assert!(late.is_empty(), "{late:?}");
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "it was the late publication that answered: {:?}",
+        started.elapsed()
+    );
+}
+
+/// Closing a document drops what was published for it; clangd's clearing after the close,
+/// without a version, is no report, and neither is the silence after a reopen, while the
+/// reopened text's own publication is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_or_reopened_document_is_not_answered_from_before() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/a.c", dir.path().display());
+    open(&engine, &uri, "int a;\n").await;
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "text": "int b;\n" } ]
+            }),
+        )
+        .await
+        .expect("didChange is sent");
+    let changed = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await
+        .expect("the publication for version 2");
+    assert_eq!(changed[0]["message"], "from the text as changed");
+
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .expect("didClose is sent");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline && !engine.diagnostics_published(&uri).await {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(engine.diagnostics_for(&uri).await, Some(Vec::new()));
+    let closed = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect_err("a closed document's clearing is no report");
+    assert_eq!(
+        closed.kind,
+        Unavailable::Unversioned { sent: None },
+        "{closed}"
+    );
+
+    open(&engine, &uri, "// silent\n").await;
+    let reopened = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect_err("nothing was published for the reopened text");
+    assert_eq!(
+        reopened.kind,
+        Unavailable::NotPublished { sent: Some(1) },
+        "version 2's errors do not answer for the new version 1: {reopened}"
+    );
+
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .expect("didClose is sent");
+    // The server numbers its publications by now, so the reopened text's own is numbered too;
+    // the close's clearing may still arrive after the reopen, and is passed over.
+    open(&engine, &uri, "// late-clean\n").await;
+    let fresh = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(10))
+        .await
+        .expect("the reopened text's publication");
+    assert!(fresh.is_empty(), "{fresh:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_version_from_a_closed_session_does_not_check_reopened_text() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .unwrap();
+    let uri = "file:///wherever/reopened.c";
+    open(&engine, uri, "int old;\n").await;
+    engine
+        .current_diagnostics_for(uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "int older;\n"}]
+            }),
+        )
+        .await
+        .unwrap();
+    // The fake server publishes version 2 after 300 ms, after we close and reopen at 1.
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({
+                "textDocument": {"uri": uri}
+            }),
+        )
+        .await
+        .unwrap();
+    open(&engine, uri, "// silent new text\n").await;
+    let report = engine
+        .current_diagnostics_for(uri, Duration::from_millis(650))
+        .await;
+    assert!(
+        report.is_err(),
+        "old session version 2 answered for reopened version 1: {report:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

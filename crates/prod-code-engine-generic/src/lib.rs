@@ -823,7 +823,8 @@ impl GenericLspEngine {
     /// server that faults it checks files with the project's real build settings. sourcekit-lsp
     /// loads a package's settings in the background after it starts; until then it checks with
     /// fallback settings that report syntax errors only, and a check answered in that window
-    /// found no errors at all (#295).
+    /// found no errors at all (#295). `Ok(false)` means the server did report on the text and
+    /// found nothing on that line; when it never reported on it at all, the error says why.
     pub async fn wait_for_semantic_check(
         &self,
         path: &Path,
@@ -831,9 +832,16 @@ impl GenericLspEngine {
         text: &str,
         line: u64,
         timeout: Duration,
-    ) -> bool {
+    ) -> Result<bool, DiagnosticsUnavailable> {
+        let started = Instant::now();
+        let unavailable = |uri: String, kind| DiagnosticsUnavailable {
+            uri,
+            waited: started.elapsed(),
+            kind,
+        };
         let Ok(uri) = url::Url::from_file_path(path) else {
-            return false;
+            let shown = path.display().to_string();
+            return Err(unavailable(shown, Unavailable::NeverPublished));
         };
         let uri = uri.to_string();
         let open = serde_json::json!({ "textDocument": {
@@ -844,26 +852,44 @@ impl GenericLspEngine {
             .await
             .is_err()
         {
-            return false;
+            return Err(unavailable(uri, Unavailable::ServerExited));
         }
-        let started = Instant::now();
         let mut faulted = false;
-        while !faulted && started.elapsed() < timeout {
+        let mut reported = false;
+        let mut missing = None;
+        loop {
             let items = match self.pull_diagnostics(&uri).await {
-                Some(items) => items,
-                None => self.current_diagnostics_for(&uri, SEMANTIC_POLL).await,
+                Some(items) => Some(items),
+                None => match self.current_diagnostics_for(&uri, SEMANTIC_POLL).await {
+                    Ok(items) => Some(items),
+                    Err(err) => {
+                        let exited = err.kind == Unavailable::ServerExited;
+                        missing = Some(err);
+                        if exited {
+                            break;
+                        }
+                        None
+                    }
+                },
             };
-            faulted = items.iter().any(|d| {
-                d.get("severity").and_then(|s| s.as_u64()) == Some(1)
-                    && d.pointer("/range/start/line").and_then(|l| l.as_u64()) == Some(line)
-            });
-            if !faulted {
-                tokio::time::sleep(SEMANTIC_POLL).await;
+            if let Some(items) = items {
+                reported = true;
+                faulted = items.iter().any(|d| {
+                    d.get("severity").and_then(|s| s.as_u64()) == Some(1)
+                        && d.pointer("/range/start/line").and_then(|l| l.as_u64()) == Some(line)
+                });
             }
+            if faulted || started.elapsed() >= timeout {
+                break;
+            }
+            tokio::time::sleep(SEMANTIC_POLL).await;
         }
         let close = serde_json::json!({ "textDocument": { "uri": uri } });
         let _ = self.send_notification("textDocument/didClose", close).await;
-        faulted
+        match missing {
+            Some(err) if !reported => Err(err),
+            _ => Ok(faulted),
+        }
     }
 
     /// Whether the server has published diagnostics for `uri` at least once.
@@ -871,15 +897,14 @@ impl GenericLspEngine {
         self.diagnostics.read().await.contains_key(uri)
     }
 
-    /// The diagnostics the server last published for `uri` (empty when none), whichever text
-    /// they were for.
-    pub async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
+    /// The diagnostics the server last published for `uri`, whichever text they were for, or
+    /// `None` when it has published none since the document was last opened or closed.
+    pub async fn diagnostics_for(&self, uri: &str) -> Option<Vec<serde_json::Value>> {
         self.diagnostics
             .read()
             .await
             .get(uri)
             .map(|p| p.items.clone())
-            .unwrap_or_default()
     }
 
     /// The diagnostics for the text last sent for `uri`. A server that pushes diagnostics
@@ -887,38 +912,51 @@ impl GenericLspEngine {
     /// change may still arrive after that change was sent; answering with it reports the old
     /// text's errors as the new one's (#293). This waits up to `wait` for a publication that
     /// covers the last text sent, and up to [`FIRST_PUBLICATION_WAIT`] for a first one when
-    /// nothing was sent for the document; past that it answers with what was last published.
+    /// nothing was sent for the document. Past that, or once the server has exited, there is
+    /// no report, and the error says why: an empty list would read as "no errors" (#471).
     pub async fn current_diagnostics_for(
         &self,
         uri: &str,
         wait: Duration,
-    ) -> Vec<serde_json::Value> {
+    ) -> Result<Vec<serde_json::Value>, DiagnosticsUnavailable> {
         let started = Instant::now();
         loop {
-            let known = {
+            let (kind, known) = {
                 let sent = self.sent.read().await;
                 let published = self.diagnostics.read().await;
-                if let Some(p) = published.get(uri)
-                    && covers(p, sent.get(uri), self.versioned.load(Ordering::Relaxed))
-                {
-                    return p.items.clone();
-                }
-                sent.contains_key(uri)
+                let last_sent = sent.get(uri);
+                let kind = match (published.get(uri), last_sent) {
+                    (Some(p), _) => {
+                        match gap(p, last_sent, self.versioned.load(Ordering::Relaxed)) {
+                            None => return Ok(p.items.clone()),
+                            Some(kind) => kind,
+                        }
+                    }
+                    (None, Some(s)) => Unavailable::NotPublished { sent: s.version },
+                    (None, None) => Unavailable::NeverPublished,
+                };
+                (kind, last_sent.is_some())
+            };
+            let kind = if self.is_alive() {
+                kind
+            } else {
+                Unavailable::ServerExited
             };
             let limit = if known {
                 wait
             } else {
                 wait.min(FIRST_PUBLICATION_WAIT)
             };
-            if started.elapsed() >= limit {
+            if kind == Unavailable::ServerExited || started.elapsed() >= limit {
+                let err = DiagnosticsUnavailable {
+                    uri: uri.to_string(),
+                    waited: started.elapsed(),
+                    kind,
+                };
                 if known {
-                    tracing::warn!(
-                        uri,
-                        waited_ms = started.elapsed().as_millis() as u64,
-                        "no diagnostics published for the text last sent; answering with the last ones"
-                    );
+                    tracing::warn!(error = %err, "no diagnostics published for the text last sent");
                 }
-                return self.diagnostics_for(uri).await;
+                return Err(err);
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -1058,18 +1096,130 @@ struct Sent {
     at: Instant,
 }
 
-/// Whether a publication covers the text last sent for its document: one for that version or
-/// a later one, or, when either side has no version, one that arrived after the text was sent.
-/// From a server that numbers its publications (`versioned`), one without a number never
-/// covers a numbered text. With nothing sent, any publication does.
-fn covers(published: &Published, sent: Option<&Sent>, versioned: bool) -> bool {
-    match sent {
-        None => true,
-        Some(sent) => match (published.version, sent.version) {
-            (Some(p), Some(s)) => p >= s,
-            (None, Some(_)) if versioned => false,
-            _ => published.at >= sent.at,
+/// Why a server has no report on a document's current text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unavailable {
+    /// No text of the document was sent, and the server published nothing for it.
+    NeverPublished,
+    /// A text was sent (with this version, when it had one), and the server has published
+    /// nothing for the document since it was opened.
+    NotPublished { sent: Option<i64> },
+    /// The last publication is for a version older than the one last sent.
+    OlderVersion { published: i64, sent: i64 },
+    /// A publication names a version not sent for the current opening of the document.
+    UnexpectedVersion { published: i64, sent: i64 },
+    /// The last publication carries no version, from a server that numbers its publications:
+    /// clangd publishes so for a document just closed.
+    Unversioned { sent: Option<i64> },
+    /// The last publication arrived before the text last sent. Without a version on both
+    /// sides, the order of arrival is all that tells them apart.
+    Earlier { sent: Option<i64> },
+    /// The server exited.
+    ServerExited,
+}
+
+/// No publication covers the text last sent for a document, so there is no report of its
+/// diagnostics; which is not a report that it has none (#471).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagnosticsUnavailable {
+    pub uri: String,
+    /// How long the publication was waited for.
+    pub waited: Duration,
+    pub kind: Unavailable,
+}
+
+impl std::fmt::Display for DiagnosticsUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ms = self.waited.as_millis();
+        let version = |v: &Option<i64>| v.map(|v| format!(" (version {v})")).unwrap_or_default();
+        write!(f, "no current diagnostics for {}: ", self.uri)?;
+        match &self.kind {
+            Unavailable::NeverPublished => write!(
+                f,
+                "no text of it was sent, and the language server published nothing for it \
+                 within {ms} ms"
+            )?,
+            Unavailable::NotPublished { sent } => write!(
+                f,
+                "the language server published nothing for the text last sent{} within {ms} ms",
+                version(sent)
+            )?,
+            Unavailable::OlderVersion { published, sent } => write!(
+                f,
+                "the language server's last publication is for version {published}, older than \
+                 version {sent} last sent, and none for version {sent} came within {ms} ms"
+            )?,
+            Unavailable::UnexpectedVersion { published, sent } => write!(
+                f,
+                "the language server published version {published}, but the current text is version \
+                 {sent}; no matching report arrived within {ms} ms"
+            )?,
+            Unavailable::Unversioned { sent: None } => write!(
+                f,
+                "the language server numbers its publications, and its last one for the document \
+                 carries no version, as one for a closed document does; no text of it is open"
+            )?,
+            Unavailable::Unversioned { sent } => write!(
+                f,
+                "the language server numbers its publications, and its last one for the document \
+                 carries no version, as one for a closed document does; none for the text last \
+                 sent{} came within {ms} ms",
+                version(sent)
+            )?,
+            Unavailable::Earlier { sent } => write!(
+                f,
+                "the language server's last publication arrived before the text last sent{}, \
+                 and none came after it within {ms} ms",
+                version(sent)
+            )?,
+            Unavailable::ServerExited => write!(
+                f,
+                "the language server exited before it published for the text last sent"
+            )?,
+        }
+        write!(
+            f,
+            "; there is no report, which does not mean the document has no errors"
+        )
+    }
+}
+
+impl std::error::Error for DiagnosticsUnavailable {}
+
+/// Why a publication does not cover the text last sent for its document, or `None` when it
+/// does: one for exactly that version, or, when either side has no version, one that
+/// arrived after the text was sent. From a server that numbers its publications
+/// (`versioned`), one without a number covers no numbered text, and with nothing sent it is a
+/// closed document's; with nothing sent, any other publication covers the document.
+fn gap(published: &Published, sent: Option<&Sent>, versioned: bool) -> Option<Unavailable> {
+    match (published.version, sent) {
+        (None, None) if versioned => Some(Unavailable::Unversioned { sent: None }),
+        (_, None) => None,
+        (
+            Some(p),
+            Some(Sent {
+                version: Some(s), ..
+            }),
+        ) => match p.cmp(s) {
+            std::cmp::Ordering::Less => Some(Unavailable::OlderVersion {
+                published: p,
+                sent: *s,
+            }),
+            std::cmp::Ordering::Equal => None,
+            std::cmp::Ordering::Greater => Some(Unavailable::UnexpectedVersion {
+                published: p,
+                sent: *s,
+            }),
         },
+        (
+            None,
+            Some(Sent {
+                version: Some(s), ..
+            }),
+        ) if versioned => Some(Unavailable::Unversioned { sent: Some(*s) }),
+        (_, Some(sent)) => {
+            (published.at < sent.at).then_some(Unavailable::Earlier { sent: sent.version })
+        }
     }
 }
 
@@ -1087,6 +1237,25 @@ mod tests {
             items: Vec::new(),
         };
         let sent = |version, at| Sent { version, at };
+        let covers = |p: &Published, s: Option<&Sent>, versioned| gap(p, s, versioned).is_none();
+        assert_eq!(
+            gap(&published(Some(1), later), Some(&sent(Some(2), now)), true),
+            Some(Unavailable::OlderVersion {
+                published: 1,
+                sent: 2
+            })
+        );
+        assert_eq!(
+            gap(&published(None, later), None, true),
+            Some(Unavailable::Unversioned { sent: None }),
+            "from clangd, an unversioned publication with nothing open is a closed document's"
+        );
+        assert!(covers(&published(None, later), None, false));
+        assert_eq!(
+            gap(&published(None, now), Some(&sent(Some(2), later)), false),
+            Some(Unavailable::Earlier { sent: Some(2) }),
+            "without a version, only the order of arrival is known"
+        );
         for versioned in [false, true] {
             assert!(
                 covers(&published(Some(1), now), None, versioned),
@@ -1106,12 +1275,12 @@ mod tests {
                 versioned
             ));
             assert!(
-                covers(
+                !covers(
                     &published(Some(3), later),
                     Some(&sent(Some(2), now)),
                     versioned
                 ),
-                "a later version covers an earlier one"
+                "a late version from a closed opening cannot cover the reopened text"
             );
             assert!(
                 !covers(
@@ -1135,6 +1304,66 @@ mod tests {
             !covers(&published(None, later), Some(&sent(Some(2), now)), true),
             "from clangd, a publication without a version is a closed document's"
         );
+    }
+
+    /// Every reason says which document has no report and why, and none claims a version the
+    /// server did not give.
+    #[test]
+    fn a_missing_report_says_why_for_which_document() {
+        let said = |kind| {
+            DiagnosticsUnavailable {
+                uri: "file:///w/a.c".to_string(),
+                waited: Duration::from_millis(20),
+                kind,
+            }
+            .to_string()
+        };
+        for (kind, reason) in [
+            (Unavailable::NeverPublished, "no text of it was sent"),
+            (
+                Unavailable::NotPublished { sent: Some(1) },
+                "published nothing for the text last sent (version 1) within 20 ms",
+            ),
+            (
+                Unavailable::OlderVersion {
+                    published: 1,
+                    sent: 2,
+                },
+                "last publication is for version 1, older than version 2 last sent",
+            ),
+            (
+                Unavailable::Unversioned { sent: None },
+                "carries no version, as one for a closed document does; no text of it is open",
+            ),
+            (
+                Unavailable::Unversioned { sent: Some(3) },
+                "none for the text last sent (version 3) came within 20 ms",
+            ),
+            (
+                Unavailable::Earlier { sent: None },
+                "arrived before the text last sent, and none came after it within 20 ms",
+            ),
+            (
+                Unavailable::UnexpectedVersion {
+                    published: 3,
+                    sent: 1,
+                },
+                "published version 3, but the current text is version 1",
+            ),
+            (Unavailable::ServerExited, "exited before it published"),
+        ] {
+            let text = said(kind);
+            assert!(
+                text.starts_with("no current diagnostics for file:///w/a.c: "),
+                "{text}"
+            );
+            assert!(text.contains(reason), "{reason}: {text}");
+            assert!(
+                text.ends_with("does not mean the document has no errors"),
+                "{text}"
+            );
+        }
+        assert!(!said(Unavailable::Earlier { sent: Some(2) }).contains("version 1"));
     }
 
     #[test]

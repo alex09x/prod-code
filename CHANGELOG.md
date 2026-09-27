@@ -31,6 +31,11 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Missing or stale diagnostic publications return an explicit unavailable error through
+  diagnostics, edit validation and code actions (#471). Empty reports remain valid when
+  published for the current text. Explicit versions must match exactly, so a delayed higher
+  version from a closed document cannot check its reopened text. Unversioned servers retain
+  arrival-order evidence only; a timestamp does not establish a document version.
 - Generic LSP diagnostic pulls accept only complete `full` reports with array items and no
   error envelope (#479). Uncached `unchanged`, unknown or malformed reports no longer become
   clean results when their kind is stripped; an available publication must supply the fallback.

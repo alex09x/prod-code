@@ -1467,10 +1467,16 @@ async fn wait_for_swift_build_settings(
         .wait_for_semantic_check(&path, "swift", &probe, line, SWIFT_SETTINGS_WAIT)
         .await;
     let waited_ms = started.elapsed().as_millis() as u64;
-    if checked {
-        tracing::info!(workspace = ?root, waited_ms, "sourcekit-lsp has the package's build settings");
-    } else {
-        tracing::warn!(workspace = ?root, waited_ms, "sourcekit-lsp found no type error in the probe; its checks may report syntax errors only");
+    match checked {
+        Ok(true) => {
+            tracing::info!(workspace = ?root, waited_ms, "sourcekit-lsp has the package's build settings")
+        }
+        Ok(false) => {
+            tracing::warn!(workspace = ?root, waited_ms, "sourcekit-lsp found no type error in the probe; its checks may report syntax errors only")
+        }
+        Err(err) => {
+            tracing::warn!(workspace = ?root, waited_ms, error = %err, "sourcekit-lsp never reported on the probe; whether its checks have the package's build settings is unknown")
+        }
     }
 }
 
