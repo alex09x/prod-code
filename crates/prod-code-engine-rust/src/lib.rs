@@ -3253,7 +3253,10 @@ fn main() {
         // Another session looks at the base, then session 1 comes back.
         engine.activate_session(2).unwrap();
         let hidden = engine.hover(&scratch, 1, 8).unwrap_err();
-        assert!(hidden.to_string().contains("Invalid position 1:8"), "{hidden:#}");
+        assert!(
+            hidden.to_string().contains("Invalid position 1:8"),
+            "{hidden:#}"
+        );
         assert!(engine.hover(&scratch, 1, 1).unwrap().is_none());
         engine.activate_session(1).unwrap();
         let again = engine.hover(&scratch, 1, 8).unwrap();
