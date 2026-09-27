@@ -5999,47 +5999,66 @@ pub async fn resolve_symbol(
     let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
         .into_iter()
         .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
-    if let Some(q) = qualifier {
-        // rust-analyzer's index leaves struct fields out, so `Type::field` has no hit of its
-        // own, and an exact hit outside the named type (a free function `field`) is not what
-        // `Type::field` means. The type's outline is what knows its members.
-        let inside_type = exact
-            .iter()
-            .any(|hit| hit.container.as_deref().is_some_and(|c| c.contains(q)));
-        if !inside_type {
-            let members = type_members(remote, root, q, name, hint).await?;
-            if !members.is_empty() {
-                return single_candidate(root, symbol, &members.iter().collect::<Vec<_>>());
+    let exact = if qualifier.is_some() {
+        // A qualifier is an eligibility requirement, not a scoring preference: choosing a
+        // same-named member of another type would make every symbol-addressable tool act on a
+        // declaration the caller explicitly did not name. rust-analyzer can omit fields and
+        // methods from its index, so ask the named type's outline after the eligible index hits
+        // are exhausted.
+        let eligible: Vec<SymbolHit> = exact
+            .into_iter()
+            .filter(|hit| qualifier_matches(root, hit, qualifiers))
+            .collect();
+        if !eligible.is_empty() {
+            eligible
+        } else {
+            let members = type_members(remote, root, qualifiers, name, hint).await?;
+            if members.is_empty() {
+                anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
             }
+            members
         }
-    }
-    if exact.is_empty() {
-        let unindexed = unindexed_declarations(remote, root, name).await;
-        anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
-    }
+    } else {
+        if exact.is_empty() {
+            let unindexed = unindexed_declarations(remote, root, name).await;
+            anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
+        }
+        exact
+    };
     let remote_texts = remote_sources(remote, &exact).await;
+    // An explicit owner is not enough when the index or outline is stale. Qualified lookup
+    // must point at the requested name in readable source, not merely rank that hit lower.
+    let exact = if qualifier.is_some() {
+        let verified: Vec<SymbolHit> = exact
+            .into_iter()
+            .filter(|hit| {
+                identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
+                    || identifier_at(
+                        &hit.path,
+                        &remote_texts,
+                        hit.line,
+                        hit.col,
+                        bare_symbol_name(&hit.name),
+                    )
+            })
+            .collect();
+        anyhow::ensure!(
+            !verified.is_empty(),
+            "no verified symbol named `{symbol}`: the index or outline positions do not match readable current source; refresh the project index or supply a current source position"
+        );
+        verified
+    } else {
+        exact
+    };
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
     let mut scored: Vec<(i32, SymbolHit)> = exact
         .into_iter()
         .map(|hit| {
             let bare = bare_symbol_name(&hit.name);
             let mut score = if bare == name { 100 } else { 60 };
-            if let Some(q) = qualifier {
-                let by_container = match &hit.container {
-                    Some(c)
-                        if c == q
-                            || c.ends_with(&format!("::{q}"))
-                            || c.ends_with(&format!(".{q}")) =>
-                    {
-                        Some(50)
-                    }
-                    Some(c) if c.contains(q) => Some(30),
-                    Some(_) => Some(-10),
-                    None => None,
-                };
-                // A free function has no container: its module path is its file's (#324).
-                let by_module = module_path_ends_with(root, &hit.path, qualifiers).then_some(50);
-                score += by_module.max(by_container).unwrap_or(0);
+            if qualifier.is_some() {
+                // Qualified hits already passed `qualifier_matches`; the score is only for
+                // ordinary tie-breakers such as a caller's path hint.
             } else if hit.kind == "EnumMember" {
                 // A bare name is the type's, not an enum's variant of the same name, which Rust
                 // reaches as `Enum::Variant` (#325).
@@ -6105,6 +6124,146 @@ pub async fn resolve_symbol(
     single_candidate(root, symbol, &ties)
 }
 
+/// Whether a qualified request can name `hit`. A member belongs to the requested type when its
+/// container names that type (including generic and impl labels); a free function belongs when
+/// its file's module path has every qualifier. This deliberately never uses substring matching:
+/// `Consumer::recv` must not resolve to `AsyncConsumer::recv`.
+fn qualifier_matches(root: &Path, hit: &SymbolHit, qualifiers: &[&str]) -> bool {
+    let decorated = decorated_owner(&hit.name);
+    let owner = hit
+        .container
+        .as_deref()
+        .map(owner_segments)
+        .filter(|owner| !owner.is_empty())
+        .unwrap_or(decorated);
+    // rust-analyzer also labels methods as Function. A known owner constrains every kind;
+    // the containing file cannot turn an explicitly owned member into a free function.
+    if !owner.is_empty() {
+        return owner_path_matches(root, &hit.path, qualifiers, &owner);
+    }
+    !symbol_is_type_member(hit.kind) && module_path_ends_with(root, &hit.path, qualifiers)
+}
+
+/// Kinds whose container is a type, never merely the module named by the hit's file.
+fn symbol_is_type_member(kind: &str) -> bool {
+    matches!(
+        kind,
+        "Method" | "Field" | "Property" | "EnumMember" | "Constructor" | "Event" | "Operator"
+    )
+}
+
+/// The explicit owner decorating a server name (`pkg.Type.member`, `Type::member`).
+fn decorated_owner(name: &str) -> Vec<String> {
+    let bare = bare_symbol_name(name);
+    name.rfind(bare)
+        .map(|at| owner_segments(name[..at].trim_end_matches([':', '.', '/', '#'])))
+        .unwrap_or_default()
+}
+
+/// Comparable owner segments from a container or outline label. Generic arguments and Rust
+/// `impl` syntax describe the same owner and do not become path segments.
+fn owner_segments(label: &str) -> Vec<String> {
+    let label = label.trim();
+    let target = match label.strip_prefix("impl") {
+        Some(rest) if rest.starts_with([' ', '<']) => {
+            let mut rest = rest.trim_start();
+            if rest.starts_with('<') {
+                let mut depth = 0usize;
+                for (i, c) in rest.char_indices() {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => {
+                            depth = depth.saturating_sub(1);
+                            if depth == 0 {
+                                rest = &rest[i + 1..];
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let rest = rest.split(" where ").next().unwrap_or(rest);
+            rest.rsplit_once(" for ").map_or(rest, |(_, ty)| ty)
+        }
+        _ => label,
+    };
+    let target = target
+        .trim()
+        .trim_start_matches('&')
+        .trim()
+        .strip_prefix("mut ")
+        .unwrap_or(target.trim().trim_start_matches('&').trim())
+        .trim();
+    let target = [
+        "pub struct ",
+        "struct ",
+        "class ",
+        "enum ",
+        "trait ",
+        "interface ",
+        "extension ",
+    ]
+    .into_iter()
+    .find_map(|prefix| target.strip_prefix(prefix))
+    .unwrap_or(target);
+    let mut without_generics = String::with_capacity(target.len());
+    let mut depth = 0usize;
+    for c in target.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' if depth > 0 => depth -= 1,
+            _ if depth == 0 => without_generics.push(c),
+            _ => {}
+        }
+    }
+    without_generics
+        .replace(" > ", "::")
+        .split(['.', ':', '/', '#'])
+        .map(|part| {
+            let part = part.trim();
+            let part = part.strip_prefix("impl ").unwrap_or(part);
+            let part = part.rsplit_once(" for ").map_or(part, |(_, ty)| ty);
+            part.trim_matches(['(', ')', '*', '&']).replace('-', "_")
+        })
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+/// A requested owner may omit leading segments supplied by a server, but every segment the
+/// caller did provide must agree. When the server only names the terminal type, its file must
+/// establish the remaining module prefix.
+fn owner_path_matches(root: &Path, path: &Path, requested: &[&str], declared: &[String]) -> bool {
+    let equals = |a: &str, b: &str| {
+        a.replace('-', "_")
+            .eq_ignore_ascii_case(&b.replace('-', "_"))
+    };
+    let ends_with = |longer: &[String], shorter: &[&str]| {
+        longer.len() >= shorter.len()
+            && longer[longer.len() - shorter.len()..]
+                .iter()
+                .zip(shorter)
+                .all(|(a, b)| equals(a, b))
+    };
+    if requested.is_empty() || declared.is_empty() {
+        return false;
+    }
+    if ends_with(declared, requested) {
+        return true;
+    }
+    if requested.len() < declared.len()
+        || !declared
+            .iter()
+            .rev()
+            .zip(requested.iter().rev())
+            .all(|(a, b)| equals(a, b))
+    {
+        return false;
+    }
+    let module_prefix = &requested[..requested.len() - declared.len()];
+    !module_prefix.is_empty() && module_path_ends_with(root, path, module_prefix)
+}
+
 /// Whether the module path `path`'s file gives it ends with `qualifiers`:
 /// `crates/prod-code-mcp/src/report.rs` is `crates::prod_code_mcp::report`, which ends with
 /// `prod_code_mcp::report` and with `report`. `src`, `lib`, `main`, `mod`, `__init__` and
@@ -6125,15 +6284,68 @@ fn module_path_ends_with(root: &Path, path: &Path, qualifiers: &[&str]) -> bool 
         })
         .collect();
     let ends_with = |qualifiers: &[&str]| {
-        segments.len() >= qualifiers.len()
-            && segments[segments.len() - qualifiers.len()..]
-                .iter()
-                .zip(qualifiers)
-                .all(|(segment, q)| segment.eq_ignore_ascii_case(&q.replace('-', "_")))
+        (qualifiers.is_empty() && segments.is_empty())
+            || (!qualifiers.is_empty()
+                && segments.len() >= qualifiers.len()
+                && segments[segments.len() - qualifiers.len()..]
+                    .iter()
+                    .zip(qualifiers)
+                    .all(|(segment, q)| segment.eq_ignore_ascii_case(&q.replace('-', "_"))))
     };
-    // The first segment may be the crate's name (or `crate`), which a single crate's paths do
-    // not spell.
-    ends_with(qualifiers) || (qualifiers.len() > 1 && ends_with(&qualifiers[1..]))
+    ends_with(qualifiers)
+        || (module_root_alias(root, path, qualifiers[0]) && ends_with(&qualifiers[1..]))
+}
+
+/// Whether `candidate` is a root segment the source itself establishes: Rust's `crate`, the
+/// containing Cargo package/lib name, or the checkout directory name.
+fn module_root_alias(root: &Path, path: &Path, candidate: &str) -> bool {
+    let wanted = candidate.replace('-', "_");
+    if root.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .replace('-', "_")
+            .eq_ignore_ascii_case(&wanted)
+    }) {
+        return true;
+    }
+    if cargo_manifest_names(root.join("Cargo.toml"), candidate) {
+        return true;
+    }
+    // Test fixtures and macOS callers can spell a file through `/var` while their canonical
+    // workspace root is below `/private/var`; compare canonical paths before walking upward.
+    let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut dir = canonical_path.parent();
+    while let Some(current) = dir.filter(|current| current.starts_with(root)) {
+        let manifest = current.join("Cargo.toml");
+        if cargo_manifest_names(manifest, candidate) {
+            return true;
+        }
+        if current == root {
+            break;
+        }
+        dir = current.parent();
+    }
+    false
+}
+
+/// Whether a Cargo manifest establishes `candidate` as its crate keyword, library, or package.
+fn cargo_manifest_names(manifest: std::path::PathBuf, candidate: &str) -> bool {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return false;
+    };
+    let Ok(manifest) = toml::from_str::<toml::Value>(&text) else {
+        return false;
+    };
+    if candidate.eq_ignore_ascii_case("crate") {
+        return manifest.get("package").is_some() || manifest.get("lib").is_some();
+    }
+    let wanted = candidate.replace('-', "_");
+    ["package", "lib"].into_iter().any(|section| {
+        manifest
+            .get(section)
+            .and_then(|table| table.get("name"))
+            .and_then(toml::Value::as_str)
+            .is_some_and(|name| name.replace('-', "_").eq_ignore_ascii_case(&wanted))
+    })
 }
 
 /// How closely a symbol's name matches a query (#326): 0 the name itself, 1 a name that starts
@@ -6376,10 +6588,13 @@ fn edit_distance(a: &str, b: &str) -> usize {
 async fn type_members(
     remote: SocketAddr,
     root: &Path,
-    type_name: &str,
+    owner: &[&str],
     member: &str,
     hint: Option<&Path>,
 ) -> Result<Vec<SymbolHit>> {
+    let Some(type_name) = owner.last().copied() else {
+        return Ok(Vec::new());
+    };
     let types = workspace_symbol_search(remote, root, type_name, hint, 200).await?;
     let mut files: Vec<std::path::PathBuf> = Vec::new();
     for hit in &types {
@@ -6404,13 +6619,13 @@ async fn type_members(
             continue;
         };
         let mut found = Vec::new();
-        collect_members(&outline, type_name, member, &mut found);
+        collect_members(&outline, root, file, owner, member, &[], &mut found);
         for (name, kind, line, col) in found {
             let hit = SymbolHit {
                 path: file.clone(),
                 name,
                 kind: symbol_kind_name(kind),
-                container: Some(type_name.to_string()),
+                container: Some(owner.join("::")),
                 line,
                 col,
             };
@@ -6438,34 +6653,47 @@ async fn type_members(
 /// parent in `containerName`, innermost last after ` > `.
 fn collect_members(
     symbols: &serde_json::Value,
-    type_name: &str,
+    root: &Path,
+    path: &Path,
+    owner: &[&str],
     member: &str,
+    ancestors: &[String],
     out: &mut Vec<(String, u64, u32, u32)>,
 ) {
+    let type_name = owner.last().copied().unwrap_or_default();
     let is_member = |sym: &serde_json::Value| {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
         bare_symbol_name(name).eq_ignore_ascii_case(member)
     };
     for sym in symbols.as_array().into_iter().flatten() {
-        let parent = sym
-            .get("containerName")
-            .and_then(|c| c.as_str())
-            .and_then(|c| c.rsplit(" > ").next());
-        if is_member(sym) && parent.is_some_and(|p| names_type(p, type_name)) {
+        let parent = sym.get("containerName").and_then(|c| c.as_str());
+        if is_member(sym)
+            && parent.is_some_and(|parent| {
+                owner_path_matches(root, path, owner, &owner_segments(parent))
+            })
+        {
             out.extend(member_at(sym));
         }
         let Some(children) = sym.get("children") else {
             continue;
         };
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
-        if names_type(name, type_name) {
+        let mut declared = ancestors.to_vec();
+        declared.extend(owner_segments(name));
+        if names_type(name, type_name) && owner_path_matches(root, path, owner, &declared) {
             for child in children.as_array().into_iter().flatten() {
                 if is_member(child) {
                     out.extend(member_at(child));
                 }
             }
         }
-        collect_members(children, type_name, member, out);
+        let kind = sym.get("kind").and_then(|kind| kind.as_u64()).unwrap_or(0);
+        let nested_ancestors = if matches!(kind, 2..=5 | 10 | 11 | 23) {
+            declared
+        } else {
+            ancestors.to_vec()
+        };
+        collect_members(children, root, path, owner, member, &nested_ancestors, out);
     }
 }
 
@@ -6490,37 +6718,11 @@ fn member_at(sym: &serde_json::Value) -> Option<(String, u64, u32, u32)> {
 /// for it (`impl Type`, `impl<T> Type<T>`, `impl Trait for Type`), whose members are the
 /// type's too.
 fn names_type(label: &str, type_name: &str) -> bool {
-    let label = label.trim();
-    let target = match label.strip_prefix("impl") {
-        Some(rest) if rest.starts_with([' ', '<']) => {
-            let mut rest = rest.trim_start();
-            if rest.starts_with('<') {
-                // The impl's own generic parameters, which may nest (`impl<T: Into<U>>`).
-                let mut depth = 0usize;
-                for (i, c) in rest.char_indices() {
-                    match c {
-                        '<' => depth += 1,
-                        '>' => {
-                            depth = depth.saturating_sub(1);
-                            if depth == 0 {
-                                rest = &rest[i + 1..];
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            let rest = rest.split(" where ").next().unwrap_or(rest);
-            rest.rsplit_once(" for ").map_or(rest, |(_, ty)| ty)
-        }
-        _ => label,
-    };
-    let target = target.trim().trim_start_matches('&').trim();
-    let target = target.strip_prefix("mut ").unwrap_or(target).trim();
-    let target = target.split('<').next().unwrap_or(target).trim();
-    let target = target.rsplit("::").next().unwrap_or(target);
-    target.eq_ignore_ascii_case(type_name)
+    owner_segments(label).last().is_some_and(|target| {
+        target
+            .replace('-', "_")
+            .eq_ignore_ascii_case(&type_name.replace('-', "_"))
+    })
 }
 
 /// The files a workspace edit rewrites, as (path, whole new content). The gateway answers a
