@@ -66,6 +66,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Editor pre-save synchronization reads the decoded top-level JSON-RPC method (#579).
+  Reordered fields and escaped method keys/values still push the checkout before save or
+  watched-file notifications; nested `method` fields do not trigger an unrelated sync.
 - Editor stdin frames use the shared bounded LSP reader (#577). Duplicate or malformed
   lengths, oversized headers/bodies, truncated frames and invalid UTF-8 fail with context
   instead of reaching the node as altered text or ending the session successfully.
