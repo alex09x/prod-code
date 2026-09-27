@@ -6,7 +6,10 @@
 //! gopls changes a signature when a rename is asked at the `func` keyword of a declaration and
 //! the new name is the new signature: `func(b, a int) error`. Its v0.23.0 implementation accepts
 //! the declared parameters reordered, some of them left out (adding one, changing a type or the
-//! results is refused), and rewrites every call by inlining a wrapper. That inliner runs with
+//! results is refused), and rewrites every call by inlining a wrapper. A deliberately narrow
+//! result replacement is performed here instead: it changes only one primitive result token of
+//! an ordinary free function, then proves every direct caller with the remote Go compiler.
+//! That inliner runs with
 //! effect analysis switched off, so `f(mark(a), mark(b))` comes back as `f(mark(b), mark(a))`,
 //! and the argument of a removed parameter is dropped whatever it does: `f(1, g())` becomes
 //! `f(1)` and `g` no longer runs. A removed parameter the body still reads is left in the body.
@@ -41,9 +44,11 @@ pub const GOPLS_VERSION: &str = "v0.23.0";
 /// The part of the requirement that a refusal leaves open, so that it stays visible.
 const STILL_OPEN: &str = "Go signature changes here are limited to reordering named parameters, \
      removing ones proven unused, and adding explicitly typed primitive parameters with literal \
-     arguments to ordinary non-generic functions and named value or pointer receiver methods; \
+     arguments to ordinary non-generic functions and named value or pointer receiver methods, plus \
+     replacing one unnamed primitive result of an ordinary non-generic free function; \
      variadics, generic functions or receivers, combined additions with removals, reorders or type \
-     changes, method expressions or values, interface signatures or dispatch, and broader modifiers \
+     changes, named or multiple results, result removal or addition from void, scope-dependent or \
+     composite results, method expressions or values, interface signatures or dispatch, and broader modifiers \
      remain open requirements (#448)";
 
 /// A parameter as the declaration declares it, flattened out of Go's grouping: `a, b int` is two.
@@ -119,7 +124,7 @@ pub async fn change_with(
         "{} is not a Go file",
         file.display()
     );
-    refuse_modifiers(modifiers)?;
+    refuse_non_result_modifiers(modifiers)?;
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     anyhow::ensure!(
@@ -146,6 +151,12 @@ pub async fn change_with(
             decl.name
         ))
     })?;
+    if let Some(result) = modifiers.returns.as_deref() {
+        return replace_result(
+            remote, root, file, text, decl, declared, request, result, apply,
+        )
+        .await;
+    }
     if request.iter().any(|p| matches!(p, Param::Add { .. })) {
         return add_parameters(remote, root, file, text, decl, declared, request, apply).await;
     }
@@ -540,6 +551,234 @@ pub async fn change_with(
         asyncness: None,
         not_async: Vec::new(),
     })
+}
+
+/// Replaces the sole unnamed primitive result of an ordinary free function. gopls cannot make
+/// this edit, and a result change can make an otherwise untouched caller ill typed, so the
+/// reference proof and compiler-shadow gate are mandatory even for a preview and even for a
+/// no-op request.
+#[allow(clippy::too_many_arguments)]
+async fn replace_result(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: String,
+    decl: Decl,
+    declared: Vec<GoParam>,
+    request: &[Param],
+    requested_result: &str,
+    apply: bool,
+) -> Result<SignatureChange> {
+    anyhow::ensure!(
+        decl.receiver.is_none(),
+        "{}",
+        refusal(format!(
+            "changing the result of receiver method `{}` is not supported",
+            decl.name
+        ))
+    );
+    anyhow::ensure!(
+        !decl.generic,
+        "{}",
+        refusal(format!(
+            "changing the result of generic function `{}` is not supported",
+            decl.name
+        ))
+    );
+    anyhow::ensure!(
+        !declared
+            .iter()
+            .any(|parameter| parameter.ty.starts_with("...")),
+        "{}",
+        refusal(format!(
+            "changing the result of variadic function `{}` is not supported",
+            decl.name
+        ))
+    );
+    unchanged_parameters(&declared, request)?;
+    anyhow::ensure!(
+        primitive_type(&decl.results),
+        "{}",
+        refusal(format!(
+            "changing the results of `{}` is supported only for one unnamed primitive result, not `{}`",
+            decl.name,
+            if decl.results.is_empty() {
+                "no result"
+            } else {
+                &decl.results
+            }
+        ))
+    );
+    let requested_result = requested_result.trim();
+    anyhow::ensure!(
+        primitive_type(requested_result),
+        "{}",
+        refusal(format!(
+            "the result of `{}` must be an ordinary primitive spelling, not `{requested_result}`",
+            decl.name
+        ))
+    );
+    ensure_predeclared_types_unshadowed(root, file, &[&decl.results, requested_result])
+        .map_err(|why| {
+            refusal(format!(
+                "changing the result of `{}` is refused because primitive type identity cannot be proven: {why:#}",
+                decl.name
+            ))
+        })?;
+    let body = body_open(&text, decl.close + 1).with_context(|| {
+        refusal(format!(
+            "changing the result of `{}` is refused because it has no body here",
+            decl.name
+        ))
+    })?;
+    closing(&text, body)
+        .with_context(|| refusal(format!("the body of `{}` does not close", decl.name)))?;
+
+    // Read every path gopls names before considering a write. In particular, an indirect value,
+    // stale coordinate or malformed reference is evidence we do not have, not an empty caller.
+    let canonical_root = std::fs::canonicalize(root)
+        .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    let (originals, calls) = function_reference_evidence(
+        remote,
+        root,
+        file,
+        &canonical_root,
+        &text,
+        &decl,
+        None,
+    )
+    .await
+    .map_err(|why| {
+        refusal(format!(
+            "cannot prove every reference to `{}` is a supported direct call or its declaration: \
+             {why:#}",
+            decl.name
+        ))
+    })?;
+    let arity = declared.len();
+    for call in &calls {
+        anyhow::ensure!(
+            call.args.len() == arity
+                && !call
+                    .args
+                    .last()
+                    .is_some_and(|arg| arg.trim_end().ends_with("...")),
+            "{}",
+            refusal(format!(
+                "{}: the call passes {} argument(s) and `{}` declares {arity}, so its result \
+                 replacement cannot be reconciled exactly",
+                call.at,
+                call.args.len(),
+                decl.name
+            ))
+        );
+    }
+
+    let result_at = skip_space(&text, decl.close + 1);
+    anyhow::ensure!(
+        text[result_at..].starts_with(&decl.results),
+        "the primitive result token of `{}` cannot be located; nothing was written",
+        decl.name
+    );
+    let mut rewritten = BTreeMap::new();
+    if decl.results != requested_result {
+        let replacement = splice(
+            &text,
+            &[(
+                result_at,
+                result_at + decl.results.len(),
+                requested_result.to_string(),
+            )],
+        );
+        anyhow::ensure!(
+            comments(&text) == comments(&replacement),
+            "{}: changing its result would drop or change a comment; nothing was written",
+            display(root, file)
+        );
+        rewritten.insert(file.to_path_buf(), replacement);
+    }
+    let proposal: Vec<(PathBuf, String)> = if rewritten.is_empty() {
+        vec![(file.to_path_buf(), text.clone())]
+    } else {
+        rewritten
+            .iter()
+            .map(|(path, source)| (path.clone(), source.clone()))
+            .collect()
+    };
+    let compiler = crate::verify::compile_go_shadow(remote, root, file, &proposal)
+        .await
+        .context(
+            "the complete Go result replacement could not be compiled in its private shadow; nothing was written",
+        )?;
+    anyhow::ensure!(
+        compiler.passed,
+        "the changed Go project does not compile; nothing was written, and `force` does not \
+         override this:\n{}",
+        compiler.output.trim()
+    );
+
+    let mut applied = false;
+    if apply {
+        for (path, old) in &originals {
+            let now = std::fs::read_to_string(path).unwrap_or_default();
+            anyhow::ensure!(
+                now == *old,
+                "{} changed while the result replacement was planned and compiled; nothing was written",
+                display(root, path)
+            );
+        }
+        if !rewritten.is_empty() {
+            crate::refactor::apply_workspace_edit(
+                root,
+                &crate::signature::whole_file_edit(&rewritten),
+            )?;
+            applied = true;
+        }
+    }
+    Ok(SignatureChange {
+        symbol: decl.name,
+        root: root.to_path_buf(),
+        file: display(root, file),
+        old_signature: normalize(&text[decl.open + 1..decl.close]),
+        new_signature: normalize(&text[decl.open + 1..decl.close]),
+        rule: String::new(),
+        rewritten: rewritten
+            .into_iter()
+            .map(|(path, source)| (path.to_string_lossy().into_owned(), source))
+            .collect(),
+        unmatched: Vec::new(),
+        unexpected: Vec::new(),
+        diagnostics: Vec::new(),
+        applied,
+        returns: Some((decl.results, requested_result.to_string())),
+        visibility: None,
+        asyncness: None,
+        not_async: Vec::new(),
+    })
+}
+
+/// Result replacement has no call-site edits. Reordering, removing or adding a parameter would
+/// make this a different operation and is refused before the compiler can normalize it away.
+fn unchanged_parameters(declared: &[GoParam], request: &[Param]) -> Result<()> {
+    anyhow::ensure!(
+        request.len() == declared.len(),
+        "{}",
+        refusal(
+            "a Go result replacement requires the existing named parameter list exactly unchanged"
+                .to_string()
+        )
+    );
+    for (expected, requested) in declared.iter().zip(request) {
+        anyhow::ensure!(
+            matches!(requested, Param::Keep(name) if name == &expected.name),
+            "{}",
+            refusal(format!(
+                "a Go result replacement requires the existing named parameter list exactly unchanged; expected `{}`",
+                expected.name
+            ))
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -972,6 +1211,183 @@ fn primitive_type(ty: &str) -> bool {
             | "complex64"
             | "complex128"
     )
+}
+
+/// Primitive-looking names are safe only while the declaring package has not shadowed them.
+/// Go's package block spans files and declarations are order-independent, so checking only the
+/// signature token or accepting a successful compile would mistake a user-defined type or alias
+/// for a predeclared primitive.
+fn ensure_predeclared_types_unshadowed(root: &Path, file: &Path, types: &[&str]) -> Result<()> {
+    let directory = file
+        .parent()
+        .with_context(|| format!("{} has no containing package directory", file.display()))?;
+    let declaring_text =
+        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+    let package = package_name(&declaring_text)
+        .with_context(|| format!("cannot identify the Go package in {}", file.display()))?;
+    let wanted: BTreeSet<&str> = types.iter().copied().collect();
+
+    for entry in std::fs::read_dir(directory).with_context(|| {
+        format!(
+            "cannot inspect the Go package directory {}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "cannot inspect an entry in the Go package directory {}",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "go") {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        // `DirEntry::file_type` deliberately does not follow links. Go and the checkout sync
+        // do, so silently skipping one could make a package-level alias look predeclared. Do
+        // not follow it here: the link might lead outside the checkout we are allowed to read.
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "cannot prove primitive type identity: linked Go source {} is not inspected",
+                display(root, &path)
+            );
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        if package_name(&source) != Some(package) {
+            continue;
+        }
+        for name in package_type_names(&source) {
+            if wanted.contains(name.as_str()) {
+                anyhow::bail!(
+                    "`{name}` is declared as a package type in {}; its spelling does not name the predeclared primitive",
+                    display(root, &path)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn package_name(text: &str) -> Option<&str> {
+    let at = skip_space(text, 0);
+    if !text[at..].starts_with("package")
+        || at > 0 && is_ident_byte(text.as_bytes()[at - 1])
+        || text
+            .as_bytes()
+            .get(at + "package".len())
+            .is_some_and(|byte| is_ident_byte(*byte))
+    {
+        return None;
+    }
+    let start = skip_space(text, at + "package".len());
+    let end = identifier_end(text, start);
+    (end > start).then_some(&text[start..end])
+}
+
+fn identifier_end(text: &str, start: usize) -> usize {
+    let mut end = start;
+    while end < text.len() && is_ident_byte(text.as_bytes()[end]) {
+        end += 1;
+    }
+    end
+}
+
+/// Names introduced by package-level `type` declarations, including parenthesized declaration
+/// groups. Comments and literal text are skipped, and declarations inside function bodies are not
+/// package declarations.
+fn package_type_names(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut names = Vec::new();
+    let (mut braces, mut brackets, mut parens, mut at) = (0usize, 0usize, 0usize, 0usize);
+    while at < bytes.len() {
+        if let Some(end) = skip_opaque(bytes, at) {
+            at = end;
+            continue;
+        }
+        match bytes[at] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b't' if braces == 0
+                && brackets == 0
+                && parens == 0
+                && text[at..].starts_with("type")
+                && (at == 0 || !is_ident_byte(bytes[at - 1]))
+                && !bytes
+                    .get(at + "type".len())
+                    .is_some_and(|byte| is_ident_byte(*byte)) =>
+            {
+                let start = skip_space(text, at + "type".len());
+                if bytes.get(start) == Some(&b'(') {
+                    let Some(close) = closing(text, start) else {
+                        return names;
+                    };
+                    grouped_type_names(text, start, close, &mut names);
+                    at = close + 1;
+                    continue;
+                }
+                let end = identifier_end(text, start);
+                if end > start {
+                    names.push(text[start..end].to_string());
+                }
+                at = end;
+                continue;
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    names
+}
+
+fn grouped_type_names(text: &str, open: usize, close: usize, names: &mut Vec<String>) {
+    let bytes = text.as_bytes();
+    let (mut parens, mut brackets, mut braces) = (0usize, 0usize, 0usize);
+    let (mut at, mut at_spec_start) = (open + 1, true);
+    while at < close {
+        if let Some(end) = skip_opaque(bytes, at) {
+            if at_spec_start || text[at..end].contains('\n') {
+                at_spec_start = true;
+            }
+            at = end;
+            continue;
+        }
+        if at_spec_start && bytes[at].is_ascii_whitespace() {
+            at += 1;
+            continue;
+        }
+        if at_spec_start {
+            let end = identifier_end(text, at);
+            if end > at {
+                names.push(text[at..end].to_string());
+                at_spec_start = false;
+                at = end;
+                continue;
+            }
+        }
+        match bytes[at] {
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b';' if parens == 0 && brackets == 0 && braces == 0 => at_spec_start = true,
+            b'\n' if parens == 0 && brackets == 0 && braces == 0 => at_spec_start = true,
+            _ => {}
+        }
+        at += 1;
+    }
 }
 
 fn scalar_literal(value: &str) -> bool {
@@ -1495,14 +1911,8 @@ fn refusal(why: String) -> anyhow::Error {
     anyhow::anyhow!("{why}; nothing was written. {STILL_OPEN}")
 }
 
-/// Results, visibility and `async` are not parameters, and gopls changes none of them.
-fn refuse_modifiers(modifiers: &Modifiers) -> Result<()> {
-    if modifiers.returns.is_some() {
-        return Err(refusal(format!(
-            "changing a Go function's results is not supported: gopls {GOPLS_VERSION} refuses \
-             result changes in a signature rename"
-        )));
-    }
+/// Visibility and `async` are not parameters or the narrow result replacement supported here.
+fn refuse_non_result_modifiers(modifiers: &Modifiers) -> Result<()> {
     if modifiers.visibility.is_some() {
         return Err(refusal(
             "a Go name is exported by its first letter, not by a modifier; use a rename to \
@@ -2588,6 +2998,56 @@ mod tests {
     }
 
     #[test]
+    fn package_type_shadowing_is_found_across_comments_and_groups() {
+        let source = r#"// build comment
+package p
+
+// type fake string
+const text = "type quoted int"
+type Direct = string
+type /* before group */ (
+    // before name
+    int64 /* after name */ = interface{}
+    byte = struct {
+        field int
+    }
+)
+func local() { type string = interface{} }
+"#;
+        assert_eq!(package_name(source), Some("p"));
+        assert_eq!(
+            package_type_names(source),
+            vec![
+                "Direct".to_string(),
+                "int64".to_string(),
+                "byte".to_string()
+            ]
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        let file = root.join("a.go");
+        std::fs::write(&file, "package p\nfunc F() int { return 1 }\n").unwrap();
+        std::fs::write(root.join("shadow.go"), source).unwrap();
+        std::fs::write(
+            root.join("external_test.go"),
+            "package p_test\ntype string = interface{}\n",
+        )
+        .unwrap();
+
+        ensure_predeclared_types_unshadowed(&root, &file, &["string"]).unwrap();
+        for shadowed in ["int64", "byte"] {
+            let error = ensure_predeclared_types_unshadowed(&root, &file, &[shadowed])
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("declared as a package type") && error.contains("shadow.go"),
+                "{shadowed}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn only_named_value_or_pointer_receivers_can_be_extended() {
         assert_eq!(
             ordinary_receiver("meter Meter").unwrap(),
@@ -2910,10 +3370,6 @@ mod tests {
         assert!(permutation(&d, &[keep("z"), keep("a")]).is_err());
         for m in [
             Modifiers {
-                returns: Some("error".into()),
-                ..Default::default()
-            },
-            Modifiers {
                 visibility: Some("pub".into()),
                 ..Default::default()
             },
@@ -2922,7 +3378,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            let err = refuse_modifiers(&m).unwrap_err().to_string();
+            let err = refuse_non_result_modifiers(&m).unwrap_err().to_string();
             assert!(err.contains(STILL_OPEN), "{err}");
         }
     }

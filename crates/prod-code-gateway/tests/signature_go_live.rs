@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 /// A gateway process and its storage, stopped when dropped.
@@ -116,6 +117,24 @@ func Ship(qty int, note string, priority int, dest string) string {
 
 // Drop never reads b; its caller passes an effect for it.
 func Drop(a, b int) int { return a }
+
+// Count has one unnamed primitive result: only this token may change.
+func Count(n int) int { return 7 }
+
+type (
+	// Grouped aliases prove that compilation cannot establish primitive identity.
+	uint64 = /* requested shadow */ interface{}
+	byte   = interface{}
+)
+
+func RequestedShadow(n int) int    { return n }
+func OldShadow(n int) byte         { return n }
+func VariadicResult(xs ...int) int { return len(xs) }
+func BodyMismatch(n int) int       { return n }
+func TestCaller(n int) int         { return n }
+func ValueResult(n int) int        { return n }
+
+var savedResult = ValueResult
 "#;
 
 const MAIN: &str = r#"package main
@@ -125,6 +144,7 @@ import "fmt"
 func main() {
 	note, prio := "fragile", 2
 	fmt.Println(Ship(3, "glass", 1, "LA"), Ship(mark("m", 2), note, prio, "NY")) // Ship(1, "x", 2, "y")
+	fmt.Println(Count(mark("count", 1)))
 	fmt.Println(Drop(1, mark("call", 2)), note, prio, trace)
 }
 "#;
@@ -138,6 +158,19 @@ func TestShip(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	t.Log(trace)
+}
+
+func TestCount(t *testing.T) {
+	if Count(1) != 7 {
+		t.Fatal("count")
+	}
+}
+
+func TestResultCallerType(t *testing.T) {
+	var got int = TestCaller(1)
+	if got != 1 {
+		t.Fatal("typed caller")
+	}
 }
 "#;
 
@@ -308,6 +341,66 @@ fn receiver_checkout() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
+/// A committed package whose same-package declaration is a git-tracked linked Go source. The
+/// target deliberately has a non-Go extension: `go` follows the link named `shadow.go`, while a
+/// directory scan must not follow an arbitrary target just to prove primitive identity.
+#[cfg(unix)]
+fn symlink_checkout() -> (tempfile::TempDir, PathBuf) {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::Builder::new()
+        .prefix("gosigsymlink")
+        .tempdir()
+        .expect("checkout dir");
+    for (rel, text) in [
+        ("go.work", "go 1.22\n\nuse ./project\n"),
+        (
+            "project/go.mod",
+            "module example.com/gosigsymlink\n\ngo 1.22\n",
+        ),
+        (
+            "project/lib.go",
+            "package main\n\nfunc RequestedShadow(n int) int { return n }\nfunc OldShadow(n int) int64 { return n }\n",
+        ),
+        (
+            "project/main_test.go",
+            "package main\n\nimport \"testing\"\n\nfunc TestLinkedSourceCompiles(t *testing.T) {\n\tvar got interface{} = OldShadow(1)\n\tif got == nil { t.Fatal(\"linked source was not loaded\") }\n}\n",
+        ),
+        (
+            "project/shadow_source.txt",
+            "package main\n\ntype int64 = interface{}\n",
+        ),
+    ] {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+    symlink("shadow_source.txt", dir.path().join("project/shadow.go")).expect("link source");
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+    (dir, root)
+}
+
 /// Every file of the checkout but `.git`, and its bytes.
 fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
@@ -345,6 +438,85 @@ fn run(root: &Path, program: &str, args: &[&str]) -> (bool, String) {
         .unwrap_or_else(|e| {
             panic!("{program} is a prerequisite of this real-server test and does not run: {e}")
         });
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), text)
+}
+
+/// A fresh cache makes `go test -x` print the compiler invocation, proving the linked source
+/// participates in the package instead of merely existing in the fixture.
+#[cfg(unix)]
+fn compiler_output(root: &Path) -> (bool, String) {
+    let cache = tempfile::tempdir().expect("compiler cache");
+    let out = Command::new("go")
+        .args(["test", "-x", "-count=1", "."])
+        .current_dir(root)
+        .env("GOTOOLCHAIN", "local")
+        .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
+        .env("GOCACHE", cache.path())
+        .output()
+        .expect("go is a prerequisite of this real-server test");
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+/// The client binary is built from this checkout on the same node before a live scenario uses
+/// it. Keeping the path derived from the manifest prevents an installed client from masking a
+/// candidate regression.
+fn source_cli() -> PathBuf {
+    static CLI: OnceLock<PathBuf> = OnceLock::new();
+    CLI.get_or_init(|| {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("gateway crate lives below workspace")
+            .to_path_buf();
+        // A seeded target can contain an older binary. Always ask Cargo to establish that
+        // this checkout's client is current, including when instrumentation selects a target.
+        let status = Command::new("cargo")
+            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+            .current_dir(&workspace)
+            .status()
+            .expect("build source client");
+        assert!(status.success(), "build source client: {status}");
+        let target = std::env::var_os("CARGO_TARGET_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| workspace.join("target"));
+        let target = if target.is_absolute() {
+            target
+        } else {
+            workspace.join(target)
+        };
+        let cli = target
+            .join("debug")
+            .join(format!("prod-code{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            cli.is_file(),
+            "source-built CLI missing at {}",
+            cli.display()
+        );
+        cli
+    })
+    .clone()
+}
+
+/// Drive the public CLI built from this revision, not an installed `prod-code` binary.
+fn cli(root: &Path, addr: SocketAddr, args: &[&str]) -> (bool, String) {
+    let out = Command::new(source_cli())
+        .args(["--remote", &addr.to_string()])
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("source CLI runs");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),
@@ -407,38 +579,69 @@ async fn client_sentinel_scenario() {
         .parse()
         .expect("sentinel gateway address parses");
     let before_refusal = snapshot(&root);
-    let refused_addition = tool(
-        addr,
+    let (result_ok, result_refusal) = cli(
         &root,
-        "code_change_signature",
-        serde_json::json!({
-            "symbol": "Ship",
-            "params": ["dest", "qty", "bad: string = 1"],
-            "apply": true,
-            "force": true
-        }),
-    )
-    .await;
+        addr,
+        &[
+            "change-signature",
+            "BodyMismatch",
+            "--param",
+            "n",
+            "--returns",
+            "string",
+            "--apply",
+            "--force",
+        ],
+    );
     assert!(
-        refused_addition.starts_with("error: ") && refused_addition.contains("does not compile"),
+        !result_ok && result_refusal.contains("does not compile"),
+        "{result_refusal}"
+    );
+    assert_eq!(
+        snapshot(&root),
+        before_refusal,
+        "result compiler refusal wrote"
+    );
+    let (refused, refused_addition) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "Ship",
+            "--param",
+            "dest",
+            "--param",
+            "qty",
+            "--param",
+            "bad: string = 1",
+            "--apply",
+            "--force",
+        ],
+    );
+    assert!(
+        !refused && refused_addition.contains("does not compile"),
         "{refused_addition}"
     );
     assert_eq!(snapshot(&root), before_refusal, "compiler refusal wrote");
 
-    let added = tool(
-        addr,
+    let (added_ok, added) = cli(
         &root,
-        "code_change_signature",
-        serde_json::json!({
-            "symbol": "Ship",
-            "params": ["dest", "qty", "route: string = \"road,air\""],
-            "apply": true,
-            "force": true
-        }),
-    )
-    .await;
+        addr,
+        &[
+            "change-signature",
+            "Ship",
+            "--param",
+            "dest",
+            "--param",
+            "qty",
+            "--param",
+            "route: string = \"road,air\"",
+            "--apply",
+            "--force",
+        ],
+    );
     assert!(
-        !added.starts_with("error: ") && added.contains("[applied to 3 file(s)]"),
+        added_ok && added.contains("[applied to 3 file(s)]"),
         "{added}"
     );
 }
@@ -486,6 +689,171 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         hover.contains("func Ship"),
         "gopls loaded the module: {hover}"
     );
+
+    // The source-built public CLI previews and applies a result replacement. The real gateway
+    // compiles the package plus its test caller before either action.
+    let (preview_ok, count_preview) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "Count",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+        ],
+    );
+    assert!(
+        preview_ok
+            && count_preview.contains("returns: `int` → `int64`")
+            && count_preview.contains("nothing was written"),
+        "{count_preview}"
+    );
+    assert_eq!(snapshot(&root), untouched, "result preview wrote");
+    let (applied_ok, count_applied) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "Count",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+            "--apply",
+        ],
+    );
+    assert!(applied_ok, "{count_applied}");
+    let count_lib = std::fs::read_to_string(project.join("lib.go")).expect("lib.go");
+    assert!(
+        count_lib.contains("func Count(n int) int64 { return 7 }"),
+        "{count_lib}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("main.go")).expect("main.go"),
+        MAIN,
+        "result replacement touched a caller"
+    );
+    let after_result = behaviour(&project);
+    assert_eq!(after_result, before, "result replacement changed execution");
+    assert!(
+        after_result
+            .0
+            .contains("[Ship(3,LA) m Ship(2,NY) count call]"),
+        "free-function argument trace was not observed: {after_result:?}"
+    );
+    // Exercise non-no-op MCP preview/apply against the same real compiler as well. Restoring
+    // the original result must restore every source byte before the CLI reapplies its change.
+    let mcp_preview = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Count", "params": ["n"], "returns": "int"
+        }),
+    )
+    .await;
+    assert!(
+        !mcp_preview.starts_with("error: ") && mcp_preview.contains("nothing was written"),
+        "{mcp_preview}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("lib.go")).unwrap(),
+        count_lib,
+        "MCP preview wrote"
+    );
+    let mcp_apply = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Count", "params": ["n"], "returns": "int", "apply": true
+        }),
+    )
+    .await;
+    assert!(!mcp_apply.starts_with("error: "), "{mcp_apply}");
+    assert_eq!(
+        snapshot(&root),
+        untouched,
+        "restoring the result did not restore all fixture bytes"
+    );
+    let (reapplied, output) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "Count",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+            "--apply",
+        ],
+    );
+    assert!(reapplied, "{output}");
+    assert_eq!(
+        std::fs::read_to_string(project.join("lib.go")).unwrap(),
+        count_lib
+    );
+    let untouched = snapshot(&root);
+
+    // A no-op still lists complete references and compiles packages plus test callers remotely.
+    let no_op = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Count", "params": ["n"], "returns": "int64",
+            "apply": true, "force": true
+        }),
+    )
+    .await;
+    assert!(
+        !no_op.starts_with("error: ") && no_op.contains("nothing was written"),
+        "{no_op}"
+    );
+    assert_eq!(snapshot(&root), untouched, "result no-op wrote");
+
+    // Compiler and semantic refusals include an incompatible body, a typed test-only caller,
+    // requested and existing shadowed primitive names, a variadic declaration with no calls, and
+    // an indirect function value. Force cannot turn any of them into a write.
+    for (symbol, returns, reason) in [
+        ("BodyMismatch", "string", "does not compile"),
+        ("TestCaller", "int64", "does not compile"),
+        (
+            "RequestedShadow",
+            "uint64",
+            "primitive type identity cannot be proven",
+        ),
+        (
+            "OldShadow",
+            "string",
+            "primitive type identity cannot be proven",
+        ),
+        ("VariadicResult", "int64", "variadic function"),
+        ("ValueResult", "int64", "used as a value"),
+    ] {
+        let refused = tool(
+            addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "symbol": symbol, "params": if symbol == "VariadicResult" {
+                    serde_json::json!(["xs"])
+                } else {
+                    serde_json::json!(["n"])
+                },
+                "returns": returns, "apply": true, "force": true
+            }),
+        )
+        .await;
+        assert!(
+            refused.starts_with("error: ") && refused.contains(reason),
+            "{symbol}: {refused}"
+        );
+        assert_eq!(snapshot(&root), untouched, "result refusal wrote: {symbol}");
+    }
 
     // A preview of removing `note` and `priority` and swapping the rest writes nothing.
     let order = serde_json::json!(["dest", "qty"]);
@@ -560,8 +928,12 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         LIB.replace(
             "func Ship(qty int, note string, priority int, dest string) string {",
             ""
+        )
+        .replace(
+            "func Count(n int) int { return 7 }",
+            "func Count(n int) int64 { return 7 }"
         ),
-        "only the parameter list of the declaration changed"
+        "only the requested signature tokens changed"
     );
 
     // The gateway inherited the real toolchain. Replace only the client's `go` with a failing
@@ -623,6 +995,80 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         after, before,
         "the changed program or its tests run differently"
     );
+}
+
+/// Linked Go sources are part of a package to the compiler, but the primitive-result guard must
+/// never follow them: an in-checkout link can still be retargeted outside the checkout between
+/// inspection and apply. Both a requested and an old primitive spelling therefore refuse before
+/// the gateway writes any proposal.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn linked_go_source_refuses_result_replacement_without_writing() {
+    let (ok, version) = run(Path::new("."), "gopls", &["version"]);
+    assert!(ok, "gopls version: {version}");
+    let gateway = Gateway::start();
+    let (_dir, root) = symlink_checkout();
+    let project = root.join("project");
+    let link = project.join("shadow.go");
+    let target = std::fs::read_link(&link).expect("linked Go source");
+    let git_index = Command::new("git")
+        .args(["ls-files", "-s", "project/shadow.go"])
+        .current_dir(&root)
+        .output()
+        .expect("git lists linked source");
+    assert!(git_index.status.success(), "git index: {git_index:?}");
+    assert!(
+        String::from_utf8_lossy(&git_index.stdout).starts_with("120000 "),
+        "linked source is git tracked: {}",
+        String::from_utf8_lossy(&git_index.stdout)
+    );
+    let (compiled, compiler) = compiler_output(&project);
+    assert!(compiled, "go test -x: {compiler}");
+    assert!(
+        compiler.contains("shadow.go"),
+        "compiler command did not include linked Go source: {compiler}"
+    );
+    let untouched = snapshot(&root);
+
+    // Wait for the real gopls behind the public gateway, rather than accepting a fixture-only
+    // scan as evidence that this is a loadable package.
+    let mut hover = String::new();
+    for _ in 1..=60 {
+        hover = tool(
+            gateway.addr,
+            &root,
+            "code_hover",
+            serde_json::json!({ "path": "project/lib.go", "line": 3, "character": 6 }),
+        )
+        .await;
+        if hover.contains("RequestedShadow") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(hover.contains("RequestedShadow"), "gopls load: {hover}");
+
+    for (symbol, returns) in [("RequestedShadow", "int64"), ("OldShadow", "string")] {
+        let refused = tool(
+            gateway.addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "symbol": symbol,
+                "params": ["n"],
+                "returns": returns,
+                "apply": true,
+                "force": true
+            }),
+        )
+        .await;
+        assert!(
+            refused.starts_with("error: ") && refused.contains("linked Go source"),
+            "{symbol}: {refused}"
+        );
+        assert_eq!(snapshot(&root), untouched, "refusal wrote: {symbol}");
+        assert_eq!(std::fs::read_link(&link).expect("linked Go source"), target);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
