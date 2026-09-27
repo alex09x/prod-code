@@ -432,10 +432,20 @@ async fn an_uncached_unchanged_pull_report_is_not_a_full_clean_report() {
     assert!(error.contains("no current diagnostics"), "{error}");
 }
 
-/// A compiler-backed public validation keeps linked Rust integration-test proposals isolated:
-/// dependencies are referenced across all three test modules so Rust must load their metadata.
+/// The warm control retains the original three-file compiler validation scenario.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn linked_rust_test_proposals_compile_in_an_overlay_without_writing_the_fixture() {
+    check_linked_rust_test_proposals(true).await;
+}
+
+/// #482: first compiler validation must build dependency metadata inside its private shadow.
+/// A preliminary code_check would mask missing metadata produced outside the shadow by sccache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cold_rust_test_proposals_compile_before_dependency_metadata_is_warmed() {
+    check_linked_rust_test_proposals(false).await;
+}
+
+async fn check_linked_rust_test_proposals(warm: bool) {
     fn snapshot(root: &Path, paths: &[&str]) -> Vec<(String, Vec<u8>)> {
         paths
             .iter()
@@ -529,14 +539,16 @@ pub fn base() -> Base {
     let before = snapshot(&root, &source_paths);
     let gateway = Gateway::start_with_sccache(None, Some(&sccache));
 
-    let warm_base = tool(gateway.addr, &root, "code_check", serde_json::json!({}))
-        .await
-        .expect("the committed fixture warms cargo check");
-    assert!(
-        warm_base.contains("cargo check --workspace --all-targets"),
-        "the warm base used cargo check: {warm_base}"
-    );
-    assert_snapshot(&root, &before);
+    if warm {
+        let warm_base = tool(gateway.addr, &root, "code_check", serde_json::json!({}))
+            .await
+            .expect("the committed fixture warms cargo check");
+        assert!(
+            warm_base.contains("cargo check --workspace --all-targets"),
+            "the warm base used cargo check: {warm_base}"
+        );
+        assert_snapshot(&root, &before);
+    }
 
     let proposed_root = r#"#[path = "linked/models.rs"]
 mod models;

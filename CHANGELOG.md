@@ -140,6 +140,8 @@
   checks symlink containment again before restoring files or removing created directories.
   Internal overlay variables cannot be overridden by request environment values.
 - Overlay shadow builds keep sccache compilation in the hypothesis namespace (#426).
+  Cold compiler-validation coverage also verifies missing dependency metadata (#482), without
+  a preliminary build that would hide the failure.
   They enable client-side compilation and refuse settings that disable it or send work
   to a distributed compiler. Config checks follow the proposed files, deletions and
   symlink aliases, so a hypothesis cannot silently be checked against the base source.
