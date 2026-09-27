@@ -37,6 +37,7 @@ pub mod remote_fs;
 pub mod rename_accessors;
 pub mod rename_mentions;
 pub mod report;
+pub mod safe_delete_go;
 pub mod schema;
 pub mod search;
 pub mod session;
