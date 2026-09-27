@@ -170,6 +170,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
   - Status (2026-09-27): Go and generic adapters now probe initialized idle servers periodically (#590), with a 60-second default interval. Valid matching replies, including unknown-method errors and late responses, prove dispatch liveness. Three consecutive idle response timeouts retire the owned generation; writer contention, indexing and ordinary activity defer probes. Complete frame writes share one budget, and a failed partial stream retires immediately. Fallback workers still use exit detection rather than periodic probes. Liveness is also read from the server's output: when it ends, the server has exited, and the next load of the workspace starts it afresh (#355). Every request has a timeout, which catches a server that hangs without exiting. Idle engines are unloaded after `--idle-evict-secs` (30 minutes by default; 5 minutes while memory is short, #396), and the process is killed with its engine.
+  - Native Go/Python/C++/TypeScript and macOS Swift 5.10 SourceKit-LSP proofs observe at least
+    two validated scheduled replies and nonempty hover before and after (#599). SwiftPM setup
+    is bounded and owns the complete compiler process group before waiting. This verifies
+    managed dispatch liveness, not all Swift versions or fallback periodic supervision.
   - Fallback writes now include lock wait, bytes and flush in one deadline (#548). Partial-frame
     cancellation retires the owned child before queued writers resume; caller-side zero-byte
     queue errors preserve a healthy connection. Undeliverable automatic replies retire the
