@@ -454,6 +454,49 @@ fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> StdMutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn validate_initialize_response(response: &serde_json::Value) -> Result<serde_json::Value> {
+    let envelope = response
+        .as_object()
+        .context("initialize response must be a JSON object")?;
+    if envelope.contains_key("error") {
+        anyhow::bail!(
+            "language server refused initialization: {}",
+            envelope["error"]
+        );
+    }
+    let result = envelope
+        .get("result")
+        .filter(|result| result.is_object())
+        .context("initialize response has no successful result object")?;
+    result
+        .get("capabilities")
+        .filter(|capabilities| capabilities.is_object())
+        .cloned()
+        .context("initialize response has no capabilities object")
+}
+
+struct InitializationGuard<'a> {
+    engine: &'a GenericLspEngine,
+    complete: bool,
+}
+
+impl Drop for InitializationGuard<'_> {
+    fn drop(&mut self) {
+        if self.complete {
+            return;
+        }
+        self.engine.invalidate_document_generation();
+        if let Ok(mut capabilities) = self.engine.capabilities.try_write() {
+            *capabilities = None;
+        } else {
+            let capabilities = Arc::clone(&self.engine.capabilities);
+            drop(tokio::spawn(async move {
+                *capabilities.write().await = None;
+            }));
+        }
+    }
+}
+
 #[derive(Default)]
 struct DocumentLifecycle {
     documents: HashMap<String, DocumentState>,
@@ -846,6 +889,11 @@ impl GenericLspEngine {
 
     /// Perform the standard LSP initialize handshake.
     pub async fn initialize(&self) -> Result<serde_json::Value> {
+        let mut handshake = InitializationGuard {
+            engine: self,
+            complete: false,
+        };
+        *self.capabilities.write().await = None;
         let ws_str = self.workspace_root.to_string_lossy().to_string();
         let ws_name = self
             .workspace_root
@@ -892,14 +940,13 @@ impl GenericLspEngine {
         }
         let resp = self.send_request("initialize", init_params).await?;
 
-        if let Some(caps) = resp.get("result").and_then(|r| r.get("capabilities")) {
-            let mut guard = self.capabilities.write().await;
-            *guard = Some(caps.clone());
-        }
+        let capabilities = validate_initialize_response(&resp)?;
 
         self.send_notification("initialized", serde_json::json!({}))
             .await?;
+        *self.capabilities.write().await = Some(capabilities);
         self.readiness.started();
+        handshake.complete = true;
 
         Ok(resp)
     }
