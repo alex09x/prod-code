@@ -40,10 +40,10 @@ on the laptop:
 | the same without the suite that starts real gateways | 56 s |
 | first load of a Rust workspace (build scripts, proc macros) | ~45 s, once per worktree |
 
-Most of those five minutes are one suite: it starts the real daemon as a child process and
-drives it against rust-analyzer, gopls, the TypeScript server, basedpyright and clangd. It is
-the only thing that proves a workspace loads, and every file in the workspace is at or above
-80% of regions because of it and the suites beside it (`python3 scripts/coverage.py --min 80`).
+These are recorded workloads; current test counts and timings are listed in each pull request.
+The live suite starts real gateways and drives their language servers. Unit and scripted-server
+tests complement those scenarios. The required coverage floor is 80% of regions per source file
+(`python3 scripts/coverage.py --min 80`); missing measurements fail the gate.
 
 ## Install
 
@@ -86,7 +86,8 @@ rust-analyzer.
 
 ## What it gives an agent
 
-Thirty-three tools, all of them answered by the node that holds the workspace.
+Tools use the node that holds the workspace. The tables describe current source; check
+[CHANGELOG.md](CHANGELOG.md) for the version that contains a change.
 
 **Find code**
 
@@ -103,25 +104,33 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 
 | tool | what it does |
 |---|---|
-| `code_slice` | only the code a symbol depends on, typically 90–96% smaller than its files |
+| `code_slice` | bounded traversal of declarations referenced by a symbol; depth and byte budgets limit the result |
 | `code_hover` · `code_type_at` | signature, type and docs |
-| `code_impact` | blast radius of a change: the functions it touches, their callers, the tests that cover them |
-| `code_dead_code` | unreferenced functions, methods and types |
-| `code_prune_orphans` | every orphan the dead-code scan finds removed with safe delete, in one type-checked edit |
+| `code_impact` | changed functions, reachable callers and candidate tests; CI falls back to the full suite when the evidence is incomplete |
+| `code_dead_code` | reference-based candidates, with failed or malformed queries marked unverified |
+| `code_prune_orphans` | eligible dead-code candidates removed with safe delete and analyzer validation; unverified and protected symbols remain |
 
 **Change it safely**
+
+Most custom planners below target Rust. The two parameter tools also support Go, C/C++,
+TypeScript/JavaScript, Python and Swift for their documented input shapes. Rename and server
+code actions depend on the selected language server. See [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md)
+for missing capabilities and [ROADMAP.md](ROADMAP.md) for individual restrictions.
+
+Analyzer diagnostics do not include every compiler or borrow-checker check. Tools with
+`verify: "compile"` can additionally run a shadow compiler check; semantic refusals still apply.
 
 | tool | what it does |
 |---|---|
 | `code_validate_edit` · `code_validate_edits` | analyzer diagnostics for proposed file contents, nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
 | `code_diagnostics` | diagnostics for a file, in memory, without a build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
-| `code_change_signature` | reorder, add and remove a function's parameters, with every call site, type-checked before it is written |
+| `code_change_signature` | Rust signature changes; Go named-parameter permutations through gopls. Both validate callers and refuse uncertain evaluation-order changes |
 | `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters, or an associated function to another type; a whole module moved to another parent, with every path that names it |
 | `code_extract_function` | a selection turned into a named function, and its duplicates and near-duplicates in this file and others replaced by calls |
-| `code_introduce_parameter_object` | several of a function's parameters bundled into a struct, with the body and every call site |
-| `code_extract_parameter` | an expression promoted to a parameter, passed at every existing call site so no caller changes |
+| `code_introduce_parameter_object` | parameters bundled into the language's supported object form, updating supported body uses and calls; JavaScript uses plain objects |
+| `code_extract_parameter` | an expression promoted to a parameter and supported callers updated, with structural and semantic refusal cases |
 | `code_migrate_type` | a declared type changed, with every site that no longer fits listed before any of it is done; with `convert`, `.into()` written wherever the analyzer accepts it |
 | `code_generify` | a parameter's concrete type turned into a bounded type parameter, every file that calls it type-checked against the new signature |
 | `code_invert_boolean` | a predicate, a `bool` field or a `bool` variable renamed to its opposite, every read and write unchanged in effect |
@@ -138,7 +147,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 | `code_schema_rename` | one schema field renamed across every language that spells it differently, semantically per project |
 | `code_assists` · `code_assist` | the analyzer's code actions and compiler fix-its, applied to the checkout |
 | `code_codemod` | structural search and replace on the syntax tree (`pattern ==>> replacement`), as a diff or applied |
-| `code_generate_fixture` | a compile-ready value for a type, every field filled and the result type-checked before you see it |
+| `code_generate_fixture` | a Rust value from its declaration, with analyzer diagnostics and explicit names for types that use a default fallback |
 | `code_shadow_run` | run a command once per candidate fix, each in a private shadow of the workspace, and take the winner's diff |
 
 **Run it**
@@ -147,7 +156,7 @@ Thirty-three tools, all of them answered by the node that holds the workspace.
 |---|---|
 | `code_check` · `code_lint` · `code_test` · `code_benchmarks` | build, lint and test on the node with parsed diagnostics; `path` narrows to one crate, package or directory; `fix: true` applies the compiler's machine-applicable fixes and checks again (Rust) |
 | `code_exec` | any command in the workspace copy; formatters, generators and lockfiles are written back |
-| `code_diagnose_failure` | run the tests and, for each failure, the failing site, its callers and what changed |
+| `code_diagnose_failure` | run tests and report up to ten failure dossiers with sites, callers, changes and supported printed assertion operands |
 
 **Operate it**
 
@@ -174,8 +183,8 @@ position, `prod-code symbols <name>` finds a declaration by name, and `prod-code
 ## Three things worth seeing
 
 **Ask a question in words.** The gateway indexes every declaration with the doc comment above
-it and ranks them against your question. Lexical, not embeddings: a question sharing no words
-with the code or its comments finds nothing.
+it and ranks them against your question. When embeddings are available, dense ranking is
+fused with lexical ranking; otherwise the response identifies lexical-only search.
 
 ```
 $ prod-code search "how do we decide which node runs a workspace"
@@ -187,7 +196,8 @@ $ prod-code search "how do we decide which node runs a workspace"
 ```
 
 **Read a symbol without reading its files.** `code_slice` follows the analyzer's own edges
-from a declaration and returns what it depends on.
+from a declaration within the requested budgets. It returns whole declarations, without
+intra-function data-flow analysis.
 
 ```
 $ prod-code slice crates/prod-code-gateway/src/shadow.rs --line 469 --depth 1
@@ -250,12 +260,15 @@ $ prod-code cluster
 
 ## What each language gets
 
-| | Rust | Go | C/C++ | TypeScript | Python | Swift |
+| | Rust | Go | C/C++ | TypeScript/JavaScript | Python | Swift |
 |---|---|---|---|---|---|---|
 | engine | rust-analyzer in-process | gopls | clangd | TypeScript 7 native LSP | basedpyright | sourcekit-lsp (macOS node) |
 | hover / def / refs / symbols / callers / callees / impls | yes | yes | yes | yes | yes | yes |
 | rename | yes (+ module files) | yes | yes | yes | yes | yes |
-| assists / safe-delete | yes | - | - | - | - | - |
+| server code actions | yes | server-dependent | server-dependent | server-dependent | server-dependent | server-dependent |
+| safe-delete | yes | - | - | - | - | - |
+| custom signature changes | yes | named-parameter permutations | - | - | - | - |
+| extract parameter / parameter object | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes | supported shapes |
 | check | cargo check | go build | cmake / meson / make | tsc (bunx / pnpm / yarn / npx) | basedpyright (uv / .venv aware) | swift build / xcodebuild |
 | lint | clippy | go vet | - | eslint / biome | ruff | - |
 | test | cargo test | go test | ctest / meson test | vitest / jest / bun test / mocha | pytest / unittest | swift test / xcodebuild test |
