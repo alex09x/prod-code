@@ -4006,16 +4006,21 @@ async fn async_is_added_and_removed_with_every_await() {
     let lib = write(&ws, "src/lib.rs", LOAD);
     commit(&ws);
     let keep = [prod_code_mcp::signature::parse_param("id").unwrap()];
-    let script = || {
+    // Where the analyzer places the calls in `LOAD`, and in it once every call is awaited: the
+    // second call on line 10 moves right by the first one's `.await`.
+    let (plain, awaited_refs) = (
+        [(6, 5), (10, 5), (10, 15), (14, 5)],
+        [(6, 5), (10, 5), (10, 21), (14, 5)],
+    );
+    let script_at = |refs: [(u32, u32); 4]| {
         let l = lib.clone();
         scripted_gateway(Arc::new(move |method, _| match method {
-            "textDocument/references" => {
-                answers::locations(&l, &[(6, 5), (10, 5), (10, 15), (14, 5)])
-            }
+            "textDocument/references" => answers::locations(&l, &refs),
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,
         }))
     };
+    let script = || script_at(plain);
     let make = |asyncness| prod_code_mcp::signature::Modifiers {
         asyncness: Some(asyncness),
         ..Default::default()
@@ -4062,7 +4067,7 @@ async fn async_is_added_and_removed_with_every_await() {
     }
 
     let change = prod_code_mcp::signature::change_with(
-        script().await,
+        script_at(awaited_refs).await,
         &root,
         &lib,
         1,
