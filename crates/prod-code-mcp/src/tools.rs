@@ -5484,14 +5484,13 @@ async fn handle_safe_delete(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument")? as u32;
-    let character = args
-        .get("character")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument")? as u32;
+    let line =
+        checked_position_argument(args.get("line").context("Missing 'line' argument")?, "line")?;
+    let character = checked_position_argument(
+        args.get("character")
+            .context("Missing 'character' argument")?,
+        "character",
+    )?;
     let file_path = resolve_file_path(workspace_root, path_str);
     // Go has no analyzer safe-delete request. Its narrow compiler-verified planner must run
     // before the Rust parameter scanner can mistake Go syntax for a parameter.

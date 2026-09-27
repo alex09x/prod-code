@@ -44,6 +44,7 @@ pub async fn delete_function(
     );
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve checkout {}", root.display()))?;
+    refuse_linked_source_path(root, &canonical_root, file)?;
     let canonical_file = regular_unlinked_inside(&canonical_root, file)?;
     let module = go_module_root(&canonical_root, &canonical_file)?;
     refuse_linked_sources(&module)?;
@@ -397,7 +398,7 @@ fn function_start_for_name(text: &str, name_start: usize) -> Result<usize> {
                 );
             }
             b'f' if stack.is_empty()
-                && text[cursor..].starts_with("func")
+                && text.as_bytes()[cursor..].starts_with(b"func")
                 && token_boundary(text.as_bytes(), cursor, 4) =>
             {
                 let mut candidate = skip_trivia(text, cursor + 4)?;
@@ -799,17 +800,35 @@ fn refuse_attached_directives(text: &str, start: usize) -> Result<()> {
 }
 
 fn is_generated(text: &str) -> bool {
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        let rest = &bytes[cursor..];
+        if rest.starts_with(b"//") {
+            let end = rest
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |offset| cursor + offset);
+            let line = &text[cursor..end];
+            if let Some(marker) = line.strip_prefix("// Code generated ")
+                && marker.ends_with(" DO NOT EDIT.")
+            {
+                return true;
+            }
+            cursor = end;
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("// Code generated ") {
-            return rest.ends_with(" DO NOT EDIT.");
+        if rest.starts_with(b"/*") {
+            let Some(end) = rest[2..].windows(2).position(|window| window == b"*/") else {
+                return false;
+            };
+            cursor += end + 4;
+            continue;
         }
-        if !trimmed.starts_with("//") {
-            return false;
-        }
+        return false;
     }
     false
 }
@@ -817,9 +836,9 @@ fn is_generated(text: &str) -> bool {
 fn refuse_source_directives(text: &str) -> Result<()> {
     let mut cursor = 0usize;
     while cursor < text.len() {
-        let rest = &text[cursor..];
+        let rest = &text.as_bytes()[cursor..];
         anyhow::ensure!(
-            !rest.starts_with("//line ") && !rest.starts_with("/*line "),
+            !rest.starts_with(b"//line ") && !rest.starts_with(b"/*line "),
             "Go source line directives are not supported; nothing was written"
         );
         cursor = opaque_end(text, cursor)?.unwrap_or(cursor + 1);
@@ -831,6 +850,40 @@ fn current_text(path: &Path, expected: &str) -> Result<bool> {
     Ok(std::fs::read_to_string(path)
         .with_context(|| format!("cannot reread {}", path.display()))?
         == expected)
+}
+
+fn refuse_linked_source_path(root: &Path, canonical_root: &Path, source: &Path) -> Result<()> {
+    let relative = source
+        .strip_prefix(root)
+        .or_else(|_| source.strip_prefix(canonical_root))
+        .with_context(|| {
+            format!(
+                "{} is outside the checkout {}; nothing was written",
+                source.display(),
+                root.display()
+            )
+        })?;
+    let mut current = canonical_root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::CurDir => continue,
+            std::path::Component::Normal(name) => current.push(name),
+            _ => anyhow::bail!(
+                "{} is outside the checkout {}; nothing was written",
+                source.display(),
+                root.display()
+            ),
+        }
+        let metadata = std::fs::symlink_metadata(&current).with_context(|| {
+            format!("cannot inspect {}; nothing was written", current.display())
+        })?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "the requested Go source contains linked source path {}; deletion is refused",
+            current.display()
+        );
+    }
+    Ok(())
 }
 
 fn regular_unlinked_inside(root: &Path, path: &Path) -> Result<PathBuf> {

@@ -18,10 +18,13 @@ use std::time::{Duration, Instant};
 const SENTINEL_CHILD: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_CHILD";
 const SENTINEL_ROOT: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_ROOT";
 const SENTINEL_ADDR: &str = "PROD_CODE_SAFE_DELETE_GO_SENTINEL_ADDR";
+const CLEANUP_CHILD: &str = "PROD_CODE_SAFE_DELETE_GO_CLEANUP_CHILD";
+const CLEANUP_READY: &str = "PROD_CODE_SAFE_DELETE_GO_CLEANUP_READY";
 
 struct Gateway {
     child: Child,
     addr: SocketAddr,
+    stdout_reader: Option<std::thread::JoinHandle<()>>,
     _storage: tempfile::TempDir,
 }
 
@@ -37,42 +40,68 @@ impl Gateway {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0);
-        let child = command.spawn().expect("gateway starts");
-        let mut gateway = Self {
+        let mut child = command.spawn().expect("gateway starts");
+        let stdout = child.stdout.take().expect("gateway stdout");
+        let (addr, stdout_reader) = bound_address(stdout);
+        Self {
             child,
-            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            addr,
+            stdout_reader: Some(stdout_reader),
             _storage: storage,
-        };
-        let stdout = gateway.child.stdout.take().expect("gateway stdout");
-        gateway.addr = bound_address(stdout);
-        gateway
+        }
     }
 }
 
 impl Drop for Gateway {
     fn drop(&mut self) {
-        let group = -(self.child.id() as i32);
-        unsafe {
-            libc::kill(group, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            match self.child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                Err(_) => break,
-            }
-        }
-        unsafe {
-            libc::kill(group, libc::SIGKILL);
-        }
-        let _ = self.child.wait();
+        retire_owned_group(
+            &mut self.child,
+            self.stdout_reader.take(),
+            Duration::from_secs(20),
+        );
     }
 }
 
-fn bound_address(stdout: std::process::ChildStdout) -> SocketAddr {
+fn wait_for_exit(
+    child: &mut Child,
+    timeout: Duration,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn retire_owned_group(
+    child: &mut Child,
+    stdout_reader: Option<std::thread::JoinHandle<()>>,
+    grace: Duration,
+) {
+    let group = -(child.id() as i32);
+    unsafe {
+        libc::kill(group, libc::SIGTERM);
+    }
+    let reaped = wait_for_exit(child, grace).ok().flatten().is_some();
+    unsafe {
+        libc::kill(group, libc::SIGKILL);
+    }
+    if !reaped {
+        let _ = child.wait();
+    }
+    if let Some(reader) = stdout_reader {
+        let _ = reader.join();
+    }
+}
+
+fn bound_address(stdout: std::process::ChildStdout) -> (SocketAddr, std::thread::JoinHandle<()>) {
     let (send, receive) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(stdout);
         let mut line = String::new();
         loop {
@@ -88,9 +117,10 @@ fn bound_address(stdout: std::process::ChildStdout) -> SocketAddr {
             }
         }
     });
-    receive
+    let addr = receive
         .recv_timeout(Duration::from_secs(60))
-        .expect("gateway reports its address")
+        .expect("gateway reports its address");
+    (addr, reader)
 }
 
 fn checkout(source: &str, test: &str) -> (tempfile::TempDir, PathBuf) {
@@ -334,7 +364,8 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
     .expect("sentinel PATH");
-    let status = Command::new(std::env::current_exe().expect("test executable"))
+    let mut sentinel = Command::new(std::env::current_exe().expect("test executable"));
+    sentinel
         .args([
             "--exact",
             "go_function_safe_delete_has_real_gateway_cli_and_mcp_proof",
@@ -344,8 +375,16 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         .env(SENTINEL_ROOT, &cli_root)
         .env(SENTINEL_ADDR, gateway.addr.to_string())
         .env("PATH", path)
-        .status()
-        .expect("sentinel child starts");
+        .process_group(0);
+    let mut sentinel = sentinel.spawn().expect("sentinel child starts");
+    let status = wait_for_exit(&mut sentinel, Duration::from_secs(120))
+        .expect("sentinel child can be inspected");
+    if status.is_none() {
+        retire_owned_group(&mut sentinel, None, Duration::from_secs(2));
+        panic!("sentinel child did not exit within 120 seconds");
+    }
+    retire_owned_group(&mut sentinel, None, Duration::ZERO);
+    let status = status.expect("checked sentinel status");
     assert!(status.success(), "sentinel child: {status}");
     assert_eq!(
         behaviour(&cli_project),
@@ -389,4 +428,64 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         "compiler diagnostic missing: {output}"
     );
     assert_eq!(snapshot(&failure_root), untouched, "compiler refusal wrote");
+}
+
+#[test]
+fn gateway_cleanup_retires_term_ignoring_owned_group_members() {
+    if std::env::var_os(CLEANUP_CHILD).is_some() {
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+        }
+        let ready = std::env::var_os(CLEANUP_READY).expect("cleanup ready path");
+        std::fs::write(ready, std::process::id().to_string()).expect("cleanup child ready");
+        loop {
+            std::thread::park_timeout(Duration::from_secs(60));
+        }
+    }
+
+    let gateway = Gateway::start();
+    let group = gateway.child.id() as i32;
+    let state = tempfile::tempdir().expect("cleanup state");
+    let ready = state.path().join("ready");
+    let mut child = Command::new(std::env::current_exe().expect("test executable"));
+    child
+        .args([
+            "--exact",
+            "gateway_cleanup_retires_term_ignoring_owned_group_members",
+            "--nocapture",
+        ])
+        .env(CLEANUP_CHILD, "1")
+        .env(CLEANUP_READY, &ready)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(group);
+    let mut child = child
+        .spawn()
+        .expect("cleanup child starts in gateway group");
+    let ready_deadline = Instant::now() + Duration::from_secs(10);
+    while !ready.is_file() && Instant::now() < ready_deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if !ready.is_file() {
+        unsafe {
+            libc::kill(child.id() as i32, libc::SIGKILL);
+        }
+        let _ = child.wait();
+        panic!("cleanup child did not become ready");
+    }
+
+    drop(gateway);
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < exit_deadline {
+        if child.try_wait().expect("inspect cleanup child").is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGKILL);
+    }
+    let _ = child.wait();
+    panic!("gateway cleanup left a TERM-ignoring owned group member alive");
 }
