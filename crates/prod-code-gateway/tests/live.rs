@@ -784,7 +784,10 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
                 if entry.file_type().unwrap().is_dir() {
                     pending.push(path);
                 } else {
-                    files.insert(path.strip_prefix(root).unwrap().to_path_buf(), std::fs::read(path).unwrap());
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(path).unwrap(),
+                    );
                 }
             }
         }
@@ -805,6 +808,18 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
         "{hover:#}"
     );
 
+    for method in ["textDocument/definition", "textDocument/references"] {
+        let error = prod_code_mcp::tools::execute_lsp_query(
+            addr, &root, &checkout.path("src/lib.rs"), method,
+            serde_json::json!({"textDocument": {"uri": prod_code_protocol::path::file_uri(&checkout.path("src/lib.rs"))},
+                "position": {"line": 999998, "character": 0}}),
+        ).await.expect_err("a native query error cannot become an empty successful result");
+        assert!(
+            format!("{error:#}").contains("Invalid position 999999:1"),
+            "{error:#}"
+        );
+    }
+
     let deletion = prod_code_mcp::tools::execute_tool(
         addr,
         &root,
@@ -824,8 +839,11 @@ async fn the_gateway_refuses_invalid_native_positions_without_writing() {
         refused.contains("Invalid position 999999:1"),
         "the refusal names the invalid coordinate: {refused}"
     );
-    assert_eq!(snapshot(&root), before, "every source path and byte remains unchanged, even with force");
-
+    assert_eq!(
+        snapshot(&root),
+        before,
+        "every source path and byte remains unchanged, even with force"
+    );
 }
 
 /// The same gateway, a Go checkout: the dispatch that forwards to a child language server
@@ -3827,25 +3845,56 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
         json!(null),
         json!([]),
     ] {
-        for method in ["textDocument/hover", "textDocument/rename", "prodCode/safeDelete"] {
+        for method in [
+            "textDocument/hover",
+            "textDocument/rename",
+            "prodCode/safeDelete",
+        ] {
             let error = prod_code_mcp::tools::execute_lsp_query(
-                gateway.addr, &root, &file, method,
+                gateway.addr,
+                &root,
+                &file,
+                method,
                 json!({"textDocument": {"uri": uri}, "position": position, "newName": "Other"}),
-            ).await.expect_err("malformed wire coordinates cannot produce a result or edits");
-            assert!(format!("{error:#}").to_ascii_lowercase().contains("position"), "{method} {position}: {error:#}");
+            )
+            .await
+            .expect_err("malformed wire coordinates cannot produce a result or edits");
+            assert!(
+                format!("{error:#}")
+                    .to_ascii_lowercase()
+                    .contains("position"),
+                "{method} {position}: {error:#}"
+            );
         }
     }
     let missing = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr, &root, &file, "textDocument/hover", json!({"textDocument": {"uri": uri}}),
-    ).await.expect_err("a required position cannot be defaulted");
-    assert!(format!("{missing:#}").to_ascii_lowercase().contains("position"));
+        gateway.addr,
+        &root,
+        &file,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri}}),
+    )
+    .await
+    .expect_err("a required position cannot be defaulted");
+    assert!(
+        format!("{missing:#}")
+            .to_ascii_lowercase()
+            .contains("position")
+    );
     for method in ["prodCode/assists", "prodCode/applyAssist"] {
-        for end in [json!({"line": 4294967296_u64, "character": 0}), json!({"line": 0}), json!(null)] {
+        for end in [
+            json!({"line": 4294967296_u64, "character": 0}),
+            json!({"line": 0}),
+            json!(null),
+        ] {
             let error = prod_code_mcp::tools::execute_lsp_query(
                 gateway.addr, &root, &file, method,
                 json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": end}, "id": "extract_variable"}),
             ).await.expect_err("malformed explicit range ends cannot become cursor selections");
-            assert!(format!("{error:#}").to_ascii_lowercase().contains("range"), "{error:#}");
+            assert!(
+                format!("{error:#}").to_ascii_lowercase().contains("range"),
+                "{error:#}"
+            );
         }
     }
     for method in ["callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"] {
@@ -3856,18 +3905,38 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
         assert!(format!("{error:#}").contains("selectionRange"), "{error:#}");
     }
     let valid_hover = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr, &root, &file, "textDocument/hover",
+        gateway.addr,
+        &root,
+        &file,
+        "textDocument/hover",
         json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 10}}),
-    ).await.expect("the same session accepts a valid position after rejections");
+    )
+    .await
+    .expect("the same session accepts a valid position after rejections");
     assert!(valid_hover.to_string().contains("VALUE"), "{valid_hover}");
     let assists = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr, &root, &file, "prodCode/assists",
+        gateway.addr,
+        &root,
+        &file,
+        "prodCode/assists",
         json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}}}),
-    ).await.expect("an omitted optional assist end stays valid");
+    )
+    .await
+    .expect("an omitted optional assist end stays valid");
     assert!(assists.is_array(), "{assists}");
     let diagnostics = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr, &root, &file, "textDocument/diagnostic", json!({"textDocument": {"uri": uri}}),
-    ).await.expect("positionless native diagnostics stay valid");
+        gateway.addr,
+        &root,
+        &file,
+        "textDocument/diagnostic",
+        json!({"textDocument": {"uri": uri}}),
+    )
+    .await
+    .expect("positionless native diagnostics stay valid");
     assert!(diagnostics.is_object(), "{diagnostics}");
-    assert_eq!(std::fs::read(&file).unwrap(), original, "refused wire mutations leave the source unchanged");
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        original,
+        "refused wire mutations leave the source unchanged"
+    );
 }

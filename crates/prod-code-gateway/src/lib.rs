@@ -3156,7 +3156,7 @@ fn metric_position(position: Option<&serde_json::Value>) -> (u32, u32) {
 fn native_position_params(
     method: Option<&str>,
     params: Option<&serde_json::Value>,
-) -> Result<(), &'static str> {
+) -> Result<(), String> {
     let params = params.unwrap_or(&serde_json::Value::Null);
     match method {
         Some(
@@ -3167,22 +3167,30 @@ fn native_position_params(
             | "textDocument/prepareCallHierarchy"
             | "prodCode/safeDelete"
             | "textDocument/rename",
-        ) => one_based_position(params.get("position")).map(|_| ()),
+        ) => one_based_position(params.get("position"))
+            .map(|_| ())
+            .map_err(str::to_owned),
         Some("callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls") => one_based_position(
             params
                 .get("item")
                 .and_then(|item| item.get("selectionRange"))
                 .and_then(|range| range.get("start")),
         )
-        .map(|_| ()),
+        .map(|_| ())
+        .map_err(|reason| format!("item.selectionRange.start: {reason}")),
         Some("prodCode/structuralReplace") => params
             .get("position")
-            .map(|position| one_based_position(Some(position)).map(|_| ()))
+            .map(|position| {
+                one_based_position(Some(position))
+                    .map(|_| ())
+                    .map_err(str::to_owned)
+            })
             .unwrap_or(Ok(())),
         Some("prodCode/assists" | "prodCode/applyAssist") => {
-            one_based_position(params.pointer("/range/start"))?;
+            one_based_position(params.pointer("/range/start"))
+                .map_err(|reason| format!("range.start: {reason}"))?;
             if let Some(end) = params.pointer("/range/end") {
-                one_based_position(Some(end))?;
+                one_based_position(Some(end)).map_err(|reason| format!("range.end: {reason}"))?;
             }
             Ok(())
         }
@@ -3245,7 +3253,7 @@ async fn on_client_message(
                     if let (Some(method), Some(id)) =
                         (method, id.as_ref().filter(|id| !id.is_null()))
                     {
-                        send_invalid_params(out_tx, translator, id, method, reason).await;
+                        send_invalid_params(out_tx, translator, id, method, &reason).await;
                     }
                     return Flow::Next;
                 }
@@ -4847,22 +4855,17 @@ fn lsp_references(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.find_all_refs(&fp_clone, line, col).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    Vec::new()
-                })
+                engine.activate_session(session_id)?;
+                engine.find_all_refs(&fp_clone, line, col)
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let count = refs.len();
+        let count = refs.as_ref().map_or(0, Vec::len);
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4887,7 +4890,7 @@ fn lsp_references(
             );
         }
 
-        let locations: Vec<_> = refs.into_iter().map(|t| {
+        let locations = refs.map(|targets| targets.into_iter().map(|t| {
             serde_json::json!({
                 "uri": file_uri(&t.path),
                 "range": {
@@ -4895,13 +4898,17 @@ fn lsp_references(
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
                 }
             })
-        }).collect();
+        }).collect::<Vec<_>>());
 
-        let resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": locations
-        });
+        let resp = match locations {
+            Ok(locations) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": req_id, "result": locations})
+            }
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
+            }),
+        };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
     });
@@ -4953,22 +4960,17 @@ fn lsp_definition(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.goto_definition(&fp_clone, line, col).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    Vec::new()
-                })
+                engine.activate_session(session_id)?;
+                engine.goto_definition(&fp_clone, line, col)
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let count = defs.len();
+        let count = defs.as_ref().map_or(0, Vec::len);
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4993,7 +4995,7 @@ fn lsp_definition(
             );
         }
 
-        let locations: Vec<_> = defs.into_iter().map(|t| {
+        let locations = defs.map(|targets| targets.into_iter().map(|t| {
             serde_json::json!({
                 "uri": file_uri(&t.path),
                 "range": {
@@ -5001,13 +5003,17 @@ fn lsp_definition(
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
                 }
             })
-        }).collect();
+        }).collect::<Vec<_>>());
 
-        let resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": locations
-        });
+        let resp = match locations {
+            Ok(locations) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": req_id, "result": locations})
+            }
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
+            }),
+        };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
     });
@@ -5060,22 +5066,17 @@ fn lsp_hover(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.hover(&fp_clone, line, col).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    None
-                })
+                engine.activate_session(session_id)?;
+                engine.hover(&fp_clone, line, col)
             })
             .await
-            .unwrap_or(None)
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let found = hover_res.is_some();
+        let found = matches!(&hover_res, Ok(Some(_)));
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -5101,7 +5102,7 @@ fn lsp_hover(
         }
 
         let resp = match hover_res {
-            Some(markup) => serde_json::json!({
+            Ok(Some(markup)) => serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
@@ -5111,10 +5112,14 @@ fn lsp_hover(
                     }
                 }
             }),
-            None => serde_json::json!({
+            Ok(None) => serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": null
+            }),
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
             }),
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());

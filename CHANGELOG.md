@@ -46,6 +46,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Native Rust queries and refactorings reject invalid UTF-16 source positions instead of
+  selecting byte zero (#523). Gateway requests reject malformed or overflowing coordinates
+  before conversion, including explicit assist ends and hierarchy positions (#526); navigation
+  errors remain errors instead of becoming empty answers. Valid editor clamping is unchanged.
 - MCP queries reject JSON-RPC responses that omit `result` instead of treating missing evidence
   as an empty answer (#525). Explicit `null` remains valid, and failures name the queried method.
 - Divergent-worktree benchmarks cap each initial workspace sync and complete session setup at
