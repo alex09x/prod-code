@@ -2508,6 +2508,10 @@ fn main() {
             );
         };
 
+        for (line, col) in [(0, 1), (1, 0), (1, 999999)] {
+            let error = engine.hover(&lib_path, line, col).unwrap_err();
+            assert!(format!("{error:#}").contains("Invalid position"), "{error:#}");
+        }
         assert_invalid(engine.hover(&lib_path, 999999, 1).unwrap_err());
         assert_invalid(engine.rename(&lib_path, 999999, 1, "Renamed").unwrap_err());
         assert_invalid(engine.goto_definition(&lib_path, 999999, 1).unwrap_err());
@@ -2556,6 +2560,11 @@ fn main() {
             .expect("valid UTF-16 position");
         assert!(hover.is_some(), "the symbol after 😀 resolves");
 
+        let snapshot = engine.snapshot();
+        let forward = snapshot.file_range(&lib_path, 2, 1, Some((2, 4))).unwrap();
+        let reversed = snapshot.file_range(&lib_path, 2, 4, Some((2, 1))).unwrap();
+        assert_eq!(forward.range, reversed.range, "valid reversed selections stay accepted");
+        assert!(snapshot.file_range(&lib_path, 2, 1, None).unwrap().range.is_empty());
         let eof = TextSize::of(text);
         let (line, col) = offset_to_line_col(text, eof);
         assert!(
