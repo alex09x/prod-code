@@ -4549,3 +4549,49 @@ async fn the_checkouts_own_symbol_wins_a_tie_with_the_standard_librarys() {
     );
     assert!(text.contains("config.go"), "{text}");
 }
+
+#[tokio::test]
+async fn absent_qualified_methods_never_resolve_to_unrelated_types() {
+    for count in [1usize, 2] {
+        let ws = workspace();
+        let a = write(&ws, "src/a.rs", "pub fn try_recv() {}\n");
+        let b = write(&ws, "src/b.rs", "pub fn try_recv() {}\n");
+        let absent = write(&ws, "src/missing.rs", "pub struct Missing;\n");
+        commit(&ws);
+        let remote = scripted_gateway(Arc::new(move |method, params| match method {
+            "workspace/symbol" if params["query"].as_str() == Some("Missing") => {
+                serde_json::json!([answers::symbol("Missing", 23, &absent, 1, 12)])
+            }
+            "workspace/symbol" => {
+                let mut a = answers::symbol("try_recv", 6, &a, 1, 8);
+                a["containerName"] = serde_json::json!("AsyncConsumer<T>");
+                let mut b = answers::symbol("try_recv", 6, &b, 1, 8);
+                b["containerName"] = serde_json::json!("RingConsumer<T>");
+                let mut hits = vec![a];
+                if count == 2 {
+                    hits.push(b);
+                }
+                serde_json::Value::Array(hits)
+            }
+            "textDocument/documentSymbol" => serde_json::json!([]),
+            _ => serde_json::Value::Null,
+        }))
+        .await;
+        let outcome =
+            prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "Missing::try_recv", None)
+                .await;
+        assert!(
+            outcome.is_err(),
+            "absent qualifier selected an unrelated declaration: {outcome:?}"
+        );
+        let error = format!("{:#}", outcome.unwrap_err());
+        assert!(
+            error.contains("no symbol named `Missing::try_recv`"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("is ambiguous"),
+            "an absent qualified symbol is not ambiguous: {error}"
+        );
+    }
+}
