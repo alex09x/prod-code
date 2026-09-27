@@ -23,7 +23,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 3.3 LSP adapters | Generic subprocess lifecycle, request timeouts and exit detection. | Exit detection is the implemented alternative to periodic health pings. |
 | 3.4 C/C++ | clangd, independent compilation databases and ccache. | Shared PCH and a cross-worktree clangd index remain absent. |
 | 3.5 TS/JS | TypeScript server, per-copy seeded packages and shared package-download cache. | Package trees are copied; pre-resolved shared type declarations and broad framework latency targets remain unverified. |
-| 3.6 Python | basedpyright and copied virtual environments with corrected paths. | Copied environments are not shared mutable environments; semantic completeness follows the server. |
+| 3.6 Python | basedpyright and copied virtual environments with corrected paths. Validation retains one restored document identity across baseline/proposal sessions and isolates proposals on a session-serialized validation server (#466). | Copied environments are not shared mutable environments; semantic completeness follows the server. |
 | 3.7 Swift | sourcekit-lsp on the macOS node and per-project build indexing. | Cross-copy module cache remains absent; Linux Swift was not installed or tested. |
 | 4.1 MCP | Native tool discovery and typed dispatch in `mcp/src/tools.rs`. | Public help must describe each tool's actual languages and refusal cases. |
 | 4.2 Sync | Delta transfer, worktree seeding and persistent MCP sessions in `mcp/src/sync.rs` and `session.rs`. | The #430 repair gives each pooled session its own lock and bounds opening and complete query waits; CLI invocations still reconnect and timings depend on checkout size and cache state. |

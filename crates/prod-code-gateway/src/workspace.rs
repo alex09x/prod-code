@@ -1,6 +1,6 @@
 //! Workspace management: multi-tenant shared workspaces, leader-follower coalescing, and worktree views.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -43,9 +43,13 @@ pub struct SharedWorkspace {
     /// The second engine validation sessions run on, loaded by the first of them (#73).
     /// `None` inside once a load failed: validation then falls back to the main engine.
     validation: tokio::sync::OnceCell<Option<Arc<Mutex<prod_code_engine_rust::RustEngine>>>>,
-    /// The second clangd validation sessions of a C or C++ workspace run on, started by the
-    /// first of them (#293). `None` inside once it failed to start.
-    cpp_validation: tokio::sync::OnceCell<Option<Arc<prod_code_engine_generic::GenericLspEngine>>>,
+    /// The second generic server validation sessions run on, started by the first of them.
+    /// A full retained-document generation is dropped and replaced as one unit.
+    generic_validation: Mutex<Option<Arc<prod_code_engine_generic::GenericLspEngine>>>,
+    generic_validation_loaded: AtomicBool,
+    /// A generic server has one process-wide document state. Validation sessions use it one
+    /// at a time so parallel proposals cannot replace each other's overlays.
+    pub generic_validation_session: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SharedWorkspace {
@@ -72,7 +76,9 @@ impl SharedWorkspace {
             backend,
             rust_engines,
             validation: tokio::sync::OnceCell::new(),
-            cpp_validation: tokio::sync::OnceCell::new(),
+            generic_validation: Mutex::new(None),
+            generic_validation_loaded: AtomicBool::new(false),
+            generic_validation_session: Arc::default(),
         }
     }
 
@@ -101,18 +107,18 @@ impl SharedWorkspace {
     pub async fn validation_view(
         self: &Arc<Self>,
         admission: &Arc<crate::admission::Admission>,
-    ) -> Arc<SharedWorkspace> {
-        if self.engine == "cpp" && self.generic_engine.is_some() {
-            return self.cpp_validation_view(admission).await;
+    ) -> Result<Arc<SharedWorkspace>> {
+        if self.generic_engine.is_some() {
+            return self.generic_validation_view(admission).await;
         }
         if self.rust_engine.is_none() {
-            return Arc::clone(self);
+            return Ok(Arc::clone(self));
         }
         let load: RustLoader = Arc::new(prod_code_engine_rust::RustEngine::load);
         let Some(engine) = self.validation_engine(admission, load).await else {
-            return Arc::clone(self);
+            return Ok(Arc::clone(self));
         };
-        Arc::new(SharedWorkspace {
+        Ok(Arc::new(SharedWorkspace {
             loaded_at: self.loaded_at,
             key: self.key.clone(),
             root: self.root.clone(),
@@ -126,8 +132,10 @@ impl SharedWorkspace {
             backend: None,
             rust_engines: Arc::clone(&self.rust_engines),
             validation: tokio::sync::OnceCell::new(),
-            cpp_validation: tokio::sync::OnceCell::new(),
-        })
+            generic_validation: Mutex::new(None),
+            generic_validation_loaded: AtomicBool::new(false),
+            generic_validation_session: Arc::clone(&self.generic_validation_session),
+        }))
     }
 }
 
@@ -196,8 +204,8 @@ impl SharedWorkspace {
         loading.await.ok().flatten()
     }
 
-    /// The validation view of a C or C++ workspace: this workspace, answered by a second
-    /// clangd that nothing but validation touches (#293).
+    /// The validation view of a generic-language workspace: this workspace, answered by a
+    /// second language server that nothing but validation touches (#293, #466).
     ///
     /// clangd keeps a closed document in its index as it was last built, and builds a source
     /// against the preamble it already has before it notices that a header changed back. So a
@@ -205,52 +213,60 @@ impl SharedWorkspace {
     /// the server every other session asks, after the session had closed them. On a second
     /// server they stay there. It indexes nothing in the background, costs one more clangd
     /// while the workspace is loaded, and is dropped with it. If it cannot start, validation
-    /// runs on the main server as before.
-    async fn cpp_validation_view(
+    /// fails clearly rather than putting proposal overlays into the main server.
+    async fn generic_validation_view(
         self: &Arc<Self>,
         admission: &Arc<crate::admission::Admission>,
-    ) -> Arc<SharedWorkspace> {
+    ) -> Result<Arc<SharedWorkspace>> {
         // Started in a task of its own, like the Rust validation engine: a session that stops
         // waiting leaves the start, and its reservation, to finish for the next one.
         let this = Arc::clone(self);
         let admission = Arc::clone(admission);
         let starting = tokio::spawn(async move {
             let root = this.root.clone();
-            this.cpp_validation
-                .get_or_try_init(|| async move {
-                    let reservation = admission.try_reserve("cpp").map_err(|shortfall| {
-                        let refused = crate::admission::CapacityRefused {
-                            shortfall,
-                            reclaimed: 0,
-                        };
-                        tracing::warn!(workspace = ?root, %refused, "C/C++ validation server not started; validating on the main server");
-                    })?;
-                    let started = prod_code_engine_generic::GenericLspEngine::spawn(
-                        &root,
-                        prod_code_engine_generic::GenericLspConfig::for_cpp_validation(),
-                    )
-                    .await;
-                    reservation.release_after_settling();
-                    Ok::<_, ()>(match started {
-                        Ok(engine) => {
-                            tracing::info!(workspace = ?root, "C/C++ validation server started");
-                            Some(Arc::new(engine))
-                        }
-                        Err(err) => {
-                            tracing::warn!(error = %err, workspace = ?root, "C/C++ validation server failed to start; validating on the main server");
-                            None
-                        }
-                    })
-                })
-                .await
-                .ok()
-                .cloned()
-                .flatten()
+            let engine = this.engine.clone();
+            let config = if engine == "cpp" {
+                prod_code_engine_generic::GenericLspConfig::for_cpp_validation()
+            } else {
+                this.generic_engine
+                    .as_ref()
+                    .expect("generic engine")
+                    .config
+                    .clone()
+            };
+            let mut slot = this.generic_validation.lock().await;
+            if let Some(current) = slot.as_ref()
+                && current.is_alive()
+                && current.accepts_documents()
+            {
+                return Ok(Arc::clone(current));
+            }
+            if slot.take().is_some() {
+                this.generic_validation_loaded
+                    .store(false, Ordering::Relaxed);
+            }
+            let reservation = admission.try_reserve(&engine).map_err(|shortfall| {
+                crate::admission::CapacityRefused {
+                    shortfall,
+                    reclaimed: 0,
+                }
+            })?;
+            let started = prod_code_engine_generic::GenericLspEngine::spawn(&root, config).await;
+            reservation.release_after_settling();
+            let started =
+                Arc::new(started.with_context(|| {
+                    format!("private {engine} validation server failed to start")
+                })?);
+            tracing::info!(workspace = ?root, "generic validation server started");
+            *slot = Some(Arc::clone(&started));
+            this.generic_validation_loaded
+                .store(true, Ordering::Relaxed);
+            Ok::<_, anyhow::Error>(started)
         });
-        let Some(engine) = starting.await.ok().flatten() else {
-            return Arc::clone(self);
-        };
-        Arc::new(SharedWorkspace {
+        let engine = starting
+            .await
+            .context("private generic validation server start task ended")??;
+        Ok(Arc::new(SharedWorkspace {
             loaded_at: self.loaded_at,
             key: self.key.clone(),
             root: self.root.clone(),
@@ -264,8 +280,10 @@ impl SharedWorkspace {
             backend: None,
             rust_engines: Arc::clone(&self.rust_engines),
             validation: tokio::sync::OnceCell::new(),
-            cpp_validation: tokio::sync::OnceCell::new(),
-        })
+            generic_validation: Mutex::new(None),
+            generic_validation_loaded: AtomicBool::new(false),
+            generic_validation_session: Arc::clone(&self.generic_validation_session),
+        }))
     }
 
     pub fn touch(&self) {
@@ -276,7 +294,7 @@ impl SharedWorkspace {
     /// once one runs.
     fn reclaimable(&self, admission: &crate::admission::Admission) -> u64 {
         let engines = if self.validation.get().is_some_and(Option::is_some)
-            || self.cpp_validation.get().is_some_and(Option::is_some)
+            || self.generic_validation_loaded.load(Ordering::Relaxed)
         {
             2
         } else {
@@ -289,7 +307,9 @@ impl SharedWorkspace {
     /// TypeScript server on a file of another language) would otherwise answer every later
     /// query with its exit, until the gateway restarted (#355).
     pub fn has_dead_server(&self) -> bool {
-        self.generic_engine.as_ref().is_some_and(|e| !e.is_alive())
+        self.generic_engine
+            .as_ref()
+            .is_some_and(|e| !e.is_alive() || !e.accepts_documents())
             || self.go_engine.as_ref().is_some_and(|e| !e.is_alive())
     }
 
@@ -315,7 +335,7 @@ impl SharedWorkspace {
         {
             tracing::warn!(error = %err, workspace = ?self.root, "gopls was not told about synced files");
         }
-        let validation = self.cpp_validation.get().cloned().flatten();
+        let validation = self.generic_validation.lock().await.clone();
         for server in self.generic_engine.iter().chain(validation.iter()) {
             if let Err(err) = server.send_notification(METHOD, params.clone()).await {
                 tracing::warn!(error = %err, workspace = ?self.root, "language server was not told about synced files");
@@ -1525,6 +1545,95 @@ fn with_probe_line(text: &str) -> (String, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn generic_workspace(root: &Path) -> (Arc<SharedWorkspace>, PathBuf) {
+        let script = root.join("language-server.py");
+        std::fs::write(
+            &script,
+            r#"import json, sys
+def read():
+    length = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: return None
+        line = line.strip()
+        if not line: break
+        if line.lower().startswith(b"content-length:"): length = int(line.split(b":")[1])
+    return json.loads(sys.stdin.buffer.read(length)) if length else None
+def send(value):
+    body = json.dumps(value).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+    sys.stdout.buffer.flush()
+while True:
+    message = read()
+    if message is None: break
+    if message.get("method") == "initialize":
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{"capabilities":{}}})
+"#,
+        )
+        .unwrap();
+        let config = prod_code_engine_generic::GenericLspConfig {
+            command: "python3".to_string(),
+            args: vec![script.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        let engine = prod_code_engine_generic::GenericLspEngine::spawn(root, config)
+            .await
+            .expect("fake generic engine starts");
+        (
+            Arc::new(SharedWorkspace::new(
+                root.to_path_buf(),
+                "python".to_string(),
+                None,
+                None,
+                Some(Arc::new(engine)),
+                None,
+            )),
+            script,
+        )
+    }
+
+    #[tokio::test]
+    async fn generic_validation_capacity_failure_never_falls_back_to_the_main_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, _) = generic_workspace(dir.path()).await;
+        let admission = Arc::new(crate::admission::Admission::with_probe(
+            crate::admission::scripted_probe(vec![(10, 100)]),
+            2048,
+            Duration::ZERO,
+        ));
+        let err = match workspace.validation_view(&admission).await {
+            Ok(_) => panic!("capacity refusal must not return the main engine"),
+            Err(err) => err,
+        };
+        assert!(format!("{err:#}").starts_with("capacity: "), "{err:#}");
+        assert!(
+            workspace
+                .generic_engine
+                .as_ref()
+                .unwrap()
+                .accepts_documents()
+        );
+    }
+
+    #[tokio::test]
+    async fn generic_validation_start_failure_never_falls_back_to_the_main_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, script) = generic_workspace(dir.path()).await;
+        std::fs::remove_file(script).unwrap();
+        let err = match workspace
+            .validation_view(&Arc::new(crate::admission::Admission::unbounded()))
+            .await
+        {
+            Ok(_) => panic!("start failure must not return the main engine"),
+            Err(err) => err,
+        };
+        assert!(
+            format!("{err:#}").contains("private python validation server failed to start"),
+            "{err:#}"
+        );
+        assert!(workspace.generic_engine.as_ref().unwrap().is_alive());
+    }
 
     /// A workspace whose language server has exited is not handed to the next session, which
     /// loads it afresh; one whose server runs is (#355). `cat` answers `initialize` with its

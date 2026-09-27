@@ -33,6 +33,15 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Python validation keeps one pyright document identity across baseline and proposal sessions
+  (#466). Closing a validation restores the current disk text through a monotonic document
+  change; later proposals no longer split `builtins.str` from `str`. Generic validation uses a
+  separate, session-serialized server, so proposals cannot leak into ordinary or parallel
+  clients, interrupted sessions are restored, and genuine diagnostics remain errors. Retained
+  documents follow later disk notifications while active overlays remain owned by their client;
+  bounded generations are replaced whole, and a private-server admission or startup failure is
+  reported instead of falling back to the ordinary engine. Incremental UTF-16 edits are composed
+  against their owner's full text before a session is restored; invalid ranges leave it unchanged.
 - All MCP tools with source positions reject zero, overflowing or malformed coordinates
   before dispatch (#500). Selection endpoints must be supplied together and cannot precede
   the start; CLI assist application shares the same guard. Discovery schemas advertise bounds.

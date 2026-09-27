@@ -107,6 +107,11 @@ while True:
         # The build of the opened text finds nothing, and says so, for its version, a moment later.
         document = message["params"]["textDocument"]
         threading.Timer(0.4, publish_items, (document["uri"], document["version"], [])).start()
+    elif method == "textDocument/didOpen" and os.environ.get("FAKE_ECHO_CHANGE"):
+        # Ownership probes compare exact text. Version their first publication too so an
+        # in-flight unversioned open cannot race a subsequent restore notification.
+        document = message["params"]["textDocument"]
+        publish(document["uri"], document["version"], document["text"])
     elif method == "textDocument/didOpen":
         uri = message["params"]["textDocument"]["uri"]
         send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
@@ -149,8 +154,10 @@ while True:
         version = message["params"]["textDocument"]["version"]
         publish(uri, version - 1, "from the text before the change")
         # A changed text marked `stale-only` is never built: only the old text's build arrives.
-        if "stale-only" not in message["params"]["contentChanges"][-1]["text"]:
-            threading.Timer(0.3, publish, (uri, version, "from the text as changed")).start()
+        changed = message["params"]["contentChanges"][-1]["text"]
+        if "stale-only" not in changed:
+            result = changed if os.environ.get("FAKE_ECHO_CHANGE") else "from the text as changed"
+            threading.Timer(0.3, publish, (uri, version, result)).start()
     elif method == "workspace/executeCommand":
         command = message["params"].get("command", "")
         if command == "prodCode/edit":
@@ -1281,4 +1288,619 @@ async fn full_pull_reports_keep_empty_and_error_items() {
         let report = engine.pull_diagnostics("file:///wherever/a.txt").await;
         assert_eq!(report, Some(items));
     }
+}
+
+#[tokio::test]
+#[ignore = "requires an installed basedpyright language server"]
+async fn direct_python_builtin_identity_probe() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let file = root.join("generator.py");
+    let source = r####"#!/usr/bin/env python3
+"""Regenerate the replication figures in docs/img from the numbers in docs/replication.md.
+Dependency-free (hand-written SVG) so the figures are reproducible anywhere."""
+import os, textwrap
+
+OUT = os.path.join(os.path.dirname(__file__), "img")
+FONT = "font-family='JetBrains Mono, SFMono-Regular, Menlo, monospace'"
+INK, MUTED, GRID, PANEL = "#1f2328", "#6a737d", "#d0d7de", "#f6f8fa"
+RING, RING_FILL = "#c0392b", "#fdecea"
+NET, NET_FILL = "#1d4ed8", "#e8efff"
+OK, OK_FILL = "#2e7d32", "#e8f5e9"
+OTHER = "#8fa3b8"
+
+def esc(t):
+    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def para(x, y, text, width=95, color=None, size=12, lh=17):
+    col = color or MUTED
+    return "".join(f"<text x='{x}' y='{y + i * lh}' fill='{col}' font-size='{size}'>{esc(line)}</text>"
+                   for i, line in enumerate(textwrap.wrap(text, width)))
+
+def head(W, H, title, sub=None):
+    s = [f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {W} {H}' width='{W}' height='{H}' {FONT} font-size='12'>",
+         "<defs>"
+         f"<marker id='a' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{INK}'/></marker>"
+         f"<marker id='n' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{NET}'/></marker>"
+         f"<marker id='r' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{RING}'/></marker>"
+         "</defs>",
+         f"<rect width='{W}' height='{H}' fill='white'/>",
+         f"<text x='16' y='24' font-size='15' font-weight='bold' fill='{INK}'>{esc(title)}</text>"]
+    if sub:
+        s.append(f"<text x='16' y='42' fill='{MUTED}'>{esc(sub)}</text>")
+    return s
+
+def box(x, y, w, h, text, sub=None, fill="white", stroke=INK, bold=True, size=12):
+    t = f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='6' fill='{fill}' stroke='{stroke}' stroke-width='1.5'/>"
+    t += f"<text x='{x + w / 2}' y='{y + h / 2 + (-2 if sub else 5)}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
+    if sub:
+        t += f"<text x='{x + w / 2}' y='{y + h / 2 + 14}' text-anchor='middle' fill='{MUTED}' font-size='11'>{esc(sub)}</text>"
+    return t
+
+def ring(x, y, w, h, text="ring", sub="/dev/shm"):
+    return box(x, y, w, h, text, sub, fill=RING_FILL, stroke=RING)
+
+def panel(x, y, w, h, title, fill=PANEL):
+    return (f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='10' fill='{fill}' stroke='{GRID}'/>"
+            f"<text x='{x + 12}' y='{y + 20}' fill='{INK}' font-weight='bold' font-size='13'>{esc(title)}</text>")
+
+def arrow(x1, y1, x2, y2, label=None, color=INK, marker="a", dash=None, above=True, size=11):
+    d = f" stroke-dasharray='{dash}'" if dash else ""
+    t = f"<line x1='{x1}' y1='{y1}' x2='{x2}' y2='{y2}' stroke='{color}' stroke-width='1.5' marker-end='url(#{marker})'{d}/>"
+    if label:
+        ly = min(y1, y2) - 7 if above else max(y1, y2) + 15
+        t += f"<text x='{(x1 + x2) / 2}' y='{ly}' text-anchor='middle' fill='{color}' font-size='{size}'>{esc(label)}</text>"
+    return t
+
+def write(name, s):
+    s.append("</svg>")
+    open(os.path.join(OUT, name), "w").write("\n".join(s))
+
+# 1. The pipeline of one record: source ring to mirror ring, with measured latencies ----------
+W, H = 960, 340
+s = head(W, H, "One record's path: source ring to mirror ring, same sequence number everywhere",
+         "push on the source host → read on the mirror host, measured, 64-byte records")
+s.append(panel(16, 56, 330, 190, "source host"))
+s.append(box(30, 96, 86, 44, "producer", "push()"))
+s.append(arrow(116, 118, 142, 118))
+s.append(ring(142, 90, 96, 56, "ring", "seq 1, 2, 3 …"))
+s.append(arrow(238, 104, 262, 104))
+s.append(box(262, 86, 74, 36, "serve", "raw reader", size=11))
+s.append(arrow(238, 132, 262, 160))
+s.append(box(262, 150, 74, 36, "readers", "0.1 µs", size=11))
+s.append(f"<text x='181' y='222' text-anchor='middle' fill='{MUTED}' font-size='11'>fixed slots, or descriptors + arena</text>")
+# network band
+s.append(f"<rect x='356' y='66' width='250' height='170' rx='10' fill='{NET_FILL}' stroke='{NET}' stroke-dasharray='4 3'/>")
+s.append(f"<text x='481' y='86' text-anchor='middle' fill='{NET}' font-weight='bold'>network</text>")
+s.append(arrow(336, 118, 616, 118, "DATA: raw slot bytes + seq", NET, "n"))
+s.append(f"<text x='481' y='146' text-anchor='middle' fill='{NET}' font-size='11'>UDP multicast · UDP unicast · TCP</text>")
+s.append(arrow(616, 186, 336, 186, "NAK / GAP over TCP", NET, "n", dash="4 3", above=False))
+s.append(f"<text x='481' y='214' text-anchor='middle' fill='{MUTED}' font-size='11'>the source ring is</text>")
+s.append(f"<text x='481' y='228' text-anchor='middle' fill='{MUTED}' font-size='11'>the retransmission buffer</text>")
+s.append(panel(616, 56, 328, 190, "mirror host"))
+s.append(box(630, 100, 84, 36, "mirror", "one writer", size=11))
+s.append(arrow(714, 118, 736, 118))
+s.append(ring(736, 90, 96, 56, "ring", "same seq"))
+s.append(arrow(832, 118, 852, 118))
+s.append(box(852, 96, 80, 44, "readers", "as local", size=11))
+s.append(f"<text x='780' y='222' text-anchor='middle' fill='{MUTED}' font-size='11'>written in order, never duplicated</text>")
+y = 276
+for x, label, val in [(30, "same ring", "0.1 µs"), (250, "mirror on the same host", "3.8 µs"),
+                      (490, "mirror across a 1 GbE LAN", "30 µs"), (730, "Tokyo → Los Angeles", "51.7 ms, p99 +50 µs")]:
+    s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='13'>{esc(val)}</text>")
+    s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
+s.append(f"<text x='30' y='{y + 40}' fill='{MUTED}' font-size='11'>push → read, p50, measured on each host; remote hosts corrected for clock offset</text>")
+write("mirror-pipeline.svg", s)
+
+"####;
+    std::fs::write(&file, source).unwrap();
+    let config = GenericLspConfig::for_python();
+    assert!(config.command.contains("pyright"), "real pyright required");
+    let engine = GenericLspEngine::spawn(&root, config).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    let typed = source.replace(
+        "def write(name, s):",
+        "def write(name: str, s: list[str]) -> None:",
+    );
+    for (i, text) in [source, source, typed.as_str()].into_iter().enumerate() {
+        engine.send_notification("textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":text}})).await.unwrap();
+        let items = engine
+            .current_diagnostics_for(&uri, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let identities: Vec<_> = items
+            .iter()
+            .filter(|x| {
+                x["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("builtins.str") && m.contains("not assignable"))
+            })
+            .collect();
+        eprintln!("direct step {i}: identity errors {}", identities.len());
+        assert!(
+            identities.is_empty(),
+            "direct identity failure: {identities:?}"
+        );
+        engine
+            .send_notification(
+                "textDocument/didClose",
+                serde_json::json!({"textDocument":{"uri":uri}}),
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// Pyright-family servers keep one document identity for the engine's lifetime: closing and
+/// reopening can split builtin identities (#466). The adapter restores disk text on close and
+/// changes that retained document for the next session, with exact monotonic versions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_documents_restore_disk_text_and_reopen_as_changes() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("retained.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings
+        .env
+        .insert("FAKE_ECHO_CHANGE".to_string(), "1".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+
+    engine
+        .send_session_notification(
+            7,
+            "textDocument/didOpen",
+            serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal one\n"}}),
+        )
+        .await
+        .unwrap();
+    engine.close_session(7).await.unwrap();
+    let restored = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(restored[0]["message"], "baseline\n");
+
+    engine
+        .send_session_notification(
+            8,
+            "textDocument/didOpen",
+            serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal two\n"}}),
+        )
+        .await
+        .unwrap();
+    let reopened = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(reopened[0]["message"], "proposal two\n");
+    engine.close_session(8).await.unwrap();
+
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "baseline\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_closing_one_session_preserves_the_other_session_text() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("retained.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    for (session, text) in [(7, "proposal one\n"), (8, "proposal two\n")] {
+        engine.send_session_notification(session,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":text}})).await.unwrap();
+    }
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "proposal two\n"
+    );
+    engine.close_session(7).await.unwrap();
+    let current = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        current[0]["message"], "proposal two\n",
+        "closing another client discarded the active overlay"
+    );
+    engine.close_session(8).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_and_session_owners_close_without_discarding_each_other() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("owned.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine
+        .send_session_notification(7, "textDocument/didOpen", serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "session\n"}
+        }))
+        .await
+        .unwrap();
+    engine
+        .send_notification("textDocument/didOpen", serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "direct\n"}
+        }))
+        .await
+        .unwrap();
+    engine.close_session(7).await.unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "direct\n"
+    );
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({"textDocument": {"uri": uri}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "baseline\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watched_disk_changes_refresh_only_logically_closed_retained_documents() {
+    let (dir, script) = workspace();
+    let closed = dir.path().join("closed.py");
+    let active = dir.path().join("active.py");
+    std::fs::write(&closed, "closed baseline\n").unwrap();
+    std::fs::write(&active, "active baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let closed_uri = url::Url::from_file_path(&closed).unwrap().to_string();
+    let active_uri = url::Url::from_file_path(&active).unwrap().to_string();
+    for (uri, text) in [
+        (&closed_uri, "closed overlay\n"),
+        (&active_uri, "active overlay\n"),
+    ] {
+        engine
+            .send_notification(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": text}
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": {"uri": active_uri, "version": 2},
+                "contentChanges": [{"text": "active overlay\n"}]
+            }),
+        )
+        .await
+        .unwrap();
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({
+                "textDocument": {"uri": closed_uri}
+            }),
+        )
+        .await
+        .unwrap();
+    std::fs::write(&closed, "closed changed\n").unwrap();
+    std::fs::write(&active, "active changed\n").unwrap();
+    engine
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({
+                "changes": [
+                    {"uri": closed_uri, "type": 2},
+                    {"uri": active_uri, "type": 2}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&closed_uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "closed changed\n"
+    );
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&active_uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "active overlay\n"
+    );
+    std::fs::remove_file(&closed).unwrap();
+    engine
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({"changes": [{"uri": closed_uri, "type": 3}]}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !engine.accepts_documents(),
+        "a truly closed retained identity retires the whole generation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_retained_generation_requires_whole_engine_eviction() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("bounded.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.max_retained_documents = 1;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_notification("textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "proposal\n"}
+    })).await.unwrap();
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({
+                "textDocument": {"uri": uri}
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !engine.accepts_documents(),
+        "the full generation is retired"
+    );
+    let err = engine.send_notification("textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "another\n"}
+    })).await.expect_err("an evicted identity must not be reopened in the same server");
+    assert!(format!("{err:#}").contains("restart"), "{err:#}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_version_overflow_is_refused_without_losing_ownership() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("overflow.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_session_notification(9, "textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": i64::MAX, "text": "proposal\n"}
+    })).await.unwrap();
+    let err = engine
+        .close_session(9)
+        .await
+        .expect_err("version overflow is explicit");
+    assert!(format!("{err:#}").contains("version overflowed"), "{err:#}");
+    let again = engine
+        .close_session(9)
+        .await
+        .expect_err("ownership remains for retry");
+    assert!(
+        format!("{again:#}").contains("version overflowed"),
+        "{again:#}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires basedpyright"]
+async fn primary_review_closed_python_document_follows_later_disk_changes() {
+    for retain in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let file = root.join("value.py");
+        let good = "def answer():\n    return 1\n";
+        std::fs::write(&file, good).unwrap();
+        let mut settings = GenericLspConfig::for_python();
+        settings.retain_open_documents = retain;
+        let engine = GenericLspEngine::spawn(&root, settings).await.unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_notification("textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":good}})).await.unwrap();
+        assert!(
+            !engine
+                .current_diagnostics_for(&uri, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .iter()
+                .any(|d| d["severity"] == 1)
+        );
+        let consumer = root.join("consumer.py");
+        let consumer_text = "import value\nnumber: int = value.answer()\n";
+        std::fs::write(&consumer, consumer_text).unwrap();
+        let consumer_uri = url::Url::from_file_path(&consumer).unwrap().to_string();
+        engine.send_notification("textDocument/didOpen",serde_json::json!({"textDocument":{"uri":consumer_uri,"languageId":"python","version":1,"text":consumer_text}})).await.unwrap();
+        assert!(
+            !engine
+                .current_diagnostics_for(&consumer_uri, Duration::from_secs(30))
+                .await
+                .unwrap()
+                .iter()
+                .any(|d| d["severity"] == 1)
+        );
+        engine
+            .send_notification(
+                "textDocument/didClose",
+                serde_json::json!({"textDocument":{"uri":uri}}),
+            )
+            .await
+            .unwrap();
+        std::fs::write(&file, "def answer():\n    return \"bad\"\n").unwrap();
+        engine
+            .send_notification(
+                "workspace/didChangeWatchedFiles",
+                serde_json::json!({"changes":[{"uri":uri,"type":2}]}),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let report = engine
+            .current_diagnostics_for(&consumer_uri, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(
+            report.iter().any(|d| d["severity"] == 1),
+            "retain={retain}: disk type error disappeared: {report:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_incremental_owner_is_restored_as_its_complete_text() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("incremental.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"abc\n"}})).await.unwrap();
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":2}},"text":"x"}]})).await.unwrap();
+    engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"other proposal\n"}})).await.unwrap();
+    engine.close_session(8).await.unwrap();
+    let current = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        current[0]["message"], "axc\n",
+        "restored an incremental fragment instead of the remaining owner's full text"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_retained_bound_survives_a_long_lived_active_owner() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.max_retained_documents = 2;
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let anchor = dir.path().join("anchor.py");
+    std::fs::write(&anchor, "anchor\n").unwrap();
+    let anchor_uri = url::Url::from_file_path(&anchor).unwrap().to_string();
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":anchor_uri,"languageId":"python","version":1,"text":"active editor\n"}})).await.unwrap();
+    for i in 0..2 {
+        let file = dir.path().join(format!("closed{i}.py"));
+        std::fs::write(&file, "disk\n").unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal\n"}})).await.unwrap();
+        engine.close_session(8).await.unwrap();
+    }
+    assert!(
+        !engine.accepts_documents(),
+        "an active owner must not disable the retained-document limit indefinitely"
+    );
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":anchor_uri,"version":2},"contentChanges":[{"text":"still active\n"}]})).await.expect("existing owners may keep editing the retired generation");
+    engine.close_session(7).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_ordered_utf16_changes_use_their_owners_text() {
+    for retain in [false, true] {
+        let (dir, script) = workspace();
+        let file = dir.path().join("unicode.py");
+        std::fs::write(&file, "disk\n").unwrap();
+        let mut settings = config(&script);
+        settings.retain_open_documents = retain;
+        settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"a😀b\r\nsecond\n"}})).await.unwrap();
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"another owner\n"}})).await.unwrap();
+        engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[
+            {"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":3}},"text":"x"},
+            {"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":6}},"text":"tail"}
+        ]})).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            "axb\r\ntail\n"
+        );
+        engine.close_session(7).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            "another owner\n"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_invalid_incremental_ranges_preserve_the_whole_owner_state() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("invalid-range.py");
+    std::fs::write(&file, "disk\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    let original = "a😀b\r\nlast\r";
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":original}})).await.unwrap();
+    for bad_range in [
+        serde_json::json!({"start":{"line":0,"character":2},"end":{"line":0,"character":3}}),
+        serde_json::json!({"start":{"line":0,"character":3},"end":{"line":0,"character":1}}),
+        serde_json::json!({"start":{"line":8,"character":0},"end":{"line":8,"character":0}}),
+        serde_json::json!({"start":{"line":0,"character":5},"end":{"line":0,"character":5}}),
+        serde_json::json!({"start":{"line":-1,"character":0},"end":{"line":0,"character":0}}),
+        serde_json::json!({"start":{"line":0,"character":0.5},"end":{"line":0,"character":1}}),
+        serde_json::Value::Null,
+    ] {
+        let error = engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[
+            {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"text":"z"},
+            {"range":bad_range,"text":"wrong"}
+        ]})).await.expect_err("invalid second edit is refused before any owner state change");
+        assert!(
+            format!("{error:#}").contains("incremental change"),
+            "{error:#}"
+        );
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"temporary\n"}})).await.unwrap();
+        engine.close_session(8).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            original
+        );
+    }
+    // A complete reset followed by a range edit uses the newly reset text, in order.
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":3},"contentChanges":[
+        {"text":"fresh\n"}, {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}},"text":"done"}
+    ]})).await.unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "done\n"
+    );
 }
