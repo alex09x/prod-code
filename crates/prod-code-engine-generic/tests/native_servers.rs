@@ -14,13 +14,55 @@ fn engine_is_available(test: &str, engine: &str, available: bool) -> bool {
     available
 }
 
-async fn document_symbols(
+async fn hover(
+    engine: &GenericLspEngine,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> serde_json::Value {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.send_request(
+            "textDocument/hover",
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "position":{"line":line,"character":character}
+            }),
+        ),
+    )
+    .await
+    .expect("the native server answers hover")
+    .expect("the native hover succeeds")
+}
+
+async fn hover_before_and_after_probes(
     root: &std::path::Path,
-    config: GenericLspConfig,
+    mut config: GenericLspConfig,
     path: &std::path::Path,
     language_id: &str,
     text: &str,
+    line: u32,
+    character: u32,
 ) {
+    config.health_probe_interval = Some(Duration::from_millis(100));
+    #[cfg(unix)]
+    let pid_file = root.join("native-server.pid");
+    #[cfg(unix)]
+    {
+        let command = std::mem::replace(&mut config.command, "/bin/sh".to_string());
+        let args = std::mem::take(&mut config.args);
+        config.args = vec![
+            "-c".to_string(),
+            "printf '%s\\n' \"$$\" > \"$PROD_CODE_NATIVE_PID_FILE\"; exec \"$@\"".to_string(),
+            "owned-native-server".to_string(),
+            command,
+        ];
+        config.args.extend(args);
+        config.env.insert(
+            "PROD_CODE_NATIVE_PID_FILE".to_string(),
+            pid_file.to_string_lossy().into_owned(),
+        );
+    }
     let engine = GenericLspEngine::spawn(root, config)
         .await
         .expect("the required native language server initializes");
@@ -34,19 +76,62 @@ async fn document_symbols(
         )
         .await
         .expect("the native server accepts an open document");
-    let answer = tokio::time::timeout(
-        Duration::from_secs(30),
-        engine.send_request(
-            "textDocument/documentSymbol",
-            serde_json::json!({"textDocument":{"uri":uri}}),
-        ),
-    )
+    let before = hover(&engine, &uri, line, character).await;
+    assert!(before.get("error").is_none(), "{before}");
+    assert!(
+        before.get("result").is_some_and(|result| !result.is_null()),
+        "native hover is nonempty before probes: {before}"
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while engine.busy().is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("the native server answers a simple query")
-    .expect("the native server query succeeds");
-    assert!(answer.get("error").is_none(), "{answer}");
-    assert!(answer.get("result").is_some(), "{answer}");
+    .expect("the native server becomes idle before probing");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while engine.health_probe_completions() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the native server answers at least two scheduled probes");
+    let after = hover(&engine, &uri, line, character).await;
+    assert!(after.get("error").is_none(), "{after}");
+    assert!(
+        after.get("result").is_some_and(|result| !result.is_null()),
+        "native hover is nonempty after at least two scheduled probes: {after}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(path).expect("fixture remains readable"),
+        text,
+        "health probing leaves the fixture source hash/content unchanged"
+    );
+    #[cfg(unix)]
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("owned native PID")
+        .trim()
+        .parse()
+        .expect("native PID is numeric");
     drop(engine);
+    #[cfg(unix)]
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status = std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("inspect the exact owned native PID");
+            if !status.success() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dropping the adapter reaps its exact native child");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -63,7 +148,7 @@ async fn installed_basedpyright_initializes_and_answers_a_simple_query() {
     let path = dir.path().join("answer.py");
     let text = "def answer() -> int:\n    return 42\n";
     std::fs::write(&path, text).expect("fixture");
-    document_symbols(dir.path(), config, &path, "python", text).await;
+    hover_before_and_after_probes(dir.path(), config, &path, "python", text, 0, 5).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -88,5 +173,173 @@ async fn installed_clangd_initializes_and_answers_a_simple_query() {
         path.display()
     );
     std::fs::write(build.join("compile_commands.json"), command).expect("compile commands");
-    document_symbols(dir.path(), config, &path, "cpp", text).await;
+    hover_before_and_after_probes(dir.path(), config, &path, "cpp", text, 0, 5).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_native_typescript_initializes_and_answers_before_and_after_probes() {
+    let config = GenericLspConfig::for_typescript();
+    let native =
+        config.args == ["--lsp", "--stdio"] && std::path::Path::new(&config.command).is_file();
+    if !engine_is_available(
+        "installed_native_typescript_initializes_and_answers_before_and_after_probes",
+        "native TypeScript tsc --lsp",
+        native,
+    ) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("isolated workspace");
+    let path = dir.path().join("answer.ts");
+    let text = "function answer(): number { return 42; }\nanswer();\n";
+    std::fs::write(&path, text).expect("fixture");
+    hover_before_and_after_probes(dir.path(), config, &path, "typescript", text, 0, 10).await;
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_sourcekit_lsp_initializes_and_answers_before_and_after_probes() {
+    let config = GenericLspConfig::for_swift();
+    let sourcekit_lsp = match config.command.as_str() {
+        "sourcekit-lsp" => prod_code_engine_generic::which_bin("sourcekit-lsp").is_ok(),
+        "xcrun" => prod_code_engine_generic::which_bin("xcrun").is_ok(),
+        _ => false,
+    };
+    if !engine_is_available(
+        "installed_sourcekit_lsp_initializes_and_answers_before_and_after_probes",
+        "sourcekit-lsp",
+        sourcekit_lsp,
+    ) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("isolated SwiftPM workspace");
+    let sources = dir.path().join("Sources").join("HealthFixture");
+    std::fs::create_dir_all(&sources).expect("SwiftPM sources directory");
+    std::fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 5.10\nimport PackageDescription\n\nlet package = Package(\n    name: \"HealthFixture\",\n    targets: [.target(name: \"HealthFixture\")]\n)\n",
+    )
+    .expect("SwiftPM manifest");
+    let path = sources.join("Answer.swift");
+    let text = "public func answer() -> Int {\n    42\n}\n\nlet result = answer()\n";
+    std::fs::write(&path, text).expect("Swift fixture");
+    let mut command = tokio::process::Command::new("swift");
+    command
+        .arg("build")
+        .current_dir(dir.path())
+        .kill_on_drop(true)
+        .process_group(0);
+    let child = command.spawn().expect("spawn private SwiftPM build");
+    // Own the complete compiler group before the first cancellable wait.
+    let mut build = OwnedSwiftBuild {
+        group: i32::try_from(child.id().expect("spawned build PID")).expect("PID fits i32"),
+        child,
+    };
+    let outcome = tokio::time::timeout(Duration::from_secs(120), build.child.wait()).await;
+    drop(build);
+    let status = outcome
+        .expect("private SwiftPM build completes before its deadline")
+        .expect("private SwiftPM build is reaped");
+    assert!(status.success(), "private SwiftPM build succeeds: {status}");
+    hover_before_and_after_probes(dir.path(), config, &path, "swift", text, 4, 14).await;
+}
+
+#[cfg(target_os = "macos")]
+struct OwnedSwiftBuild {
+    group: i32,
+    child: tokio::process::Child,
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for OwnedSwiftBuild {
+    fn drop(&mut self) {
+        unsafe extern "C" {
+            fn kill(pid: i32, signal: i32) -> i32;
+        }
+        // Darwin SIGKILL is 9. The command created this exact group before spawn returned.
+        // Retire descendants even when waiting already reaped their direct parent.
+        let _ = unsafe { kill(-self.group, 9) };
+        let _ = self.child.start_kill();
+        for _ in 0..50 {
+            match self.child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+            }
+        }
+        // kill_on_drop leaves Tokio's exact-child reaper as the final fallback.
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn swift_build_ownership_retires_descendants_after_timeout_and_parent_exit() {
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    for parent_exits in [false, true] {
+        let dir = tempfile::tempdir().expect("isolated compiler lifecycle fixture");
+        let pid_file = dir.path().join("descendant.pid");
+        let script = if parent_exits {
+            "sleep 60 & printf '%s\\n' \"$!\" > \"$1\"; exit 0"
+        } else {
+            "sleep 60 & printf '%s\\n' \"$!\" > \"$1\"; wait"
+        };
+        let child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", script, "owned-compiler"])
+            .arg(&pid_file)
+            .kill_on_drop(true)
+            .process_group(0)
+            .spawn()
+            .expect("spawn controlled compiler group");
+        let mut build = OwnedSwiftBuild {
+            group: i32::try_from(child.id().expect("spawned compiler PID")).expect("PID fits i32"),
+            child,
+        };
+        let group = build.group;
+        let descendant = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if let Ok(text) = std::fs::read_to_string(&pid_file)
+                    && let Ok(pid) = text.trim().parse::<i32>()
+                {
+                    break pid;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let wait = tokio::time::timeout(Duration::from_millis(100), build.child.wait()).await;
+        drop(build);
+        let retired = if let Ok(pid) = descendant {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while unsafe { kill(pid, 0) } == 0 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .is_ok()
+        } else {
+            false
+        };
+        // Preserve the observed result; fallback cleanup must never turn a failure into a pass.
+        let _ = unsafe { kill(-group, 9) };
+        assert!(
+            descendant.is_ok(),
+            "controlled descendant reaches readiness"
+        );
+        assert!(
+            retired,
+            "the exact compiler descendant retires, parent_exits={parent_exits}"
+        );
+        if parent_exits {
+            assert!(
+                wait.expect("controlled parent exits")
+                    .expect("parent is reaped")
+                    .success()
+            );
+        } else {
+            assert!(
+                wait.is_err(),
+                "the controlled compiler reaches its wait deadline"
+            );
+        }
+    }
 }

@@ -22,6 +22,7 @@ import json, os, sys, threading, time
 
 LOCK = threading.Lock()
 INITIALIZE_COUNT = 0
+HEALTH_COUNT = 0
 if os.environ.get("FAKE_PID_FILE"):
     with open(os.environ["FAKE_PID_FILE"], "w") as pid_file:
         pid_file.write(str(os.getpid()))
@@ -245,6 +246,22 @@ while True:
     elif method == "prodCode/silence":
         # Answer nothing at all, so the caller's timeout is the only way out.
         pass
+    elif method == "prodCode/healthProbe":
+        sequence = os.environ.get("FAKE_HEALTH_SEQUENCE", os.environ.get("FAKE_HEALTH", "error")).split(",")
+        health = sequence[min(HEALTH_COUNT, len(sequence) - 1)]
+        HEALTH_COUNT += 1
+        if health == "silence":
+            pass
+        elif health == "success":
+            send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+        elif health == "malformed":
+            send({"jsonrpc": "2.0", "id": message["id"], "unexpected": True})
+        elif health == "delay":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "result": None},)).start()
+        elif health == "delay-malformed":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "unexpected": True},)).start()
+        else:
+            send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "unknown method"}})
     elif method == "prodCode/die":
         sys.exit(0)
     elif method == "shutdown":
@@ -260,6 +277,25 @@ fn config(script: &Path) -> GenericLspConfig {
         env: HashMap::new(),
         ..Default::default()
     }
+}
+
+async fn wait_for_probe_count(path: &Path, count: usize) {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let seen = std::fs::read_to_string(path).unwrap_or_default();
+            if seen
+                .lines()
+                .filter(|method| *method == "prodCode/healthProbe")
+                .count()
+                >= count
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the scheduled probes reach the fake server");
 }
 
 /// A request from the server that carries the id of a question in flight is answered as a
@@ -462,6 +498,339 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         Some("the fake server answered"),
         "the answer was matched to the request: {hover}"
     );
+}
+
+#[tokio::test]
+async fn zero_health_probe_interval_is_rejected_before_spawn() {
+    let settings = GenericLspConfig {
+        health_probe_interval: Some(Duration::ZERO),
+        ..Default::default()
+    };
+    let error = match GenericLspEngine::spawn(Path::new("."), settings).await {
+        Ok(_) => panic!("a zero interval would create an unbounded poll loop"),
+        Err(error) => error,
+    };
+    assert!(
+        format!("{error:#}").contains("greater than zero"),
+        "{error:#}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn matching_health_successes_and_protocol_errors_are_private_dispatch_evidence() {
+    for health in ["success", "error"] {
+        let (dir, script) = workspace();
+        let seen_file = dir.path().join("seen");
+        let mut settings = config(&script);
+        settings.health_probe_interval = Some(Duration::from_millis(20));
+        settings.request_timeout = Duration::from_millis(80);
+        settings.env.insert("FAKE_HEALTH".into(), health.into());
+        settings.env.insert(
+            "FAKE_SEEN_FILE".into(),
+            seen_file.to_string_lossy().into_owned(),
+        );
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let mut subscriber = engine.subscribe();
+        wait_for_probe_count(&seen_file, 2).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(engine.is_alive(), "{health} is valid dispatch evidence");
+        assert!(
+            matches!(
+                subscriber.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "probe payloads are not delivered to subscribers"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ordinary_pending_work_defers_health_dispatch_without_a_failure() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(20));
+    settings.request_timeout = Duration::from_millis(180);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = std::sync::Arc::new(GenericLspEngine::spawn(dir.path(), settings).await.unwrap());
+    let ordinary = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("prodCode/silence", serde_json::json!({}))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let seen = std::fs::read_to_string(&seen_file).unwrap();
+    assert!(
+        !seen.lines().any(|method| method == "prodCode/healthProbe"),
+        "ordinary pending work defers the probe: {seen}"
+    );
+    ordinary
+        .await
+        .expect("ordinary task")
+        .expect_err("the ordinary request keeps its own timeout semantics");
+    assert!(engine.is_alive(), "a busy deferral is not a failed probe");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_matching_normal_response_resets_idle_probe_timeout_failures() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(100));
+    settings.request_timeout = Duration::from_millis(40);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    wait_for_probe_count(&seen_file, 2).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    engine
+        .send_request("textDocument/hover", serde_json::json!({}))
+        .await
+        .expect("matching normal response resets the failure streak");
+    wait_for_probe_count(&seen_file, 4).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        engine.is_alive(),
+        "two later idle timeouts are not consecutive with the two before normal traffic"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(60));
+    settings.request_timeout = Duration::from_millis(40);
+    settings.env.insert("FAKE_HEALTH".into(), "delay".into());
+    settings
+        .env
+        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let mut subscriber = engine.subscribe();
+    wait_for_probe_count(&seen_file, 4).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.health_probe_completions() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("at least two delayed matching replies are validated");
+    assert!(
+        engine.is_alive(),
+        "late valid replies reset the failure streak"
+    );
+    assert!(
+        matches!(
+            subscriber.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "late probe response stays private"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_malformed_probe_responses_do_not_reset_failures() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(60));
+    settings.request_timeout = Duration::from_millis(40);
+    settings
+        .env
+        .insert("FAKE_HEALTH".into(), "delay-malformed".into());
+    settings
+        .env
+        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.is_alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("three timeouts retire despite late malformed traffic");
+    assert_eq!(engine.health_probe_completions(), 0);
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert_eq!(
+        seen.lines()
+            .filter(|method| *method == "prodCode/healthProbe")
+            .count(),
+        3,
+        "{seen}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn busy_probe_timeouts_retain_at_most_one_response_slot() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(10));
+    settings.request_timeout = Duration::from_millis(80);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    for count in 1..=20 {
+        wait_for_probe_count(&seen_file, count).await;
+        engine
+            .send_notification("prodCode/activity", serde_json::json!({}))
+            .await
+            .expect("ordinary activity overlaps the probe wait");
+        assert!(engine.retained_health_responses() <= 1);
+    }
+    wait_for_probe_count(&seen_file, 21).await;
+    assert!(
+        engine.is_alive(),
+        "busy deferrals do not become timeout failures"
+    );
+    assert_eq!(engine.retained_health_responses(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_periodic_supervision_is_an_explicit_non_retirement_control() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = None;
+    settings.request_timeout = Duration::from_millis(40);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        engine.is_alive(),
+        "disabled supervision does not infer failure"
+    );
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert!(!seen.lines().any(|method| method == "prodCode/healthProbe"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn three_consecutive_idle_probe_response_timeouts_retire_the_generation() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let pid_file = dir.path().join("pid");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(20));
+    settings.request_timeout = Duration::from_millis(40);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.is_alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("three idle response timeouts retire the server");
+    assert!(engine.capabilities.read().await.is_none());
+    assert!(!engine.accepts_documents());
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert_eq!(
+        seen.lines()
+            .filter(|method| *method == "prodCode/healthProbe")
+            .count(),
+        3,
+        "{seen}"
+    );
+    assert_process_exits(&pid_file).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_matching_probe_reply_retires_without_waiting_for_three_timeouts() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(20));
+    settings.request_timeout = Duration::from_millis(200);
+    settings
+        .env
+        .insert("FAKE_HEALTH".into(), "malformed".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.is_alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the malformed matching response retires the server");
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert_eq!(
+        seen.lines()
+            .filter(|method| *method == "prodCode/healthProbe")
+            .count(),
+        1,
+        "{seen}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_during_a_probe_response_wait_kills_the_owned_server() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let pid_file = dir.path().join("pid");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(20));
+    settings.request_timeout = Duration::from_secs(10);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    wait_for_probe_count(&seen_file, 1).await;
+    drop(engine);
+    assert_process_exits(&pid_file).await;
 }
 
 #[cfg(unix)]
