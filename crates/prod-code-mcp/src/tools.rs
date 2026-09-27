@@ -1043,6 +1043,29 @@ pub fn list_tools() -> Vec<McpTool> {
         },
     ];
     for tool in &mut tools {
+        if let Some(properties) = tool
+            .input_schema
+            .get_mut("properties")
+            .and_then(|v| v.as_object_mut())
+        {
+            for key in POSITION_ARGUMENTS {
+                if let Some(property) = properties.get_mut(key) {
+                    property["minimum"] = serde_json::json!(1);
+                    property["maximum"] = serde_json::json!(u32::MAX);
+                }
+            }
+            for key in ["end_line", "end_character"] {
+                if let Some(description) = properties
+                    .get_mut(key)
+                    .and_then(|p| p.get_mut("description"))
+                    && let Some(text) = description.as_str()
+                {
+                    *description = serde_json::json!(format!(
+                        "{text}; supply both end_line and end_character, with the end at or after the start"
+                    ));
+                }
+            }
+        }
         if SYMBOL_ADDRESSABLE.contains(&tool.name.as_str()) {
             relax_position_schema(&mut tool.input_schema);
         }
@@ -1067,6 +1090,67 @@ fn relax_position_schema(schema: &mut serde_json::Value) {
     }
 }
 
+const POSITION_ARGUMENTS: [&str; 4] = ["line", "character", "end_line", "end_character"];
+
+fn checked_position_argument(value: &serde_json::Value, name: &str) -> Result<u32> {
+    value
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .with_context(|| {
+            format!(
+                "'{name}' must be a one-based coordinate in 1..={}",
+                u32::MAX
+            )
+        })
+}
+
+/// Check only position properties the tool actually advertises. Keeping this registry derived
+/// from discovery means a newly exposed position tool gets the same input contract immediately.
+fn validate_position_arguments(tool_name: &str, args: &serde_json::Value) -> Result<()> {
+    static POSITION_TOOLS: std::sync::OnceLock<Vec<(String, Vec<&'static str>)>> =
+        std::sync::OnceLock::new();
+    let positions = POSITION_TOOLS.get_or_init(|| {
+        list_tools()
+            .into_iter()
+            .filter_map(|tool| {
+                let properties = tool.input_schema.get("properties")?.as_object()?;
+                let fields: Vec<_> = POSITION_ARGUMENTS
+                    .into_iter()
+                    .filter(|name| properties.contains_key(*name))
+                    .collect();
+                (!fields.is_empty()).then_some((tool.name, fields))
+            })
+            .collect()
+    });
+    let Some((_, fields)) = positions.iter().find(|(name, _)| name == tool_name) else {
+        return Ok(());
+    };
+    for name in fields {
+        if let Some(value) = args.get(*name) {
+            checked_position_argument(value, name)?;
+        }
+    }
+    if fields.contains(&"end_line") && fields.contains(&"end_character") {
+        let end = match (args.get("end_line"), args.get("end_character")) {
+            (None, None) => return Ok(()),
+            (Some(line), Some(character)) => (
+                checked_position_argument(line, "end_line")?,
+                checked_position_argument(character, "end_character")?,
+            ),
+            _ => anyhow::bail!("a selection requires both 'end_line' and 'end_character'"),
+        };
+        if let (Some(line), Some(character)) = (args.get("line"), args.get("character")) {
+            let start = (
+                checked_position_argument(line, "line")?,
+                checked_position_argument(character, "character")?,
+            );
+            anyhow::ensure!(end >= start, "selection end precedes its start");
+        }
+    }
+    Ok(())
+}
+
 /// Execute an MCP tool call against the remote gateway.
 pub async fn execute_tool(
     remote: SocketAddr,
@@ -1074,6 +1158,8 @@ pub async fn execute_tool(
     tool_name: &str,
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    // Invalid explicit positions are refused before symbol lookup, routing or any write.
+    validate_position_arguments(tool_name, &args)?;
     // Notes left by an earlier call are not this answer's (#391).
     let _ = crate::session::take_indexing_notes(workspace_root);
     if tool_name == "code_references"
@@ -1107,6 +1193,8 @@ pub async fn execute_tool(
     } else {
         args
     };
+    // Resolved symbol positions obey the same contract, including a supplied selection end.
+    validate_position_arguments(tool_name, &args)?;
     // A path in a nested project of another language goes to a node that serves it (#125).
     let remote = crate::cluster::route_for_path(
         remote,
@@ -4915,26 +5003,13 @@ async fn handle_rename(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let coordinate = |name: &str| -> Result<u32> {
-        let value = args
-            .get(name)
-            .and_then(|v| v.as_u64())
-            .with_context(|| format!("Missing or invalid '{name}' argument"))?;
-        let value = u32::try_from(value).with_context(|| {
-            format!(
-                "'{name}' must be a one-based coordinate in 1..={}",
-                u32::MAX
-            )
-        })?;
-        anyhow::ensure!(
-            value > 0,
-            "'{name}' must be a one-based coordinate in 1..={}",
-            u32::MAX
-        );
-        Ok(value)
-    };
-    let line = coordinate("line")?;
-    let character = coordinate("character")?;
+    let line =
+        checked_position_argument(args.get("line").context("Missing 'line' argument")?, "line")?;
+    let character = checked_position_argument(
+        args.get("character")
+            .context("Missing 'character' argument")?,
+        "character",
+    )?;
     let new_name = args
         .get("new_name")
         .and_then(|v| v.as_str())

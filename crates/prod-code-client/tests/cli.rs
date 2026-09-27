@@ -3167,3 +3167,37 @@ async fn status_probes_the_node_the_checkout_is_placed_on() {
         stderr_of(&out)
     );
 }
+
+#[tokio::test]
+async fn cli_assist_refuses_invalid_positions_and_backwards_selections() {
+    let ws = make_workspace();
+    let path = ws.path("src/lib.rs");
+    let before = std::fs::read_to_string(&path).unwrap();
+    let old = before.clone();
+    let server_path = path.clone();
+    let gw = MockGateway::start(move |method, _| match method {
+        "prodCode/applyAssist" => {
+            answers::whole_file(&server_path, &old, "pub fn unexpectedly_changed() {}\n")
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    for args in [
+        vec!["assist", "src/lib.rs", "0", "8", "inline_fn"],
+        vec!["assist", "src/lib.rs", "5", "0", "inline_fn"],
+        vec!["assist", "src/lib.rs", "5", "8", "inline_fn", "--to", "0:8"],
+        vec!["assist", "src/lib.rs", "5", "8", "inline_fn", "--to", "5:0"],
+        vec!["assist", "src/lib.rs", "5", "8", "inline_fn", "--to", "4:8"],
+        vec!["assist", "src/lib.rs", "5", "8", "inline_fn", "--to", "5:7"],
+    ] {
+        let output = run_cli(&ws, gw.addr, &args).await;
+        assert!(!output.status.success(), "{args:?}: {}", stdout_of(&output));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("one-based coordinate") || error.contains("selection end"),
+            "{args:?}: {error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    }
+    assert_eq!(gw.calls.load(Ordering::SeqCst), 0);
+}
