@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -400,6 +400,36 @@ struct PendingRequest {
     frame_written: bool,
 }
 
+struct FrameWrite {
+    child: Weak<StdMutex<Child>>,
+    pending: Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    is_alive: Weak<AtomicBool>,
+    started: bool,
+    complete: bool,
+}
+
+impl FrameWrite {
+    fn retire(&self) {
+        if let Some(is_alive) = self.is_alive.upgrade() {
+            is_alive.store(false, Ordering::Release);
+        }
+        if let Some(child) = self.child.upgrade() {
+            let _ = lock_unpoisoned(&child).start_kill();
+        }
+        if let Some(pending) = self.pending.upgrade() {
+            lock_unpoisoned(&pending).clear();
+        }
+    }
+}
+
+impl Drop for FrameWrite {
+    fn drop(&mut self) {
+        if self.started && !self.complete {
+            self.retire();
+        }
+    }
+}
+
 impl PendingRequest {
     fn retire_if_partial(&self) {
         if self.frame_written {
@@ -445,6 +475,20 @@ struct OwnedText {
 enum DocumentOwner {
     Direct,
     Session(u64),
+}
+
+struct DocumentMutation<'a> {
+    engine: &'a GenericLspEngine,
+    changed: bool,
+    committed: bool,
+}
+
+impl Drop for DocumentMutation<'_> {
+    fn drop(&mut self) {
+        if self.changed && !self.committed {
+            self.engine.invalidate_document_generation();
+        }
+    }
 }
 
 impl GenericLspEngine {
@@ -507,9 +551,13 @@ impl GenericLspEngine {
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
 
+        let child = Arc::new(StdMutex::new(child));
+        let child_writer = Arc::downgrade(&child);
+        let pending_writer = Arc::downgrade(&pending_requests);
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_writer = stdin_arc.clone();
         let config_root = workspace_root.to_path_buf();
+        let auto_reply_timeout = config.request_timeout;
 
         let is_alive = Arc::new(AtomicBool::new(true));
         let is_alive_clone = is_alive.clone();
@@ -525,7 +573,7 @@ impl GenericLspEngine {
             let mut reader = BufReader::new(stdout);
             let mut header_line = String::new();
 
-            loop {
+            'reader: loop {
                 header_line.clear();
                 match reader.read_line(&mut header_line).await {
                     Ok(0) => break, // Process exited / EOF
@@ -571,17 +619,14 @@ impl GenericLspEngine {
                                         // Auto-respond to server requests
                                         let method = val.get("method").and_then(|m| m.as_str());
                                         if let Some(m) = method {
-                                            match m {
+                                            let resp = match m {
                                                 "window/workDoneProgress/create"
                                                 | "client/registerCapability" => {
-                                                    let resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": null
-                                                    });
-                                                    let _ =
-                                                        Self::write_frame_raw(&stdin_writer, &resp)
-                                                            .await;
+                                                    })
                                                 }
                                                 "workspace/configuration" => {
                                                     // One empty settings object per requested
@@ -612,14 +657,11 @@ impl GenericLspEngine {
                                                             )
                                                         })
                                                         .collect();
-                                                    let resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": values
-                                                    });
-                                                    let _ =
-                                                        Self::write_frame_raw(&stdin_writer, &resp)
-                                                            .await;
+                                                    })
                                                 }
                                                 "workspace/applyEdit" => {
                                                     // A command's edit: hand it to whoever is
@@ -634,24 +676,18 @@ impl GenericLspEngine {
                                                     {
                                                         let _ = tx.send(edit);
                                                     }
-                                                    let resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": { "applied": true }
-                                                    });
-                                                    let _ =
-                                                        Self::write_frame_raw(&stdin_writer, &resp)
-                                                            .await;
+                                                    })
                                                 }
                                                 "workspace/workspaceFolders" => {
-                                                    let resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": null
-                                                    });
-                                                    let _ =
-                                                        Self::write_frame_raw(&stdin_writer, &resp)
-                                                            .await;
+                                                    })
                                                 }
                                                 other => {
                                                     // Unknown server request: refuse it instead of
@@ -660,15 +696,39 @@ impl GenericLspEngine {
                                                         method = other,
                                                         "unsupported server request refused"
                                                     );
-                                                    let resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "error": { "code": -32601, "message": format!("{other} is not supported by prod-code") }
-                                                    });
-                                                    let _ =
-                                                        Self::write_frame_raw(&stdin_writer, &resp)
-                                                            .await;
+                                                    })
                                                 }
+                                            };
+                                            if let Err(error) = Self::write_frame_until(
+                                                &stdin_writer,
+                                                &resp,
+                                                tokio::time::Instant::now() + auto_reply_timeout,
+                                                m,
+                                                &child_writer,
+                                                &pending_writer,
+                                                &Arc::downgrade(&is_alive_clone),
+                                            )
+                                            .await
+                                            {
+                                                tracing::warn!(
+                                                    method = m,
+                                                    error = %error,
+                                                    "failed to answer language-server request; retiring process"
+                                                );
+                                                let mut retirement = FrameWrite {
+                                                    child: child_writer.clone(),
+                                                    pending: pending_writer.clone(),
+                                                    is_alive: Arc::downgrade(&is_alive_clone),
+                                                    started: true,
+                                                    complete: false,
+                                                };
+                                                retirement.retire();
+                                                retirement.complete = true;
+                                                break 'reader;
                                             }
                                         }
                                     }
@@ -727,6 +787,19 @@ impl GenericLspEngine {
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the request timeout (#355).
             lock_unpoisoned(&pending_clone).clear();
+            if let Some(child) = child_writer.upgrade() {
+                let _ = lock_unpoisoned(&child).start_kill();
+                for _ in 0..200 {
+                    let status = {
+                        let mut child = lock_unpoisoned(&child);
+                        child.try_wait()
+                    };
+                    match status {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => tokio::time::sleep(Duration::from_millis(5)).await,
+                    }
+                }
+            }
             tracing::info!("Generic LSP reader loop finished");
         });
 
@@ -748,7 +821,7 @@ impl GenericLspEngine {
             readiness,
             documents: Mutex::new(DocumentLifecycle::default()),
             accepts_documents: AtomicBool::new(true),
-            _child: Arc::new(StdMutex::new(child)),
+            _child: child,
         };
 
         // Initialize LSP server
@@ -758,15 +831,43 @@ impl GenericLspEngine {
     }
 
     /// Helper to write an LSP Content-Length frame.
-    async fn write_frame_raw(
+    async fn write_frame_until(
         writer: &Arc<Mutex<ChildStdin>>,
         val: &serde_json::Value,
+        deadline: tokio::time::Instant,
+        method: &str,
+        child: &Weak<StdMutex<Child>>,
+        pending: &Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+        is_alive: &Weak<AtomicBool>,
     ) -> Result<()> {
         let body = val.to_string();
         let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-        let mut sin = writer.lock().await;
-        sin.write_all(frame.as_bytes()).await?;
-        sin.flush().await?;
+        let mut sin = tokio::time::timeout_at(deadline, writer.lock())
+            .await
+            .with_context(|| format!("Timeout waiting to send LSP message '{method}'"))?;
+        if !is_alive
+            .upgrade()
+            .is_some_and(|alive| alive.load(Ordering::Acquire))
+        {
+            anyhow::bail!("Language server process has exited before message '{method}'");
+        }
+        // Declared after `sin`, so cancellation retires the process before unlocking stdin.
+        let mut frame_write = FrameWrite {
+            child: child.clone(),
+            pending: pending.clone(),
+            is_alive: is_alive.clone(),
+            started: true,
+            complete: false,
+        };
+        tokio::time::timeout_at(deadline, sin.write_all(frame.as_bytes()))
+            .await
+            .with_context(|| format!("Timeout writing LSP message '{method}'"))?
+            .with_context(|| format!("Failed to write LSP message '{method}'"))?;
+        tokio::time::timeout_at(deadline, sin.flush())
+            .await
+            .with_context(|| format!("Timeout flushing LSP message '{method}'"))?
+            .with_context(|| format!("Failed to flush LSP message '{method}'"))?;
+        frame_write.complete = true;
         Ok(())
     }
 
@@ -1156,19 +1257,20 @@ impl GenericLspEngine {
 
     /// Restore or close every document a lost gateway session owned.
     pub async fn close_session(&self, session_id: u64) -> Result<()> {
-        let uris = self
-            .documents
-            .lock()
+        let deadline = tokio::time::Instant::now() + self.config.request_timeout;
+        let uris = tokio::time::timeout_at(deadline, self.documents.lock())
             .await
+            .context("Timeout waiting to close language-server session")?
             .sessions
             .get(&session_id)
             .cloned()
             .unwrap_or_default();
         for uri in uris {
-            self.send_notification_for(
+            self.send_notification_for_until(
                 DocumentOwner::Session(session_id),
                 "textDocument/didClose",
                 serde_json::json!({ "textDocument": { "uri": uri } }),
+                deadline,
             )
             .await?;
         }
@@ -1179,23 +1281,66 @@ impl GenericLspEngine {
         &self,
         owner: DocumentOwner,
         method: &str,
-        mut params: serde_json::Value,
+        params: serde_json::Value,
     ) -> Result<()> {
-        // The lifecycle and the frame are serialized together. A disconnect can therefore
-        // never clean up ownership before its last open/change has recorded that ownership.
-        let mut documents = self.documents.lock().await;
-        if method == "workspace/didChangeWatchedFiles" {
-            self.refresh_retained_documents(&mut documents, &params)
-                .await?;
-            return self.write_notification(method, params).await;
+        let deadline = tokio::time::Instant::now() + self.config.request_timeout;
+        self.send_notification_for_until(owner, method, params, deadline)
+            .await
+    }
+
+    async fn send_notification_for_until(
+        &self,
+        owner: DocumentOwner,
+        method: &str,
+        mut params: serde_json::Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("Language server process has exited before notification '{method}'");
         }
-        let Some(uri) = params
+        let uri = params
             .pointer("/textDocument/uri")
             .and_then(|u| u.as_str())
-            .map(str::to_string)
-        else {
-            return self.write_notification(method, params).await;
+            .map(str::to_string);
+        if method != "workspace/didChangeWatchedFiles" && uri.is_none() {
+            return self
+                .write_notification_until(method, params, deadline)
+                .await;
+        }
+        // The lifecycle and the frame are serialized together. A disconnect can therefore
+        // never clean up ownership before its last open/change has recorded that ownership.
+        let mut documents = tokio::time::timeout_at(deadline, self.documents.lock())
+            .await
+            .with_context(|| {
+                format!("Timeout waiting to update document state for notification '{method}'")
+            })?;
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("Language server process has exited before notification '{method}'");
+        }
+        let mut mutation = DocumentMutation {
+            engine: self,
+            changed: false,
+            committed: false,
         };
+        if method == "workspace/didChangeWatchedFiles" {
+            let result = async {
+                self.refresh_retained_documents(
+                    &mut documents,
+                    &params,
+                    deadline,
+                    &mut mutation.changed,
+                )
+                .await?;
+                self.write_notification_until(method, params, deadline)
+                    .await
+            }
+            .await;
+            if result.is_ok() {
+                mutation.committed = true;
+            }
+            return result;
+        }
+        let uri = uri.expect("document notification URI checked above");
         let mut sent_method = method;
         match method {
             "textDocument/didOpen" => {
@@ -1209,9 +1354,15 @@ impl GenericLspEngine {
                     .and_then(|text| text.as_str())
                     .context("textDocument/didOpen has no text")?
                     .to_string();
-                let order = next_order(&mut documents)?;
-                if let Some(document) = documents.documents.get_mut(&uri) {
-                    let version = next_version(document.version, &uri)?;
+                if let Some(current_version) = documents
+                    .documents
+                    .get(&uri)
+                    .map(|document| document.version)
+                {
+                    let version = next_version(current_version, &uri)?;
+                    let order = next_order(&mut documents)?;
+                    mutation.changed = true;
+                    let document = documents.documents.get_mut(&uri).expect("document exists");
                     document.version = version;
                     document.owners.insert(
                         owner,
@@ -1227,6 +1378,8 @@ impl GenericLspEngine {
                         .pointer("/textDocument/version")
                         .and_then(|version| version.as_i64())
                         .unwrap_or(1);
+                    let order = next_order(&mut documents)?;
+                    mutation.changed = true;
                     documents.documents.insert(
                         uri.clone(),
                         DocumentState {
@@ -1246,9 +1399,15 @@ impl GenericLspEngine {
                 // Ranges belong to this owner's text, even while another owner's overlay is
                 // visible. Compose every change before committing state or sending a frame.
                 let text = apply_content_changes(base, &params)?;
-                let order = next_order(&mut documents)?;
-                if let Some(document) = documents.documents.get_mut(&uri) {
-                    let version = next_version(document.version, &uri)?;
+                if let Some(current_version) = documents
+                    .documents
+                    .get(&uri)
+                    .map(|document| document.version)
+                {
+                    let version = next_version(current_version, &uri)?;
+                    let order = next_order(&mut documents)?;
+                    mutation.changed = true;
+                    let document = documents.documents.get_mut(&uri).expect("document exists");
                     document.version = version;
                     document.owners.insert(
                         owner,
@@ -1263,6 +1422,8 @@ impl GenericLspEngine {
                         .pointer("/textDocument/version")
                         .and_then(|version| version.as_i64())
                         .unwrap_or(1);
+                    let order = next_order(&mut documents)?;
+                    mutation.changed = true;
                     documents.documents.insert(
                         uri.clone(),
                         DocumentState {
@@ -1282,7 +1443,9 @@ impl GenericLspEngine {
             }
             "textDocument/didClose" => {
                 let Some(document) = documents.documents.get(&uri) else {
-                    return self.write_notification(method, params).await;
+                    return self
+                        .write_notification_until(method, params, deadline)
+                        .await;
                 };
                 let was_visible = visible_owner(document) == Some(owner);
                 if !document.owners.contains_key(&owner) {
@@ -1309,6 +1472,7 @@ impl GenericLspEngine {
                 } else {
                     None
                 };
+                mutation.changed = true;
                 documents
                     .documents
                     .get_mut(&uri)
@@ -1317,6 +1481,7 @@ impl GenericLspEngine {
                     .remove(&owner);
                 forget_session_owner(&mut documents, owner, &uri);
                 if !was_visible {
+                    mutation.committed = true;
                     return Ok(());
                 }
                 if let Some(text) = replacement {
@@ -1339,16 +1504,27 @@ impl GenericLspEngine {
                     }
                 }
             }
-            _ => return self.write_notification(method, params).await,
+            _ => {
+                return self
+                    .write_notification_until(method, params, deadline)
+                    .await;
+            }
         }
-        self.record_and_write_notification(sent_method, params)
-            .await
+        let result = self
+            .record_and_write_notification_until(sent_method, params, deadline)
+            .await;
+        if result.is_ok() {
+            mutation.committed = true;
+        }
+        result
     }
 
     async fn refresh_retained_documents(
         &self,
         documents: &mut DocumentLifecycle,
         params: &serde_json::Value,
+        deadline: tokio::time::Instant,
+        mutated: &mut bool,
     ) -> Result<()> {
         let changes: Vec<(String, u64)> = params
             .get("changes")
@@ -1370,19 +1546,23 @@ impl GenericLspEngine {
                 continue;
             }
             if kind == 3 {
+                *mutated = true;
                 documents.documents.remove(&uri);
                 self.accepts_documents.store(false, Ordering::Relaxed);
-                self.record_and_write_notification(
+                self.record_and_write_notification_until(
                     "textDocument/didClose",
                     serde_json::json!({ "textDocument": { "uri": uri } }),
+                    deadline,
                 )
                 .await?;
             } else if let Some(text) = self.disk_text(&uri) {
                 let version = next_version(document.version, &uri)?;
+                *mutated = true;
                 document.version = version;
-                self.record_and_write_notification(
+                self.record_and_write_notification_until(
                     "textDocument/didChange",
                     changed(&uri, version, text),
+                    deadline,
                 )
                 .await?;
             }
@@ -1415,47 +1595,88 @@ impl GenericLspEngine {
         self.accepts_documents.load(Ordering::Relaxed)
     }
 
-    async fn record_and_write_notification(
+    async fn record_and_write_notification_until(
         &self,
         method: &str,
         params: serde_json::Value,
+        deadline: tokio::time::Instant,
     ) -> Result<()> {
         // Recorded before the text is on its way, so no publication for it can come first.
         if let Some(uri) = params.pointer("/textDocument/uri").and_then(|u| u.as_str()) {
             // A publication from before an open or a close describes a text that is gone:
             // another session's, which numbered its versions from 1 as this one does.
             if matches!(method, "textDocument/didOpen" | "textDocument/didClose") {
-                self.diagnostics.write().await.remove(uri);
+                tokio::time::timeout_at(deadline, self.diagnostics.write())
+                    .await
+                    .with_context(|| {
+                        format!("Timeout recording diagnostics for notification '{method}'")
+                    })?
+                    .remove(uri);
             }
             match method {
                 "textDocument/didOpen" | "textDocument/didChange" => {
                     let version = params
                         .pointer("/textDocument/version")
                         .and_then(|v| v.as_i64());
-                    self.sent.write().await.insert(
-                        uri.to_string(),
-                        Sent {
-                            version,
-                            at: Instant::now(),
-                        },
-                    );
+                    tokio::time::timeout_at(deadline, self.sent.write())
+                        .await
+                        .with_context(|| {
+                            format!("Timeout recording sent text for notification '{method}'")
+                        })?
+                        .insert(
+                            uri.to_string(),
+                            Sent {
+                                version,
+                                at: Instant::now(),
+                            },
+                        );
                 }
                 "textDocument/didClose" => {
-                    self.sent.write().await.remove(uri);
+                    tokio::time::timeout_at(deadline, self.sent.write())
+                        .await
+                        .with_context(|| {
+                            format!("Timeout recording closed text for notification '{method}'")
+                        })?
+                        .remove(uri);
                 }
                 _ => {}
             }
         }
-        self.write_notification(method, params).await
+        self.write_notification_until(method, params, deadline)
+            .await
     }
 
-    async fn write_notification(&self, method: &str, params: serde_json::Value) -> Result<()> {
+    async fn write_notification_until(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<()> {
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("Language server process has exited before notification '{method}'");
+        }
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params
         });
-        Self::write_frame_raw(&self.stdin, &payload).await
+        Self::write_frame_until(
+            &self.stdin,
+            &payload,
+            deadline,
+            method,
+            &Arc::downgrade(&self._child),
+            &Arc::downgrade(&self.pending_requests),
+            &Arc::downgrade(&self.is_alive),
+        )
+        .await
+    }
+
+    fn invalidate_document_generation(&self) {
+        self.accepts_documents.store(false, Ordering::Release);
+        self.is_alive.store(false, Ordering::Release);
+        let _ = lock_unpoisoned(&self._child).start_kill();
+        lock_unpoisoned(&self.pending_requests).clear();
     }
 
     /// Check if the process is currently running and healthy.
@@ -2026,6 +2247,78 @@ while True:
                 .any(|method| method == "prodCode/queuedAfterRetirement"),
             "{methods}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notification_expiring_before_document_lock_does_not_mutate_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("notification-server.py");
+        std::fs::write(
+            &script,
+            r#"import json, sys
+def read():
+    length = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":")[1])
+    return json.loads(sys.stdin.buffer.read(length))
+def send(message):
+    body = json.dumps(message).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+    sys.stdout.buffer.flush()
+while True:
+    message = read()
+    if message is None:
+        break
+    if message.get("method") == "initialize":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
+"#,
+        )
+        .expect("fake server");
+        let config = GenericLspConfig {
+            command: "python3".to_string(),
+            args: vec![script.to_string_lossy().into_owned()],
+            request_timeout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let engine = Arc::new(GenericLspEngine::spawn(dir.path(), config).await.unwrap());
+        let documents = engine.documents.lock().await;
+        let uri = "file:///queued.py";
+        let queued = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_notification(
+                        "textDocument/didOpen",
+                        serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"queued\n"}}),
+                    )
+                    .await
+            })
+        };
+        let error = queued
+            .await
+            .expect("notification task")
+            .expect_err("the document lock consumes the notification budget");
+        assert!(format!("{error:#}").contains("textDocument/didOpen"));
+        assert!(!documents.documents.contains_key(uri));
+        assert!(!engine.sent.read().await.contains_key(uri));
+        assert!(engine.accepts_documents());
+        assert!(engine.is_alive());
+        drop(documents);
+
+        engine
+            .send_notification(
+                "textDocument/didOpen",
+                serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"sent\n"}}),
+            )
+            .await
+            .expect("a later notification remains healthy");
     }
 
     #[test]

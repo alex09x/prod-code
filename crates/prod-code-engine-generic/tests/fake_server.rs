@@ -21,6 +21,9 @@ const SERVER: &str = r#"
 import json, os, sys, threading, time
 
 LOCK = threading.Lock()
+if os.environ.get("FAKE_PID_FILE"):
+    with open(os.environ["FAKE_PID_FILE"], "w") as pid_file:
+        pid_file.write(str(os.getpid()))
 
 def send(message):
     body = json.dumps(message).encode()
@@ -54,6 +57,9 @@ def read():
             length = int(line.split(b":")[1])
     if not length:
         return None
+    if os.environ.get("FAKE_READING_FILE") and length > 1024 * 1024:
+        with open(os.environ["FAKE_READING_FILE"], "w") as reading_file:
+            reading_file.write(str(length))
     body = b""
     while len(body) < length:
         chunk = sys.stdin.buffer.read(min(length - len(body), 4096))
@@ -79,6 +85,9 @@ while True:
         break
     method = message.get("method", "")
     REQUESTS.append(method)
+    if os.environ.get("FAKE_SEEN_FILE"):
+        with open(os.environ["FAKE_SEEN_FILE"], "a") as seen_file:
+            seen_file.write(method + "\n")
     if method == "textDocument/didOpen":
         LINES[message["params"]["textDocument"]["uri"]] = len(message["params"]["textDocument"]["text"].splitlines())
     if method == "initialize":
@@ -87,6 +96,9 @@ while True:
         }})
     elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
         os.close(0)
+        threading.Event().wait()
+    elif method == "initialized" and os.environ.get("FAKE_HUGE_AUTO_REQUEST"):
+        send({"jsonrpc": "2.0", "id": 7001, "method": "x" * (8 * 1024 * 1024), "params": {}})
         threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
         # Keep the process alive but abandon stdin, as a wedged language server can.
@@ -351,6 +363,31 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf) {
     std::fs::write(&script, SERVER).expect("write the server");
     std::fs::write(dir.path().join("a.txt"), "hello\n").expect("a file to open");
     (dir, script)
+}
+
+#[cfg(unix)]
+async fn assert_process_exits(pid_file: &Path) {
+    let pid = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                break pid;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the fake server records its pid");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the owned fake server exits");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -777,18 +814,29 @@ async fn a_request_whose_full_frame_cannot_be_written_obeys_its_deadline() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_request_waiting_for_the_writer_times_out_without_being_sent_later() {
+async fn notification_contention_retires_the_partial_stream_without_a_delayed_request() {
     let (dir, script) = workspace();
     let mut settings = config(&script);
     settings
         .env
-        .insert("FAKE_SLOW_READ".to_string(), "0.003".to_string());
-    settings.request_timeout = Duration::from_millis(100);
+        .insert("FAKE_SLOW_READ".to_string(), "0.01".to_string());
+    settings.request_timeout = Duration::from_secs(2);
+    let seen_file = dir.path().join("seen");
+    let reading_file = dir.path().join("reading");
+    settings.env.insert(
+        "FAKE_SEEN_FILE".to_string(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    settings.env.insert(
+        "FAKE_READING_FILE".to_string(),
+        reading_file.to_string_lossy().into_owned(),
+    );
     let engine = std::sync::Arc::new(
         GenericLspEngine::spawn(dir.path(), settings)
             .await
             .expect("the fake server starts"),
     );
+    let _ = std::fs::remove_file(&reading_file);
 
     let writing = {
         let engine = std::sync::Arc::clone(&engine);
@@ -796,36 +844,40 @@ async fn a_request_waiting_for_the_writer_times_out_without_being_sent_later() {
             engine
                 .send_notification(
                     "prodCode/largeNotification",
-                    serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
+                    serde_json::json!({ "payload": "x".repeat(32 * 1024 * 1024) }),
                 )
                 .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    let error = engine
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !reading_file.exists() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the large notification owns the writer");
+    let request_error = engine
         .send_request("prodCode/queued", serde_json::json!({}))
         .await
-        .expect_err("the writer stays occupied beyond the request deadline");
-    let text = format!("{error:#}");
-    assert!(text.contains("prodCode/queued"), "{text}");
-    assert!(text.to_lowercase().contains("timeout"), "{text}");
-    writing
+        .expect_err("the partial notification retires the server");
+    let notification_error = writing
         .await
         .expect("the notification task")
-        .expect("the complete notification is written");
-
-    let seen = engine
-        .send_request("prodCode/seen", serde_json::json!({}))
-        .await
-        .expect("the connection remains synchronized");
+        .expect_err("the notification reaches its bounded deadline");
+    let text = format!("{notification_error:#}");
+    assert!(text.contains("prodCode/largeNotification"), "{text}");
+    assert!(text.to_lowercase().contains("timeout"), "{text}");
     assert!(
-        !seen["result"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method == "prodCode/queued"),
+        format!("{request_error:#}").contains("prodCode/queued"),
+        "{request_error:#}"
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let seen = std::fs::read_to_string(seen_file).expect("request log");
+    assert!(
+        !seen.lines().any(|method| method == "prodCode/queued"),
         "the expired request was written after its caller returned: {seen}"
     );
+    assert!(!engine.is_alive());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2209,6 +2261,7 @@ async fn primary_review_invalid_incremental_ranges_preserve_the_whole_owner_stat
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn notification_deadline_covers_a_blocked_frame() {
     let (dir, script) = workspace();
@@ -2217,6 +2270,11 @@ async fn notification_deadline_covers_a_blocked_frame() {
         .env
         .insert("FAKE_STOP_READING".to_string(), "1".to_string());
     settings.request_timeout = Duration::from_millis(200);
+    let pid_file = dir.path().join("pid");
+    settings.env.insert(
+        "FAKE_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    );
     let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
     let outcome = tokio::time::timeout(
         Duration::from_secs(2),
@@ -2232,4 +2290,111 @@ async fn notification_deadline_covers_a_blocked_frame() {
         !engine.is_alive(),
         "a partial document frame cannot be reused"
     );
+    assert!(
+        !engine.accepts_documents(),
+        "state changed before the failed write invalidates the generation"
+    );
+    assert_process_exits(&pid_file).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_notification_retires_its_owned_process() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_STOP_READING".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_secs(10);
+    let pid_file = dir.path().join("pid");
+    settings.env.insert(
+        "FAKE_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = std::sync::Arc::new(GenericLspEngine::spawn(dir.path(), settings).await.unwrap());
+    let writing = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_notification(
+                    "prodCode/cancelledNotification",
+                    serde_json::json!({"payload": "x".repeat(8 * 1024 * 1024)}),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    writing.abort();
+    assert!(writing.await.expect_err("cancelled").is_cancelled());
+    assert!(!engine.is_alive());
+    assert_process_exits(&pid_file).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_automatic_response_retires_the_server() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_HUGE_AUTO_REQUEST".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_millis(200);
+    let pid_file = dir.path().join("pid");
+    settings.env.insert(
+        "FAKE_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.is_alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the automatic response has a bounded write");
+    assert_process_exits(&pid_file).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_complete_notification_keeps_document_restore_healthy() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("healthy.py");
+    std::fs::write(&file, "disk\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine
+        .send_session_notification(
+            7,
+            "textDocument/didOpen",
+            serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"overlay\n"}}),
+        )
+        .await
+        .unwrap();
+    engine.close_session(7).await.unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "disk\n"
+    );
+    assert!(engine.is_alive());
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_engine_kills_a_reader_owned_server() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    let pid_file = dir.path().join("pid");
+    settings.env.insert(
+        "FAKE_PID_FILE".to_string(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    drop(engine);
+    assert_process_exits(&pid_file).await;
 }
