@@ -639,6 +639,17 @@ async fn add_parameters(
 
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    if receiver.is_some() {
+        receiver_interface_evidence(remote, root, file, &text, &decl)
+            .await
+            .map_err(|why| {
+                refusal(format!(
+                    "adding parameters to `{}` is refused because its interface implementations \\
+                     cannot be proven absent: {why:#}",
+                    decl.name
+                ))
+            })?;
+    }
     let (originals, calls) = function_reference_evidence(
         remote,
         root,
@@ -1124,6 +1135,46 @@ fn parameter_piece_has_type(piece: &str) -> bool {
         && !keyword
         && piece[word_end..].starts_with(|c: char| c.is_whitespace())
         && !rest.is_empty()
+}
+
+/// A receiver method may satisfy an imported interface even when no source interface declaration
+/// or interface-typed call names it. gopls reports those relations from the concrete method, so
+/// an empty result is the proof that extending this method does not alter an interface contract.
+async fn receiver_interface_evidence(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    declaration_text: &str,
+    decl: &Decl,
+) -> Result<()> {
+    let (line, character) = line_col_utf16(declaration_text, decl.name_at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?
+        .to_string();
+    let answer = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/implementation",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+        }),
+    )
+    .await
+    .context("gopls could not list the method's interface implementations")?;
+    let implementations = crate::refactor::lsp_locations(&answer, "interface implementations")?;
+    anyhow::ensure!(
+        implementations.is_empty(),
+        "`{}` has interface implementation evidence at {}; interface dispatch cannot be reconciled",
+        decl.name,
+        implementations
+            .iter()
+            .map(|(path, line, column)| format!("{}:{line}:{column}", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
 }
 
 /// gopls's complete reference answer for the function. The declaration must occur exactly once;
