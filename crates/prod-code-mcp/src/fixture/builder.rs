@@ -196,12 +196,19 @@ pub async fn preview(
         serde_json::json!({ "textDocument": { "uri": uri } }),
     )
     .await?;
-    let node = outline_node(&outline, request.symbol, hit.line).with_context(|| {
-        format!(
-            "the analyzer's outline of {file} has no declaration of `{}` at line {}",
-            request.symbol, hit.line
-        )
-    })?;
+    let node = outline_node(&outline, request.symbol, hit.line)
+        .with_context(|| {
+            format!(
+                "the analyzer's outline of {file} is malformed; refusing rather than guessing where `{}` is and which fields it has",
+                request.symbol
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "the analyzer's outline of {file} has no declaration of `{}` at line {}",
+                request.symbol, hit.line
+            )
+        })?;
     let text = std::fs::read_to_string(&hit.path)
         .with_context(|| format!("cannot read {}", hit.path.display()))?;
     let mut plan = plan(
@@ -269,38 +276,42 @@ struct OutlineNode {
     fields: Option<Vec<String>>,
 }
 
-/// The smallest struct-like node called `name` whose lines hold `line` (1-based).
-fn outline_node(symbols: &serde_json::Value, name: &str, line: u32) -> Option<OutlineNode> {
-    fn walk(nodes: &[serde_json::Value], name: &str, line: u32, best: &mut Option<OutlineNode>) {
+/// The smallest struct-like node called `name` whose lines hold `line` (1-based); `None` when
+/// the outline has none. An outline that cannot be read where it speaks of `name` (a range that
+/// is not one, a field without a name, members that are not a list) is an error: dropping that
+/// part would pass a partial or misplaced struct for the declaration.
+fn outline_node(symbols: &serde_json::Value, name: &str, line: u32) -> Result<Option<OutlineNode>> {
+    fn walk(
+        nodes: &[serde_json::Value],
+        name: &str,
+        line: u32,
+        best: &mut Option<OutlineNode>,
+    ) -> Result<()> {
         for node in nodes {
-            let range = node
-                .get("range")
-                .or_else(|| node.pointer("/location/range"));
             let named = node
                 .get("name")
                 .and_then(|n| n.as_str())
                 .is_some_and(|n| bare(n) == bare(name));
             // Struct, enum and class: a union is listed as a struct.
             let kind = node.get("kind").and_then(|k| k.as_u64());
-            if named
-                && matches!(kind, Some(5) | Some(10) | Some(23))
-                && let Some(range) = range
-                && let (Some(s), Some(e)) = (
-                    range.pointer("/start/line").and_then(|l| l.as_u64()),
-                    range.pointer("/end/line").and_then(|l| l.as_u64()),
-                )
-            {
-                let (s, e) = (s as u32 + 1, e as u32 + 1);
+            if named && matches!(kind, Some(5) | Some(10) | Some(23)) {
+                let (s, e) = symbol_lines(node).with_context(|| {
+                    format!("it gives `{name}` a range that is not one: {}", shown(node))
+                })?;
                 if s <= line && line <= e && best.as_ref().is_none_or(|b| e - s < b.end - b.start) {
-                    let fields: Vec<String> = node
-                        .get("children")
-                        .and_then(|c| c.as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter(|c| c.get("kind").and_then(|k| k.as_u64()) == Some(8))
-                        .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
-                        .map(str::to_string)
-                        .collect();
+                    let mut fields = Vec::new();
+                    for child in children(node)? {
+                        match child.get("kind").and_then(|k| k.as_u64()) {
+                            Some(8) => match child.get("name").and_then(|n| n.as_str()) {
+                                Some(field) => fields.push(field.to_string()),
+                                None => {
+                                    bail!("it lists a field of `{name}` without a name: {child}")
+                                }
+                            },
+                            Some(_) => {}
+                            None => bail!("it lists a member of `{name}` without a kind: {child}"),
+                        }
+                    }
                     *best = Some(OutlineNode {
                         start: s,
                         end: e,
@@ -308,10 +319,9 @@ fn outline_node(symbols: &serde_json::Value, name: &str, line: u32) -> Option<Ou
                     });
                 }
             }
-            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-                walk(children, name, line, best);
-            }
+            walk(children(node)?, name, line, best)?;
         }
+        Ok(())
     }
     /// Fields listed flat, as the Rust engine answers: a `Field` whose container path ends in
     /// the struct's name and whose line is inside the struct's.
@@ -320,41 +330,86 @@ fn outline_node(symbols: &serde_json::Value, name: &str, line: u32) -> Option<Ou
         owner: &str,
         lines: (u32, u32),
         out: &mut Vec<String>,
-    ) {
+    ) -> Result<()> {
         for node in nodes {
-            let start = node
-                .get("range")
-                .or_else(|| node.pointer("/location/range"))
-                .and_then(|r| r.pointer("/start/line"))
-                .and_then(|l| l.as_u64())
-                .map(|l| l as u32 + 1);
             let contained = node
                 .get("containerName")
                 .and_then(|c| c.as_str())
                 .and_then(|c| c.rsplit(" > ").next())
                 .is_some_and(|c| bare(c.trim()) == bare(owner));
-            if node.get("kind").and_then(|k| k.as_u64()) == Some(8)
-                && contained
-                && start.is_some_and(|s| lines.0 <= s && s <= lines.1)
-                && let Some(field) = node.get("name").and_then(|n| n.as_str())
-            {
-                out.push(field.to_string());
+            if node.get("kind").and_then(|k| k.as_u64()) == Some(8) && contained {
+                let field = node.get("name").and_then(|n| n.as_str()).with_context(|| {
+                    format!("it lists a field of `{owner}` without a name: {node}")
+                })?;
+                let (start, _) = symbol_lines(node).with_context(|| {
+                    format!(
+                        "it gives field `{field}` of `{owner}` a range that is not one: {}",
+                        shown(node)
+                    )
+                })?;
+                if lines.0 <= start && start <= lines.1 {
+                    out.push(field.to_string());
+                }
             }
-            if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
-                flat_fields(children, owner, lines, out);
-            }
+            flat_fields(children(node)?, owner, lines, out)?;
+        }
+        Ok(())
+    }
+    /// A node's `DocumentSymbol` or `SymbolInformation` range, as 1-based lines.
+    fn symbol_lines(node: &serde_json::Value) -> Option<(u32, u32)> {
+        node.get("range")
+            .or_else(|| node.pointer("/location/range"))
+            .and_then(range_lines)
+    }
+    /// The range a node was given, for an error.
+    fn shown(node: &serde_json::Value) -> String {
+        node.get("range")
+            .or_else(|| node.pointer("/location/range"))
+            .map_or_else(|| "none".to_string(), |r| r.to_string())
+    }
+    /// A node's members: none when it has no `children` (or `null`), an error when they are
+    /// not a list.
+    fn children(node: &serde_json::Value) -> Result<&[serde_json::Value]> {
+        match node.get("children") {
+            None | Some(serde_json::Value::Null) => Ok(&[][..]),
+            Some(serde_json::Value::Array(children)) => Ok(children.as_slice()),
+            Some(other) => bail!("it lists members that are not a list: {other}"),
         }
     }
-    let nodes = symbols.as_array()?;
+    let nodes = match symbols {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::Array(nodes) => nodes,
+        other => bail!("it is not a list of symbols: {other}"),
+    };
     let mut best: Option<OutlineNode> = None;
-    walk(nodes, name, line, &mut best);
-    let mut best = best?;
+    walk(nodes, name, line, &mut best)?;
+    let Some(mut best) = best else {
+        return Ok(None);
+    };
     if best.fields.is_none() {
         let mut fields = Vec::new();
-        flat_fields(nodes, name, (best.start, best.end), &mut fields);
+        flat_fields(nodes, name, (best.start, best.end), &mut fields)?;
         best.fields = (!fields.is_empty()).then_some(fields);
     }
-    Some(best)
+    Ok(Some(best))
+}
+
+/// A 0-based LSP line or character as a 1-based `u32`. `None` for anything else, including a
+/// number a cast would truncate or `+ 1` would overflow.
+fn one_based(value: Option<&serde_json::Value>) -> Option<u32> {
+    u32::try_from(value?.as_u64()?).ok()?.checked_add(1)
+}
+
+/// The first and last lines of an LSP range, 1-based. `None` unless both ends have a line and a
+/// character that fit and the range does not end on a line before it starts. Only the lines are
+/// ordered: the Rust engine's flat outline ends a field at character 0 of its own line.
+fn range_lines(range: &serde_json::Value) -> Option<(u32, u32)> {
+    let line = |at: &str| {
+        one_based(range.pointer(&format!("/{at}/character")))?;
+        one_based(range.pointer(&format!("/{at}/line")))
+    };
+    let (start, end) = (line("start")?, line("end")?);
+    (start <= end).then_some((start, end))
 }
 
 /// Plans the builder for the declaration of `type_name` that starts within `within` (1-based
@@ -864,7 +919,9 @@ async fn verify(
         Ok(Probe::Blind(reason)) => return Ok(Verification::Unverified { reason }),
         Err(err) => {
             return Ok(Verification::Unverified {
-                reason: format!("the analyzer could not be asked which names are free: {err:#}"),
+                reason: format!(
+                    "the analyzer gave no usable answer about which names are free: {err:#}"
+                ),
             });
         }
     }
@@ -964,7 +1021,7 @@ async fn probe_names(
     let mut session =
         crate::session::LspSession::open_for_validation(remote, root, Some(path)).await?;
     let uri = session.open_text(path, &text).await?;
-    let mut resolved = Vec::new();
+    let mut answers = Vec::new();
     for (k, prefix) in prefixes.iter().enumerate() {
         let answer = session
             .request(
@@ -979,7 +1036,7 @@ async fn probe_names(
             )
             .await;
         match answer {
-            Ok(answer) => resolved.push(locations(&answer)),
+            Ok(answer) => answers.push(answer),
             Err(err) => {
                 session.close().await;
                 return Err(err);
@@ -987,6 +1044,15 @@ async fn probe_names(
         }
     }
     session.close().await;
+    // A location that cannot be read is not the absence of one: the name could be taken.
+    let resolved = names
+        .iter()
+        .zip(&answers)
+        .map(|((_, name), answer)| {
+            locations(answer)
+                .with_context(|| format!("the answer for `{name}` at the insertion point"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let declared = resolved[0].iter().any(|(target, line)| {
         (target == path || target.ends_with(file))
             && (plan.declaration_lines.0..=plan.declaration_lines.1).contains(line)
@@ -1010,25 +1076,34 @@ async fn probe_names(
     Ok(Probe::Free)
 }
 
-/// The files and 1-based lines a definition answer points at: `Location`, `Location[]` or
-/// `LocationLink[]`.
-fn locations(answer: &serde_json::Value) -> Vec<(std::path::PathBuf, u32)> {
+/// The files and 1-based lines a definition answer points at: none for `null` or `[]`, else a
+/// `Location`, `Location[]` or `LocationLink[]`. Anything else, or an entry without a file URI
+/// and a valid range, is an error rather than one location fewer.
+fn locations(answer: &serde_json::Value) -> Result<Vec<(std::path::PathBuf, u32)>> {
     let items = match answer {
-        serde_json::Value::Array(items) => items.clone(),
-        serde_json::Value::Null => Vec::new(),
-        other => vec![other.clone()],
+        serde_json::Value::Null => return Ok(Vec::new()),
+        serde_json::Value::Array(items) => items.as_slice(),
+        other => std::slice::from_ref(other),
     };
     items
         .iter()
-        .filter_map(|l| {
-            let uri = l.get("targetUri").or_else(|| l.get("uri"))?.as_str()?;
-            let path = url::Url::parse(uri).ok()?.to_file_path().ok()?;
-            let range = l
-                .get("targetSelectionRange")
-                .or_else(|| l.get("range"))
-                .or_else(|| l.get("targetRange"))?;
-            let line = range.pointer("/start/line")?.as_u64()? as u32 + 1;
-            Some((path, line))
+        .map(|item| {
+            let (uri, range) = match item.get("targetUri") {
+                Some(uri) => (
+                    Some(uri),
+                    item.get("targetSelectionRange")
+                        .or_else(|| item.get("targetRange")),
+                ),
+                None => (item.get("uri"), item.get("range")),
+            };
+            let path = uri
+                .and_then(|u| u.as_str())
+                .and_then(|u| url::Url::parse(u).ok())
+                .and_then(|u| u.to_file_path().ok());
+            match (path, range.and_then(range_lines)) {
+                (Some(path), Some((line, _))) => Ok((path, line)),
+                _ => bail!("malformed definition answer: {item}"),
+            }
         })
         .collect()
 }
@@ -1617,15 +1692,19 @@ fn other() {}
             ]
         }]);
         assert_eq!(
-            outline_node(&symbols, "P", 1),
+            outline_node(&symbols, "P", 1).unwrap(),
             Some(OutlineNode {
                 start: 1,
                 end: 1,
                 fields: Some(vec!["r#a".into()])
             })
         );
-        assert_eq!(outline_node(&symbols, "Q", 1), None);
-        assert_eq!(outline_node(&symbols, "P", 2), None);
+        assert_eq!(outline_node(&symbols, "Q", 1).unwrap(), None);
+        assert_eq!(outline_node(&symbols, "P", 2).unwrap(), None);
+        assert_eq!(
+            outline_node(&serde_json::Value::Null, "P", 1).unwrap(),
+            None
+        );
 
         // The Rust engine's flat answer: a field is named by its container path and its line.
         let at = |line: u64| serde_json::json!({ "start": { "line": line, "character": 4 }, "end": { "line": line, "character": 0 } });
@@ -1637,11 +1716,139 @@ fn other() {}
             { "name": "c", "kind": 8, "containerName": "network > Q", "location": { "uri": "file:///w/a.rs", "range": at(8) } },
         ]);
         assert_eq!(
-            outline_node(&flat, "P", 3),
+            outline_node(&flat, "P", 3).unwrap(),
             Some(OutlineNode {
                 start: 3,
                 end: 6,
                 fields: Some(vec!["r#type".into(), "b".into()])
+            })
+        );
+    }
+
+    /// A range over the 0-based lines `from..=to`, written as JSON.
+    fn span(from: serde_json::Value, to: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "start": { "line": from, "character": 0 }, "end": { "line": to, "character": 1 } })
+    }
+
+    #[test]
+    fn coordinates_are_converted_checked() {
+        let n = |v: serde_json::Value| one_based(Some(&v));
+        assert_eq!(n(serde_json::json!(0)), Some(1));
+        assert_eq!(n(serde_json::json!(u32::MAX - 1)), Some(u32::MAX));
+        assert_eq!(n(serde_json::json!(u32::MAX)), None);
+        assert_eq!(n(serde_json::json!(1u64 << 32)), None);
+        assert_eq!(n(serde_json::json!(-1)), None);
+        assert_eq!(n(serde_json::json!(1.5)), None);
+        assert_eq!(n(serde_json::json!("3")), None);
+        assert_eq!(one_based(None), None);
+        assert_eq!(
+            range_lines(&span(serde_json::json!(2), serde_json::json!(4))),
+            Some((3, 5))
+        );
+        // Zero width, as sourcekit-lsp answers, is a range.
+        let point = serde_json::json!({ "line": 2, "character": 3 });
+        assert_eq!(
+            range_lines(&serde_json::json!({ "start": point, "end": point })),
+            Some((3, 3))
+        );
+        // A field in the Rust engine's flat outline: it ends at character 0 of the line it
+        // starts on, which rust-analyzer behind the gateway really answers.
+        assert_eq!(
+            range_lines(
+                &serde_json::json!({ "start": { "line": 27, "character": 8 }, "end": { "line": 27, "character": 0 } })
+            ),
+            Some((28, 28))
+        );
+        for bad in [
+            span(serde_json::json!(4), serde_json::json!(2)),
+            serde_json::json!({ "start": { "line": 2, "character": -5 }, "end": { "line": 2, "character": 1 } }),
+            serde_json::json!({ "start": { "line": 2, "character": 0 }, "end": { "line": 2, "character": u32::MAX } }),
+            serde_json::json!({ "start": { "line": 2 }, "end": { "line": 2, "character": 1 } }),
+            serde_json::json!({ "start": { "line": 2, "character": 0 } }),
+            span(serde_json::json!(u32::MAX), serde_json::json!(u32::MAX)),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(range_lines(&bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_outline_is_an_error_not_a_panic_or_a_guess() {
+        let node = |range: serde_json::Value| serde_json::json!([{ "name": "P", "kind": 23, "range": range }]);
+        let past_u32 = 1u64 << 32;
+        for (outline, expected) in [
+            (
+                node(span(serde_json::json!(0), serde_json::json!(u32::MAX))),
+                "a range that is not one",
+            ),
+            (
+                node(span(
+                    serde_json::json!(past_u32),
+                    serde_json::json!(past_u32 + 2),
+                )),
+                "a range that is not one",
+            ),
+            (
+                node(span(serde_json::json!(-1), serde_json::json!(2))),
+                "a range that is not one",
+            ),
+            (
+                serde_json::json!([{ "name": "P", "kind": 23 }]),
+                "a range that is not one: none",
+            ),
+            (
+                serde_json::json!([{ "name": "P", "kind": 23, "range": span(serde_json::json!(0), serde_json::json!(2)),
+                    "children": [{ "kind": 8, "range": span(serde_json::json!(1), serde_json::json!(1)) }] }]),
+                "a field of `P` without a name",
+            ),
+            (
+                serde_json::json!([{ "name": "P", "kind": 23, "range": span(serde_json::json!(0), serde_json::json!(2)),
+                    "children": [{ "name": "a" }] }]),
+                "a member of `P` without a kind",
+            ),
+            (
+                serde_json::json!([{ "name": "m", "kind": 2, "range": span(serde_json::json!(0), serde_json::json!(9)),
+                    "children": "P" }]),
+                "members that are not a list",
+            ),
+            (
+                serde_json::json!([
+                    { "name": "P", "kind": 23, "range": span(serde_json::json!(0), serde_json::json!(2)) },
+                    { "name": "a", "kind": 8, "containerName": "P",
+                      "range": span(serde_json::json!(past_u32 + 1), serde_json::json!(past_u32 + 1)) },
+                ]),
+                "field `a` of `P` a range that is not one",
+            ),
+            (
+                serde_json::json!([
+                    { "name": "P", "kind": 23, "range": span(serde_json::json!(0), serde_json::json!(2)) },
+                    { "kind": 8, "containerName": "P", "range": span(serde_json::json!(1), serde_json::json!(1)) },
+                ]),
+                "a field of `P` without a name",
+            ),
+            (serde_json::json!({ "name": "P" }), "not a list of symbols"),
+        ] {
+            let err = outline_node(&outline, "P", 1).expect_err(&outline.to_string());
+            let err = format!("{err:#}");
+            assert!(err.contains(expected), "{outline}\n=> {err}");
+        }
+        // What is not about `P` does not stop it: another name's range, a field of another
+        // struct, members of another kind, `null` children.
+        let fine = serde_json::json!([
+            { "name": "Q", "kind": 23, "range": span(serde_json::json!(u32::MAX), serde_json::json!(-1)) },
+            { "name": "P", "kind": 23, "range": span(serde_json::json!(0), serde_json::json!(2)),
+              "children": [
+                  { "name": "a", "kind": 8, "range": span(serde_json::json!(1), serde_json::json!(1)) },
+                  { "name": "f", "kind": 6, "range": span(serde_json::json!(1), serde_json::json!(1)), "children": null },
+              ] },
+            { "name": "b", "kind": 8, "containerName": "Q", "range": span(serde_json::json!(-1), serde_json::json!(-1)) },
+        ]);
+        assert_eq!(
+            outline_node(&fine, "P", 2).unwrap(),
+            Some(OutlineNode {
+                start: 1,
+                end: 3,
+                fields: Some(vec!["a".into()])
             })
         );
     }
@@ -1652,13 +1859,48 @@ fn other() {}
             "targetRange": { "start": { "line": 1, "character": 0 }, "end": { "line": 3, "character": 1 } },
             "targetSelectionRange": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 5 } } }]);
         assert_eq!(
-            locations(&link),
+            locations(&link).unwrap(),
             vec![(std::path::PathBuf::from("/w/src/lib.rs"), 3)]
+        );
+        let link_without_selection = serde_json::json!([{ "targetUri": "file:///w/src/lib.rs",
+            "targetRange": { "start": { "line": 1, "character": 0 }, "end": { "line": 3, "character": 1 } } }]);
+        assert_eq!(
+            locations(&link_without_selection).unwrap(),
+            vec![(std::path::PathBuf::from("/w/src/lib.rs"), 2)]
         );
         let single = serde_json::json!({ "uri": "file:///w/a.rs",
             "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } });
-        assert_eq!(locations(&single).len(), 1);
-        assert!(locations(&serde_json::Value::Null).is_empty());
+        assert_eq!(locations(&single).unwrap().len(), 1);
+        assert!(locations(&serde_json::Value::Null).unwrap().is_empty());
+        assert!(locations(&serde_json::json!([])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_definition_answer_is_an_error_not_an_empty_one() {
+        let range = span(serde_json::json!(8), serde_json::json!(8));
+        let uri = "file:///w/a.rs";
+        for answer in [
+            serde_json::json!([{ "uri": uri }]),
+            serde_json::json!([{ "range": range }]),
+            serde_json::json!([{ "uri": 7, "range": range }]),
+            serde_json::json!([{ "uri": "not a uri", "range": range }]),
+            serde_json::json!([{ "uri": "untitled:Untitled-1", "range": range }]),
+            serde_json::json!([{ "targetUri": uri, "range": range }]),
+            serde_json::json!([{ "targetUri": uri, "targetSelectionRange": span(serde_json::json!(u32::MAX), serde_json::json!(u32::MAX)) }]),
+            serde_json::json!([{ "uri": uri, "range": span(serde_json::json!(1u64 << 32), serde_json::json!(1u64 << 32)) }]),
+            serde_json::json!([{ "uri": uri, "range": span(serde_json::json!(-1), serde_json::json!(0)) }]),
+            // One good location does not make up for a bad one next to it.
+            serde_json::json!([{ "uri": uri, "range": range }, { "uri": uri }]),
+            serde_json::json!([null]),
+            serde_json::json!("P"),
+            serde_json::json!(true),
+        ] {
+            let err = locations(&answer).expect_err(&answer.to_string());
+            assert!(
+                format!("{err:#}").contains("malformed definition answer"),
+                "{err:#}"
+            );
+        }
     }
 
     #[test]

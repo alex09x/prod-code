@@ -146,6 +146,12 @@ struct Script {
     indexed: Vec<&'static str>,
     /// An outline that lists one field more than the source has.
     ghost_field: bool,
+    /// The outline, instead of the one the text gives.
+    outline: Option<Value>,
+    /// The definition answer for `Config` at the insertion point, instead of its declaration.
+    target_answer: Option<Value>,
+    /// The definition answer for `ConfigBuilder` at the insertion point, instead of nothing.
+    builder_answer: Option<Value>,
 }
 
 struct Scripted {
@@ -215,6 +221,9 @@ async fn gateway(file: &Path, script: Script) -> Scripted {
                 }
             }
             "textDocument/documentSymbol" => {
+                if let Some(outline) = &script.outline {
+                    return outline.clone();
+                }
                 let (from, _) = find(SETTINGS, "/// Everything at once");
                 let (to, _) = find(SETTINGS, "\n}\n\npub struct Pair");
                 let mut fields: Vec<Value> = CONFIG_FIELDS
@@ -253,6 +262,14 @@ async fn gateway(file: &Path, script: Script) -> Scripted {
                     .skip(character)
                     .take_while(|c| c.is_alphanumeric() || *c == '_')
                     .collect();
+                let scripted = match name.as_str() {
+                    "Config" => &script.target_answer,
+                    "ConfigBuilder" => &script.builder_answer,
+                    _ => &None,
+                };
+                if let Some(answer) = scripted {
+                    return answer.clone();
+                }
                 if name == "Config" {
                     let (line, col) = find(SETTINGS, "pub struct Config");
                     answers::locations(&file, &[(line, col + 11)])
@@ -569,6 +586,279 @@ async fn collisions_and_unsupported_shapes_are_refused_and_nothing_is_written() 
         let err = format!("{err:#}");
         assert!(err.contains(expected), "{expected}\n=> {err}");
     }
+    assert_eq!(snapshot(&root), before, "a refusal writes nothing");
+}
+
+/// An LSP range over the 0-based lines `from..=to`.
+fn span(from: u64, to: u64) -> Value {
+    serde_json::json!({
+        "start": { "line": from, "character": 0 },
+        "end": { "line": to, "character": 1 }
+    })
+}
+
+/// The 0-based lines `Config` spans in `SETTINGS`, its doc comment included.
+fn config_span() -> (u64, u64) {
+    let (from, _) = find(SETTINGS, "/// Everything at once");
+    let (to, _) = find(SETTINGS, "\n}\n\npub struct Pair");
+    (u64::from(from) - 1, u64::from(to))
+}
+
+/// The 0-based line of `Config`'s field `field`.
+fn field_line(field: &str) -> u64 {
+    let needle = format!("pub {field}:").replace("pub limits", "pub(crate) limits");
+    u64::from(find(SETTINGS, &needle).0) - 1
+}
+
+/// An outline holding only `Config`, spanning `range`, with `children` when given.
+fn config_outline(range: Value, children: Option<Vec<Value>>) -> Value {
+    let mut config = serde_json::json!({ "name": "Config", "kind": 23, "range": range });
+    if let Some(children) = children {
+        config["children"] = Value::Array(children);
+    }
+    serde_json::json!([config])
+}
+
+/// A definition answer the probe cannot read is not an answer that the name is free: a malformed
+/// location for the builder's name, next to a valid one for the struct and a deliberate error the
+/// analyzer reports, is unverified evidence. A null or empty answer still means "nothing there".
+#[tokio::test]
+async fn a_malformed_definition_answer_is_never_taken_for_a_free_name() {
+    let (ws, file) = workspace();
+    let root = ws.root();
+    let before = snapshot(&root);
+    let core = "file:///toolchain/lib/rustlib/src/core/src/lib.rs";
+    let past_u32 = 1u64 << 32;
+    let cases = [
+        (
+            "a location without a range",
+            serde_json::json!([{ "uri": core }]),
+        ),
+        (
+            "a location whose URI is not one",
+            serde_json::json!([{ "uri": "not a uri", "range": span(8, 8) }]),
+        ),
+        (
+            "a link to a URI that is not a file",
+            serde_json::json!([{
+                "targetUri": "untitled:Untitled-1",
+                "targetRange": span(8, 8),
+                "targetSelectionRange": span(8, 8)
+            }]),
+        ),
+        (
+            "a negative line",
+            serde_json::json!([{ "uri": core, "range": {
+                "start": { "line": -1, "character": 0 },
+                "end": { "line": 0, "character": 1 }
+            } }]),
+        ),
+        (
+            "a line past u32",
+            serde_json::json!([{ "uri": core, "range": span(past_u32 + 8, past_u32 + 8) }]),
+        ),
+        (
+            "a range that ends before it starts",
+            serde_json::json!([{ "uri": core, "range": span(9, 8) }]),
+        ),
+        ("a string", serde_json::json!("ConfigBuilder")),
+        ("a null entry", serde_json::json!([null])),
+    ];
+    let mut wrong = Vec::new();
+    for (case, answer) in cases {
+        let scripted = gateway(
+            &file,
+            Script {
+                builder_answer: Some(answer),
+                ..Default::default()
+            },
+        )
+        .await;
+        match builder::preview(scripted.gateway.addr(), &root, &request("Config", true)).await {
+            Ok(preview)
+                if matches!(
+                    &preview.verification,
+                    Verification::Unverified { reason } if reason.contains("malformed definition answer")
+                ) && !preview.verified() => {}
+            Ok(preview) => wrong.push(format!("{case}: {:?}", preview.verification)),
+            Err(err) => wrong.push(format!("{case}: refused: {err:#}")),
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "malformed evidence taken for an answer:\n{}",
+        wrong.join("\n")
+    );
+    // No location at all is an answer: the name is free there.
+    for answer in [Value::Null, serde_json::json!([])] {
+        let scripted = gateway(
+            &file,
+            Script {
+                builder_answer: Some(answer.clone()),
+                ..Default::default()
+            },
+        )
+        .await;
+        let preview = builder::preview(scripted.gateway.addr(), &root, &request("Config", true))
+            .await
+            .expect("a builder for Config");
+        assert_eq!(preview.verification, Verification::Clean, "{answer}");
+    }
+    assert_eq!(snapshot(&root), before, "a preview writes nothing");
+}
+
+/// A definition line at `u32::MAX` has no 1-based line; reading one overflowed.
+#[tokio::test]
+async fn a_definition_line_at_u32_max_is_unverified_not_a_panic() {
+    let (ws, file) = workspace();
+    let root = ws.root();
+    let before = snapshot(&root);
+    let max = u64::from(u32::MAX);
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    let scripted = gateway(
+        &file,
+        Script {
+            target_answer: Some(serde_json::json!([{ "uri": uri, "range": span(max, max) }])),
+            ..Default::default()
+        },
+    )
+    .await;
+    let preview = builder::preview(scripted.gateway.addr(), &root, &request("Config", true))
+        .await
+        .expect("the builder is still generated");
+    match &preview.verification {
+        Verification::Unverified { reason } => {
+            assert!(reason.contains("malformed definition answer"), "{reason}")
+        }
+        other => panic!("expected unverified, got {other:?}"),
+    }
+    assert!(!preview.verified());
+    assert_eq!(snapshot(&root), before, "a preview writes nothing");
+}
+
+/// An outline the analyzer garbled is not evidence of where the struct is or which fields it has:
+/// coordinates a cast would truncate back into the file, fields without names, members listed in
+/// a shape that is not a list. Each is refused, and nothing is written.
+#[tokio::test]
+async fn a_malformed_outline_is_refused() {
+    let (ws, file) = workspace();
+    let root = ws.root();
+    let before = snapshot(&root);
+    let (from, to) = config_span();
+    let past_u32 = 1u64 << 32;
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    let flat_field = |f: &str, line: u64| {
+        serde_json::json!({
+            "name": f, "kind": 8, "containerName": "Config",
+            "location": { "uri": uri, "range": span(line, line) }
+        })
+    };
+    let mut flat_past_u32 = vec![serde_json::json!({
+        "name": "Config", "kind": 23, "location": { "uri": uri, "range": span(from, to) }
+    })];
+    flat_past_u32.extend(
+        CONFIG_FIELDS
+            .iter()
+            .map(|f| flat_field(f, past_u32 + field_line(f))),
+    );
+    let cases = [
+        (
+            "struct lines past u32 that truncate into the file",
+            config_outline(span(past_u32 + from, past_u32 + to), None),
+        ),
+        (
+            "fields without names",
+            config_outline(
+                span(from, to),
+                Some(vec![serde_json::json!({ "kind": 8 }); CONFIG_FIELDS.len()]),
+            ),
+        ),
+        (
+            "a member without a kind",
+            config_outline(
+                span(from, to),
+                Some(vec![serde_json::json!({ "name": "name" })]),
+            ),
+        ),
+        (
+            "children that are not a list",
+            serde_json::json!([{
+                "name": "Config", "kind": 23, "range": span(from, to),
+                "children": { "name": "name", "kind": 8 }
+            }]),
+        ),
+        ("flat fields on lines past u32", Value::Array(flat_past_u32)),
+        (
+            "an outline that is not a list",
+            serde_json::json!({ "name": "Config", "kind": 23, "range": span(from, to) }),
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (case, outline) in cases {
+        let scripted = gateway(
+            &file,
+            Script {
+                outline: Some(outline),
+                ..Default::default()
+            },
+        )
+        .await;
+        match builder::preview(scripted.gateway.addr(), &root, &request("Config", true)).await {
+            Err(err) if format!("{err:#}").contains("outline of src/settings.rs is malformed") => {}
+            Err(err) => wrong.push(format!("{case}: refused for another reason: {err:#}")),
+            Ok(preview) => wrong.push(format!("{case}: accepted: {:?}", preview.verification)),
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a malformed outline taken for evidence:\n{}",
+        wrong.join("\n")
+    );
+    // The same outline, well formed, is still read: flat fields as the Rust engine lists them.
+    let mut flat = vec![serde_json::json!({
+        "name": "Config", "kind": 23, "location": { "uri": uri, "range": span(from, to) }
+    })];
+    flat.extend(CONFIG_FIELDS.iter().map(|f| flat_field(f, field_line(f))));
+    let scripted = gateway(
+        &file,
+        Script {
+            outline: Some(Value::Array(flat)),
+            ..Default::default()
+        },
+    )
+    .await;
+    let preview = builder::preview(scripted.gateway.addr(), &root, &request("Config", true))
+        .await
+        .expect("a builder for Config");
+    assert_eq!(preview.verification, Verification::Clean);
+    assert!(preview.plan.notes.is_empty(), "{:?}", preview.plan.notes);
+    assert_eq!(snapshot(&root), before, "a refusal writes nothing");
+}
+
+/// An outline line at `u32::MAX` has no 1-based line; reading one overflowed.
+#[tokio::test]
+async fn an_outline_line_at_u32_max_is_refused_not_a_panic() {
+    let (ws, file) = workspace();
+    let root = ws.root();
+    let before = snapshot(&root);
+    let (from, _) = config_span();
+    let max = u64::from(u32::MAX);
+    let scripted = gateway(
+        &file,
+        Script {
+            outline: Some(config_outline(span(from, max), None)),
+            ..Default::default()
+        },
+    )
+    .await;
+    let err = builder::preview(scripted.gateway.addr(), &root, &request("Config", true))
+        .await
+        .expect_err("a malformed outline is refused");
+    let err = format!("{err:#}");
+    assert!(
+        err.contains("outline of src/settings.rs is malformed"),
+        "{err}"
+    );
     assert_eq!(snapshot(&root), before, "a refusal writes nothing");
 }
 
