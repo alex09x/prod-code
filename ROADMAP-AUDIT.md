@@ -80,7 +80,9 @@ evidence remain above; the original mechanism or required scope remains open.
   type and const parameters with bounds, but imports for moved methods still do not update caller
   type annotations. Attributed impls, conditional methods, `Self`-dependent impl bounds, opaque
   `impl Trait` returns, macro/specialized shapes and other languages remain unsupported. #509 fixes
-  Unicode header slicing; #510 refuses opaque returns whose capture contract can change.
+  Unicode header slicing; #510 refuses opaque returns whose capture contract can change. #514
+  selects the enclosing impl at method-body cursors after opaque argument syntax, including
+  local impls in block expressions, while preserving macro and trait-impl refusals.
 - **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
   the promised general `for`/`while` iterator/fold transformation.
 - **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM storage

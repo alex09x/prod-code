@@ -3561,3 +3561,178 @@ async fn trait_extraction_preserves_unicode_positions_and_refuses_opaque_capture
     }
     compile_and_run("src/bin/macro_arg.rs");
 }
+
+/// #514: a method-body cursor after `impl Trait` input syntax still selects the enclosing
+/// inherent implementation. This uses the public MCP preview/apply flow and a real analyzer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trait_extraction_accepts_an_opaque_argument_method_cursor() {
+    const API: &str = r#"pub struct Example;
+
+impl Example {
+    pub fn value(&self, input: impl Copy) -> u8 {
+        let 猫 = input;
+        let _ = 猫;
+        7
+    }
+}
+
+pub fn outside() {}
+"#;
+    const CALLERS: &str = r#"use crate::api::Example;
+
+pub fn call() -> u8 {
+    Example.value(())
+}
+"#;
+    const MAIN: &str =
+        "mod api;\nmod callers;\n\nfn main() { println!(\"{}\", callers::call()); }\n";
+
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    checkout.write("src/main.rs", MAIN);
+    checkout.write("src/api.rs", API);
+    checkout.write("src/callers.rs", CALLERS);
+    let local_body = "{ struct Local(u8); impl Local { fn value(&self, input: impl Copy) -> u8 { let _ = input; self.0 } } Local(9).value(()) }";
+    let local_sources = [
+        (
+            "src/bin/local_parenthesized.rs",
+            format!("fn main() {{ let value = ({local_body}); println!(\"{{value}}\"); }}"),
+        ),
+        (
+            "src/bin/local_array.rs",
+            format!("fn main() {{ let values = [{local_body}]; println!(\"{{}}\", values[0]); }}"),
+        ),
+    ];
+    for (path, source) in &local_sources {
+        checkout.write(path, source);
+    }
+    checkout.commit();
+    let root = checkout.root();
+    let api = checkout.path("src/api.rs");
+    let compile_and_run = |source: &str| {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("opaque-argument-fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", source, "-o"])
+            .arg(&binary)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&binary).output().unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        ran.stdout
+    };
+    let before = compile_and_run("src/main.rs");
+    let cursor = API.find("let _").unwrap();
+    let line_start = API[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line = API[..cursor].matches('\n').count() + 1;
+    let character = API[line_start..cursor].encode_utf16().count() + 1;
+    let args = |apply| {
+        serde_json::json!({
+            "path": "src/api.rs", "line": line, "character": character,
+            "methods": ["value"], "name": "Value", "apply": apply
+        })
+    };
+
+    let preview = tool(gateway.addr, &root, "code_extract_trait", args(false)).await;
+    assert!(!preview.is_error, "{}", text_of(&preview));
+    assert_eq!(
+        std::fs::read_to_string(&api).unwrap(),
+        API,
+        "preview writes nothing"
+    );
+    assert_eq!(
+        compile_and_run("src/main.rs"),
+        before,
+        "preview preserves execution"
+    );
+
+    let applied = tool(gateway.addr, &root, "code_extract_trait", args(true)).await;
+    assert!(!applied.is_error, "{}", text_of(&applied));
+    assert!(
+        std::fs::read_to_string(&api)
+            .unwrap()
+            .contains("impl Value for Example"),
+        "{}",
+        text_of(&applied)
+    );
+    assert!(
+        std::fs::read_to_string(checkout.path("src/callers.rs"))
+            .unwrap()
+            .contains("use crate::api::Value;"),
+        "{}",
+        text_of(&applied)
+    );
+    assert_eq!(
+        compile_and_run("src/main.rs"),
+        before,
+        "applied extraction preserves execution"
+    );
+
+    for (path, source) in &local_sources {
+        let original_output = compile_and_run(path);
+        assert_eq!(original_output, b"9\n");
+        let cursor = source.find("let _").unwrap();
+        let params = |apply| {
+            serde_json::json!({
+                "path": path, "line": 1,
+                "character": source[..cursor].encode_utf16().count() + 1,
+                "methods": ["value"], "name": "LocalValue", "apply": apply
+            })
+        };
+        let preview = tool(gateway.addr, &root, "code_extract_trait", params(false)).await;
+        assert!(
+            !preview.is_error,
+            "local preview {path}: {}",
+            text_of(&preview)
+        );
+        assert_eq!(
+            std::fs::read_to_string(checkout.path(path)).unwrap(),
+            *source
+        );
+        let applied = tool(gateway.addr, &root, "code_extract_trait", params(true)).await;
+        assert!(
+            !applied.is_error,
+            "local apply {path}: {}",
+            text_of(&applied)
+        );
+        assert!(
+            std::fs::read_to_string(checkout.path(path))
+                .unwrap()
+                .contains("impl LocalValue for Local")
+        );
+        assert_eq!(
+            compile_and_run(path),
+            original_output,
+            "local impl changed execution: {path}"
+        );
+    }
+
+    let current_api = std::fs::read_to_string(&api).unwrap();
+    let outside = current_api.find("outside").unwrap();
+    let outside_line_start = current_api[..outside].rfind('\n').map_or(0, |i| i + 1);
+    let outside_args = serde_json::json!({
+        "path": "src/api.rs", "line": current_api[..outside].matches('\n').count() + 1,
+        "character": current_api[outside_line_start..outside].encode_utf16().count() + 1,
+        "methods": ["value"], "name": "Outside", "apply": true, "force": true
+    });
+    let before_refusal = std::fs::read_to_string(&api).unwrap();
+    let error =
+        prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", outside_args)
+            .await
+            .expect_err("a position outside every implementation is refused");
+    assert!(
+        format!("{error:#}").contains("no `impl` block"),
+        "{error:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&api).unwrap(), before_refusal);
+}

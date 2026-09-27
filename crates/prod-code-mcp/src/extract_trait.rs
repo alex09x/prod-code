@@ -658,6 +658,104 @@ fn inside_macro(text: &str, at: usize) -> bool {
     })
 }
 
+fn inside_macro_invocation(text: &str, code: &[bool], at: usize) -> bool {
+    let mut opens = Vec::new();
+    for (i, byte) in text[..at].bytes().enumerate() {
+        if !code[i] {
+            continue;
+        }
+        match byte {
+            b'{' | b'(' | b'[' => opens.push((i, byte)),
+            b'}' | b')' | b']' => {
+                let expected = match byte {
+                    b'}' => b'{',
+                    b')' => b'(',
+                    b']' => b'[',
+                    _ => unreachable!(),
+                };
+                if opens.last().is_some_and(|(_, open)| *open == expected) {
+                    opens.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    opens.into_iter().any(|(open, _)| {
+        previous_code(text, code, open).is_some_and(|before| text.as_bytes()[before] == b'!')
+    })
+}
+
+/// Whether this lexical `impl` can begin an implementation item. Opaque `impl Trait` types are
+/// deliberately not items, even when their following function body would otherwise look like
+/// the body of an implementation to the lightweight structural scanner.
+fn starts_impl_item(text: &str, code: &[bool], impl_at: usize) -> bool {
+    if text[..impl_at].ends_with("r#") {
+        return false;
+    }
+
+    let mut delimiters = Vec::new();
+    for (i, byte) in text[..impl_at].bytes().enumerate() {
+        if !code[i] {
+            continue;
+        }
+        match byte {
+            b'{' | b'(' | b'[' => delimiters.push(byte),
+            b'}' | b')' | b']' => {
+                let expected = match byte {
+                    b'}' => b'{',
+                    b')' => b'(',
+                    b']' => b'[',
+                    _ => unreachable!(),
+                };
+                if delimiters.last() == Some(&expected) {
+                    delimiters.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    let macro_invocation = inside_macro_invocation(text, code, impl_at);
+    if matches!(delimiters.last(), Some(b'(' | b'['))
+        && !inside_macro(text, impl_at)
+        && !macro_invocation
+    {
+        return false;
+    }
+    if macro_invocation {
+        return true;
+    }
+
+    let Some(before) = previous_code(text, code, impl_at) else {
+        return true;
+    };
+    match text.as_bytes()[before] {
+        b'{' | b'}' | b';' | b']' => true,
+        _ => {
+            let prefix = &text[..=before];
+            ["unsafe", "const", "default"]
+                .iter()
+                .any(|qualifier| prefix.ends_with(qualifier))
+        }
+    }
+}
+
+fn enclosing_impl(text: &str, code: &[bool], at: usize) -> Option<(usize, usize, usize)> {
+    text.match_indices("impl")
+        .take_while(|(i, _)| *i <= at)
+        .filter(|(i, _)| {
+            code[*i..*i + 4].iter().all(|is_code| *is_code)
+                && !text[..*i].chars().next_back().is_some_and(is_ident)
+                && !text[*i + 4..].chars().next().is_some_and(is_ident)
+                && starts_impl_item(text, code, *i)
+        })
+        .filter_map(|(start, _)| {
+            let open = impl_body_open(text, start).ok()?;
+            let close = matching_close_brace(text, open)?;
+            (at <= close).then_some((start, open, close))
+        })
+        .max_by_key(|(start, _, _)| *start)
+}
+
 /// The inherent `impl` block whose header holds `at`, or which `at` is inside.
 pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
     anyhow::ensure!(
@@ -665,20 +763,11 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
         "the impl position is not a UTF-8 source boundary"
     );
     let code = lexical_code(text);
-    let impl_at = text
-        .match_indices("impl")
-        .take_while(|(i, _)| *i <= at)
-        .filter(|(i, _)| {
-            code[*i..*i + 4].iter().all(|is_code| *is_code)
-                && !text[..*i].chars().next_back().is_some_and(is_ident)
-                && !text[*i + 4..].chars().next().is_some_and(is_ident)
-        })
-        .map(|(i, _)| i)
-        .last()
-        .context("no `impl` block at this position")?;
+    let (impl_at, open, close) =
+        enclosing_impl(text, &code, at).context("no `impl` block at this position")?;
     let line_start = text[..impl_at].rfind('\n').map_or(0, |i| i + 1);
     anyhow::ensure!(
-        !inside_macro(text, impl_at),
+        !inside_macro(text, impl_at) && !inside_macro_invocation(text, &code, impl_at),
         "impl blocks generated inside macros are not supported; expand the macro first"
     );
     let before = text[line_start..impl_at].trim_end();
@@ -692,9 +781,6 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
         !has_outer_attribute_before(text, impl_at),
         "attributes on impl blocks are not supported; remove or expand the conditional impl first"
     );
-    let open = impl_body_open(text, impl_at)?;
-    let close = matching_close_brace(text, open).context("the `impl` block is not closed")?;
-    anyhow::ensure!(at <= close, "the position is not in an `impl` block");
     let header = text[impl_at + 4..open].trim();
     anyhow::ensure!(
         !header.contains('#'),
@@ -1405,6 +1491,70 @@ mod position_and_capture_tests {
             let source = format!("struct Example; impl Example {{ {method} }}");
             let block = impl_block(&source, source.find("impl Example").unwrap()).unwrap();
             assert!(rewrite(&source, &block, &["value".into()], "Value").is_ok());
+        }
+    }
+
+    #[test]
+    fn cursor_selects_the_innermost_actual_impl_item() {
+        let source = "struct Example; impl Example { fn value(&self, input: impl Copy) -> u8 { let \u{732b} = input; let _ = \u{732b}; 7 } }";
+        for at in [
+            source.find("impl Example").unwrap() + 2,
+            source.find("let _").unwrap(),
+        ] {
+            let block = impl_block(source, at).unwrap();
+            assert_eq!(block.self_ty, "Example");
+            assert_eq!(block.start, source.find("impl Example").unwrap());
+            assert_eq!(block.close, source.len() - 1);
+        }
+
+        let nested_closed = "struct Example; impl Example { fn value(&self, input: impl Copy) -> u8 { { impl Closed {} } let _ = input; 7 } }";
+        assert_eq!(
+            impl_block(nested_closed, nested_closed.find("let _").unwrap())
+                .unwrap()
+                .self_ty,
+            "Example"
+        );
+        let raw_identifier = "struct Example; impl Example { fn value(&self, input: impl Copy) -> u8 { let r#impl = input; let _ = r#impl; 7 } }";
+        assert_eq!(
+            impl_block(raw_identifier, raw_identifier.find("let _").unwrap())
+                .unwrap()
+                .self_ty,
+            "Example"
+        );
+
+        let comments_and_literals = "struct Example; impl Example { fn value(&self) { let note = \"impl NotAnItem {\"; // impl AlsoNotAnItem {\n let _ = note; } }";
+        assert_eq!(
+            impl_block(
+                comments_and_literals,
+                comments_and_literals.find("let _").unwrap()
+            )
+            .unwrap()
+            .self_ty,
+            "Example"
+        );
+
+        let nested_trait = "struct Example; trait Inner {} impl Example { fn value(&self) { impl Inner for Nested {} } }";
+        let error = impl_block(nested_trait, nested_trait.find("impl Inner").unwrap()).unwrap_err();
+        assert!(
+            error.to_string().contains("already implements a trait"),
+            "{error:#}"
+        );
+        assert!(impl_block("fn outside() {}", 3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_item_probe {
+    use super::*;
+    #[test]
+    fn an_impl_inside_a_block_expression_is_still_an_item() {
+        for source in [
+            "fn main() { let _ = ({ struct Local; impl Local { fn value(&self) {} } 0 }); }",
+            "fn main() { let _ = [{ struct Local; impl Local { fn value(&self) {} } 0 }]; }",
+        ] {
+            let block = impl_block(source, source.find("impl Local").unwrap())
+                .expect("an item inside an expression block is valid");
+            assert_eq!(block.self_ty, "Local");
         }
     }
 }
