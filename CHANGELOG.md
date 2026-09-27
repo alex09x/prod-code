@@ -31,6 +31,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Multi-file Rust validation checks candidate definitions before warning about a removed
+  name (#483). Relocated declarations and names that resolve in the complete proposal no
+  longer count as stale callers; unresolved uses and malformed definition evidence still warn.
 - Go signature changes reject zero one-based coordinates, CRLF terminator interiors and
   UTF-16 surrogate interiors before planning or applying native edits (#486).
 - Relative source paths passed to library diagnostics and validation select their engine
