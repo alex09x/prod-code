@@ -65,12 +65,11 @@ async fn scripted_gateway() -> SocketAddr {
     ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
         "textDocument/didChange" => {
             let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
-            if uri.contains("lib.rs") {
-                if let Some(changes) = params["contentChanges"].as_array() {
-                    if let Some(text) = changes.first().and_then(|c| c["text"].as_str()) {
-                        covers_flag.store(text.contains("covers"), Ordering::SeqCst);
-                    }
-                }
+            if uri.contains("lib.rs")
+                && let Some(changes) = params["contentChanges"].as_array()
+                && let Some(text) = changes.first().and_then(|c| c["text"].as_str())
+            {
+                covers_flag.store(text.contains("covers"), Ordering::SeqCst);
             }
             Value::Null
         }
@@ -295,16 +294,14 @@ pub fn work() {}
     for _ in 0..120 {
         if let Ok(report) =
             prod_code_mcp::diagnostics::validate_text(remote, &root, &lib, LIVE_LIB).await
+            && report.ok()
+            && report
+                .items
+                .iter()
+                .all(|d| d.code.as_deref() != Some("unlinked-file"))
         {
-            if report.ok()
-                && report
-                    .items
-                    .iter()
-                    .all(|d| d.code.as_deref() != Some("unlinked-file"))
-            {
-                loaded = true;
-                break;
-            }
+            loaded = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
@@ -445,16 +442,14 @@ async fn native_inline_test_module_relocation_keeps_definitions_and_fields_clean
         if let Ok(report) =
             prod_code_mcp::diagnostics::validate_text(remote, &root, &ws.path("src/lib.rs"), BEFORE)
                 .await
+            && report.ok()
+            && report
+                .items
+                .iter()
+                .all(|d| d.code.as_deref() != Some("unlinked-file"))
         {
-            if report.ok()
-                && report
-                    .items
-                    .iter()
-                    .all(|d| d.code.as_deref() != Some("unlinked-file"))
-            {
-                loaded = true;
-                break;
-            }
+            loaded = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }

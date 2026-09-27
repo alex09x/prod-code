@@ -49,6 +49,8 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Build metadata consistently requires Rust 1.95, matching the locked analyzer dependencies;
+  the documented minimum is checked with its own compiler and Clippy (#532).
 - Native Rust queries and refactorings reject invalid UTF-16 source positions instead of
   selecting byte zero (#523). Gateway requests reject malformed or overflowing coordinates
   before conversion, including explicit assist ends and hierarchy positions (#526); navigation
