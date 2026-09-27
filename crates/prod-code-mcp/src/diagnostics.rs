@@ -162,9 +162,12 @@ fn set_aside_preexisting(
     }
     let items = std::mem::take(&mut report.items);
     for d in items {
-        // A file the analyzer panicked on was not checked; that it was not checked before the
-        // edit either does not make it checked now (#94).
-        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE) {
+        // A file the analyzer panicked on, or that no crate includes, was not checked; that it
+        // was not checked before the edit either does not make it checked now (#94, #467).
+        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE)
+            || d.code.as_deref() == Some(UNLINKED_FILE)
+            || d.code.as_deref() == Some(INVALID_DIAGNOSTICS)
+        {
             report.items.push(d);
             continue;
         }
@@ -230,6 +233,48 @@ fn is_auto_trait_bound(message: &str) -> bool {
         .any(|bound| first.contains(bound))
         || first.contains("cannot be sent between threads safely")
         || first.contains("cannot be shared between threads safely")
+}
+
+/// rust-analyzer's code for a file that no crate includes: it offers no semantic service there,
+/// so it reports no type error, no unresolved name, nothing but this hint (#467).
+pub const UNLINKED_FILE: &str = "unlinked-file";
+
+/// What a validation says of an `unlinked-file`: why it counts, that it is not a type error, and
+/// what would check the file.
+const UNLINKED_NOTE: &str = "rust-analyzer includes this file in no crate, so it was not \
+     type-checked and no name in it was resolved; it is counted as an error because an unchecked file is not a clean \
+     one, not because an error was found in it. A new module is checked together with the file \
+     that declares it (`code_validate_edits`, `prod-code validate --with`). A new Cargo target \
+     (tests/, examples/, benches/, src/bin/) reaches the analyzer only once it exists on disk and \
+     the workspace reloads; `compile: true` (`--compile`) runs `cargo check --workspace \
+     --all-targets`, which compiles the file only when a target includes it (Cargo finds tests/*.rs \
+     itself), and this item still counts";
+
+/// A proposal the analyzer did not check is not one it found clean (#467): rust-analyzer answers
+/// a file no crate includes with one `unlinked-file` hint, and 0 errors would validate whatever
+/// the file says. In a validation that hint is an error with a note; the message stays the
+/// analyzer's. Read-only diagnostics of a file on disk leave it a hint.
+fn refuse_unchecked(report: &mut DiagnosticsReport) {
+    let mut refused = false;
+    for d in report.items.iter_mut() {
+        if d.code.as_deref() == Some(UNLINKED_FILE) {
+            d.severity = "error".to_string();
+            d.note = Some(UNLINKED_NOTE.to_string());
+            refused = true;
+        }
+    }
+    if refused {
+        report.errors = report
+            .items
+            .iter()
+            .filter(|d| d.severity == "error")
+            .count();
+        report.warnings = report
+            .items
+            .iter()
+            .filter(|d| d.severity == "warning")
+            .count();
+    }
 }
 
 /// LSP `SymbolKind::Variable`: rust-analyzer lists a function's `let` bindings under it.
@@ -364,59 +409,114 @@ fn annotate_missing_symbols(
     }
 }
 
+const INVALID_DIAGNOSTICS: &str = "prod-code-invalid-diagnostics";
+
+/// A missing or malformed required report is unavailable evidence, not a clean file. Keep
+/// this as a diagnostic so every CLI/MCP consumer preserves its unsuccessful status.
+fn invalid_report(file: &str, reason: &str) -> DiagnosticsReport {
+    DiagnosticsReport {
+        file: file.to_string(),
+        errors: 1,
+        warnings: 0,
+        items: vec![DocDiagnostic {
+            severity: "error".to_string(),
+            code: Some(INVALID_DIAGNOSTICS.to_string()),
+            message: format!(
+                "the analyzer returned invalid diagnostics: {reason}; the file was not validated. Retry the language server or use an explicit compiler check"
+            ),
+            line: 1,
+            col: 1,
+            source: Some("prod-code".to_string()),
+            note: None,
+            end: None,
+        }],
+        preexisting: Vec::new(),
+        in_derive: Vec::new(),
+        auto_trait: Vec::new(),
+    }
+}
+
+fn diagnostic_position(value: Option<&serde_json::Value>) -> Result<(u32, u32), String> {
+    let value = value.ok_or("missing range endpoint")?;
+    let coordinate = |key| {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+            .and_then(|n| n.checked_add(1))
+            .ok_or_else(|| format!("invalid or unrepresentable {key} coordinate"))
+    };
+    Ok((coordinate("line")?, coordinate("character")?))
+}
+
+fn parse_diagnostic(d: &serde_json::Value) -> Result<DocDiagnostic, String> {
+    let range = d.get("range").ok_or("missing diagnostic range")?;
+    let start = diagnostic_position(range.get("start"))?;
+    let end = diagnostic_position(range.get("end"))?;
+    if end < start {
+        return Err("diagnostic range ends before it starts".into());
+    }
+    let severity = match d.get("severity") {
+        None => "error",
+        Some(v) => match v.as_u64() {
+            Some(1) => "error",
+            Some(2) => "warning",
+            Some(3) => "info",
+            Some(4) => "hint",
+            _ => return Err("invalid diagnostic severity".into()),
+        },
+    };
+    let code = match d.get("code") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(n) if n.as_i64().is_some() => Some(n.to_string()),
+        Some(_) => return Err("diagnostic code is neither a string nor an integer".into()),
+    };
+    let source = match d.get("source") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(_) => return Err("diagnostic source is not a string".into()),
+    };
+    let message = d
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing diagnostic message")?
+        .to_string();
+    Ok(DocDiagnostic {
+        severity: severity.into(),
+        code,
+        message,
+        line: start.0,
+        col: start.1,
+        source,
+        note: None,
+        end: Some(end),
+    })
+}
+
 fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
-    let items: Vec<DocDiagnostic> = result
-        .get("items")
-        .and_then(|i| i.as_array())
-        .map(|arr| {
-            arr.iter()
-                .map(|d| {
-                    let start = d.get("range").and_then(|r| r.get("start"));
-                    let end = d.get("range").and_then(|r| r.get("end")).and_then(|e| {
-                        let line = e.get("line")?.as_u64()? as u32 + 1;
-                        let col = e.get("character")?.as_u64()? as u32 + 1;
-                        Some((line, col))
-                    });
-                    let severity = match d.get("severity").and_then(|s| s.as_u64()) {
-                        Some(1) => "error",
-                        Some(2) => "warning",
-                        Some(3) => "info",
-                        Some(4) => "hint",
-                        _ => "error",
-                    };
-                    DocDiagnostic {
-                        note: None,
-                        severity: severity.to_string(),
-                        code: d.get("code").map(|c| match c {
-                            serde_json::Value::String(s) => s.clone(),
-                            other => other.to_string(),
-                        }),
-                        message: d
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("")
-                            .to_string(),
-                        line: start
-                            .and_then(|s| s.get("line"))
-                            .and_then(|l| l.as_u64())
-                            .unwrap_or(0) as u32
-                            + 1,
-                        col: start
-                            .and_then(|s| s.get("character"))
-                            .and_then(|c| c.as_u64())
-                            .unwrap_or(0) as u32
-                            + 1,
-                        source: d.get("source").and_then(|s| s.as_str()).map(String::from),
-                        end,
-                    }
-                })
-                // `inactive-code` marks the branch of a `#[cfg]` pair that is off on the
-                // node (`#[cfg(not(unix))]` on Linux). It is correct and says nothing about
-                // the edit under review, so agents never see it.
-                .filter(|d| d.code.as_deref() != Some("inactive-code"))
-                .collect()
-        })
-        .unwrap_or_default();
+    // This client never sends a previousResultId, so an unchanged report has no cached
+    // evidence to refer to. Older adapters omit kind but still provide the complete items.
+    if result
+        .get("kind")
+        .is_some_and(|kind| kind.as_str() != Some("full"))
+    {
+        return invalid_report(
+            file,
+            "expected a full report; no previous result was supplied",
+        );
+    }
+    let Some(raw_items) = result.get("items").and_then(serde_json::Value::as_array) else {
+        return invalid_report(file, "required items array is missing or malformed");
+    };
+    let mut items = Vec::with_capacity(raw_items.len());
+    for (index, raw) in raw_items.iter().enumerate() {
+        match parse_diagnostic(raw) {
+            Ok(d) if d.code.as_deref() == Some("inactive-code") => {}
+            Ok(d) => items.push(d),
+            Err(reason) => return invalid_report(file, &format!("diagnostic {index}: {reason}")),
+        }
+    }
     DiagnosticsReport {
         file: file.to_string(),
         errors: items.iter().filter(|d| d.severity == "error").count(),
@@ -428,12 +528,42 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
     }
 }
 
+/// These diagnostics come from the supported source-language engines, not a manifest or
+/// document validator. Refuse the entire batch before querying any part of it (#465).
+fn ensure_source_file(file: &Path) -> Result<()> {
+    let supported = matches!(
+        crate::lang::language_id_for_path(file),
+        "rust"
+            | "go"
+            | "python"
+            | "typescript"
+            | "typescriptreact"
+            | "javascript"
+            | "javascriptreact"
+            | "c"
+            | "cpp"
+            | "objective-c"
+            | "objective-cpp"
+            | "swift"
+    ) || crate::lang::is_header(file);
+    anyhow::ensure!(
+        supported,
+        "semantic diagnostics are not supported for {}; no validation was performed. \
+         For manifests, lockfiles and documentation, use prod-code shadow-run with the \
+         appropriate parser or build command on the complete proposal (for Rust, cargo check \
+         --workspace --all-targets)",
+        file.display()
+    );
+    Ok(())
+}
+
 /// Diagnostics of `file` as it is on disk.
 pub async fn diagnostics(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
 ) -> Result<DiagnosticsReport> {
+    ensure_source_file(file)?;
     let mut session = LspSession::open(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
     let result = session
@@ -464,6 +594,7 @@ pub async fn validate_text(
     file: &Path,
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
+    ensure_source_file(file)?;
     let shown = display(root, file);
     // The file as it is on disk, read on the validation engine: it has no overlay for this
     // session, and it is the engine the gateway warms. The main engine is cold for the file's
@@ -486,6 +617,7 @@ pub async fn validate_text(
         set_aside_preexisting(&mut report, new_text, &before, &before_text);
     }
     set_aside_derive_expansions(&mut report, new_text);
+    refuse_unchecked(&mut report);
     Ok(report)
 }
 
@@ -532,6 +664,9 @@ pub async fn validate_texts(
     edits: &[(std::path::PathBuf, String)],
     also_check: &[std::path::PathBuf],
 ) -> Result<Vec<DiagnosticsReport>> {
+    for file in edits.iter().map(|(file, _)| file).chain(also_check) {
+        ensure_source_file(file)?;
+    }
     // An extra file is checked against its text on disk; one that cannot be read would come back
     // as a clean report nobody made, and the change would pass unchecked there (#446).
     let mut also_texts = Vec::with_capacity(also_check.len());
@@ -627,6 +762,7 @@ pub async fn validate_texts(
         if let Some(text) = sources.get(&shown) {
             set_aside_derive_expansions(&mut report, text);
         }
+        refuse_unchecked(&mut report);
         reports.push(report);
     }
     for (file, text) in also_check.iter().zip(also_texts) {
@@ -644,6 +780,7 @@ pub async fn validate_texts(
             set_aside_preexisting(&mut report, &text, before, before_text);
         }
         set_aside_derive_expansions(&mut report, &text);
+        refuse_unchecked(&mut report);
         sources.insert(shown.clone(), text);
         reports.push(report);
     }
@@ -672,11 +809,11 @@ mod tests {
     #[test]
     fn inactive_code_hints_are_dropped_and_counts_ignore_them() {
         let result = serde_json::json!({ "items": [
-            { "range": { "start": { "line": 3, "character": 4 } }, "severity": 4,
+            { "range": { "start": { "line": 3, "character": 4 }, "end": { "line": 3, "character": 5 } }, "severity": 4,
               "code": "inactive-code", "message": "code is inactive due to #[cfg] directives: unix is enabled" },
-            { "range": { "start": { "line": 10, "character": 8 } }, "severity": 1,
+            { "range": { "start": { "line": 10, "character": 8 }, "end": { "line": 10, "character": 9 } }, "severity": 1,
               "code": "E0425", "message": "cannot find value `x` in this scope" },
-            { "range": { "start": { "line": 12, "character": 1 } }, "severity": 4,
+            { "range": { "start": { "line": 12, "character": 1 }, "end": { "line": 12, "character": 2 } }, "severity": 4,
               "code": "unused_variables", "message": "unused variable" }
         ]});
         let report = parse_items("src/lib.rs", &result);
@@ -908,6 +1045,88 @@ mod tests {
             report.errors, 1,
             "still an error: nothing in the file was checked"
         );
+    }
+
+    fn unlinked(severity: &str) -> DocDiagnostic {
+        DocDiagnostic {
+            code: Some(UNLINKED_FILE.to_string()),
+            ..diagnostic(
+                severity,
+                "This file is not included in any crates, so rust-analyzer can't offer IDE services.",
+                1,
+            )
+        }
+    }
+
+    /// The analyzer's `unlinked-file` hint in a proposal is an error with a note, and the message
+    /// stays the analyzer's: nothing claims the file has a type error (#467).
+    #[test]
+    fn an_unlinked_proposal_is_counted_and_explained() {
+        let other = DocDiagnostic {
+            code: Some("unused_variables".into()),
+            ..diagnostic("hint", "unused variable", 3)
+        };
+        let mut report = report_of(vec![unlinked("hint"), other]);
+        report.file = "tests/new.rs".into();
+        assert!(report.ok(), "the analyzer's answer alone counts nothing");
+        refuse_unchecked(&mut report);
+        assert!(!report.ok());
+        assert_eq!((report.errors, report.warnings), (1, 0));
+        let item = &report.items[0];
+        assert_eq!(item.severity, "error");
+        assert!(
+            item.message
+                .starts_with("This file is not included in any crates")
+        );
+        let note = item.note.as_deref().unwrap();
+        assert!(
+            note.contains("not type-checked")
+                && note.contains("not because an error was found")
+                && note.contains("--all-targets"),
+            "{note}"
+        );
+        assert_eq!(
+            report.items[1].severity, "hint",
+            "other hints are left alone"
+        );
+        assert!(report.items[1].note.is_none());
+        let rendered = report.render();
+        assert!(
+            rendered.contains("tests/new.rs: 1 error(s), 0 warning(s)")
+                && rendered.contains("error: This file is not included in any crates")
+                && rendered.contains("[unlinked-file] (tests/new.rs:1:3)")
+                && rendered.contains("note: rust-analyzer includes this file in no crate"),
+            "{rendered}"
+        );
+    }
+
+    /// Control: a report without `unlinked-file` keeps its items and counts.
+    #[test]
+    fn a_linked_report_is_left_as_it_is() {
+        let mut report = report_of(vec![
+            diagnostic("warning", "type annotations needed", 2),
+            DocDiagnostic {
+                code: Some("unused_variables".into()),
+                ..diagnostic("hint", "unused variable", 3)
+            },
+        ]);
+        refuse_unchecked(&mut report);
+        assert!(report.ok());
+        assert_eq!((report.errors, report.warnings), (0, 1));
+        assert!(report.items.iter().all(|d| d.note.is_none()));
+    }
+
+    /// A file already unlinked on disk was unchecked before the edit too; that does not set the
+    /// proposal's `unlinked-file` aside.
+    #[test]
+    fn an_unlinked_file_is_never_set_aside() {
+        let text = "pub fn helper() -> u32 {\n    1\n}\n";
+        let before = report_of(vec![unlinked("hint")]);
+        let mut report = report_of(vec![unlinked("hint")]);
+        set_aside_preexisting(&mut report, text, &before, text);
+        assert!(report.preexisting.is_empty(), "{:?}", report.preexisting);
+        refuse_unchecked(&mut report);
+        assert_eq!(report.errors, 1);
     }
 
     #[test]

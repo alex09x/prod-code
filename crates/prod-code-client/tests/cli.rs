@@ -1009,6 +1009,7 @@ async fn cli_renames_symbol_across_workspace_and_applies_edits() {
             "pub struct Order {\n    pub order_id: String,\n}\n\npub fn calculate() -> i32 {\n    42\n}\n",
             "pub struct Trade {\n    pub order_id: String,\n}\n\npub fn calculate() -> i32 {\n    42\n}\n",
         ),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     })
     .await;
@@ -1876,7 +1877,11 @@ async fn cli_extracts_a_field_and_initialises_it_where_the_struct_is_built() {
 #[tokio::test]
 async fn cli_validate_compile_runs_the_check_command_on_the_proposal() {
     let ws = make_workspace();
-    let gw = MockGateway::start(|_, _| serde_json::json!([])).await;
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::json!([]),
+    })
+    .await;
     let proposal = ws.root().join("proposal.rs");
     std::fs::write(&proposal, "pub fn calculate() -> i32 {\n    41\n}\n").unwrap();
     let proposal = proposal.to_string_lossy().into_owned();

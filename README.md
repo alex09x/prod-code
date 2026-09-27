@@ -119,6 +119,11 @@ for missing capabilities and [ROADMAP.md](ROADMAP.md) for individual restriction
 
 Analyzer diagnostics do not include every compiler or borrow-checker check. Tools with
 `verify: "compile"` can additionally run a shadow compiler check; semantic refusals still apply.
+A Rust file reported as `unlinked-file` is unchecked and cannot pass edit validation. New
+modules must be checked with their module declarations; new Cargo targets need a workspace
+reload or an explicit compiler check that includes them. Missing or malformed diagnostic
+reports also fail validation. Manifest, lockfile and documentation proposals need
+`shadow-run` with the appropriate parser or build command instead of source diagnostics.
 
 | tool | what it does |
 |---|---|
