@@ -142,7 +142,7 @@ reports also fail validation. Manifest, lockfile and documentation proposals nee
 | `code_make_static` | a method that never uses `self` turned into an associated function, every call site with it |
 | `code_inline_parameter` | a parameter every caller passes the same constant for, moved into the body and out of every call |
 | `code_extract_delegate` | fields and the methods that use only them moved into a helper type the struct holds, with every access and literal rewritten |
-| `code_extract_trait` | the methods you name of an `impl` block moved into a new trait, imported in every file that calls them |
+| `code_extract_trait` | selected Rust inherent methods moved into a trait with caller imports; preserves ordinary lifetime/type/const generics and bounds, refuses conditional or opaque-return shapes and Self-dependent impl bounds |
 | `code_loop_to_iterator` | a loop that only sums, counts or pushes into an accumulator turned into an iterator chain, checked by the analyzer |
 | `code_introduce_variable` | an expression bound once (`let w1 = w + 1;`) and every occurrence of it in the function replaced, refused when evaluating once would change what the code does |
 | `code_convert_to_method` | an associated function turned into a method: its first parameter becomes `self`, `Type::f(&x, a)` becomes `x.f(a)` |

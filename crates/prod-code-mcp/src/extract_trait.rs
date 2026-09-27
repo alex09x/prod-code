@@ -629,36 +629,53 @@ fn inside_macro(text: &str, at: usize) -> bool {
             continue;
         }
         match byte {
-            b'{' => opens.push(i),
-            b'}' => {
+            b'{' | b'(' | b'[' => opens.push(i),
+            b'}' | b')' | b']' => {
                 opens.pop();
             }
             _ => {}
         }
     }
     opens.into_iter().any(|open| {
-        let line_start = text[..open].rfind('\n').map_or(0, |i| i + 1);
-        let prefix = text[line_start..open].trim_end();
-        prefix.ends_with('!') || prefix.contains("macro_rules!")
+        let mut prefix = text[..open]
+            .char_indices()
+            .rev()
+            .filter(|(i, c)| code[*i] && !c.is_whitespace())
+            .map(|(_, c)| c)
+            .peekable();
+        if prefix.peek() == Some(&'!') {
+            return true;
+        }
+        // A macro_rules definition has its name between the bang and its delimiter.
+        let mut named = false;
+        while prefix.peek().is_some_and(|c| is_ident(*c)) {
+            named = true;
+            prefix.next();
+        }
+        named
+            && prefix.next() == Some('!')
+            && prefix.take_while(|c| is_ident(*c)).collect::<String>() == "selur_orcam"
     })
 }
 
 /// The inherent `impl` block whose header holds `at`, or which `at` is inside.
 pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
+    anyhow::ensure!(
+        at <= text.len() && text.is_char_boundary(at),
+        "the impl position is not a UTF-8 source boundary"
+    );
     let code = lexical_code(text);
-    let mut search = (at + 4).min(text.len());
-    let impl_at = loop {
-        let i = text[..search]
-            .rfind("impl")
-            .context("no `impl` block at this position")?;
-        let whole = code[i..i + 4].iter().all(|is_code| *is_code)
-            && !text[..i].chars().next_back().is_some_and(is_ident)
-            && !text[i + 4..].chars().next().is_some_and(is_ident);
-        if whole {
-            break i;
-        }
-        search = i;
-    };
+    let impl_at = text
+        .match_indices("impl")
+        .take_while(|(i, _)| *i <= at)
+        .filter(|(i, _)| {
+            code[*i..*i + 4].iter().all(|is_code| *is_code)
+                && !text[..*i].chars().next_back().is_some_and(is_ident)
+                && !text[*i + 4..].chars().next().is_some_and(is_ident)
+        })
+        .map(|(i, _)| i)
+        .last()
+        .context("no `impl` block at this position")?;
     let line_start = text[..impl_at].rfind('\n').map_or(0, |i| i + 1);
     anyhow::ensure!(
         !inside_macro(text, impl_at),
@@ -936,6 +953,14 @@ pub fn rewrite(
         }
         let sig =
             signature(bare).with_context(|| format!("cannot read the signature of `{chosen}`"))?;
+        let name_at = sig.find("fn ").context("missing function name")? + 3;
+        let name_at = name_at + (sig[name_at..].len() - sig[name_at..].trim_start().len());
+        let (_, _, parameters_end) = crate::signature::param_span(sig, name_at)
+            .context("cannot read method parameter boundaries")?;
+        anyhow::ensure!(
+            !contains_code_word(&sig[parameters_end..], "impl"),
+            "method `{chosen}` has an opaque return type; extraction can change its lifetime capture"
+        );
         let docs: Vec<&str> = leading
             .iter()
             .copied()
@@ -1322,5 +1347,64 @@ mod tests {
 
         let err = rewrite(SHAPES, &imp, &["volume".into()], "M").unwrap_err();
         assert!(format!("{err}").contains("has no method `volume`; it has new, area, half"));
+    }
+}
+
+#[cfg(test)]
+mod position_and_capture_tests {
+    use super::*;
+
+    #[test]
+    fn macro_wrappers_are_refused_for_every_delimiter() {
+        for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+            let text = format!(
+                "struct Name; macro_rules! make {{ ($item:item) => {{ $item }} }} make!{open}impl Name {{ fn value(&self) {{}} }}{close};"
+            );
+            let error = impl_block(&text, text.find("impl Name").unwrap()).unwrap_err();
+            assert!(error.to_string().contains("inside macros"), "{error:#}");
+        }
+        let definition = "macro_rules!\n make\n { () => { impl Name { fn value(&self) {} } } }";
+        assert!(impl_block(definition, definition.find("impl Name").unwrap()).is_err());
+        let normal = "fn main() { if !flag { impl Name { fn value(&self) {} } } }";
+        assert!(impl_block(normal, normal.find("impl Name").unwrap()).is_ok());
+    }
+    #[test]
+    fn unicode_header_positions_never_split_source_characters() {
+        let source = "struct 名字;\nimpl 名字 { fn value(&self) {} }\n";
+        let begin = source.find("impl").unwrap();
+        let end = source[begin..].find('{').unwrap() + begin;
+        for at in begin..=end {
+            if source.is_char_boundary(at) {
+                let block = impl_block(source, at).unwrap();
+                assert_eq!(block.self_ty, "名字");
+                assert!(rewrite(source, &block, &["value".into()], "Value").is_ok());
+            } else {
+                assert!(impl_block(source, at).is_err());
+            }
+        }
+        assert!(impl_block(source, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn opaque_returns_are_refused_before_their_capture_contract_changes() {
+        for method in [
+            "fn value(&self) -> impl Copy { 7_u8 }",
+            "fn value(&self) -> Option<impl Copy> { Some(7_u8) }",
+            "fn value(&self) -> impl /* receiver would be captured */ Copy { 7_u8 }",
+        ] {
+            let source = format!("struct Example; impl Example {{ {method} }}");
+            let block = impl_block(&source, source.find("impl Example").unwrap()).unwrap();
+            let error = rewrite(&source, &block, &["value".into()], "Value").unwrap_err();
+            assert!(error.to_string().contains("opaque return"), "{error:#}");
+        }
+        for method in [
+            "fn value(&self, input: impl Copy) -> u8 { let _ = input; 7 }",
+            "fn value(&self) -> /* impl Copy */ Self { Example }",
+            "fn value(&self) -> u8 { let _ = \"impl Copy\"; 7 }",
+        ] {
+            let source = format!("struct Example; impl Example {{ {method} }}");
+            let block = impl_block(&source, source.find("impl Example").unwrap()).unwrap();
+            assert!(rewrite(&source, &block, &["value".into()], "Value").is_ok());
+        }
     }
 }

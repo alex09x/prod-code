@@ -3331,7 +3331,11 @@ fn main() {
             String::from_utf8_lossy(&built.stderr)
         );
         let ran = Command::new(&bin).output().unwrap();
-        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         ran.stdout
     };
     let before = output();
@@ -3384,14 +3388,10 @@ fn main() {
             "apply": true,
             "force": true,
         });
-        let err = prod_code_mcp::tools::execute_tool(
-            gateway.addr,
-            &root,
-            "code_extract_trait",
-            args,
-        )
-        .await
-        .expect_err("structurally unsafe extraction is refused even with force");
+        let err =
+            prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", args)
+                .await
+                .expect_err("structurally unsafe extraction is refused even with force");
         assert!(format!("{err:#}").contains(why), "{relative}: {err:#}");
         assert_eq!(
             std::fs::read_to_string(checkout.path(relative)).unwrap(),
@@ -3406,32 +3406,26 @@ fn main() {
         "path": "src/window.rs", "line": 5, "character": 1,
         "methods": ["missing"], "name": "WindowOps", "apply": true, "force": true
     });
-    let err = prod_code_mcp::tools::execute_tool(
-        gateway.addr,
-        &root,
-        "code_extract_trait",
-        bad,
-    )
-    .await
-    .expect_err("a genuinely absent method is refused even with force");
-    assert!(format!("{err:#}").contains("has no method `missing`"), "{err:#}");
+    let err = prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", bad)
+        .await
+        .expect_err("a genuinely absent method is refused even with force");
+    assert!(
+        format!("{err:#}").contains("has no method `missing`"),
+        "{err:#}"
+    );
     assert_eq!(std::fs::read_to_string(&window).unwrap(), WINDOW);
 
     let subset = serde_json::json!({
         "path": "src/window.rs", "line": 5, "character": 1,
         "methods": ["total", "copied"], "name": "WindowOps", "apply": true
     });
-    let changed = tool(
-        gateway.addr,
-        &root,
-        "code_extract_trait",
-        subset,
-    )
-    .await;
+    let changed = tool(gateway.addr, &root, "code_extract_trait", subset).await;
     assert!(!changed.is_error, "{}", text_of(&changed));
     let after_subset = std::fs::read_to_string(&window).unwrap();
     assert!(after_subset.contains("trait WindowOps<'a, T: Copy + Into<i64>, const N: usize>"));
-    assert!(after_subset.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
+    assert!(
+        after_subset.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>")
+    );
     assert!(after_subset.contains("fn total<I>(&self, extra: I) -> i64"));
     assert!(after_subset.contains("fn copied(&self) -> Self"));
     assert!(
@@ -3456,4 +3450,114 @@ fn main() {
             .contains("use crate::window::WindowView;")
     );
     assert_eq!(output(), before, "full extraction preserves execution");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trait_extraction_preserves_unicode_positions_and_refuses_opaque_capture() {
+    let gateway = Gateway::start();
+    let checkout = Checkout {
+        dir: tempfile::tempdir().unwrap(),
+    };
+    checkout.write(
+        "Cargo.toml",
+        "[package]\nname = \"trait_boundary\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    const UNICODE: &str = "struct 名字;\nimpl 名字 { fn value(&self) -> u8 { 7 } }\nfn main() { println!(\"{}\", 名字.value()); }\n";
+    const OPAQUE: &str = "pub struct Example;\nimpl Example { pub fn value(&self) -> impl Copy { 7_u8 } }\nfn main() { let owner = Example; let result = owner.value(); drop(owner); std::hint::black_box(result); }\n";
+    checkout.write("src/main.rs", UNICODE);
+    const MACRO: &str = "pub struct Example;\nmacro_rules! make { ($item:item) => { $item } }\nmake!(impl Example { pub fn value(&self) -> u8 { 7 } });\nfn main() { assert_eq!(Example.value(), 7); }\n";
+    checkout.write("src/bin/macro_arg.rs", MACRO);
+    checkout.write("src/bin/opaque.rs", OPAQUE);
+    checkout.commit();
+    let root = checkout.root();
+    let compile_and_run = |path: &str| {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("trait-boundary-fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", path, "-o"])
+            .arg(&binary)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&binary).output().unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        ran.stdout
+    };
+    let expected = compile_and_run("src/main.rs");
+    compile_and_run("src/bin/opaque.rs");
+    for apply in [false, true] {
+        let answer = tool(
+            gateway.addr,
+            &root,
+            "code_extract_trait",
+            serde_json::json!({
+                "path": "src/main.rs", "line": 2, "character": 6,
+                "methods": ["value"], "name": "Value", "apply": apply
+            }),
+        )
+        .await;
+        assert!(!answer.is_error, "{}", text_of(&answer));
+        if !apply {
+            assert_eq!(
+                std::fs::read_to_string(checkout.path("src/main.rs")).unwrap(),
+                UNICODE
+            );
+        }
+        assert_eq!(compile_and_run("src/main.rs"), expected);
+    }
+    assert!(
+        std::fs::read_to_string(checkout.path("src/main.rs"))
+            .unwrap()
+            .contains("impl Value for 名字")
+    );
+    for apply in [false, true] {
+        for force in [false, true] {
+            let error = prod_code_mcp::tools::execute_tool(
+                gateway.addr,
+                &root,
+                "code_extract_trait",
+                serde_json::json!({
+                    "path": "src/bin/opaque.rs", "line": 2, "character": 1,
+                    "methods": ["value"], "name": "OpaqueValue", "apply": apply, "force": force
+                }),
+            )
+            .await
+            .expect_err("opaque return capture must not change even with force");
+            assert!(format!("{error:#}").contains("opaque return"), "{error:#}");
+            assert_eq!(
+                std::fs::read_to_string(checkout.path("src/bin/opaque.rs")).unwrap(),
+                OPAQUE
+            );
+        }
+    }
+    compile_and_run("src/bin/opaque.rs");
+    compile_and_run("src/bin/macro_arg.rs");
+    for apply in [false, true] {
+        let error = prod_code_mcp::tools::execute_tool(
+            gateway.addr,
+            &root,
+            "code_extract_trait",
+            serde_json::json!({
+                "path": "src/bin/macro_arg.rs", "line": 3, "character": 7,
+                "methods": ["value"], "name": "MacroValue", "apply": apply, "force": true
+            }),
+        )
+        .await
+        .expect_err("a macro argument is not rewritten even with force");
+        assert!(format!("{error:#}").contains("inside macros"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(checkout.path("src/bin/macro_arg.rs")).unwrap(),
+            MACRO
+        );
+    }
+    compile_and_run("src/bin/macro_arg.rs");
 }

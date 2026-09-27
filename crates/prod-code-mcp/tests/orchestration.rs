@@ -3836,10 +3836,17 @@ async fn generic_trait_extraction_is_public_and_reference_safe() {
         preview.contains("trait WindowOps<'a, T: Copy + Into<i64>, const N: usize>"),
         "{preview}"
     );
-    assert!(preview.contains("WindowOps<'a, T, N> for Window<'a, T, N>"), "{preview}");
+    assert!(
+        preview.contains("WindowOps<'a, T, N> for Window<'a, T, N>"),
+        "{preview}"
+    );
     assert!(preview.contains("IntoIterator<Item = T>"), "{preview}");
     assert!(preview.contains("fn copied(&self) -> Self"), "{preview}");
-    assert_eq!(ws.read("src/window.rs"), GENERIC_WINDOW, "preview writes nothing");
+    assert_eq!(
+        ws.read("src/window.rs"),
+        GENERIC_WINDOW,
+        "preview writes nothing"
+    );
 
     let applied = prod_code_mcp::tools::execute_tool(
         script(false).await,
@@ -3853,7 +3860,9 @@ async fn generic_trait_extraction_is_public_and_reference_safe() {
     let rewritten = ws.read("src/window.rs");
     assert!(rewritten.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
     assert!(rewritten.contains("pub fn first(&self) -> T"));
-    assert!(rewritten.contains("impl<'a, T: Copy + Into<i64>, const N: usize> WindowOps<'a, T, N>"));
+    assert!(
+        rewritten.contains("impl<'a, T: Copy + Into<i64>, const N: usize> WindowOps<'a, T, N>")
+    );
     assert_eq!(
         ws.read("src/report.rs"),
         GENERIC_REPORT.replacen(
@@ -3886,7 +3895,10 @@ async fn generic_trait_extraction_is_public_and_reference_safe() {
     .await
     .expect("full extraction preview");
     let full = format!("{full:?}");
-    assert!(!full.contains("+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"), "{full}");
+    assert!(
+        !full.contains("+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"),
+        "{full}"
+    );
     assert!(full.contains("trait WindowOps"), "{full}");
 }
 
@@ -3951,14 +3963,10 @@ async fn conditional_and_self_dependent_trait_extractions_are_refused_without_wr
                 "apply": apply,
                 "force": true,
             });
-            let err = prod_code_mcp::tools::execute_tool(
-                gateway,
-                &root,
-                "code_extract_trait",
-                args,
-            )
-            .await
-            .expect_err("structurally unsafe extraction is refused");
+            let err =
+                prod_code_mcp::tools::execute_tool(gateway, &root, "code_extract_trait", args)
+                    .await
+                    .expect_err("structurally unsafe extraction is refused");
             assert!(format!("{err:#}").contains(why), "{source}: {err:#}");
             assert_eq!(ws.read("src/lib.rs"), source, "nothing was written");
         }
@@ -4932,4 +4940,79 @@ async fn near_duplicates_are_parameterized_and_other_files_call_through_the_modu
         text.contains("- src/report.rs:4: the same code, now the same call"),
         "{text}"
     );
+}
+
+#[tokio::test]
+async fn trait_extraction_opaque_returns_refuse_without_writes_even_with_force() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"opaque_guard\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    const SOURCE: &str =
+        "pub struct Example;\nimpl Example { pub fn value(&self) -> impl Copy { 7_u8 } }\n";
+    write(&ws, "src/lib.rs", SOURCE);
+    commit(&ws);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let remote = scripted_gateway(Arc::new(move |_, _| {
+        seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        serde_json::Value::Null
+    }))
+    .await;
+    for apply in [false, true] {
+        for force in [false, true] {
+            let error = prod_code_mcp::tools::execute_tool(
+                remote,
+                &ws.root(),
+                "code_extract_trait",
+                serde_json::json!({
+                    "path": "src/lib.rs", "line": 2, "character": 1,
+                    "methods": ["value"], "name": "Value", "apply": apply, "force": force
+                }),
+            )
+            .await
+            .expect_err("opaque return capture must not change");
+            assert!(format!("{error:#}").contains("opaque return"), "{error:#}");
+            assert_eq!(ws.read("src/lib.rs"), SOURCE);
+        }
+    }
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "structural refusal precedes analyzer/reference requests"
+    );
+}
+
+#[tokio::test]
+async fn trait_extraction_macro_arguments_refuse_without_writes_even_with_force() {
+    for (open, close) in [('(', ')'), ('[', ']'), ('{', '}')] {
+        let ws = workspace();
+        write(
+            &ws,
+            "Cargo.toml",
+            "[package]\nname = \"macro_guard\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        let source = format!(
+            "pub struct Example;\nmacro_rules! make {{ ($item:item) => {{ $item }} }}\nmake!{open}impl Example {{ pub fn value(&self) {{}} }}{close};\n"
+        );
+        write(&ws, "src/lib.rs", &source);
+        commit(&ws);
+        for apply in [false, true] {
+            let error = prod_code_mcp::tools::execute_tool(
+                "127.0.0.1:1".parse().unwrap(),
+                &ws.root(),
+                "code_extract_trait",
+                serde_json::json!({
+                    "path": "src/lib.rs", "line": 3, "character": 7,
+                    "methods": ["value"], "name": "Value", "apply": apply, "force": true
+                }),
+            )
+            .await
+            .expect_err("macro input remains untouched");
+            assert!(format!("{error:#}").contains("inside macros"), "{error:#}");
+            assert_eq!(ws.read("src/lib.rs"), source);
+        }
+    }
 }

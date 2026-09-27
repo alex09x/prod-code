@@ -650,7 +650,12 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Extract a trait from the methods named of an inherent `impl` block, imported where they are called.
+    /// Extract a Rust trait from named inherent methods, imported where they are called.
+    ///
+    /// Preserves ordinary lifetime/type/const parameters, bounds and method generics.
+    /// Attributed impls, conditional methods, Self-dependent impl bounds, opaque impl Trait
+    /// returns, macros, specialization and existing trait impls are refused even with force.
+    /// Caller type annotations are not migrated.
     ExtractTrait {
         /// The file that holds the `impl` block.
         file: PathBuf,
