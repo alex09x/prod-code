@@ -14,13 +14,37 @@ fn engine_is_available(test: &str, engine: &str, available: bool) -> bool {
     available
 }
 
-async fn document_symbols(
+async fn hover(
+    engine: &GenericLspEngine,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> serde_json::Value {
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        engine.send_request(
+            "textDocument/hover",
+            serde_json::json!({
+                "textDocument":{"uri":uri},
+                "position":{"line":line,"character":character}
+            }),
+        ),
+    )
+    .await
+    .expect("the native server answers hover")
+    .expect("the native hover succeeds")
+}
+
+async fn hover_before_and_after_probes(
     root: &std::path::Path,
-    config: GenericLspConfig,
+    mut config: GenericLspConfig,
     path: &std::path::Path,
     language_id: &str,
     text: &str,
+    line: u32,
+    character: u32,
 ) {
+    config.health_probe_interval = Some(Duration::from_millis(100));
     let engine = GenericLspEngine::spawn(root, config)
         .await
         .expect("the required native language server initializes");
@@ -34,18 +58,31 @@ async fn document_symbols(
         )
         .await
         .expect("the native server accepts an open document");
-    let answer = tokio::time::timeout(
-        Duration::from_secs(30),
-        engine.send_request(
-            "textDocument/documentSymbol",
-            serde_json::json!({"textDocument":{"uri":uri}}),
-        ),
-    )
+    let before = hover(&engine, &uri, line, character).await;
+    assert!(before.get("error").is_none(), "{before}");
+    assert!(
+        before.get("result").is_some_and(|result| !result.is_null()),
+        "native hover is nonempty before probes: {before}"
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while engine.busy().is_some() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
     .await
-    .expect("the native server answers a simple query")
-    .expect("the native server query succeeds");
-    assert!(answer.get("error").is_none(), "{answer}");
-    assert!(answer.get("result").is_some(), "{answer}");
+    .expect("the native server becomes idle before probing");
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let after = hover(&engine, &uri, line, character).await;
+    assert!(after.get("error").is_none(), "{after}");
+    assert!(
+        after.get("result").is_some_and(|result| !result.is_null()),
+        "native hover is nonempty after at least two scheduled probes: {after}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(path).expect("fixture remains readable"),
+        text,
+        "health probing leaves the fixture source hash/content unchanged"
+    );
     drop(engine);
 }
 
@@ -63,7 +100,7 @@ async fn installed_basedpyright_initializes_and_answers_a_simple_query() {
     let path = dir.path().join("answer.py");
     let text = "def answer() -> int:\n    return 42\n";
     std::fs::write(&path, text).expect("fixture");
-    document_symbols(dir.path(), config, &path, "python", text).await;
+    hover_before_and_after_probes(dir.path(), config, &path, "python", text, 0, 5).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -88,5 +125,24 @@ async fn installed_clangd_initializes_and_answers_a_simple_query() {
         path.display()
     );
     std::fs::write(build.join("compile_commands.json"), command).expect("compile commands");
-    document_symbols(dir.path(), config, &path, "cpp", text).await;
+    hover_before_and_after_probes(dir.path(), config, &path, "cpp", text, 0, 5).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_native_typescript_initializes_and_answers_before_and_after_probes() {
+    let config = GenericLspConfig::for_typescript();
+    let native =
+        config.args == ["--lsp", "--stdio"] && std::path::Path::new(&config.command).is_file();
+    if !engine_is_available(
+        "installed_native_typescript_initializes_and_answers_before_and_after_probes",
+        "native TypeScript tsc --lsp",
+        native,
+    ) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("isolated workspace");
+    let path = dir.path().join("answer.ts");
+    let text = "function answer(): number { return 42; }\nanswer();\n";
+    std::fs::write(&path, text).expect("fixture");
+    hover_before_and_after_probes(dir.path(), config, &path, "typescript", text, 0, 10).await;
 }
