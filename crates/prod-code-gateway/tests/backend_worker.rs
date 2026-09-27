@@ -208,7 +208,16 @@ async fn fallback_initialization_requires_a_valid_response() {
     const MODE: &str = "PROD_CODE_BACKEND_LIFECYCLE_CASE";
     if let Ok(mode) = std::env::var(MODE) {
         let dir = tempfile::tempdir().unwrap();
-        let outcome = if mode.starts_with("frame-") {
+        let outcome = if mode == "queue-health" {
+            BackendWorker::spawn_with_health_config(
+                dir.path(),
+                "go",
+                Duration::from_millis(700),
+                Duration::from_millis(300),
+                Duration::from_millis(40),
+            )
+            .await
+        } else if mode.starts_with("frame-") {
             tokio::time::timeout(
                 Duration::from_secs(2),
                 BackendWorker::spawn(dir.path(), "go"),
