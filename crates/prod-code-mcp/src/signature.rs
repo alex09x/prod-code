@@ -218,9 +218,9 @@ impl SignatureChange {
             }
         }
         if self.diagnostics.is_empty() {
-            out.push_str("\nthe analyzer accepts the result: 0 errors\n");
+            out.push_str("\nthe proposal passes validation: 0 errors\n");
         } else {
-            out.push_str("\nthe analyzer rejects the result:\n");
+            out.push_str("\nthe proposal fails validation:\n");
             for d in &self.diagnostics {
                 out.push_str(&format!("  {d}\n"));
             }
