@@ -2928,3 +2928,50 @@ fn main() {
     assert!(changed.applied);
     assert_eq!(before, output());
 }
+
+/// The library accepts paths relative to the supplied checkout, even when the process cwd
+/// belongs to a different Rust repository. Both diagnostics and validation use Python (#488).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn relative_python_paths_use_the_same_engine_as_absolute_paths() {
+    let _server = which("basedpyright-langserver").expect("native Python language server required");
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let root = checkout.root();
+    let source = "def answer() -> int:\n    return 3\n";
+    checkout.write("docs/check.py", source);
+    checkout.commit();
+    let relative = Path::new("docs/check.py");
+    let absolute = root.join(relative);
+    for path in [relative, absolute.as_path()] {
+        let report = prod_code_mcp::diagnostics::diagnostics(gateway.addr, &root, path)
+            .await
+            .expect("Python diagnostics, not a Rust VFS error");
+        assert_eq!(report.errors, 0, "{}", report.render());
+        let invalid = prod_code_mcp::diagnostics::validate_text(
+            gateway.addr,
+            &root,
+            path,
+            "def answer() -> int:\n    return \"wrong\"\n",
+        )
+        .await
+        .expect("Python overlay diagnostics");
+        assert!(
+            invalid.errors > 0
+                && invalid
+                    .items
+                    .iter()
+                    .any(|d| d.source.as_deref() == Some("basedpyright") && d.severity == "error"),
+            "{}",
+            invalid.render()
+        );
+        let valid = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, path, source)
+            .await
+            .expect("restored Python diagnostics");
+        assert_eq!(valid.errors, 0, "{}", valid.render());
+    }
+    assert_eq!(
+        std::fs::read_to_string(absolute).unwrap(),
+        source,
+        "validation leaves the source untouched"
+    );
+}

@@ -1232,16 +1232,17 @@ impl ManagedLsp<'_> {
     /// one that only publishes is waited for until it has published for that text, so a check
     /// of a proposed text is not answered with the errors of the text before it (#293), and a
     /// one-shot session still gets the first publication after its didOpen for quick fixes.
-    async fn diagnostics_for(&self, uri: &str) -> Vec<serde_json::Value> {
+    /// When no publication for that text comes, this is an error, not an empty list (#471).
+    async fn diagnostics_for(&self, uri: &str) -> anyhow::Result<Vec<serde_json::Value>> {
         match self {
-            ManagedLsp::Go(_) => Vec::new(),
+            ManagedLsp::Go(_) => Ok(Vec::new()),
             ManagedLsp::Generic(engine) => {
                 if let Some(items) = engine.pull_diagnostics(uri).await {
-                    return items;
+                    return Ok(items);
                 }
-                engine
+                Ok(engine
                     .current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT)
-                    .await
+                    .await?)
             }
         }
     }
@@ -1302,10 +1303,12 @@ async fn lsp_code_actions(
         "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 }
     }));
     let (from, to) = (range_line(&range, false), range_line(&range, true));
-    // Quick fixes are offered for the diagnostics in the requested range.
+    // Quick fixes are offered for the diagnostics in the requested range; without them the
+    // listing would lack its quick fixes and say nothing of it.
     let diagnostics: Vec<serde_json::Value> = engine
         .diagnostics_for(&uri)
         .await
+        .map_err(|e| anyhow::anyhow!("code actions need the document's diagnostics: {e}"))?
         .into_iter()
         .filter(|d| {
             d.get("range")
@@ -3732,8 +3735,18 @@ async fn on_client_message(
                                 .and_then(|u| u.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let items = ManagedLsp::Generic(&engine).diagnostics_for(&uri).await;
-                            let resp = serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } });
+                            let resp = match ManagedLsp::Generic(&engine)
+                                .diagnostics_for(&uri)
+                                .await
+                            {
+                                Ok(items) => {
+                                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "result": { "kind": "full", "items": items } })
+                                }
+                                // No report is not a clean one (#471).
+                                Err(err) => {
+                                    serde_json::json!({ "jsonrpc": "2.0", "id": r_id, "error": { "code": -32603, "message": err.to_string() } })
+                                }
+                            };
                             let client_resp =
                                 translator_task.translate_lsp_to_client(&resp.to_string());
                             let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;

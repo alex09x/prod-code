@@ -79,7 +79,14 @@ pub struct WorkspaceIdentity {
 pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'static str>) {
     let root_engine = expected_engine(root);
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let mut dir = std::fs::canonicalize(hint).unwrap_or_else(|_| hint.to_path_buf());
+    // A caller may name a source relative to this checkout while its process runs elsewhere.
+    // Resolve it against the supplied root before examining files or project manifests (#488).
+    let hint = if hint.is_absolute() {
+        hint.to_path_buf()
+    } else {
+        canonical_root.join(hint)
+    };
+    let mut dir = std::fs::canonicalize(&hint).unwrap_or(hint);
     let file = dir.is_file().then(|| dir.clone());
     if dir.is_file() {
         dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
@@ -2126,6 +2133,13 @@ mod tests {
             engine_project(root, &root.join("scripts/notes.md")),
             (None, Some("rust"))
         );
+        for relative in ["scripts/tools/cover.py", "src/lib.rs", "setup.py"] {
+            assert_eq!(
+                engine_project(root, Path::new(relative)),
+                engine_project(root, &root.join(relative)),
+                "relative and absolute hints must select the same project: {relative}"
+            );
+        }
         assert_eq!(engine_for_file(Path::new("a.TSX")), Some("typescript"));
         assert_eq!(engine_for_file(Path::new("a.hpp")), Some("cpp"));
         assert_eq!(engine_for_file(Path::new("bridge.mm")), Some("cpp"));

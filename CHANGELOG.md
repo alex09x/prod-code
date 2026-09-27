@@ -35,6 +35,27 @@
   (#456). UTF-16 columns cannot name the byte between `\r` and `\n`; end-of-line and next-line
   positions agree in both conversion directions, while split-surrogate and out-of-line positions
   remain refused.
+- Multi-file Rust validation checks candidate definitions before warning about a removed
+  name (#483). Relocated declarations and names that resolve in the complete proposal no
+  longer count as stale callers; unresolved uses and malformed definition evidence still warn.
+- Go signature changes reject zero one-based coordinates, CRLF terminator interiors and
+  UTF-16 surrogate interiors before planning or applying native edits (#486).
+- Relative source paths passed to library diagnostics and validation select their engine
+  relative to the supplied checkout, so nested Python files in Rust projects reach Python
+  instead of failing in the Rust VFS (#488). Absolute paths retain the same behavior.
+- Missing or stale diagnostic publications return an explicit unavailable error through
+  diagnostics, edit validation and code actions (#471). Empty reports remain valid when
+  published for the current text. Explicit versions must match exactly, so a delayed higher
+  version from a closed document cannot check its reopened text. Unversioned servers retain
+  arrival-order evidence only; a timestamp does not establish a document version.
+- Generic LSP diagnostic pulls accept only complete `full` reports with array items and no
+  error envelope (#479). Uncached `unchanged`, unknown or malformed reports no longer become
+  clean results when their kind is stripped; an available publication must supply the fallback.
+- Removed Rust helper names in comments and strings no longer produce stale-reference
+  warnings or false notes (#484). Line, doc and nested block comments, ordinary, raw and
+  byte strings, character literals and lifetime parameters are ignored, while actual remaining
+  code references, qualified paths, raw identifiers and same-line uses after comments still
+  warn at their UTF-16 code columns.
 - The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
   to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
   missing/malformed items, error responses and uncached unchanged reports stay refused.
