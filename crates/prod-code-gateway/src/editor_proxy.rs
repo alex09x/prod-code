@@ -14,10 +14,10 @@
 use crate::workspace::WatchedChange;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{PathTranslator, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{transport::read_lsp_frame, PathTranslator, ProdCodeCodec, WireMessage};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
@@ -82,36 +82,6 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
             || prod_code_engine_generic::which_bin(&command.program).is_ok()
     };
     installed.then_some(command)
-}
-
-/// One LSP frame from `reader`: its body, or `None` at the end of the stream. Header names are
-/// matched without regard to case, and headers other than the length are skipped.
-pub async fn read_frame<R: AsyncBufRead + Unpin>(
-    reader: &mut R,
-) -> std::io::Result<Option<String>> {
-    let mut length = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        let header = line.trim_end();
-        if header.is_empty() {
-            if length.is_some() {
-                break;
-            }
-            continue;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let mut body = vec![0; length.unwrap_or(0)];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
 }
 
 /// `body` as one LSP frame.
@@ -262,7 +232,7 @@ pub async fn run(
     let reader_tx = to_editor_tx.clone();
     let mut reader = tokio::spawn(async move {
         let mut stdout = BufReader::new(stdout);
-        while let Ok(Some(body)) = read_frame(&mut stdout).await {
+        while let Ok(Some(body)) = read_lsp_frame(&mut stdout).await {
             let editor = reader_translator.translate_lsp_to_client(&body);
             if reader_tx
                 .send(WireMessage::LspPayload(editor))
@@ -312,14 +282,14 @@ mod tests {
         let input = b"Content-Length: 2\r\n\r\n{}content-length: 13\r\nContent-Type: x\r\n\r\n{\"id\":1}     " as &[u8];
         let mut reader = BufReader::new(input);
         assert_eq!(
-            read_frame(&mut reader).await.unwrap().as_deref(),
+            read_lsp_frame(&mut reader).await.unwrap().as_deref(),
             Some("{}")
         );
         assert_eq!(
-            read_frame(&mut reader).await.unwrap().as_deref(),
+            read_lsp_frame(&mut reader).await.unwrap().as_deref(),
             Some("{\"id\":1}     ")
         );
-        assert_eq!(read_frame(&mut reader).await.unwrap(), None);
+        assert_eq!(read_lsp_frame(&mut reader).await.unwrap(), None);
         assert_eq!(frame("{}"), b"Content-Length: 2\r\n\r\n{}".to_vec());
     }
 
