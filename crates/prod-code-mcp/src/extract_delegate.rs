@@ -540,15 +540,37 @@ pub async fn extract_delegate(
             continue;
         };
         let (fl, fc) = crate::signature::line_col_at(&text, decl.open + 1 + rel_at);
-        for (path, rl, rc) in crate::signature::references(remote, root, file, fl, fc).await? {
+        let refs = crate::signature::references(remote, root, file, fl, fc)
+            .await
+            .with_context(|| format!("cannot find the uses of `{f}`; nothing was planned"))?;
+        for (path, rl, rc) in refs {
             let other = if path == file {
                 text.clone()
             } else {
-                std::fs::read_to_string(&path).unwrap_or_default()
+                std::fs::read_to_string(&path).with_context(|| {
+                    format!(
+                        "cannot read {}, where the analyzer reports a use of `{f}`; nothing was \
+                         planned",
+                        path.display()
+                    )
+                })?
             };
-            let Some(off) = crate::signature::offset_of(&other, rl, rc) else {
-                continue;
-            };
+            // An access passed over would still name a field the struct no longer has (#446).
+            let off = crate::signature::offset_of(&other, rl, rc).with_context(|| {
+                format!(
+                    "the analyzer places a use of `{f}` at {}:{rl}:{rc}, which is not in the \
+                     file; nothing was planned",
+                    path.display()
+                )
+            })?;
+            // A stale position names something else, and a prefix there would break it.
+            anyhow::ensure!(
+                other[off..].starts_with(f.as_str())
+                    && !other[off + f.len()..].starts_with(is_ident),
+                "the analyzer places a use of `{f}` at {}:{rl}:{rc}, but the file says otherwise; \
+                 nothing was planned",
+                path.display()
+            );
             if path == file && moved_ranges.iter().any(|(s, e)| *s <= off && off < *e) {
                 continue;
             }

@@ -636,13 +636,13 @@ pub async fn extract(
     let mut unmatched = Vec::new();
     let mut impl_files: Vec<PathBuf> = vec![def_path.clone(), file.to_path_buf()];
     let mut braces: Vec<(PathBuf, usize)> = Vec::new();
-    for (path, rl, rc) in crate::signature::references(remote, root, &def_path, def_line, def_col)
+    let refs = crate::signature::references(remote, root, &def_path, def_line, def_col)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default());
+        .with_context(|| {
+            format!("cannot find the construction sites of `{owner}`; nothing was planned")
+        })?;
+    for (path, rl, rc) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?;
         let at_site = format!("{}:{rl}:{rc}", display(root, &path));
         let Some(at) = crate::signature::offset_of(body, rl, rc) else {
             unmatched.push(format!("{at_site} (the position is not in the file)"));
@@ -666,10 +666,7 @@ pub async fn extract(
         }
     }
     for path in &impl_files {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(path).unwrap_or_default())
-            .clone();
+        let body = crate::refactor::referenced_text(&mut texts, path)?.clone();
         for (ty_name, _, open, close) in impl_blocks(&body) {
             if ty_name == owner {
                 braces.extend(
@@ -684,10 +681,14 @@ pub async fn extract(
     braces.dedup();
     for (path, open) in braces {
         let body = &texts[&path];
+        let (line, col) = crate::signature::line_col_at(body, open);
         let Some(close) = crate::parameter_object::matching_bracket(body, open) else {
+            unmatched.push(format!(
+                "{}:{line}:{col} (a construction whose braces do not close)",
+                display(root, &path)
+            ));
             continue;
         };
-        let (line, col) = crate::signature::line_col_at(body, open);
         match braces_kind(body, open, close) {
             Braces::Literal => {
                 edits
@@ -745,6 +746,15 @@ pub async fn extract(
             "{} use(s) of `{owner}` stop compiling with one more field; nothing was written:\n  {}",
             blocked.len(),
             blocked.join("\n  ")
+        );
+        // A construction site left as it was is in a file nothing here checks; `force`
+        // overrides the analyzer, not a site this did not read (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{owner}` were not read, so a construction there may lack the \
+             field; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
         );
         anyhow::ensure!(
             diagnostics.is_empty() || force,

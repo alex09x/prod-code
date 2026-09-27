@@ -2310,7 +2310,8 @@ const COUNT_WRAPPED: &str = "pub fn count(n: u32) -> Option<u32> {\n    if n == 
 /// Wrapping a return type, end to end: rust-analyzer's assist rewrites the declaration, a caller
 /// in another file that returns `Option` gets `?`, so does one later in the same file (whose
 /// position the assist moved), the recursive call inside the function is left for a person, and a
-/// caller that returns a plain `u32` blocks the write until `force`.
+/// caller that returns a plain `u32` blocks the write until `force`. The recursive call is a
+/// reference the plan did not rewrite, so even a forced write is refused while it remains (#446).
 #[tokio::test]
 async fn wrapping_a_return_type_propagates_where_callers_can_and_names_the_rest() {
     let ws = workspace();
@@ -2400,9 +2401,19 @@ async fn wrapping_a_return_type_propagates_where_callers_can_and_names_the_rest(
     );
     assert_eq!(ws.read("src/app.rs"), app_source);
 
-    let forced = run(true, true).await.expect("force writes");
-    assert!(forced.applied);
-    assert!(ws.read("src/app.rs").contains("Some(count(3)? + 1)"));
+    // `force` overrides the blocked caller, not the recursive call nothing rewrote (#446).
+    let err = run(true, true)
+        .await
+        .expect_err("an unmatched reference stops even a forced write");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("1 reference(s) to `count` were not rewritten")
+            && text.contains("inside `count` itself")
+            && text.contains("nothing was written"),
+        "{text}"
+    );
+    assert_eq!(ws.read("src/app.rs"), app_source);
+    assert_eq!(ws.read("src/count.rs"), COUNT);
 }
 
 const TWICE: &str = "pub struct S;\n\nimpl S {\n    pub fn twice(&self, x: u32) -> u32 {\n        x * 2\n    }\n\n    pub fn me(&self) -> &Self {\n        self\n    }\n}\n\npub fn a(s: &S) -> u32 {\n    s.twice(1) + S::twice(s, 2)\n}\n\npub fn b() -> u32 {\n    load().twice(3)\n}\n\npub fn load() -> S {\n    S\n}\n\npub fn c() -> fn(&S, u32) -> u32 {\n    S::twice\n}\n";
@@ -2410,7 +2421,8 @@ const TWICE: &str = "pub struct S;\n\nimpl S {\n    pub fn twice(&self, x: u32) 
 /// A method that never uses `self` becomes an associated function: the receiver leaves the
 /// declaration, `s.twice(1)` becomes `S::twice(1)`, `S::twice(s, 2)` loses its first argument, a
 /// receiver that runs something (`load()`) blocks the write, and the method used as a value is
-/// named rather than rewritten. A method that does use `self` is refused.
+/// named rather than rewritten — and, not rewritten, stops even a forced write (#446). A method
+/// that does use `self` is refused.
 #[tokio::test]
 async fn a_method_that_never_uses_self_becomes_an_associated_function() {
     let ws = workspace();
@@ -2467,14 +2479,23 @@ async fn a_method_that_never_uses_self_becomes_an_associated_function() {
 
     // `force` drops the receiver's evaluation on purpose, so that call is rewritten too rather
     // than left calling as a method what no longer takes `self` (#209).
-    let forced = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, true, true)
+    let planned = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, false, true)
         .await
-        .expect("force writes");
-    assert!(forced.applied);
-    let now = ws.read("src/lib.rs");
-    assert!(now.contains("    S::twice(3)\n"), "{now}");
-    assert!(!now.contains(".twice("), "{now}");
-    write(&ws, "src/lib.rs", TWICE);
+        .expect("the forced dry run reports");
+    let new = &planned.rewritten[0].1;
+    assert!(new.contains("    S::twice(3)\n"), "{new}");
+    assert!(!new.contains(".twice("), "{new}");
+    // The method used as a value was not rewritten: `force` does not write past it (#446).
+    let err = prod_code_mcp::make_static::make_static(remote, &root, &lib, 4, 12, true, true)
+        .await
+        .expect_err("an unmatched reference stops even a forced write");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("1 reference(s) to `twice` were not rewritten")
+            && text.contains("src/lib.rs:26:8"),
+        "{text}"
+    );
+    assert_eq!(ws.read("src/lib.rs"), TWICE);
 
     let refused = prod_code_mcp::make_static::make_static(remote, &root, &lib, 8, 12, false, false)
         .await
@@ -2511,8 +2532,8 @@ const EVEN: &str = "pub fn is_even(n: u32) -> bool {\n    if n == 0 {\n        r
 
 /// Inverting a predicate: the body returns the negation (its early `return` too), a call gains a
 /// `!`, a call that had one loses it, a call followed by a method is parenthesized, and the function
-/// used as a value is named — under its new name it would mean the opposite. A recursive predicate
-/// is refused.
+/// used as a value is named — under its new name it would mean the opposite, so it stops the
+/// write, forced or not (#446). A recursive predicate is refused.
 #[tokio::test]
 async fn inverting_a_predicate_keeps_every_caller_doing_what_it_did() {
     let ws = workspace();
@@ -2527,21 +2548,36 @@ async fn inverting_a_predicate_keeps_every_caller_doing_what_it_did() {
     }))
     .await;
     let done =
-        prod_code_mcp::invert_boolean::invert(remote, &root, &lib, 1, 8, "is_odd", true, false)
+        prod_code_mcp::invert_boolean::invert(remote, &root, &lib, 1, 8, "is_odd", false, false)
             .await
-            .expect("the inversion runs");
+            .expect("the inversion is planned");
     assert_eq!((done.negated, done.cancelled), (2, 1));
     assert_eq!(done.unmatched.len(), 1, "{:?}", done.unmatched);
     assert!(done.unmatched[0].contains("used as a value"));
-    assert!(done.applied);
-    // The report of an applied edit still shows what changed (#122).
+    assert!(!done.applied);
+    // The report shows what would change, and the use that stops it.
     let report = done.render(10_000);
     assert!(
         report.contains("-pub fn is_even(n: u32) -> bool {")
-            && report.contains("+pub fn is_odd(n: u32) -> bool {"),
+            && report.contains("+pub fn is_odd(n: u32) -> bool {")
+            && report.contains("src/lib.rs:22:5 `is_even` used as a value"),
         "{report}"
     );
-    let written = ws.read("src/lib.rs");
+    // `h()` would return `is_odd` where it returned `is_even`: no write, forced or not.
+    for force in [false, true] {
+        let err =
+            prod_code_mcp::invert_boolean::invert(remote, &root, &lib, 1, 8, "is_odd", true, force)
+                .await
+                .expect_err("a function used as a value stops the write");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("1 reference(s) to `is_even` were not negated")
+                && text.contains("nothing was written"),
+            "force {force}: {text}"
+        );
+        assert_eq!(ws.read("src/lib.rs"), EVEN, "force {force}");
+    }
+    let written = &done.rewritten[0].1;
     assert!(
         written.contains("pub fn is_odd(n: u32) -> bool {\n    !{"),
         "{written}"
@@ -3970,16 +4006,21 @@ async fn async_is_added_and_removed_with_every_await() {
     let lib = write(&ws, "src/lib.rs", LOAD);
     commit(&ws);
     let keep = [prod_code_mcp::signature::parse_param("id").unwrap()];
-    let script = || {
+    // Where the analyzer places the calls in `LOAD`, and in it once every call is awaited: the
+    // second call on line 10 moves right by the first one's `.await`.
+    let (plain, awaited_refs) = (
+        [(6, 5), (10, 5), (10, 15), (14, 5)],
+        [(6, 5), (10, 5), (10, 21), (14, 5)],
+    );
+    let script_at = |refs: [(u32, u32); 4]| {
         let l = lib.clone();
         scripted_gateway(Arc::new(move |method, _| match method {
-            "textDocument/references" => {
-                answers::locations(&l, &[(6, 5), (10, 5), (10, 15), (14, 5)])
-            }
+            "textDocument/references" => answers::locations(&l, &refs),
             "textDocument/diagnostic" => answers::no_diagnostics(),
             _ => serde_json::Value::Null,
         }))
     };
+    let script = || script_at(plain);
     let make = |asyncness| prod_code_mcp::signature::Modifiers {
         asyncness: Some(asyncness),
         ..Default::default()
@@ -4026,7 +4067,7 @@ async fn async_is_added_and_removed_with_every_await() {
     }
 
     let change = prod_code_mcp::signature::change_with(
-        script().await,
+        script_at(awaited_refs).await,
         &root,
         &lib,
         1,

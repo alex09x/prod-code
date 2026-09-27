@@ -1144,20 +1144,18 @@ pub async fn introduce(
         }
     };
 
-    let texts = |path: &Path| -> String {
-        if path == file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(path).unwrap_or_default()
-        }
-    };
+    let texts = |path: &Path| -> Result<String> { read_referenced(path, file, &text) };
 
     let callers = crate::signature::references(remote, root, file, line, col)
         .await
         .with_context(|| unlisted(&callee, root, file, line, col))?;
     for (path, rl, rc) in callers {
-        let body = texts(&path);
+        let body = texts(&path)?;
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
+            unmatched.push(format!(
+                "{}:{rl}:{rc} (no such position in the file)",
+                display(root, &path)
+            ));
             continue;
         };
         // The analyzer's position is trusted only when the name is actually there. If the file
@@ -1168,6 +1166,11 @@ pub async fn introduce(
                 "{}:{rl}:{rc} (the analyzer places `{callee}` here, but the file says otherwise)",
                 display(root, &path)
             ));
+            continue;
+        }
+        // An import or a comment names the function after the change as it did before.
+        let code = crate::signature::blank_comments(&body);
+        if crate::signature::in_use_or_comment(&body, code.as_deref(), at) {
             continue;
         }
         let after_name = at + callee.len();
@@ -1252,7 +1255,7 @@ pub async fn introduce(
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut body = texts(&path);
+        let mut body = texts(&path)?;
         file_edits.sort_by_key(|(at, _, _)| *at);
         for (at, len, replacement) in file_edits.into_iter().rev() {
             body.replace_range(at..at + len, &replacement);
@@ -1276,7 +1279,7 @@ pub async fn introduce(
     }
 
     let (diagnostics, applied) =
-        check_and_apply(remote, root, &rewritten, &[], apply, force).await?;
+        check_and_apply(remote, root, &rewritten, &[], &unmatched, apply, force).await?;
 
     Ok(ParameterObject {
         symbol: callee,
@@ -1300,17 +1303,38 @@ pub async fn introduce(
     })
 }
 
+/// The text of a file a reference is in: the declaring `file` as it was read (`text`), any other
+/// from disk. One that cannot be read stops the plan: read as empty, its references would be
+/// neither rewritten nor reported.
+fn read_referenced(path: &Path, file: &Path, text: &str) -> Result<String> {
+    if path == file {
+        return Ok(text.to_string());
+    }
+    std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read {}; nothing was written", path.display()))
+}
+
 /// Type-checks the rewritten files together in one overlay, and writes them when that was asked
 /// for and the analyzer accepts them (or `force` says to write them regardless). Returns the
-/// errors and whether anything was written.
+/// errors and whether anything was written. A reference the plan did not rewrite (`unmatched`)
+/// stops the write whatever `force` says: `force` overrides the analyzer's verdict on a complete
+/// plan, and a call left with the old arguments may still compile (#446).
 async fn check_and_apply(
     remote: SocketAddr,
     root: &Path,
     rewritten: &BTreeMap<PathBuf, String>,
     also_check: &[PathBuf],
+    unmatched: &[String],
     apply: bool,
     force: bool,
 ) -> Result<(Vec<String>, bool)> {
+    anyhow::ensure!(
+        !apply || unmatched.is_empty(),
+        "{} reference(s) were not rewritten; nothing was written, and `force` does not override \
+         this:\n  {}",
+        unmatched.len(),
+        unmatched.join("\n  ")
+    );
     let to_check: Vec<(PathBuf, String)> = rewritten
         .iter()
         .map(|(p, t)| (p.clone(), t.clone()))
@@ -3419,13 +3443,7 @@ async fn introduce_in(
         }
     }
 
-    let texts = |path: &Path| -> String {
-        if path == file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(path).unwrap_or_default()
-        }
-    };
+    let texts = |path: &Path| -> Result<String> { read_referenced(path, file, &text) };
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     let mut imports = Vec::new();
@@ -3436,7 +3454,7 @@ async fn introduce_in(
         .await
         .with_context(|| unlisted(&callee, root, file, line, col))?;
     for (path, rl, rc) in callers {
-        let source = texts(&path);
+        let source = texts(&path)?;
         let place = format!("{}:{rl}:{rc}", display(root, &path));
         // As in Rust (#75): the position is trusted only when the name is there. A JavaScript
         // call left as it was would pass the old arguments to the new parameter, and only a
@@ -3449,11 +3467,13 @@ async fn introduce_in(
              since the analyzer read it, so nothing was rewritten"
         );
         let Some((at, called)) = called else {
-            if crate::signature::offset_of(&source, rl, rc).is_some() {
-                unmatched.push(format!(
+            unmatched.push(if crate::signature::offset_of(&source, rl, rc).is_some() {
+                format!(
                     "{place} (the analyzer places `{callee}` here, but the file says otherwise)"
-                ));
-            }
+                )
+            } else {
+                format!("{place} (no such position in the file)")
+            });
             continue;
         };
         // `build.call(receiver, …)` passes the receiver first and the arguments after it;
@@ -3666,7 +3686,7 @@ async fn introduce_in(
         None => "",
     };
     for path in bare_callers {
-        let source = texts(&path);
+        let source = texts(&path)?;
         match python_import_edit(&source, stem, name) {
             Some((_, insert)) if insert.is_empty() => {}
             Some((at, insert)) => {
@@ -3685,7 +3705,7 @@ async fn introduce_in(
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut source = texts(&path);
+        let mut source = texts(&path)?;
         file_edits.sort_by_key(|(at, _, _)| *at);
         for (at, len, replacement) in file_edits.into_iter().rev() {
             source.replace_range(at..at + len, &replacement);
@@ -3697,8 +3717,16 @@ async fn introduce_in(
     // up as an error instead of breaking unseen (#294).
     let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
     let unreported = crate::signature::unreported_callers(root, file, &callee, &checked);
-    let (diagnostics, applied) =
-        check_and_apply(remote, root, &rewritten, &unreported, apply, force).await?;
+    let (diagnostics, applied) = check_and_apply(
+        remote,
+        root,
+        &rewritten,
+        &unreported,
+        &unmatched,
+        apply,
+        force,
+    )
+    .await?;
 
     Ok(ParameterObject {
         symbol: callee,
@@ -4152,11 +4180,16 @@ async fn introduce_c(
     let mut consumed = vec![false; uses.len()];
     for (path, rl, rc) in calls {
         if !texts.contains_key(&path) {
-            let t = std::fs::read_to_string(&path).unwrap_or_default();
+            let t = std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {}; nothing was written", path.display()))?;
             texts.insert(path.clone(), t);
         }
         let source = &texts[&path];
         let Some(at) = crate::signature::offset_of(source, rl, rc) else {
+            unmatched.push(format!(
+                "{}:{rl}:{rc} (no such position in the file)",
+                display(root, &path)
+            ));
             continue;
         };
         // As in Rust (#75): the position is trusted only when the name is there.
@@ -4262,8 +4295,16 @@ async fn introduce_c(
     // up as an error instead of breaking unseen (#294).
     let checked: Vec<PathBuf> = rewritten.keys().cloned().collect();
     let unreported = crate::signature::unreported_callers(root, file, &callee, &checked);
-    let (diagnostics, applied) =
-        check_and_apply(remote, root, &rewritten, &unreported, apply, force).await?;
+    let (diagnostics, applied) = check_and_apply(
+        remote,
+        root,
+        &rewritten,
+        &unreported,
+        &unmatched,
+        apply,
+        force,
+    )
+    .await?;
     let was = &decls[main].text[decls[main].open..decls[main].close];
     Ok(ParameterObject {
         symbol: callee,

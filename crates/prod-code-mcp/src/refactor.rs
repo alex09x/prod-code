@@ -731,6 +731,78 @@ pub fn text_before_apply(path: &Path) -> String {
     String::from_utf8_lossy(&current).into_owned()
 }
 
+/// The text of a file the analyzer reports a reference in, read once into `texts`. A file that
+/// cannot be read is an error: taken as empty, its references would not be in it, and the plan
+/// would go on as if they did not exist (#446).
+pub(crate) fn referenced_text<'a>(
+    texts: &'a mut std::collections::BTreeMap<std::path::PathBuf, String>,
+    path: &Path,
+) -> Result<&'a mut String> {
+    use std::collections::btree_map::Entry;
+    match texts.entry(path.to_path_buf()) {
+        Entry::Occupied(known) => Ok(known.into_mut()),
+        Entry::Vacant(slot) => {
+            let text = std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "cannot read {}, where the analyzer reports a reference; nothing was planned",
+                    path.display()
+                )
+            })?;
+            Ok(slot.insert(text))
+        }
+    }
+}
+
+/// The locations of a `definition`, `declaration` or `implementation` answer, as (file, 1-based
+/// line, 1-based column): `null` is none, and a `Location`, a `LocationLink` or a list of either
+/// is read whole. Any other answer, and an entry without a file or a start, is an error naming
+/// `what` was asked: a planner that dropped it would leave that declaration as it was (#446).
+pub(crate) fn lsp_locations(
+    answer: &serde_json::Value,
+    what: &str,
+) -> Result<Vec<(std::path::PathBuf, u32, u32)>> {
+    let entries = match answer {
+        serde_json::Value::Null => return Ok(Vec::new()),
+        serde_json::Value::Array(all) => all.iter().collect(),
+        one @ serde_json::Value::Object(_) => vec![one],
+        other => anyhow::bail!("the analyzer's {what} is not a location or a list: {other}"),
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for (n, loc) in entries.iter().enumerate() {
+        let uri = loc.get("uri").or_else(|| loc.get("targetUri"));
+        let start = loc
+            .pointer("/range/start")
+            .or_else(|| loc.pointer("/targetSelectionRange/start"));
+        let at = |key: &str| {
+            start
+                .and_then(|s| s.get(key))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .and_then(|v| v.checked_add(1))
+        };
+        let (Some(uri), Some(line), Some(col)) =
+            (uri.and_then(|u| u.as_str()), at("line"), at("character"))
+        else {
+            anyhow::bail!(
+                "entry {} of {} in the analyzer's {what} has no file or start position: {loc}",
+                n + 1,
+                entries.len()
+            );
+        };
+        let parsed = url::Url::parse(uri)
+            .with_context(|| format!("invalid URI in the analyzer's {what}: {uri}"))?;
+        anyhow::ensure!(
+            parsed.scheme() == "file" && parsed.query().is_none() && parsed.fragment().is_none(),
+            "the analyzer's {what} does not name a plain local file: {uri}"
+        );
+        let path = parsed.to_file_path().map_err(|_| {
+            anyhow::anyhow!("the analyzer's {what} does not name a local file: {uri}")
+        })?;
+        out.push((path, line, col));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1316,5 +1388,67 @@ mod tests {
             assert_eq!(tree(&away), Default::default(), "{edit}");
         }
         crate::sync::clear_sync_cache(&root);
+    }
+}
+
+#[cfg(test)]
+mod required_location_tests {
+    use super::lsp_locations;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_required_locations_return_errors_without_panicking() {
+        for n in [u32::MAX as u64, u32::MAX as u64 + 1, u64::MAX] {
+            for key in ["line", "character"] {
+                let mut location = json!({"uri": "file:///tmp/a.rs", "range": {"start": {"line": 0, "character": 0}}});
+                location["range"]["start"][key] = json!(n);
+                let result = std::panic::catch_unwind(|| {
+                    lsp_locations(&json!([location]), "implementations")
+                });
+                assert!(result.is_ok(), "coordinate {key}={n} panicked");
+                assert!(
+                    result.unwrap().is_err(),
+                    "coordinate {key}={n} was accepted"
+                );
+            }
+        }
+        for uri in [
+            "https://example.invalid/a.rs",
+            "file:///tmp/a.rs?version=2",
+            "file:///tmp/a.rs#part",
+            "file://remote.invalid/a.rs",
+            "relative.rs",
+        ] {
+            let location = json!({"uri": uri, "range": {"start": {"line": 0, "character": 0}}});
+            assert!(
+                lsp_locations(&json!([location]), "definitions").is_err(),
+                "accepted {uri}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_locations_accept_protocol_empty_answers_and_encoded_local_files() {
+        assert!(
+            lsp_locations(&serde_json::Value::Null, "declarations")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            lsp_locations(&json!([]), "declarations")
+                .unwrap()
+                .is_empty()
+        );
+        let path = std::env::temp_dir().join("a # %41 ü.rs");
+        let uri = url::Url::from_file_path(&path).unwrap().to_string();
+        for answer in [
+            json!({"uri": uri, "range": {"start": {"line": 2, "character": 3}}}),
+            json!({"targetUri": uri, "targetSelectionRange": {"start": {"line": 2, "character": 3}}}),
+        ] {
+            assert_eq!(
+                lsp_locations(&answer, "declarations").unwrap(),
+                vec![(path.clone(), 3, 4)]
+            );
+        }
     }
 }

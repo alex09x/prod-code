@@ -10,7 +10,7 @@
 //! the opposite) or a serde derive (the serialised name and meaning would change).
 
 use crate::invert_boolean::Inverted;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -269,14 +269,11 @@ pub async fn invert_value(
 
     let (mut negated, mut cancelled) = (0usize, 0usize);
     let mut unmatched = Vec::new();
-    for (path, l, c) in crate::signature::references(remote, root, file, l0, c0)
+    let refs = crate::signature::references(remote, root, file, l0, c0)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default())
-            .clone();
+        .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
             unmatched.push(format!("{site} (the position is not in the file)"));
@@ -430,6 +427,15 @@ pub async fn invert_value(
              written:\n  {}",
             blocked.len(),
             blocked.join("\n  ")
+        );
+        // A use left as it was reads the opposite of what it did, and still compiles; `force`
+        // overrides the analyzer, not a use this did not negate (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} use(s) of `{name}` were not rewritten and would read the opposite; nothing was \
+             written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
         );
         anyhow::ensure!(
             diagnostics.is_empty() || force,

@@ -23,6 +23,12 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Custom refactoring planners refuse failed, malformed, unreadable or unmatched required
+  references before writing (#446), including with `force` and compiler verification.
+  Signature changes reconcile individual occurrences, so a rewritten call cannot hide an
+  unhandled function value on the same line. Raw `r#use` identifiers are not imports, and
+  spaces inside argument string literals remain significant. Missing indexed files stop
+  parameter-object rewrites in every supported language.
 - Fixture generation requires one distinct type location (#461). Declarations in `lib.rs`,
   `main.rs` and `mod.rs` are no longer discarded by filename. Ambiguous names list every
   location and require a declaring-file hint, including separately indexed re-exports.

@@ -532,6 +532,23 @@ pub async fn validate_texts(
     edits: &[(std::path::PathBuf, String)],
     also_check: &[std::path::PathBuf],
 ) -> Result<Vec<DiagnosticsReport>> {
+    // An extra file is checked against its text on disk; one that cannot be read would come back
+    // as a clean report nobody made, and the change would pass unchecked there (#446).
+    let mut also_texts = Vec::with_capacity(also_check.len());
+    for file in also_check {
+        let abs = if file.is_absolute() {
+            file.clone()
+        } else {
+            root.join(file)
+        };
+        also_texts.push(std::fs::read_to_string(&abs).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read {}, which the change must be checked against; nothing was \
+                 validated: {e}",
+                abs.display()
+            )
+        })?);
+    }
     let hint = edits
         .first()
         .map(|(file, _)| file.as_path())
@@ -612,7 +629,7 @@ pub async fn validate_texts(
         }
         reports.push(report);
     }
-    for file in also_check {
+    for (file, text) in also_check.iter().zip(also_texts) {
         let uri = session.uri_for(file)?;
         let result = session
             .query(
@@ -622,19 +639,12 @@ pub async fn validate_texts(
             )
             .await?;
         let shown = display(root, file);
-        let abs = if file.is_absolute() {
-            file.clone()
-        } else {
-            root.join(file)
-        };
         let mut report = parse_items(&shown, &result);
-        if let Ok(text) = std::fs::read_to_string(&abs) {
-            if let Some((before, before_text)) = baselines.get(&shown) {
-                set_aside_preexisting(&mut report, &text, before, before_text);
-            }
-            set_aside_derive_expansions(&mut report, &text);
-            sources.insert(shown.clone(), text);
+        if let Some((before, before_text)) = baselines.get(&shown) {
+            set_aside_preexisting(&mut report, &text, before, before_text);
         }
+        set_aside_derive_expansions(&mut report, &text);
+        sources.insert(shown.clone(), text);
         reports.push(report);
     }
     session.close().await;
