@@ -268,17 +268,47 @@ impl BackendWorker {
                             .to_string();
                             if let Err(error) = reader_writer.send(&auto_resp).await {
                                 tracing::warn!(%error, "Failed to write automatic backend LSP response");
+                                // No caller can retry this mandatory response. Keeping a server
+                                // waiting forever would leave a falsely reusable backend.
+                                reader_writer.retire();
+                                break;
                             }
                         }
                         (Some(id), Some("workspace/configuration")) => {
-                            let auto_resp = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": [{}]
-                            })
+                            let items = val
+                                .get("params")
+                                .and_then(|params| params.get("items"))
+                                .and_then(serde_json::Value::as_array)
+                                .filter(|items| {
+                                    items.iter().all(|item| {
+                                        item.is_object()
+                                            && ["section", "scopeUri"].iter().all(|key| {
+                                                item.get(key).is_none_or(|value| value.is_string())
+                                            })
+                                    })
+                                });
+                            let auto_resp = match items {
+                                Some(items) => serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": vec![serde_json::json!({}); items.len()]
+                                }),
+                                None => serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "workspace/configuration requires an items array of configuration objects with optional string section and scopeUri"
+                                    }
+                                }),
+                            }
                             .to_string();
                             if let Err(error) = reader_writer.send(&auto_resp).await {
                                 tracing::warn!(%error, "Failed to write automatic backend LSP response");
+                                // No caller can retry this mandatory response. Keeping a server
+                                // waiting forever would leave a falsely reusable backend.
+                                reader_writer.retire();
+                                break;
                             }
                         }
                         _ => {}
