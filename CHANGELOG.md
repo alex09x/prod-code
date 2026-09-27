@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Go safe-delete also supports named value/pointer receiver methods (#567). Interface
+  obligations, promoted methods and embeddings through nested structures or aliases refuse
+  without writing, including with force. Constant-array receiver types remain supported;
+  named array fields remain distinct from instantiated alias embeddings.
 - Go safe-delete supports ordinary unexported, ASCII-named, non-generic top-level functions
   with bodies (#550). Exact gopls declaration/reference evidence and remote package/test
   compilation precede the write. Used functions, generated or linked sources, uncertain
@@ -66,6 +70,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Dedicated editor servers share the bounded LSP frame reader (#573). Duplicate or
+  malformed headers, oversized or truncated frames and invalid UTF-8 end the owned
+  session without forwarding corrupted text.
 - Go and generic language-server adapters reject unsuccessful or malformed initialization
   replies (#572). Failure, timeout or cancellation retires the owned server generation,
   clears pending requests and capabilities, and ends generic document acceptance; ordinary
