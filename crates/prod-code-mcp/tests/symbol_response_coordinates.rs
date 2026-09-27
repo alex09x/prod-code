@@ -28,7 +28,29 @@ fn symbol(name: &str, path: &std::path::Path, start: Value) -> Value {
     })
 }
 
-fn methods() -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
+type Methods = Arc<Mutex<Vec<String>>>;
+
+#[tokio::test]
+async fn oversized_matching_workspace_position_never_wraps() {
+    let ws = rust_workspace("pub fn target() {}\n");
+    let path = ws.path("src/lib.rs");
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "prod-code/handshake" => json!({ "index_gated": true }),
+        "workspace/symbol" => json!([symbol(
+            "target",
+            &path,
+            json!({ "line": 4_294_967_296u64, "character": 7 }),
+        )]),
+        _ => Value::Null,
+    })
+    .await;
+    let error = workspace_symbol_search(gateway.addr(), &ws.root(), "target", None, 10)
+        .await
+        .expect_err("oversized response line must not become line one");
+    assert!(format!("{error:#}").contains("exceeds u32"), "{error:#}");
+}
+
+fn methods() -> (Methods, Methods) {
     let methods = Arc::new(Mutex::new(Vec::new()));
     (Arc::clone(&methods), methods)
 }
