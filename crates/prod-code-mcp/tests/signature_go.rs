@@ -9,12 +9,21 @@
 
 use prod_code_mcp::protocol::McpContentItem;
 use prod_code_mcp::signature::{Modifiers, Param, SignatureChange};
+use prod_code_testkit::ScriptedGateway;
 use prod_code_testkit::gopls::{GoModule, GoplsBridge, require_go_toolchain, uri};
 use serde_json::json;
 use std::net::SocketAddr;
 
 fn keep(names: &[&str]) -> Vec<Param> {
     names.iter().map(|n| Param::Keep(n.to_string())).collect()
+}
+
+fn add(name: &str, ty: &str, value: &str) -> Param {
+    Param::Add {
+        name: name.to_string(),
+        ty: ty.to_string(),
+        value: value.to_string(),
+    }
 }
 
 /// The 1-based position of the first `needle` in the file.
@@ -281,6 +290,220 @@ async fn functions_and_methods_are_reordered_by_gopls_and_run_the_same() {
     assert!(vetted, "go vet after the change: {output}");
 }
 
+const ADD_LIB: &str = r#"package main
+
+import "fmt"
+
+var addTrace []string
+
+func markAdd(tag string, value int) int {
+	addTrace = append(addTrace, tag)
+	return value
+}
+
+func wordAdd(tag string, value string) string {
+	addTrace = append(addTrace, tag)
+	return value
+}
+
+// Blend keeps the old argument effects in their original order.
+func Blend(amount int, label string) string {
+	addTrace = append(addTrace, fmt.Sprintf("Blend(%d,%s)", amount, label))
+	return fmt.Sprintf("%d:%s", amount, label)
+}
+"#;
+
+const ADD_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	fmt.Println(Blend(markAdd("amount", 7), wordAdd("label", "pear")))
+	fmt.Println(addTrace)
+}
+"#;
+
+const ADD_OTHER: &str = r#"package main
+
+func fromOther() string {
+	return Blend(2, "other")
+}
+"#;
+
+const ADD_TEST: &str = r#"package main
+
+import "testing"
+
+func TestBlend(t *testing.T) {
+	if got := Blend(3, "test"); got != "3:test" {
+		t.Fatalf("got %q", got)
+	}
+}
+"#;
+
+/// Additions at the beginning, middle and end are insertion-only across source and test callers.
+/// Delimiters inside quoted literals do not split the request, preview writes nothing, and the
+/// old side-effecting arguments run in the same order after the applied change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn typed_literal_parameters_are_added_without_reordering_old_argument_effects() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/add\n\ngo 1.22\n"),
+        ("lib.go", ADD_LIB),
+        ("main.go", ADD_MAIN),
+        ("other.go", ADD_OTHER),
+        ("main_test.go", ADD_TEST),
+    ]);
+    let before = fixture.run();
+    let tests_before = go_tests(&fixture);
+    assert!(before.contains("[amount label Blend(7,pear)]"), "{before}");
+    let untouched = fixture.snapshot();
+    let bridge = GoplsBridge::start(&fixture).await;
+    let request = vec![
+        add("prefix", "string", "\"p,)\""),
+        Param::Keep("amount".into()),
+        add("separator", "rune", "','"),
+        Param::Keep("label".into()),
+        add("scale", "int", "0x2A"),
+        add("suffix", "string", "`s,)`"),
+    ];
+    let preview = change_with(
+        bridge.addr(),
+        &fixture,
+        "lib.go",
+        "Blend(amount",
+        &request,
+        &Modifiers::default(),
+        false,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("addition preview: {e:#}"));
+    assert!(!preview.applied);
+    assert_eq!(fixture.snapshot(), untouched, "preview wrote");
+    assert_eq!(
+        preview.new_signature,
+        "prefix string, amount int, separator rune, label string, scale int, suffix string"
+    );
+    let main = rewritten(&preview, "main.go");
+    assert!(
+        main.contains(
+            "Blend(\"p,)\", markAdd(\"amount\", 7), ',', wordAdd(\"label\", \"pear\"), 0x2A, `s,)`)"
+        ),
+        "{main}"
+    );
+    assert!(
+        rewritten(&preview, "main_test.go")
+            .contains("Blend(\"p,)\", 3, ',', \"test\", 0x2A, `s,)`)")
+    );
+    assert!(
+        bridge.renames().is_empty(),
+        "addition asked gopls to rename"
+    );
+
+    let applied = change_with(
+        bridge.addr(),
+        &fixture,
+        "lib.go",
+        "Blend(amount",
+        &request,
+        &Modifiers::default(),
+        true,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("addition applies: {e:#}"));
+    assert!(applied.applied);
+    let lib = fixture.read("lib.go");
+    assert!(lib.contains(
+        "func Blend(prefix string, amount int, separator rune, label string, scale int, suffix string) string {"
+    ));
+    assert_eq!(fixture.run(), before, "old argument effects changed order");
+    assert_eq!(go_tests(&fixture), tests_before, "tests ran differently");
+}
+
+/// Malformed, stale and outside-checkout function locations are unknown evidence, not an empty
+/// or partial success, and `force` cannot turn any of them into a write.
+#[tokio::test]
+async fn additions_refuse_untrusted_function_reference_evidence() {
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/evidence\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package evidence\n\nfunc AddMe(value int) int { return value }\n",
+        ),
+        (
+            "use.go",
+            "package evidence\n\nfunc use() int { return AddMe(1) }\n",
+        ),
+    ]);
+    let location = |rel: &str, needle: &str| {
+        let text = fixture.read(rel);
+        let offset = text.find(needle).unwrap();
+        let before = &text[..offset];
+        let line = before.matches('\n').count() as u32;
+        let character = before.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
+        json!({
+            "uri": uri(&fixture.path(rel)),
+            "range": {
+                "start": { "line": line, "character": character },
+                "end": { "line": line, "character": character + "AddMe".len() as u32 }
+            }
+        })
+    };
+    let declaration = location("lib.go", "AddMe");
+    let call = location("use.go", "AddMe");
+    let outside = tempfile::tempdir().unwrap();
+    let outside_file = outside.path().join("outside.go");
+    std::fs::write(&outside_file, "package outside\nfunc AddMe() {}\n").unwrap();
+    let outside_location = json!({
+        "uri": uri(&outside_file),
+        "range": {
+            "start": { "line": 1, "character": 5 },
+            "end": { "line": 1, "character": 10 }
+        }
+    });
+    let mut stale = call.clone();
+    stale["range"]["start"]["character"] =
+        json!(call["range"]["start"]["character"].as_u64().unwrap() + 1);
+    stale["range"]["end"]["character"] =
+        json!(call["range"]["end"]["character"].as_u64().unwrap() + 1);
+    let cases = [
+        (
+            json!([declaration.clone(), { "uri": uri(&fixture.path("use.go")) }]),
+            "malformed",
+        ),
+        (json!([declaration.clone(), stale]), "stale"),
+        (
+            json!([declaration.clone(), outside_location]),
+            "outside the checkout",
+        ),
+    ];
+    let untouched = fixture.snapshot();
+    for (answer, said) in cases {
+        let gateway = ScriptedGateway::start(move |method, _| {
+            if method == "textDocument/references" {
+                answer.clone()
+            } else {
+                serde_json::Value::Null
+            }
+        })
+        .await;
+        let error = change_with(
+            gateway.addr(),
+            &fixture,
+            "lib.go",
+            "AddMe(value",
+            &[Param::Keep("value".into()), add("extra", "int", "0")],
+            &Modifiers::default(),
+            true,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains(said), "{said}: {error}");
+        assert_eq!(fixture.snapshot(), untouched, "{said} wrote");
+    }
+}
+
 const REFUSE_LIB: &str = r#"package main
 
 import "fmt"
@@ -309,6 +532,12 @@ func Blank(int, string) {}
 func Keep(a, b int) int { return a + b }
 
 func Sub(a, b int) int { return a - b }
+
+func UsesLen(a int) int { return a + len("x") }
+
+func Spread(a int, rest ...int) int { return a + len(rest) }
+
+func External(a int) int
 
 func bump(p *int) int { *p += 10; return *p }
 
@@ -406,18 +635,15 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         unnamed.contains("unnamed") && unnamed.contains(open),
         "{unnamed}"
     );
-    // Removing, adding, changing results, and a position that is no declaration.
+    // Removing, malformed/combined additions, changing results, and a position that is no
+    // declaration.
     let removed = err(change(remote, &fixture, "lib.go", "Keep(a", &["a"], true).await);
     assert!(
         removed.contains("removing `b`") && removed.contains(open),
         "{removed}"
     );
-    let mut added = keep(&["b", "a"]);
-    added.push(Param::Add {
-        name: "c".into(),
-        ty: "int".into(),
-        value: "0".into(),
-    });
+    let mut added = keep(&["a", "b"]);
+    added.push(add("c", "int", "make(chan int)"));
     let added = err(change_with(
         remote,
         &fixture,
@@ -428,7 +654,88 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         true,
     )
     .await);
-    assert!(added.contains("adding the parameter `c`"), "{added}");
+    assert!(
+        added.contains("must be one numeric, string or rune literal"),
+        "{added}"
+    );
+    for (needle, request, said) in [
+        (
+            "Keep(a",
+            vec![
+                Param::Keep("b".into()),
+                Param::Keep("a".into()),
+                add("c", "int", "0"),
+            ],
+            "retain every old parameter exactly once",
+        ),
+        (
+            "UsesLen(a",
+            vec![add("len", "int", "0"), Param::Keep("a".into())],
+            "shadow existing references",
+        ),
+        (
+            ") Add(x",
+            vec![
+                Param::Keep("x".into()),
+                Param::Keep("y".into()),
+                add("z", "int", "0"),
+            ],
+            "receiver method",
+        ),
+        (
+            "Pair[T",
+            vec![
+                Param::Keep("t".into()),
+                Param::Keep("u".into()),
+                add("z", "int", "0"),
+            ],
+            "generic function",
+        ),
+        (
+            "Spread(a",
+            vec![
+                Param::Keep("a".into()),
+                Param::Keep("rest".into()),
+                add("z", "int", "0"),
+            ],
+            "variadic function",
+        ),
+        (
+            "External(a",
+            vec![Param::Keep("a".into()), add("z", "int", "0")],
+            "no body",
+        ),
+    ] {
+        let refused = err(change_with(
+            remote,
+            &fixture,
+            "lib.go",
+            needle,
+            &request,
+            &Modifiers::default(),
+            true,
+        )
+        .await);
+        assert!(refused.contains(said), "{needle}: {refused}");
+    }
+    let compiler = err(change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Keep(a",
+        &[
+            Param::Keep("a".into()),
+            Param::Keep("b".into()),
+            add("bad", "string", "1"),
+        ],
+        &Modifiers::default(),
+        true,
+    )
+    .await);
+    assert!(
+        compiler.contains("does not compile") && compiler.contains("force` does not override"),
+        "{compiler}"
+    );
     let results = Modifiers {
         returns: Some("int64".into()),
         ..Default::default()
@@ -630,8 +937,8 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
         "a preview wrote to the checkout"
     );
 
-    // Refusals through the tool, `force` or not: a removal, a result change, an addition, and
-    // the declared order itself.
+    // Refusals through the tool, `force` or not: a removal, a result change, a non-literal
+    // addition, and the declared order itself.
     let refusals = [
         (
             json!({ "symbol": "Price", "params": ["label", "unit", "qty"], "apply": true, "force": true }),
@@ -642,8 +949,8 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
             "results",
         ),
         (
-            json!({ "symbol": "Price", "params": ["label", "unit", "qty", "discount", "extra: int = 0"], "apply": true }),
-            "adding the parameter `extra`",
+            json!({ "symbol": "Price", "params": ["label", "unit", "qty", "discount", "extra: int = qty + 1"], "apply": true }),
+            "must be one numeric, string or rune literal",
         ),
         (
             json!({ "symbol": "Price", "params": ["qty", "unit", "discount", "label"], "apply": true }),
@@ -688,6 +995,30 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
         before,
         "the reordered program prints something else"
     );
+
+    // The same public tool adds a literal-backed parameter after the native gopls reorder.
+    let added = run(json!({
+        "symbol": "Price",
+        "params": ["label", "unit", "qty", "discount", "currency: string = \"USD,)\""],
+        "apply": true,
+        "force": true
+    }))
+    .await
+    .unwrap_or_else(|e| panic!("the addition applies: {e:#}"));
+    let text = text_of(&added);
+    assert!(!added.is_error, "{text}");
+    assert!(text.contains("[applied to 4 file(s)]"), "{text}");
+    assert!(
+        fixture
+            .read("lib.go")
+            .contains("discount float64, currency string) (total int, err error)")
+    );
+    assert!(
+        fixture
+            .read("main.go")
+            .contains("Price(\"first\", u, q, 0.1, \"USD,)\")")
+    );
+    assert_eq!(fixture.run(), before, "the added literal changed behaviour");
     let (tested, output) = fixture.go(&["test", "-count=1", "./..."]);
     assert!(tested, "go test after the change: {output}");
 }

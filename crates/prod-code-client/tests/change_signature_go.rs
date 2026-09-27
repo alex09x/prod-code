@@ -238,6 +238,45 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         before,
         "the reordered program prints something else"
     );
+
+    // The existing CLI syntax for typed additions reaches the Go adapter too. The quoted value
+    // contains delimiters, and `force` cannot bypass any safety check (this one is valid).
+    let added = cli(
+        root,
+        home.path(),
+        remote,
+        &[
+            "change-signature",
+            "Price",
+            "--param",
+            "label",
+            "--param",
+            "unit",
+            "--param",
+            "qty",
+            "--param",
+            "discount",
+            "--param",
+            "currency: string = \"USD,)\"",
+            "--apply",
+            "--force",
+        ],
+    )
+    .await;
+    let text = said(&added);
+    assert!(added.status.success(), "{text}");
+    assert!(text.contains("[applied to 2 file(s)]"), "{text}");
+    assert!(
+        module
+            .read("lib.go")
+            .contains("discount float64, currency string) (total int, err error)")
+    );
+    assert!(
+        module
+            .read("main.go")
+            .contains("Price(\"first\", 250, q, 0.1, \"USD,)\")")
+    );
+    assert_eq!(module.run(), before, "the added literal changed behaviour");
 }
 
 /// Real gopls edits for both partial removal and an explicitly empty list through the CLI.

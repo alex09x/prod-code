@@ -367,6 +367,36 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         ),
         "only the parameter list of the declaration changed"
     );
+
+    // The source-built gateway also carries an explicitly typed addition through public MCP.
+    // gopls supplies the complete reference set; the adapter inserts only the pure literal and
+    // compiles every source and test caller in a private shadow before writing.
+    let added = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Ship",
+            "params": ["dest", "qty", "route: string = \"road,air\""],
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await;
+    eprintln!("applied addition:\n{added}");
+    assert!(
+        !added.starts_with("error: ") && added.contains("[applied to 3 file(s)]"),
+        "{added}"
+    );
+    let lib = std::fs::read_to_string(root.join("lib.go")).expect("lib.go");
+    let main = std::fs::read_to_string(root.join("main.go")).expect("main.go");
+    let test = std::fs::read_to_string(root.join("main_test.go")).expect("main_test.go");
+    assert!(
+        lib.contains("func Ship(dest string, qty int, route string) string {"),
+        "{lib}"
+    );
+    assert!(main.contains("Ship(\"LA\", 3, \"road,air\")"), "{main}");
+    assert!(test.contains("Ship(\"SF\", 2, \"road,air\")"), "{test}");
     let after = behaviour(&root);
     eprintln!(
         "transformed program:\n{}\ntransformed tests:\n{}",

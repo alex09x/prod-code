@@ -6,7 +6,172 @@ use crate::exec::{TailBuffer, run_remote};
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::process::Command;
+
+/// The Go compiler's verdict for complete proposed source in an isolated checkout copy.
+#[derive(Debug, Clone)]
+pub(crate) struct GoCompileVerdict {
+    pub passed: bool,
+    pub output: String,
+}
+
+/// Compiles every package and its external test package with the proposed files in place.
+///
+/// `go test -c` builds test binaries but never starts them, so package and test `init`
+/// functions cannot run. The checkout copy is private, and `-mod=readonly` prevents a build
+/// from changing module metadata. A source file changing while the compiler runs is an error,
+/// never a verdict about a mixture of revisions.
+pub(crate) async fn compile_go_shadow(
+    root: &Path,
+    files: &[(PathBuf, String)],
+) -> Result<GoCompileVerdict> {
+    let root = root.to_path_buf();
+    let files = files.to_vec();
+    tokio::task::spawn_blocking(move || compile_go_shadow_sync(&root, &files))
+        .await
+        .map_err(|e| anyhow!("the Go compiler shadow task failed: {e}"))?
+}
+
+fn compile_go_shadow_sync(root: &Path, files: &[(PathBuf, String)]) -> Result<GoCompileVerdict> {
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| anyhow!("cannot resolve the checkout {}: {e}", root.display()))?;
+    let list = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .current_dir(&canonical_root)
+        .output()
+        .map_err(|e| anyhow!("cannot list the checkout for Go compiler verification: {e}"))?;
+    anyhow::ensure!(
+        list.status.success(),
+        "cannot list the checkout for Go compiler verification: {}",
+        String::from_utf8_lossy(&list.stderr).trim()
+    );
+    let shadow = tempfile::Builder::new()
+        .prefix("prod-code-go-shadow")
+        .tempdir()?;
+    let mut observed = Vec::new();
+    for raw in list.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let rel = std::str::from_utf8(raw)
+            .map_err(|_| anyhow!("the checkout has a non-UTF-8 path; Go verification refused"))?;
+        let rel = Path::new(rel);
+        anyhow::ensure!(
+            rel.components().all(|c| matches!(c, Component::Normal(_))),
+            "git listed an unsafe checkout path {}; Go verification refused",
+            rel.display()
+        );
+        let source = canonical_root.join(rel);
+        if !source.exists() {
+            continue;
+        }
+        let real = std::fs::canonicalize(&source).map_err(|e| {
+            anyhow!(
+                "cannot resolve {} for Go verification: {e}",
+                source.display()
+            )
+        })?;
+        anyhow::ensure!(
+            real.starts_with(&canonical_root) && real.is_file(),
+            "{} is not a regular file inside the checkout; Go verification refused",
+            source.display()
+        );
+        let bytes = std::fs::read(&source)
+            .map_err(|e| anyhow!("cannot read {} for Go verification: {e}", source.display()))?;
+        let target = shadow.path().join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, &bytes)?;
+        observed.push((source, bytes));
+    }
+    for (path, text) in files {
+        let path = if path.is_absolute() {
+            path.clone()
+        } else {
+            canonical_root.join(path)
+        };
+        let rel = path.strip_prefix(&canonical_root).map_err(|_| {
+            anyhow!(
+                "{} is outside the checkout {}; Go verification refused",
+                path.display(),
+                canonical_root.display()
+            )
+        })?;
+        anyhow::ensure!(
+            rel.components().all(|c| matches!(c, Component::Normal(_))),
+            "{} is not a safe checkout path; Go verification refused",
+            path.display()
+        );
+        let target = shadow.path().join(rel);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&target, text)?;
+    }
+    let binaries = tempfile::Builder::new()
+        .prefix("prod-code-go-testbins")
+        .tempdir()?;
+    let mut goflags = std::env::var("GOFLAGS").unwrap_or_default();
+    if !goflags
+        .split_whitespace()
+        .any(|flag| flag.starts_with("-mod="))
+    {
+        if !goflags.is_empty() {
+            goflags.push(' ');
+        }
+        goflags.push_str("-mod=readonly");
+    }
+    let compiled = Command::new("go")
+        .args(["test", "-c", "-o"])
+        .arg(binaries.path())
+        .arg("./...")
+        .env("GOTOOLCHAIN", "local")
+        .env("GOFLAGS", goflags)
+        .current_dir(shadow.path())
+        .output()
+        .map_err(|e| anyhow!("cannot run the Go compiler in its private shadow: {e}"))?;
+    for (source, bytes) in observed {
+        let now = std::fs::read(&source).map_err(|e| {
+            anyhow!(
+                "{} changed while the Go compiler checked the proposal: {e}",
+                source.display()
+            )
+        })?;
+        anyhow::ensure!(
+            now == bytes,
+            "{} changed while the Go compiler checked the proposal; nothing was written",
+            source.display()
+        );
+    }
+    let mut output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&compiled.stdout),
+        String::from_utf8_lossy(&compiled.stderr)
+    )
+    .replace(&shadow.path().to_string_lossy().to_string(), ".");
+    if output.len() > 16 * 1024 {
+        output = output.split_off(output.len() - 16 * 1024);
+        output.insert_str(0, "… output tail …\n");
+    }
+    if !compiled.status.success() && output.trim().is_empty() {
+        output = format!(
+            "the Go compiler exited with {} and no diagnostic",
+            compiled
+                .status
+                .code()
+                .map_or_else(|| "no status".to_string(), |code| code.to_string())
+        );
+    }
+    Ok(GoCompileVerdict {
+        passed: compiled.status.success(),
+        output,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VerifyKind {
