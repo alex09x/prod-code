@@ -1,4 +1,4 @@
-# Roadmap audit — 2026-09-26
+# Roadmap audit — 2026-09-27
 
 Baseline: `bf71e7d` (v0.3.18). This is a comparison of the written requirements with the
 implementation, not a certificate that every language and scenario was rerun. Historical
@@ -15,7 +15,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 1.3 Editor client | `prod-code lsp` bridges the editor to a remote language server and exits unsuccessfully on disconnect. | Recovery is an editor restart, not in-process replay of LSP state. Zero-allocation hot paths are not established by the recorded evidence. |
 | 1.4 Gateway | Session registry, command execution and JSON status in `gateway/src/lib.rs`. | The #433 repair reserves memory for concurrent new engines; this is admission control, not a hard limit on later analyzer growth. |
 | 2.1 Rust database | In-process analyzer and per-workspace resident databases in `engine-rust/src/lib.rs`. | Distinct worktrees retain distinct databases; memory is not a single shared dependency database. |
-| 2.2 Direct edits | Single-owner editing and divergent-worktree benchmark exist. | The original cold workload had 32 timeouts (#408). CPU budgeting and a correctly seeded benchmark are addressed in #432; it is not a repeat of that larger workload. |
+| 2.2 Direct edits | Single-owner editing and divergent-worktree benchmark exist. The 2026-09-27 rerun completed the supplied 1,280-hover comparison with all successful-answer isolation checks passing and unchanged original fixture Git HEAD, tracked-file count and porcelain status. | The original cold workload had 32 timeouts ([#408](https://github.com/alex09x/prod-code/issues/408)), on the older deployed 0.3.15 gateway, which were not reproduced on `bf71e7d`; do not claim a 32-to-0 fix. The rerun still had 40 errors under seed capacity pressure and a 29,406.42 ms first-hover maximum with sufficient headroom. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for pressure and near-budget cold first responses. |
 | 2.3 File IDs | Explicit file-ID mask and edition-aware conversion in the Rust engine. | Existing tests cover the implementation; this audit did not exhaust all upstream analyzer ID states. |
 | 2.4 Observability | Request timing, host memory/disk snapshots and pressure logging. | The observed OOM motivated reservation-based admission (#433); production rollout and monitoring remain separate from passing injected-pressure tests. |
 | 3.1 Detection | Manifest and nested-project detection in `gateway/src/detect.rs` and MCP sync. Relative session hints resolve against the supplied checkout (#488). | Framework support still depends on the installed server, project configuration and build index. |
@@ -31,9 +31,9 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 5.2 Discovery | Seed-address discovery and cached gossip membership. | This is the documented replacement for DNS/SRV discovery, not an implementation of it. |
 | 5.3 Pressure | Memory/disk thresholds influence placement and idle eviction. | The #433 repair checks host usage plus unsettled reservations against 85%, reclaims eligible idle engines and explains capacity refusals. Unknown host memory and underestimated later growth remain limitations. |
 | 5.4 Macros | Build-script loading and out-of-process macro expansion. | Raw analyzer derive diagnostics can contain E0282 artifacts; existing #159 handling labels them in_derive and excludes them from the error count. #424 was closed after confirming that handling; compiler checks passed. |
-| 5.5 Fleet tests | Persistent-session and divergent-worktree benchmarks. | Warm success does not erase cold timeouts; record both error counts and percentiles. |
+| 5.5 Fleet tests | Persistent-session and divergent-worktree benchmarks, including the 2026-09-27 cold/warm rerun. | Warm success does not erase cold errors or near-budget first responses; record both full wall and query-wave wall time, error counts and percentiles. One A/B run per condition gives no statistical speedup guarantee and does not establish native-test runtime speedup. |
 | 6.1 Execution | Streamed commands, exit status, timeout and cancellation. | A command's exit status must survive any output filtering in the acceptance command. |
-| 6.2 Caches | Persistent workspace artifacts and per-user package/compiler caches. | RAM-backed caches, pre-warmed Python bytecode and some language-specific shared caches remain open. sccache was observed in node Cargo configuration; the older blanket claim that it was absent is incorrect. |
+| 6.2 Caches | Persistent workspace artifacts and per-user package/compiler caches. The rerun also confirmed the existing 20%-free safeguard denied the final two cache copies and preserved disk. | RAM-backed caches, pre-warmed Python bytecode and some language-specific shared caches remain open. sccache was observed in node Cargo configuration; the older blanket claim that it was absent is incorrect. |
 | 6.3 Isolation | Worktree copies and process supervision. | The #426 repair keeps sccache compilation client-side in the shadow and refuses incompatible logging/distributed settings. The #440 repair serializes in-place runs per workspace and reports incomplete rollback; arbitrary external build daemons still need their own isolation contract. |
 | 6.4 Build tools | Language-specific check, lint and test dispatch in `mcp/src/verify.rs`. | The 1–3 second target is workload-dependent, not a universal guarantee. |
 | 7.1 Refactoring | Rust custom planners plus language-server actions; both parameter operations also cover JavaScript and the other listed languages. | Most custom planners remain Rust-specific. Go signature reorder/removal is verified through CLI/MCP and real gopls (#448), with proof of unused parameters and safe dropped arguments. Typed literal additions to ordinary free functions retain old argument order and compile remotely (#502); broader additions, modifiers and signature changes remain open. JavaScript parameter objects are added in #428. The #425 repair makes application transactional; #442 guards Rust signature effects, while #436/#441 preserve parameter-object evaluation and destruction order with explicit refusals for uncertain cases. The #446 repair blocks writes on failed/malformed/unreadable or unmatched required references, even with `force` and compiler verification; individual signature occurrences are reconciled, including ordinary block comments relocated by the analyzer (#472). The #456 conversion uses UTF-16 source columns and refuses split-surrogate, out-of-line and CRLF-splitting planner positions; the native editor clamps to valid boundaries. |
@@ -54,6 +54,41 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 Paths shortened above are under `crates/prod-code-*`. The main integration evidence lives in
 the gateway live tests, MCP orchestration/analysis tests, native parameter tests and client CLI
 tests. Unit and mock coverage complements real-server checks; it does not replace them.
+
+## 2026-09-27 cold-load rerun
+
+The rerun used an unnamed 1,284-tracked-file Rust repository (1,251 synced files), 16
+diverged worktrees, 64 persistent clients, 1,280 hovers, four isolation groups, release
+builds, the same 128-core ARM Linux node, Rust 1.97.1, and the same SSH loopback tunnel for
+each comparison. Baseline source: `bf71e7d89ed1f46c0f8112012016860216047ece`; audited
+source: `58e7f538af87f86b5ef9d01078824c603d2d7c9a`. The audited revision prepared the
+origin before the query wave, so full wall time and query
+wave wall time are separate. “Cold” means fresh private gateway/storage, not wiped OS,
+toolchain, package or compiler caches.
+
+| Run | Full wall | Query wave | Errors | p95 successful hover | p99 successful hover |
+|---|---:|---:|---:|---:|---:|
+| Baseline cold | 353.250 s | 255.54 s | 0 | 7.91 ms | 27,973.60 ms |
+| Baseline warm | 77.351 s | 0.86 s | 0 | 22.53 ms | 28.24 ms |
+| Current cold, seed capacity pressure | 290.401 s | 109.50 s | 40 | 88.92 ms | 29,375.59 ms |
+| Current warm | 80.983 s | 0.81 s | 0 | 20.82 ms | 31.61 ms |
+| Current cold, sufficient disk headroom | 237.185 s | 55.86 s | 0 | 8.07 ms | 28,815.07 ms |
+| Current warm after headroom cold | 81.667 s | 0.84 s | 0 | 24.64 ms | 34.68 ms |
+
+All successful-answer isolation checks passed, the original fixture's Git HEAD, tracked-file
+count and porcelain status were unchanged in all runs, and owned gateway/storage cleanup completed in all runs. The
+capacity-pressure run exited 1; all other runs exited 0. The headroom run started with
+246,192,762,880 bytes free of 980,122,034,176 and seeded all 16 copies. Its first-hover
+maximum was 29,406.42 ms, close to the 30 s budget. In the capacity-pressure run, two final cache copies were denied by
+the existing 20%-free safeguard, preserving disk; subsequent unseeded loads took 67 s and
+74 s. The historical 32 timeouts from the older deployed 0.3.15 gateway were not reproduced in
+the `bf71e7d` comparison; this rerun must not be described as a 32-to-0 fix.
+
+This is one A/B run per condition, so it provides no statistical speedup guarantee and no
+native-test runtime speedup claim. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for capacity pressure and near-budget
+cold first responses. [#516](https://github.com/alex09x/prod-code/issues/516) remains open for the broader roadmap; these observations do not
+complete an entire phase. Native helpers now exercise production logging defaults (#521),
+without a measured runtime-improvement claim.
 
 ## Checkbox reconciliation
 

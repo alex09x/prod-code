@@ -90,6 +90,37 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     cross-worktree bleed in both versions: baseline/candidate p95 3.67/4.85 ms,
     p99 13.65/13.67 s and measured-wave time 22.64/22.47 s. The budget is a resource bound,
     not a measured speedup. This does not repeat the 1,284-file workload above.
+  - Follow-up to #408 (2026-09-27): a rerun used an unnamed 1,284-tracked-file Rust
+    repository (1,251 synced files), 16 diverged worktrees, 64 persistent clients, 1,280
+    hovers, four isolation groups, release builds, and the same 128-core ARM Linux node,
+    Rust 1.97.1 toolchain, and SSH loopback tunnel for each comparison. The benchmark
+    prepares the origin before the query wave in the audited revision, so both full wall time and query-wave wall
+    time are reported. “Cold” means fresh private gateway/storage; OS, toolchain, package,
+    and compiler caches were not wiped. Baseline source: `bf71e7d89ed1f46c0f8112012016860216047ece`;
+    audited source: `58e7f538af87f86b5ef9d01078824c603d2d7c9a`.
+
+    | Run | Full wall | Query wave | Errors | p95 successful hover | p99 successful hover |
+    |---|---:|---:|---:|---:|---:|
+    | Baseline cold | 353.250 s | 255.54 s | 0 | 7.91 ms | 27,973.60 ms |
+    | Baseline warm | 77.351 s | 0.86 s | 0 | 22.53 ms | 28.24 ms |
+    | Current cold, seed capacity pressure | 290.401 s | 109.50 s | 40 | 88.92 ms | 29,375.59 ms |
+    | Current warm | 80.983 s | 0.81 s | 0 | 20.82 ms | 31.61 ms |
+    | Current cold, sufficient disk headroom | 237.185 s | 55.86 s | 0 | 8.07 ms | 28,815.07 ms |
+    | Current warm after headroom cold | 81.667 s | 0.84 s | 0 | 24.64 ms | 34.68 ms |
+
+    All successful-answer isolation checks passed; the original fixture's Git HEAD, tracked-file
+    count and porcelain status were unchanged in every run; and owned gateway/storage cleanup completed in every run.
+    The capacity-pressure run exited 1; all other runs exited 0. The headroom run started
+    with 246,192,762,880 bytes free of 980,122,034,176, and all 16 copies were seeded.
+    Its first-hover maximum was 29,406.42 ms, still close to the 30 s budget. In the capacity-pressure run, two final
+    cache copies were denied by the existing 20%-free safeguard, preserving disk; subsequent
+    unseeded loads took 67 s and 74 s. The CPU/load budget remains a resource bound, not a
+    measured speedup, and this is a single A/B run per condition: it provides no statistical
+    speedup guarantee and no native-test runtime speedup claim. [#408](https://github.com/alex09x/prod-code/issues/408) remains open for
+    capacity pressure and near-budget cold first responses. Native helpers now exercise
+    production logging defaults (#521), without a measured runtime-improvement claim. The
+    historical 32 timeouts came from a deployed 0.3.15 gateway and were not reproduced in
+    the `bf71e7d` comparison; this rerun does not establish a 32-to-0 fix.
 - [x] **2.3. Safe FileId & Edition Handling**
   - Comply with `EditionedFileId` 24-bit mask (`0x007F_FFFF`) to prevent Rust Edition bit corruption.
   - Path-normalized FileId deduplication and reuse across concurrent sessions.
