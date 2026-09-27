@@ -546,12 +546,13 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
         .expect("the tool is listed");
     for promised in [
         "Go (a `.go` file, through gopls v0.23.0)",
-        "permutation of the named parameters",
+        "reorders named parameters and removes provably unused ones",
         "Grouped parameters",
-        "variadic parameter must stay last",
-        "adding (`name: Type = expression`) or removing a parameter",
-        "a generic function that has calls",
-        "used as a value",
+        "variadic parameter stays last",
+        "Go additions, parameter/result type changes",
+        "empty array to remove all",
+        "generic functions with calls",
+        "function values and unreconciled calls",
         "`true`, `false` and `nil` count as variables",
     ] {
         assert!(
@@ -689,4 +690,455 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
     );
     let (tested, output) = fixture.go(&["test", "-count=1", "./..."]);
     assert!(tested, "go test after the change: {output}");
+}
+
+/// The version of the `gopls` on `PATH`, for the log of a real-server run.
+fn gopls_version() -> String {
+    let out = std::process::Command::new("gopls")
+        .arg("version")
+        .output()
+        .expect("gopls version runs");
+    assert!(out.status.success(), "gopls version: {out:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// `go test -v` of the module, which must pass, without its timings: the tests that ran, what
+/// they logged and their verdicts.
+fn go_tests(fixture: &GoModule) -> String {
+    let (ok, output) = fixture.go(&["test", "-v", "-count=1", "./..."]);
+    assert!(ok, "go test fails: {output}");
+    output
+        .lines()
+        .map(|l| match l.find(" (") {
+            Some(cut) if l.starts_with("--- ") => &l[..cut],
+            _ if l.starts_with("ok ") => "ok",
+            _ => l,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Every comment of a Go text, in order.
+fn comments_of(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| l.find("//").map(|at| l[at..].to_string()))
+        .collect()
+}
+
+const REMOVE_LIB: &str = r#"package main
+
+import "fmt"
+
+var trace []string
+
+// mark records an effect and passes its value on.
+func mark(tag string, v int) int {
+	trace = append(trace, tag)
+	return v
+}
+
+// Label brackets a name; the width it was once padded to is no longer read.
+func Label(name string, width int) string {
+	return "[" + name + "]"
+}
+
+// Ship sends qty items to dest; the note and the priority are no longer read.
+func Ship(qty int, note string, priority int, dest string) string {
+	trace = append(trace, fmt.Sprintf("Ship(%d,%s)", qty, dest))
+	return fmt.Sprint(qty, "->", dest)
+}
+
+var ticks int
+
+// Tick counts, whatever it is told.
+func Tick(reason string, n int) {
+	ticks++
+}
+
+// Total adds xs to base; the label is not read.
+func Total(label string, base int, xs ...int) int {
+	for _, x := range xs {
+		base += x
+	}
+	return base
+}
+
+// Pad returns s; the widths are not read.
+func Pad(s string, widths ...int) string {
+	return s
+}
+
+type Counter struct{ n int }
+
+// Bump adds by; why is not read.
+func (c *Counter) Bump(by int, why string) {
+	c.n += by
+}
+"#;
+
+const REMOVE_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	w, note, prio := 8, "fragile", 2
+	s := "pear"
+	nums := []int{4, 5}
+	fmt.Println(Label("a,b", 10), Label(s, w)) // Label("x", 1) stays a comment
+	fmt.Println(Ship(3, "glass", 1, "LA"), Ship(mark("m", 2), note, prio, "NY"))
+	Tick("start", 1)
+	Tick(s, w)
+	fmt.Println(Total("t", 1, 2, 3), Total(s, 0, nums...), Total("none", 7))
+	fmt.Println(Pad("x", 1, 2), Pad("y", nums...), Pad("z"))
+	var c Counter
+	c.Bump(mark("b", 4), "because")
+	fmt.Println(w, note, prio, ticks, c.n, "Ship(1, \"s\", 2, \"d\")")
+	fmt.Println(trace)
+}
+"#;
+
+const REMOVE_TEST: &str = r#"package main
+
+import "testing"
+
+func TestShip(t *testing.T) {
+	if got := Ship(2, "n", 0, "SF"); got != "2->SF" {
+		t.Fatalf("got %q", got)
+	}
+	t.Log(Label("t", 3), Total("u", 1, 2), Pad("p", 9))
+}
+
+func TestBump(t *testing.T) {
+	var c Counter
+	c.Bump(5, "test")
+	Tick("test", 0)
+	if c.n != 5 {
+		t.Fatalf("got %d", c.n)
+	}
+}
+"#;
+
+/// Parameters the body provably never reads are removed through gopls, alone, with a reorder,
+/// all of them, beside a kept or a removed variadic parameter, and from a method; the arguments
+/// dropped are literals and plain variables, whose evaluation does nothing. The program and its
+/// tests run the same before and after, and comments and strings stay as they were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unused_parameters_are_removed_by_gopls_and_the_program_runs_the_same() {
+    require_go_toolchain();
+    eprintln!("gopls on PATH: {}", gopls_version());
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/remove\n\ngo 1.22\n"),
+        ("lib.go", REMOVE_LIB),
+        ("main.go", REMOVE_MAIN),
+        ("main_test.go", REMOVE_TEST),
+    ]);
+    let before = fixture.run();
+    let tests_before = go_tests(&fixture);
+    eprintln!("original program:\n{before}\noriginal tests:\n{tests_before}");
+    assert!(
+        before.contains("[a,b] [pear]") && before.contains("[Ship(3,LA) m Ship(2,NY) b]"),
+        "{before}"
+    );
+    assert!(
+        tests_before.contains("--- PASS: TestShip"),
+        "{tests_before}"
+    );
+    let comments = (comments_of(REMOVE_LIB), comments_of(REMOVE_MAIN));
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = bridge.addr();
+
+    // One unused parameter, previewed: gopls is asked for the shorter signature, and nothing is
+    // written.
+    let untouched = fixture.snapshot();
+    let preview = change(remote, &fixture, "lib.go", "Label(name", &["name"], false)
+        .await
+        .unwrap_or_else(|e| panic!("the removal previews: {e:#}"));
+    assert!(!preview.applied);
+    assert_eq!(fixture.snapshot(), untouched, "a preview wrote");
+    assert!(preview.unmatched.is_empty(), "{:?}", preview.unmatched);
+    assert!(preview.unexpected.is_empty(), "{:?}", preview.unexpected);
+    assert!(preview.diagnostics.is_empty(), "{:?}", preview.diagnostics);
+    assert_eq!(preview.old_signature, "name string, width int");
+    assert_eq!(preview.new_signature, "name string");
+    assert_eq!(
+        bridge.renames().last().unwrap()["newName"],
+        "func(name string) string"
+    );
+    assert!(
+        rewritten(&preview, "main.go")
+            .contains("fmt.Println(Label(\"a,b\"), Label(s)) // Label(\"x\", 1) stays a comment"),
+        "{}",
+        rewritten(&preview, "main.go")
+    );
+    assert!(rewritten(&preview, "main_test.go").contains("Label(\"t\")"));
+    eprintln!("{}", preview.render(4000));
+    let label = change(remote, &fixture, "lib.go", "Label(name", &["name"], true)
+        .await
+        .unwrap_or_else(|e| panic!("the removal applies: {e:#}"));
+    assert!(label.applied);
+    for (path, text) in &label.rewritten {
+        assert_eq!(&std::fs::read_to_string(path).unwrap(), text, "{path}");
+    }
+    assert!(
+        fixture
+            .read("lib.go")
+            .contains("func Label(name string) string {")
+    );
+
+    // Two removed and the rest reordered: a call beside a literal keeps its effect, in order.
+    let ship = change(
+        remote,
+        &fixture,
+        "lib.go",
+        "Ship(qty",
+        &["dest", "qty"],
+        true,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("the removal and reorder apply: {e:#}"));
+    assert!(ship.applied);
+    assert_eq!(
+        ship.old_signature,
+        "qty int, note string, priority int, dest string"
+    );
+    assert_eq!(ship.new_signature, "dest string, qty int");
+    let main = fixture.read("main.go");
+    assert!(
+        main.contains("fmt.Println(Ship(\"LA\", 3), Ship(\"NY\", mark(\"m\", 2)))"),
+        "{main}"
+    );
+    assert!(fixture.read("main_test.go").contains("Ship(\"SF\", 2)"));
+
+    // Every parameter removed.
+    let tick = change(remote, &fixture, "lib.go", "Tick(reason", &[], true)
+        .await
+        .unwrap_or_else(|e| panic!("removing every parameter applies: {e:#}"));
+    assert!(tick.applied);
+    assert_eq!(tick.new_signature, "");
+    let main = fixture.read("main.go");
+    assert!(main.contains("\tTick()\n\tTick()\n"), "{main}");
+    assert!(fixture.read("lib.go").contains("func Tick() {"));
+
+    // A fixed parameter removed before a kept variadic one: the tail, spread or not, stays.
+    let total = change(
+        remote,
+        &fixture,
+        "lib.go",
+        "Total(label",
+        &["base", "xs"],
+        true,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("removing before a variadic parameter applies: {e:#}"));
+    assert!(total.applied);
+    let main = fixture.read("main.go");
+    assert!(
+        main.contains("Total(1, 2, 3), Total(0, nums...), Total(7)"),
+        "{main}"
+    );
+
+    // The variadic parameter removed: every argument of the tail goes, a spread slice too.
+    let pad = change(remote, &fixture, "lib.go", "Pad(s", &["s"], true)
+        .await
+        .unwrap_or_else(|e| panic!("removing a variadic parameter applies: {e:#}"));
+    assert!(pad.applied);
+    let main = fixture.read("main.go");
+    assert!(
+        main.contains("Pad(\"x\"), Pad(\"y\"), Pad(\"z\")"),
+        "{main}"
+    );
+    assert!(fixture.read("main_test.go").contains("Pad(\"p\")"));
+
+    // A method: the receiver stays exactly as written, the effectful argument that stays too.
+    let bump = change(remote, &fixture, "lib.go", "Bump(by", &["by"], true)
+        .await
+        .unwrap_or_else(|e| panic!("removing a method parameter applies: {e:#}"));
+    assert!(bump.applied);
+    assert!(
+        fixture
+            .read("lib.go")
+            .contains("func (c *Counter) Bump(by int) {")
+    );
+    assert!(fixture.read("main.go").contains("c.Bump(mark(\"b\", 4))"));
+    assert!(fixture.read("main_test.go").contains("c.Bump(5)"));
+
+    let lib = fixture.read("lib.go");
+    let main = fixture.read("main.go");
+    eprintln!("transformed lib.go:\n{lib}\ntransformed main.go:\n{main}");
+    assert_eq!((comments_of(&lib), comments_of(&main)), comments);
+    assert!(
+        main.contains("\"Ship(1, \\\"s\\\", 2, \\\"d\\\")\""),
+        "{main}"
+    );
+    let after = fixture.run();
+    let tests_after = go_tests(&fixture);
+    eprintln!("transformed program:\n{after}\ntransformed tests:\n{tests_after}");
+    assert_eq!(after, before, "the program prints something else");
+    assert_eq!(tests_after, tests_before, "the tests ran differently");
+    let (vetted, output) = fixture.go(&["vet", "./..."]);
+    assert!(vetted, "go vet after the change: {output}");
+}
+
+const REFUSE_REMOVE_LIB: &str = r#"package main
+
+var trace []string
+
+func mark(tag string, v int) int {
+	trace = append(trace, tag)
+	return v
+}
+
+// Keep reads both.
+func Keep(a, b int) int { return a + b }
+
+// Later reads b only in a closure.
+func Later(a, b int) func() int {
+	return func() int { return a + b }
+}
+
+// Drop never reads b; its callers pass effects for it.
+func Drop(a, b int) int { return a }
+
+type box struct{ n int }
+
+func two() (int, int) { return 1, 2 }
+
+// Spare never reads b, but is used as a value.
+func Spare(a, b int) int { return a }
+
+// Both never reads b, and is called with a pair.
+func Both(a, b int) int { return a }
+
+// Gen never reads n.
+func Gen[T any](t T, n int) T { return t }
+"#;
+
+const REFUSE_REMOVE_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	ch := make(chan int, 1)
+	ch <- 7
+	xs := []int{1, 2}
+	p := &box{n: 3}
+	i := 1
+	fmt.Println(Keep(1, 2), Later(1, 2)())
+	fmt.Println(Drop(1, mark("call", 2)), Drop(2, <-ch), Drop(3, xs[i]), Drop(4, p.n), Drop(5, i+1))
+	f := Spare
+	fmt.Println(f(1, 2), Both(two()), Gen(1, 2), trace)
+}
+"#;
+
+/// A removal is refused, with `force`, before gopls is asked for an edit, whenever it is not
+/// proven harmless: the body reads the parameter (directly or in a closure), a dropped argument
+/// is a call, a receive, an index, a selector (which can dereference nil) or an operator, the
+/// function is used as a value, a call passes a pair, or the function is generic. A reference
+/// list that cannot be had stops it too. Not a byte changes, and the program runs the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn removals_that_are_used_effectful_or_unproven_are_refused_and_write_nothing() {
+    require_go_toolchain();
+    eprintln!("gopls on PATH: {}", gopls_version());
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/refuseremove\n\ngo 1.22\n"),
+        ("lib.go", REFUSE_REMOVE_LIB),
+        ("main.go", REFUSE_REMOVE_MAIN),
+    ]);
+    let before = fixture.run();
+    eprintln!("original program:\n{before}");
+    let untouched = fixture.snapshot();
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = bridge.addr();
+    let open = "remain open requirements";
+    let refused = |needle: &'static str, order: &'static [&'static str]| {
+        let fixture = &fixture;
+        async move {
+            let (line, col) = at(fixture, "lib.go", needle);
+            match prod_code_mcp::signature_go::change_with(
+                remote,
+                fixture.root(),
+                &fixture.path("lib.go"),
+                line,
+                col,
+                &keep(order),
+                &Modifiers::default(),
+                true,
+                true,
+            )
+            .await
+            {
+                Ok(c) => panic!("expected a refusal, got {}", c.render(3000)),
+                Err(e) => format!("{e:#}"),
+            }
+        }
+    };
+
+    // What gopls itself does with the removal: the call, the receive and the index are dropped
+    // without a trace, and the program no longer runs them.
+    let (line, _) = at(&fixture, "lib.go", "func Drop");
+    let native = bridge.native(
+        "textDocument/rename",
+        json!({
+            "textDocument": { "uri": uri(&fixture.path("lib.go")) },
+            "position": { "line": line - 1, "character": 0 },
+            "newName": "func(a int) int"
+        }),
+    );
+    eprintln!("gopls's own answer to removing Drop's b: {native:?}");
+
+    let body = refused("Keep(a", &["a"]).await;
+    assert!(
+        body.contains("removing `b`") && body.contains("still uses it at lib.go:11:"),
+        "{body}"
+    );
+    assert!(body.contains(open), "{body}");
+    let closure = refused("Later(a", &["a"]).await;
+    assert!(
+        closure.contains("removing `b`") && closure.contains("still uses it at lib.go:15:"),
+        "{closure}"
+    );
+    let effects = refused("Drop(a", &["a"]).await;
+    for arg in ["mark(\"call\", 2)", "<-ch", "xs[i]", "p.n", "i+1"] {
+        assert!(
+            effects.contains(&format!(
+                "`{arg}` is passed for the removed `b` and would no longer be evaluated"
+            )),
+            "{arg}: {effects}"
+        );
+    }
+    assert!(effects.contains("`force` does not override"), "{effects}");
+    let value = refused("Spare(a", &["a"]).await;
+    assert!(
+        value.contains("used as a value") && value.contains("main.go:13:7"),
+        "{value}"
+    );
+    let pair = refused("Both(a", &["a"]).await;
+    assert!(
+        pair.contains("passes 1 argument(s) and `Both` declares 2"),
+        "{pair}"
+    );
+    let generic = refused("Gen[T", &["t"]).await;
+    assert!(
+        generic.contains("removing `n`") && generic.contains("generic"),
+        "{generic}"
+    );
+    assert!(generic.contains(open), "{generic}");
+
+    // A reference list that cannot be had: nothing is guessed.
+    bridge.fail("textDocument/references", "no package metadata");
+    let unknown = refused("Drop(a", &["a"]).await;
+    bridge.heal();
+    assert!(unknown.contains("cannot list the references"), "{unknown}");
+
+    assert!(
+        bridge.renames().is_empty(),
+        "gopls was asked for an edit: {:?}",
+        bridge.renames()
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        untouched,
+        "a refused removal wrote to the checkout"
+    );
+    assert_eq!(fixture.run(), before);
 }

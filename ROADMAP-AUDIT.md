@@ -36,7 +36,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 | 6.2 Caches | Persistent workspace artifacts and per-user package/compiler caches. | RAM-backed caches, pre-warmed Python bytecode and some language-specific shared caches remain open. sccache was observed in node Cargo configuration; the older blanket claim that it was absent is incorrect. |
 | 6.3 Isolation | Worktree copies and process supervision. | The #426 repair keeps sccache compilation client-side in the shadow and refuses incompatible logging/distributed settings. The #440 repair serializes in-place runs per workspace and reports incomplete rollback; arbitrary external build daemons still need their own isolation contract. |
 | 6.4 Build tools | Language-specific check, lint and test dispatch in `mcp/src/verify.rs`. | The 1–3 second target is workload-dependent, not a universal guarantee. |
-| 7.1 Refactoring | Rust custom planners plus language-server actions; both parameter operations also cover JavaScript and the other listed languages. | Most custom planners remain Rust-specific. Go signature permutations are verified through CLI/MCP and real gopls (#448); broader signature changes remain open. JavaScript parameter objects are added in #428. The #425 repair makes application transactional; #442 guards Rust signature effects, while #436/#441 preserve parameter-object evaluation and destruction order with explicit refusals for uncertain cases. The #446 repair blocks writes on failed/malformed/unreadable or unmatched required references, even with `force` and compiler verification; individual signature occurrences are reconciled, including ordinary block comments relocated by the analyzer (#472). |
+| 7.1 Refactoring | Rust custom planners plus language-server actions; both parameter operations also cover JavaScript and the other listed languages. | Most custom planners remain Rust-specific. Go signature reorder/removal is verified through CLI/MCP and real gopls (#448), with proof of unused parameters and safe dropped arguments; additions, modifiers and broader signature changes remain open. JavaScript parameter objects are added in #428. The #425 repair makes application transactional; #442 guards Rust signature effects, while #436/#441 preserve parameter-object evaluation and destruction order with explicit refusals for uncertain cases. The #446 repair blocks writes on failed/malformed/unreadable or unmatched required references, even with `force` and compiler verification; individual signature occurrences are reconciled, including ordinary block comments relocated by the analyzer (#472). |
 | 7.2 Fixes | Server code actions and compiler/linter fix modes. | The proposed `code_quickfix` spelling is not a separate tool; use the shipped assist/check/lint surfaces. |
 | 7.3 Slicing | Bounded declaration traversal in `mcp/src/slice.rs`; #457 distinguishes missing evidence from depth/byte/declaration bounds and checks URI and actual UTF-16 source coordinates, verified through a real engine. | No intra-function program-dependence/data-flow slicing or proof of a minimal complete slice. |
 | 7.4 Shadows | Overlay hypotheses and a serialized fallback in `gateway/src/shadow.rs`. | Real sccache/build-script regressions cover #426. Regressions for #440 cover failed staging, cancellation, metadata and symlink containment during rollback, including created directories; unsupported environments must not count as a passing integration scenario. |
@@ -54,6 +54,41 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 Paths shortened above are under `crates/prod-code-*`. The main integration evidence lives in
 the gateway live tests, MCP orchestration/analysis tests, native parameter tests and client CLI
 tests. Unit and mock coverage complements real-server checks; it does not replace them.
+
+## Checkbox reconciliation
+
+The following 14 checkboxes changed from `[x]` to `[~]` (#480). Their delivered behavior and recorded
+evidence remain above; the original mechanism or required scope remains open.
+
+- **1.1**: length framing, compatibility defaults and loopback TCP do not implement NUL framing,
+  negotiated capabilities/version, or Unix-socket/named-pipe transport.
+- **1.3**: editor restart is not in-process reconnect, and the record does not establish
+  zero-allocation hot paths.
+- **3.3**: exit detection and request timeouts are not the specified periodic health ping.
+- **3.6**: copied virtual environments and bundled typeshed are not a shared virtual-environment
+  stub cache.
+- **5.1**: client-directed placement avoids, rather than implements, the gateway dispatcher and
+  `WireMessage::Redirect` mechanism.
+- **5.2**: seed-address gossip/cache discovery is a substitute for, not an implementation of,
+  DNS/mDNS/SRV publication.
+- **5.4**: per-workspace out-of-process macro servers are not a sandboxed shared worker farm.
+- **6.3**: seeded per-worktree artifacts and per-user caches are not a shared read-only dependency
+  artifact cache.
+- **7.1 `extract_function`**: token-matched copies, with optional other-file search, are not
+  automatic workspace-wide structural duplicate detection.
+- **7.1 `extract_trait` / `extract_interface`**: imports for moved methods do not update caller
+  type annotations, and generic implementations are refused.
+- **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
+  the promised general `for`/`while` iterator/fold transformation.
+- **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM storage
+  is optional, not the specified in-memory RAM workspace mechanism.
+- **7.5**: `code_dead_code` counts references; it is not whole-program reachability.
+- **7.6**: planning and direct all-or-rollback writes are not an atomic multi-repository
+  `WorkspaceEdit`.
+
+Other completed checkboxes remain unchanged when their stated language/input restrictions have
+attributable implementation and verification evidence; this reconciliation does not turn a lack
+of a fresh audit rerun into a failure.
 
 ## Remaining feature scope
 
