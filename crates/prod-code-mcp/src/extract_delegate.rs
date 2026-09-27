@@ -539,7 +539,7 @@ pub async fn extract_delegate(
         }) else {
             continue;
         };
-        let (fl, fc) = crate::signature::line_col_at(&text, decl.open + 1 + rel_at);
+        let (fl, fc) = crate::signature::position_at(&text, decl.open + 1 + rel_at)?;
         let refs = crate::signature::references(remote, root, file, fl, fc)
             .await
             .with_context(|| format!("cannot find the uses of `{f}`; nothing was planned"))?;

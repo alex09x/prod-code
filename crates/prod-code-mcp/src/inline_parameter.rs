@@ -180,7 +180,7 @@ pub async fn inline_parameter(
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     let mut values: Vec<(String, String)> = Vec::new();
-    let (fl, fc) = crate::signature::line_col_at(&text, fn_at);
+    let (fl, fc) = crate::signature::position_at(&text, fn_at)?;
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let refs = crate::signature::references(remote, root, file, fl, fc)
         .await

@@ -323,21 +323,32 @@ fn split_at_top_level(text: &str, sep: char) -> Option<(&str, &str)> {
     None
 }
 
-/// Byte offset of a 1-based line and column.
+/// Byte offset of a 1-based line and column, the column counted in UTF-16 code units as an LSP
+/// position is (prod-code negotiates no other encoding) (#456). Lines end at `\n`, and a `\r`
+/// before it is part of the break, not of the line. One past the last character of a line is
+/// its end, and the start of the empty line after a final `\n` is the end of the text. A zero
+/// line or column, one past the end of its line or of the text, and one that falls between the
+/// two halves of a surrogate pair is on no character: `None`, never a nearby offset.
 pub(crate) fn offset_of(text: &str, line: u32, col: u32) -> Option<usize> {
-    let mut offset = 0usize;
-    for (n, l) in text.lines().enumerate() {
-        if n as u32 + 1 == line {
-            let within: usize = l
-                .chars()
-                .take(col.saturating_sub(1) as usize)
-                .map(char::len_utf8)
-                .sum();
-            return Some(offset + within);
-        }
-        offset += l.len() + 1;
+    if line == 0 || col == 0 {
+        return None;
     }
-    None
+    let mut start = 0usize;
+    for _ in 1..line {
+        start += text[start..].find('\n')? + 1;
+    }
+    let rest = &text[start..];
+    let end = rest.find('\n').map_or(rest.len(), |n| {
+        if rest[..n].ends_with('\r') { n - 1 } else { n }
+    });
+    let mut units = 1u32;
+    for (i, ch) in rest[..end].char_indices() {
+        if units >= col {
+            return (units == col).then_some(start + i);
+        }
+        units = units.checked_add(ch.len_utf16() as u32)?;
+    }
+    (units == col).then_some(start + end)
 }
 
 /// The span between the parentheses of the parameter list of the function whose name starts at
@@ -980,7 +991,8 @@ fn attribute(
     }
     let mut unexpected = Vec::new();
     if let Some(at) = stop {
-        unexpected.push(format!("{place}:{}", line_col_at(old, at).0));
+        // Only the line is named: a change can start between the `\r` and `\n` of a break.
+        unexpected.push(format!("{place}:{}", old[..at].matches('\n').count() + 1));
         for (i, nested) in &outer[verified..] {
             for j in std::iter::once(i).chain(nested) {
                 if calls[*j].needs {
@@ -1168,7 +1180,7 @@ pub async fn change_with(
                 .with_context(|| {
                     format!("`{gone}` is not where the parameter list says; nothing was written")
                 })?;
-            let (l, c) = line_col_at(&text, at);
+            let (l, c) = position_at(&text, at)?;
             let refs = references(remote, root, file, l, c)
                 .await
                 .with_context(|| {
@@ -2187,7 +2199,7 @@ async fn hover_markdown(
     if let Some(known) = asked.get(&at) {
         return known.clone();
     }
-    let (line, col) = line_col_at(text, at);
+    let (line, col) = line_col_at(text, at)?;
     let uri = url::Url::from_file_path(file).ok()?.to_string();
     let hover = crate::tools::execute_lsp_query(
         remote,
@@ -2466,15 +2478,33 @@ fn writes_call(text: &str, name: &str) -> bool {
     })
 }
 
-pub(crate) fn line_col_at(text: &str, offset: usize) -> (u32, u32) {
-    let before = &text[..offset.min(text.len())];
-    let line = before.matches('\n').count() as u32 + 1;
-    let col = before
-        .rsplit('\n')
-        .next()
-        .map(|l| l.chars().count() as u32 + 1)
-        .unwrap_or(1);
-    (line, col)
+/// The 1-based line and UTF-16 column of a byte offset, the inverse of [`offset_of`]. An offset
+/// past the end of the text, inside a character, or between the `\r` and the `\n` of a line
+/// break is on no position: `None`, not the nearest one.
+pub(crate) fn line_col_at(text: &str, offset: usize) -> Option<(u32, u32)> {
+    if !text.is_char_boundary(offset) {
+        return None;
+    }
+    let before = &text[..offset];
+    let line_start = before.rfind('\n').map_or(0, |n| n + 1);
+    let in_line = &before[line_start..];
+    if in_line.ends_with('\r') && text[offset..].starts_with('\n') {
+        return None;
+    }
+    let line = u32::try_from(before.matches('\n').count()).ok()?;
+    let col = u32::try_from(in_line.encode_utf16().count()).ok()?;
+    Some((line.checked_add(1)?, col.checked_add(1)?))
+}
+
+/// [`line_col_at`] for a planner, whose offsets come from the text itself: one that is on no
+/// position is an error that stops the plan.
+pub(crate) fn position_at(text: &str, offset: usize) -> Result<(u32, u32)> {
+    line_col_at(text, offset).with_context(|| {
+        format!(
+            "byte {offset} of a {}-byte file is on no line and column; nothing was planned",
+            text.len()
+        )
+    })
 }
 
 fn display(root: &Path, path: &Path) -> String {
@@ -2929,7 +2959,7 @@ mod tests {
         text.match_indices(name)
             .filter_map(|(at, _)| {
                 call_arguments(text, at).unwrap().map(|args| CallSite {
-                    at: line_col_at(text, at).0.to_string(),
+                    at: line_col_at(text, at).unwrap().0.to_string(),
                     args,
                 })
             })
@@ -3263,7 +3293,7 @@ mod tests {
 
     /// The (line, column) of the `n`th `join` in `text`.
     fn join_at(text: &str, n: usize) -> (u32, u32) {
-        line_col_at(text, text.match_indices("join").nth(n).expect("there").0)
+        line_col_at(text, text.match_indices("join").nth(n).expect("there").0).unwrap()
     }
 
     #[test]
@@ -3360,7 +3390,7 @@ mod tests {
     fn an_await_is_part_of_the_call_it_follows() {
         let old = "async fn m() {\n    let f = load;\n    load(1);\n}\n";
         let new = "async fn m() {\n    let f = load;\n    load(1).await;\n}\n";
-        let at = |n: usize| line_col_at(old, old.match_indices("load").nth(n).unwrap().0);
+        let at = |n: usize| line_col_at(old, old.match_indices("load").nth(n).unwrap().0).unwrap();
         let awaits = |_: &[String], awaited: bool| !awaited;
         let (unmatched, unexpected) = attribute("m.rs", old, new, "load", &[at(0), at(1)], &awaits);
         assert!(unexpected.is_empty(), "{unexpected:?}");
@@ -3373,7 +3403,113 @@ mod tests {
         let text = "fn a() {}\nfn b(x: u32) {}\n";
         let offset = offset_of(text, 2, 4).expect("line 2 exists");
         assert_eq!(&text[offset..offset + 1], "b");
-        assert_eq!(line_col_at(text, offset), (2, 4));
+        assert_eq!(line_col_at(text, offset), Some((2, 4)));
+    }
+
+    /// An analyzer's column counts UTF-16 units, and a CRLF break is two bytes of the file
+    /// (#456).
+    #[test]
+    fn a_position_counts_utf16_units_and_crlf_bytes() {
+        // 😀 is four bytes and two UTF-16 units.
+        assert_eq!(offset_of("😀fn", 1, 3), Some(4));
+        assert_eq!(offset_of("a\r\nfn", 2, 1), Some(3));
+        assert_eq!(offset_of("a\r\nfn", 2, 2), Some(4));
+        assert_eq!(offset_of("a\r\nb\r\nfn", 3, 1), Some(6));
+        // é is two bytes and one unit; 𝄞 four bytes and two units.
+        assert_eq!(offset_of("é𝄞x", 1, 4), Some(6));
+        assert_eq!(offset_of("é𝄞x", 1, 5), Some(7));
+        // The end of a CRLF line is before its `\r`.
+        assert_eq!(offset_of("ab\r\n", 1, 3), Some(2));
+        assert_eq!(line_col_at("😀fn", 4), Some((1, 3)));
+        assert_eq!(line_col_at("a\r\nfn", 3), Some((2, 1)));
+        assert_eq!(line_col_at("ab\r\n", 2), Some((1, 3)));
+        // A lone `\r` is a character, not a line break.
+        assert_eq!(offset_of("a\rb", 1, 3), Some(2));
+        assert_eq!(line_col_at("a\rb", 2), Some((1, 3)));
+    }
+
+    /// A position on no character is refused, never moved to the end of its line or the text.
+    #[test]
+    fn a_position_on_no_character_is_refused() {
+        assert_eq!(offset_of("abc", 1, 999), None);
+        assert_eq!(offset_of("abc", 1, 5), None);
+        assert_eq!(offset_of("abc", 1, 4), Some(3));
+        assert_eq!(offset_of("abc", 0, 1), None);
+        assert_eq!(offset_of("abc", 1, 0), None);
+        assert_eq!(offset_of("abc", 2, 1), None);
+        assert_eq!(offset_of("abc", u32::MAX, u32::MAX), None);
+        // Between the halves of a surrogate pair, at the start and at the end of a line.
+        assert_eq!(offset_of("😀fn", 1, 2), None);
+        assert_eq!(offset_of("a😀", 1, 3), None);
+        assert_eq!(offset_of("a😀", 1, 4), Some(5));
+        // Past the `\r` of a CRLF break.
+        assert_eq!(offset_of("ab\r\ncd", 1, 4), None);
+        // A byte inside a character, past the end, or between `\r` and `\n`.
+        assert_eq!(line_col_at("😀fn", 1), None);
+        assert_eq!(line_col_at("é", 1), None);
+        assert_eq!(line_col_at("abc", 4), None);
+        assert_eq!(line_col_at("ab\r\ncd", 3), None);
+        let err = position_at("abc", 9).unwrap_err().to_string();
+        assert!(err.contains("byte 9 of a 3-byte file"), "{err}");
+        assert_eq!(position_at("abc", 3).unwrap(), (1, 4));
+    }
+
+    /// The empty text has one empty line, and so does the end of a text after its last break.
+    #[test]
+    fn an_empty_text_and_a_final_empty_line_have_one_position() {
+        assert_eq!(offset_of("", 1, 1), Some(0));
+        assert_eq!(offset_of("", 1, 2), None);
+        assert_eq!(offset_of("", 2, 1), None);
+        assert_eq!(line_col_at("", 0), Some((1, 1)));
+        assert_eq!(line_col_at("", 1), None);
+        assert_eq!(offset_of("a\n", 2, 1), Some(2));
+        assert_eq!(offset_of("a\r\n", 2, 1), Some(3));
+        assert_eq!(offset_of("a\n", 2, 2), None);
+        assert_eq!(offset_of("a\n", 3, 1), None);
+        assert_eq!(line_col_at("a\n", 2), Some((2, 1)));
+        assert_eq!(line_col_at("a\r\n", 3), Some((2, 1)));
+        assert_eq!(offset_of("a", 1, 2), Some(1));
+        assert_eq!(line_col_at("a", 1), Some((1, 2)));
+    }
+
+    /// Every byte offset that has a position comes back from it, and every position that has an
+    /// offset comes back from that.
+    #[test]
+    fn offsets_and_positions_are_inverses() {
+        for text in [
+            "",
+            "\n",
+            "\r\n",
+            "a\r\n\r\nb",
+            "😀fn x(é: u8) {}\r\n  let 𝄞 = \"\r\";\n😀\n",
+            "\r\r\n\u{FEFF}x",
+        ] {
+            let mut positions = 0;
+            for offset in 0..=text.len() + 1 {
+                if let Some((line, col)) = line_col_at(text, offset) {
+                    positions += 1;
+                    assert_eq!(
+                        offset_of(text, line, col),
+                        Some(offset),
+                        "{text:?} {offset}"
+                    );
+                }
+            }
+            let mut offsets = 0;
+            for line in 0..6 {
+                for col in 0..30 {
+                    if let Some(offset) = offset_of(text, line, col) {
+                        offsets += 1;
+                        assert_eq!(
+                            line_col_at(text, offset),
+                            Some((line, col)),
+                            "{text:?} {line}:{col}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(positions, offsets, "{text:?}");
+        }
     }
 
     #[test]

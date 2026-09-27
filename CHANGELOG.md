@@ -39,6 +39,23 @@
   documents follow later disk notifications while active overlays remain owned by their client;
   bounded generations are replaced whole, and a private-server admission or startup failure is
   reported instead of falling back to the ordinary engine.
+- All MCP tools with source positions reject zero, overflowing or malformed coordinates
+  before dispatch (#500). Selection endpoints must be supplied together and cannot precede
+  the start; CLI assist application shares the same guard. Discovery schemas advertise bounds.
+- Linux overlay shadow commands drop mount-time namespace capabilities before running (#491),
+  so read-only files are refused as in ordinary execution. Overlay support now requires
+  `setpriv` on the gateway PATH; the capability probe reports when it is unavailable.
+- Rename refuses zero and overflowing one-based coordinates before asking the analyzer or
+  writing files (#495), including forced, comment-aware and accessor renames.
+- Rust refactoring planners and the native Rust engine now convert UTF-16 source columns
+  consistently (#456), including supplementary characters and CRLF. Invalid planner positions
+  are refused before edits; the editor bridge clamps positions to valid character and line
+  boundaries. A final bare carriage return remains source text.
+- Multi-file Rust validation checks candidate definitions before warning about a removed
+  name (#483). Relocated declarations and names that resolve in the complete proposal no
+  longer count as stale callers; unresolved uses and malformed definition evidence still warn.
+- Go signature changes reject zero one-based coordinates, CRLF terminator interiors and
+  UTF-16 surrogate interiors before planning or applying native edits (#486).
 - Relative source paths passed to library diagnostics and validation select their engine
   relative to the supplied checkout, so nested Python files in Rust projects reach Python
   instead of failing in the Rust VFS (#488). Absolute paths retain the same behavior.
@@ -50,6 +67,11 @@
 - Generic LSP diagnostic pulls accept only complete `full` reports with array items and no
   error envelope (#479). Uncached `unchanged`, unknown or malformed reports no longer become
   clean results when their kind is stripped; an available publication must supply the fallback.
+- Removed Rust helper names in comments and strings no longer produce stale-reference
+  warnings or false notes (#484). Line, doc and nested block comments, ordinary, raw and
+  byte strings, character literals and lifetime parameters are ignored, while actual remaining
+  code references, qualified paths, raw identifiers and same-line uses after comments still
+  warn at their UTF-16 code columns.
 - The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
   to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
   missing/malformed items, error responses and uncached unchanged reports stay refused.

@@ -211,7 +211,7 @@ pub async fn invert_value(
     let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     texts.insert(file.to_path_buf(), text.to_string());
-    let (l0, c0) = crate::signature::line_col_at(text, start);
+    let (l0, c0) = crate::signature::position_at(text, start)?;
 
     // The declaration.
     let own = edits.entry(file.to_path_buf()).or_default();
