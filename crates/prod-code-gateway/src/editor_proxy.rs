@@ -17,9 +17,16 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{PathTranslator, ProdCodeCodec, WireMessage, transport::read_lsp_frame};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::task::{AbortHandle, JoinHandle};
+use tokio::time::{Instant, timeout_at};
 use tokio_util::codec::Framed;
+
+const CHANNEL_CAPACITY: usize = 1024;
+const WRITE_BUDGET: Duration = Duration::from_secs(30);
+const TEARDOWN_BUDGET: Duration = Duration::from_secs(5);
 
 /// How to start a language server for an editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,39 +120,87 @@ pub fn to_server(translator: &PathTranslator, raw: &str) -> String {
 #[derive(Default)]
 pub struct EditorServers {
     next: AtomicU64,
-    servers: std::sync::Mutex<Vec<(u64, PathBuf, rapidfire::mpsc::Sender<String>)>>,
+    servers: std::sync::Mutex<Vec<ServerRegistration>>,
+}
+
+struct ServerRegistration {
+    id: u64,
+    root: PathBuf,
+    input: rapidfire::mpsc::Sender<PendingServerFrame>,
+    retire: tokio::sync::watch::Sender<bool>,
+    write_budget: Duration,
+}
+
+struct PendingServerFrame {
+    body: String,
+    deadline: Instant,
+}
+
+struct PendingEditorMessage {
+    message: WireMessage,
+    deadline: Instant,
 }
 
 /// A server's place in [`EditorServers`], given up when the session ends.
 pub struct Registration<'a> {
     servers: &'a EditorServers,
     id: u64,
+    retired: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Drop for Registration<'_> {
     fn drop(&mut self) {
-        let mut servers = self
-            .servers
-            .servers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        servers.retain(|(id, _, _)| *id != self.id);
+        self.servers.remove(self.id, false);
+    }
+}
+
+impl Registration<'_> {
+    async fn retired(&mut self) {
+        if !*self.retired.borrow() {
+            let _ = self.retired.changed().await;
+        }
     }
 }
 
 impl EditorServers {
     /// Adds a server started in `root` that takes LSP message bodies on `input`.
-    pub fn register(
+    fn register(
         &self,
         root: PathBuf,
-        input: rapidfire::mpsc::Sender<String>,
+        input: rapidfire::mpsc::Sender<PendingServerFrame>,
+        write_budget: Duration,
     ) -> Registration<'_> {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let (retire, retired) = tokio::sync::watch::channel(false);
         self.servers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .push((id, root, input));
-        Registration { servers: self, id }
+            .push(ServerRegistration {
+                id,
+                root,
+                input,
+                retire,
+                write_budget,
+            });
+        Registration {
+            servers: self,
+            id,
+            retired,
+        }
+    }
+
+    fn remove(&self, id: u64, retire: bool) {
+        let mut servers = self.servers.lock().unwrap_or_else(|e| e.into_inner());
+        servers.retain(|server| {
+            if server.id != id {
+                return true;
+            }
+            server.input.close();
+            if retire {
+                server.retire.send_replace(true);
+            }
+            false
+        });
     }
 
     /// How many editor servers are running.
@@ -155,14 +210,22 @@ impl EditorServers {
 
     /// Sends `workspace/didChangeWatchedFiles` for the `changes` under each server's root.
     pub async fn notify(&self, changes: &[(PathBuf, WatchedChange)]) {
-        let targets: Vec<(PathBuf, rapidfire::mpsc::Sender<String>)> = self
+        let targets: Vec<_> = self
             .servers
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .map(|(_, root, input)| (root.clone(), input.clone()))
+            .map(|server| {
+                (
+                    server.id,
+                    server.root.clone(),
+                    server.input.clone(),
+                    server.write_budget,
+                )
+            })
             .collect();
-        for (root, input) in targets {
+        let mut retire = Vec::new();
+        for (id, root, input, write_budget) in targets {
             let events = crate::workspace::watched_events(&root, changes);
             if events.is_empty() {
                 continue;
@@ -172,7 +235,191 @@ impl EditorServers {
                 "method": "workspace/didChangeWatchedFiles",
                 "params": { "changes": events }
             });
-            let _ = input.send(note.to_string()).await;
+            let pending = PendingServerFrame {
+                body: note.to_string(),
+                deadline: Instant::now() + write_budget,
+            };
+            if input.try_send(pending).is_err() {
+                retire.push(id);
+            }
+        }
+        for id in retire {
+            // A watched-file notification is mandatory. A full or closed input means that
+            // this transport has lost part of its stream and must never be reused.
+            self.remove(id, true);
+        }
+    }
+}
+
+struct TaskAbortGuard(AbortHandle);
+
+impl TaskAbortGuard {
+    fn new<T>(task: &JoinHandle<T>) -> Self {
+        Self(task.abort_handle())
+    }
+}
+
+impl Drop for TaskAbortGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+struct OwnedChild {
+    child: tokio::process::Child,
+    process_group: Option<i32>,
+    leader_reaped: bool,
+    group_retired: bool,
+}
+
+impl OwnedChild {
+    fn new(child: tokio::process::Child) -> Self {
+        #[cfg(unix)]
+        let process_group = child.id().and_then(|pid| i32::try_from(pid).ok());
+        #[cfg(not(unix))]
+        let process_group = None;
+        Self {
+            child,
+            process_group,
+            leader_reaped: false,
+            group_retired: false,
+        }
+    }
+
+    fn retire_group(&mut self) {
+        if self.group_retired {
+            return;
+        }
+        self.group_retired = true;
+        #[cfg(unix)]
+        if let Some(group) = self.process_group {
+            // The command was put in its own process group before spawn. A negative PID
+            // targets only that owned group, including descendants which ignore shutdown.
+            let _ = unsafe { libc::kill(-group, libc::SIGKILL) };
+        }
+        if !self.leader_reaped {
+            let _ = self.child.start_kill();
+        }
+    }
+
+    async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let result = self.child.wait().await;
+        if result.is_ok() {
+            self.leader_reaped = true;
+        }
+        result
+    }
+
+    async fn retire(&mut self, deadline: Instant) {
+        // Reaping the direct child says nothing about descendants which still belong to the
+        // exact process group created at spawn. Retire that group once on every exit path.
+        self.retire_group();
+        if self.leader_reaped {
+            return;
+        }
+        if matches!(timeout_at(deadline, self.child.wait()).await, Ok(Ok(_))) {
+            self.leader_reaped = true;
+        }
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        self.retire_group();
+        if self.leader_reaped {
+            return;
+        }
+        // Cancellation cannot await. Give the exact child a short synchronous reap window;
+        // kill_on_drop remains the final fallback if the platform has not reported it yet.
+        for _ in 0..50 {
+            match self.child.try_wait() {
+                Ok(Some(_)) => {
+                    self.leader_reaped = true;
+                    break;
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+async fn write_server_frames(
+    mut stdin: tokio::process::ChildStdin,
+    mut input: rapidfire::mpsc::Receiver<PendingServerFrame>,
+) -> Result<()> {
+    while let Ok(pending) = input.recv().await {
+        let bytes = frame(&pending.body);
+        timeout_at(pending.deadline, async {
+            stdin.write_all(&bytes).await?;
+            stdin.flush().await
+        })
+        .await
+        .context("editor server input write exceeded its deadline")?
+        .context("writing an editor server input frame")?;
+    }
+    Ok(())
+}
+
+async fn write_editor_messages(
+    mut socket: futures_util::stream::SplitSink<Framed<TcpStream, ProdCodeCodec>, WireMessage>,
+    mut input: rapidfire::mpsc::Receiver<PendingEditorMessage>,
+) -> Result<()> {
+    while let Ok(pending) = input.recv().await {
+        timeout_at(pending.deadline, socket.send(pending.message))
+            .await
+            .context("editor socket write exceeded its deadline")?
+            .context("writing a message to the editor")?;
+    }
+    Ok(())
+}
+
+async fn finish_task(
+    task: &mut JoinHandle<Result<()>>,
+    already_finished: bool,
+    deadline: Instant,
+    session_id: u64,
+    task_name: &'static str,
+) {
+    if already_finished {
+        return;
+    }
+    match timeout_at(deadline, &mut *task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => tracing::warn!(
+            session_id,
+            task = task_name,
+            error = %error,
+            "editor task failed during teardown"
+        ),
+        Ok(Err(error)) => tracing::warn!(
+            session_id,
+            task = task_name,
+            %error,
+            "editor task join failed during teardown"
+        ),
+        Err(_) => {
+            tracing::warn!(
+                session_id,
+                task = task_name,
+                "editor task exceeded the teardown deadline; aborting it"
+            );
+            task.abort();
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    session_id,
+                    task = task_name,
+                    error = %error,
+                    "editor task failed while being aborted during teardown"
+                ),
+                Err(error) => tracing::warn!(
+                    session_id,
+                    task = task_name,
+                    %error,
+                    "editor task join failed after teardown abort"
+                ),
+            }
         }
     }
 }
@@ -187,96 +434,232 @@ pub async fn run(
     servers: &EditorServers,
     session_id: u64,
 ) -> Result<()> {
-    let mut child = tokio::process::Command::new(&command.program)
+    run_with_budgets(
+        framed,
+        translator,
+        command,
+        root,
+        servers,
+        session_id,
+        WRITE_BUDGET,
+        TEARDOWN_BUDGET,
+    )
+    .await
+}
+
+/// Test injection point for exercising deadlines without changing the product CLI.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_budgets(
+    framed: Framed<TcpStream, ProdCodeCodec>,
+    translator: PathTranslator,
+    command: ServerCommand,
+    root: &Path,
+    servers: &EditorServers,
+    session_id: u64,
+    write_budget: Duration,
+    teardown_budget: Duration,
+) -> Result<()> {
+    let mut process = tokio::process::Command::new(&command.program);
+    process
         .args(&command.args)
         .envs(command.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .current_dir(root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    {
+        process.process_group(0);
+    }
+    let child = process
         .spawn()
         .with_context(|| format!("starting {} for an editor", command.program))?;
-    let mut stdin = child.stdin.take().context("the server has no stdin")?;
-    let stdout = child.stdout.take().context("the server has no stdout")?;
-    let stderr = child.stderr.take().context("the server has no stderr")?;
+    let mut child = OwnedChild::new(child);
+    let stdin = child
+        .child
+        .stdin
+        .take()
+        .context("the server has no stdin")?;
+    let stdout = child
+        .child
+        .stdout
+        .take()
+        .context("the server has no stdout")?;
+    let stderr = child
+        .child
+        .stderr
+        .take()
+        .context("the server has no stderr")?;
     tracing::info!(session_id, program = %command.program, root = %root.display(), "✏️ [EDITOR] language server started");
 
-    tokio::spawn(async move {
+    let mut stderr_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        while let Some(line) = lines
+            .next_line()
+            .await
+            .context("reading editor server stderr")?
+        {
             tracing::debug!(session_id, "editor server: {line}");
         }
+        Ok(())
     });
+    let _stderr_guard = TaskAbortGuard::new(&stderr_task);
 
-    let (to_server_tx, mut to_server_rx) = rapidfire::mpsc::bounded::<String>(1024);
-    let registration = servers.register(root.to_path_buf(), to_server_tx.clone());
-    let writer = tokio::spawn(async move {
-        while let Ok(body) = to_server_rx.recv().await {
-            if stdin.write_all(&frame(&body)).await.is_err() || stdin.flush().await.is_err() {
-                break;
-            }
-        }
-    });
+    let (to_server_tx, to_server_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
+    let mut registration = servers.register(root.to_path_buf(), to_server_tx.clone(), write_budget);
+    let mut writer_task = tokio::spawn(write_server_frames(stdin, to_server_rx));
+    let _writer_guard = TaskAbortGuard::new(&writer_task);
 
-    let (mut socket_tx, mut socket_rx) = framed.split();
-    let (to_editor_tx, mut to_editor_rx) = rapidfire::mpsc::bounded::<WireMessage>(1024);
-    let socket_writer = tokio::spawn(async move {
-        while let Ok(message) = to_editor_rx.recv().await {
-            if socket_tx.send(message).await.is_err() {
-                break;
-            }
-        }
-    });
+    let (socket_tx, mut socket_rx) = framed.split();
+    let (to_editor_tx, to_editor_rx) = rapidfire::mpsc::bounded(CHANNEL_CAPACITY);
+    let mut socket_writer_task = tokio::spawn(write_editor_messages(socket_tx, to_editor_rx));
+    let _socket_writer_guard = TaskAbortGuard::new(&socket_writer_task);
     let reader_translator = translator.clone();
     let reader_tx = to_editor_tx.clone();
-    let mut reader = tokio::spawn(async move {
+    let mut reader_task = tokio::spawn(async move {
         let mut stdout = BufReader::new(stdout);
-        while let Ok(Some(body)) = read_lsp_frame(&mut stdout).await {
+        while let Some(body) = read_lsp_frame(&mut stdout)
+            .await
+            .context("reading an editor server output frame")?
+        {
             let editor = reader_translator.translate_lsp_to_client(&body);
-            if reader_tx
-                .send(WireMessage::LspPayload(editor))
-                .await
-                .is_err()
-            {
-                break;
-            }
+            let deadline = Instant::now() + write_budget;
+            timeout_at(
+                deadline,
+                reader_tx.send(PendingEditorMessage {
+                    message: WireMessage::LspPayload(editor),
+                    deadline,
+                }),
+            )
+            .await
+            .context("editor output queue exceeded its deadline")?
+            .map_err(|_| anyhow::anyhow!("editor output queue closed"))?;
         }
+        Ok(())
     });
+    let _reader_guard = TaskAbortGuard::new(&reader_task);
 
     let mut reader_finished = false;
+    let mut writer_finished = false;
+    let mut socket_writer_finished = false;
+    let mut stderr_finished = false;
     loop {
         tokio::select! {
             message = socket_rx.next() => match message {
                 Some(Ok(WireMessage::LspPayload(raw))) => {
-                    if to_server_tx.send(to_server(&translator, &raw)).await.is_err() {
+                    let deadline = Instant::now() + write_budget;
+                    if to_server_tx.try_send(PendingServerFrame {
+                        body: to_server(&translator, &raw),
+                        deadline,
+                    }).is_err() {
                         break;
                     }
                 }
                 Some(Ok(WireMessage::Ping)) => {
-                    let _ = to_editor_tx.send(WireMessage::Pong).await;
+                    let deadline = Instant::now() + write_budget;
+                    if to_editor_tx.try_send(PendingEditorMessage {
+                        message: WireMessage::Pong,
+                        deadline,
+                    }).is_err() {
+                        break;
+                    }
                 }
                 Some(Ok(WireMessage::Disconnect { .. })) | Some(Err(_)) | None => break,
                 Some(Ok(_)) => {}
             },
             // The server exited or closed its output: the session is over.
-            _ = &mut reader => {
+            result = &mut reader_task => {
                 reader_finished = true;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(session_id, error = %error, "editor server stdout ended with an error"),
+                    Err(error) => tracing::warn!(session_id, %error, "editor server stdout task failed"),
+                }
                 break;
             },
+            result = &mut writer_task => {
+                writer_finished = true;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(session_id, error = %error, "editor server stdin ended with an error"),
+                    Err(error) => tracing::warn!(session_id, %error, "editor server stdin task failed"),
+                }
+                break;
+            },
+            result = &mut socket_writer_task => {
+                socket_writer_finished = true;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => tracing::warn!(session_id, error = %error, "editor socket writer ended with an error"),
+                    Err(error) => tracing::warn!(session_id, %error, "editor socket writer task failed"),
+                }
+                break;
+            },
+            result = &mut stderr_task, if !stderr_finished => {
+                stderr_finished = true;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        tracing::warn!(session_id, error = %error, "editor server stderr ended with an error");
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(session_id, %error, "editor server stderr task failed");
+                        break;
+                    }
+                }
+            },
+            status = child.wait() => {
+                if let Err(error) = status {
+                    tracing::warn!(session_id, %error, "waiting for editor server failed");
+                }
+                break;
+            },
+            _ = registration.retired() => break,
         }
     }
     drop(registration);
-    if !reader_finished {
-        reader.abort();
-        let _ = reader.await;
-    }
-    writer.abort();
-    let _ = writer.await;
+    drop(to_server_tx);
+    let cleanup_deadline = Instant::now() + teardown_budget;
+    // Retire the process tree before draining editor output: a non-reading editor can no
+    // longer postpone ownership cleanup, while already queued final messages may still drain.
+    child.retire(cleanup_deadline).await;
+    finish_task(
+        &mut writer_task,
+        writer_finished,
+        cleanup_deadline,
+        session_id,
+        "server stdin writer",
+    )
+    .await;
+    finish_task(
+        &mut reader_task,
+        reader_finished,
+        cleanup_deadline,
+        session_id,
+        "server stdout reader",
+    )
+    .await;
+    finish_task(
+        &mut stderr_task,
+        stderr_finished,
+        cleanup_deadline,
+        session_id,
+        "server stderr reader",
+    )
+    .await;
     drop(to_editor_tx);
-    // What the server said last still reaches the editor.
-    let _ = socket_writer.await;
-    let _ = child.kill().await;
+    // What the server said last still reaches a reading editor, within the same teardown budget.
+    finish_task(
+        &mut socket_writer_task,
+        socket_writer_finished,
+        cleanup_deadline,
+        session_id,
+        "editor socket writer",
+    )
+    .await;
     tracing::info!(session_id, "✏️ [EDITOR] language server stopped");
     Ok(())
 }
@@ -328,10 +711,14 @@ mod tests {
     #[tokio::test]
     async fn a_sync_reaches_the_servers_whose_root_holds_the_files() {
         let servers = EditorServers::default();
-        let (app_tx, mut app_rx) = rapidfire::mpsc::bounded::<String>(8);
-        let (other_tx, mut other_rx) = rapidfire::mpsc::bounded::<String>(8);
-        let app = servers.register(PathBuf::from("/srv/workspaces/app"), app_tx);
-        let _other = servers.register(PathBuf::from("/srv/workspaces/other"), other_tx);
+        let (app_tx, mut app_rx) = rapidfire::mpsc::bounded(8);
+        let (other_tx, mut other_rx) = rapidfire::mpsc::bounded(8);
+        let app = servers.register(PathBuf::from("/srv/workspaces/app"), app_tx, WRITE_BUDGET);
+        let _other = servers.register(
+            PathBuf::from("/srv/workspaces/other"),
+            other_tx,
+            WRITE_BUDGET,
+        );
         assert_eq!(servers.count(), 2);
         servers
             .notify(&[(
@@ -339,7 +726,8 @@ mod tests {
                 WatchedChange::Changed,
             )])
             .await;
-        let note: serde_json::Value = serde_json::from_str(&app_rx.recv().await.unwrap()).unwrap();
+        let note: serde_json::Value =
+            serde_json::from_str(&app_rx.recv().await.unwrap().body).unwrap();
         assert_eq!(note["method"], "workspace/didChangeWatchedFiles");
         assert_eq!(
             note["params"]["changes"][0],
@@ -352,6 +740,37 @@ mod tests {
             "the other workspace's server hears nothing"
         );
         drop(app);
+        assert_eq!(servers.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_full_registration_retires_without_delaying_a_healthy_target() {
+        let servers = EditorServers::default();
+        let root = PathBuf::from("/srv/workspaces/app");
+        let (lagging_tx, _lagging_rx) = rapidfire::mpsc::bounded(1);
+        let mut lagging = servers.register(root.clone(), lagging_tx.clone(), WRITE_BUDGET);
+        lagging_tx
+            .try_send(PendingServerFrame {
+                body: "held".to_string(),
+                deadline: Instant::now() + WRITE_BUDGET,
+            })
+            .unwrap();
+        let (healthy_tx, mut healthy_rx) = rapidfire::mpsc::bounded(1);
+        let _healthy = servers.register(root.clone(), healthy_tx, WRITE_BUDGET);
+
+        servers
+            .notify(&[(root.join("src/lib.rs"), WatchedChange::Changed)])
+            .await;
+
+        let healthy = tokio::time::timeout(Duration::from_millis(50), healthy_rx.recv())
+            .await
+            .expect("healthy registration is notified promptly")
+            .expect("healthy registration remains open");
+        let note: serde_json::Value = serde_json::from_str(&healthy.body).unwrap();
+        assert_eq!(note["method"], "workspace/didChangeWatchedFiles");
+        tokio::time::timeout(Duration::from_millis(50), lagging.retired())
+            .await
+            .expect("full registration is retired promptly");
         assert_eq!(servers.count(), 1);
     }
 }
