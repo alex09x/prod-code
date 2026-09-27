@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- TypeScript safe-delete supports ordinary private ASCII-named top-level functions in
+  contained ES-module projects (#594). Exact native declaration/reference evidence and
+  remote TypeScript compilation precede transactional application. Exports, uncertain or
+  dynamic references (including disguised direct eval), linked/generated sources and broader
+  configuration graphs refuse even with force. The `preserve` module-emission mode is refused
+  because a type-only export cannot prove runtime module privacy (#603). JavaScript, global
+  scripts and broader TypeScript declarations remain unsupported.
 - Go and generic adapters periodically probe initialized idle language servers (#590).
   Valid late replies reset the failure streak; private probe state stays bounded. Three
   consecutive idle response timeouts retire the generation, while ordinary work defers
