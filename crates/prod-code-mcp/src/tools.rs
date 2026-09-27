@@ -252,7 +252,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "by_value": { "type": "boolean", "description": "Return the field by value (it must be `Copy`) or by shared reference; default: by value for primitive `Copy` types only" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a borrow the getter no longer allows" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when a use cannot be rewritten or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when a use cannot become a method call or the result does not compile; a reference that is not read as a use still blocks the write" }
                 }
             }),
         },
@@ -377,7 +377,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the parameter's name" },
                     "character": { "type": "integer", "description": "1-based column of the parameter's name" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when a reference is not a call or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile; a reference that is not a call still blocks the write" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -521,7 +521,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_introduce_parameter_object".to_string(),
-            description: "Bundle two or more named parameters into one object and rewrite their body uses and call sites. Supports Rust, TypeScript, JavaScript, Python, Go, C, C++ and Swift. Rust generates a struct; TypeScript an interface; JavaScript passes a plain object without a type declaration; Python a dataclass or an unannotated class; Go, C/C++ and Swift a struct. C/C++ prototypes and definitions are updated together, including headers; C++ literal syntax follows the configured language version. Python keyword arguments and Swift labels are matched by name. Literal fields preserve the call's argument order; bundling nonadjacent arguments is refused when the planner cannot show that reordered expressions commute. Failed reference queries stop the refactor. Unhandled references are reported for review. JavaScript refuses spread/apply calls, arguments-dependent bodies, destructured parameters, unsupported defaults and stale references; its validation uses syntax diagnostics rather than a type-check guarantee. Other languages use analyzer diagnostics on the proposed texts; Rust additionally supports verify=compile. Inspect the reported limitations and diff before apply=true; force only bypasses the diagnostic gate, not structural refusals. Re-run your formatter afterwards."
+            description: "Bundle two or more named parameters into one object and rewrite their body uses and call sites. Supports Rust, TypeScript, JavaScript, Python, Go, C, C++ and Swift. Rust generates a struct; TypeScript an interface; JavaScript passes a plain object without a type declaration; Python a dataclass or an unannotated class; Go, C/C++ and Swift a struct. C/C++ prototypes and definitions are updated together, including headers; C++ literal syntax follows the configured language version. Python keyword arguments and Swift labels are matched by name. Literal fields preserve the call's argument order; bundling nonadjacent arguments is refused when the planner cannot show that reordered expressions commute. Failed reference queries and unreadable referenced files stop the refactor. References it does not rewrite (the function used as a value, a position where the file says something else) are reported, and nothing is written while one remains, with or without force or verify. JavaScript refuses spread/apply calls, arguments-dependent bodies, destructured parameters, unsupported defaults and stale references; its validation uses syntax diagnostics rather than a type-check guarantee. Other languages use analyzer diagnostics on the proposed texts; Rust additionally supports verify=compile. Inspect the reported limitations and diff before apply=true; force only bypasses the diagnostic gate, not structural refusals. Re-run your formatter afterwards."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -590,14 +590,14 @@ pub fn list_tools() -> Vec<McpTool> {
                     "to_param": { "type": "string", "description": "The parameter whose type the method moves to" },
                     "to_type": { "type": "string", "description": "For an associated function (no `self`): the struct or enum it moves to; every `Old::f` path becomes `New::f`" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when something blocks it or it does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when a call's evaluation order changes or the result does not compile; a reference that is not rewritten still blocks the write" }
                 },
                 "required": ["path", "line", "character"]
             }),
         },
         McpTool {
             name: "code_change_signature".to_string(),
-            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list and anything it did not touch is named. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust: re-run your formatter afterwards. Reorders and removals are refused when argument evaluation or parameter destruction can change; field reads and reference coercions may invoke user Deref code, and primitive-looking names must be confirmed by the analyzer. Missing references and these semantic refusals cannot be overridden by force. Go (a `.go` file, through gopls v0.23.0) supports exactly one change: a permutation of the named parameters of a declared function or method, where `params` lists every declared parameter by name exactly once in the new order. Grouped parameters (`a, b int`) move one by one, a method keeps its receiver, named or unnamed results stay as declared, and a variadic parameter must stay last, its arguments staying at the end of every call. gopls rewrites the declaration and the calls; its edit is refused unless every call and the declaration come back as exactly the requested permutation with nothing else changed, and the whole result is type-checked before it is written. Refused for Go, with nothing written and `force` overriding none of it: adding (`name: Type = expression`) or removing a parameter, `returns`, `visibility`, `async`, `verify`, unnamed or blank `_` parameters, a generic function that has calls (gopls refuses it), a function or method used as a value instead of called, a call that gopls leaves in the old order (such as one through an interface), and any reorder of two arguments where either can have an effect the other sees (a call, receive, index, conversion or operator beside anything but a number, string, rune or function literal; `true`, `false` and `nil` count as variables because Go lets a scope redeclare them)."
+            description: "Change what a function takes, with its call sites. `params` is the parameter list the function should end up with: `name` keeps the parameter declared under that name in this position, `name: Type = expression` adds one and passes `expression` at every call site, and a declared parameter that is not listed is removed. The arity and the types come from the declaration, so the rule that rewrites the call sites is built rather than guessed, and it is resolved in the declaring file's own scope, so calls match however they are spelled. What was rewritten is reconciled against the analyzer's reference list occurrence by occurrence: a reference that was not rewritten (the function used as a value, a stale position) and a change that is not a reference are named, and nothing is written while one remains, with or without force or verify; imports and comments naming the function stay as they are, and a return type or visibility change leaves every reference as it is. Dropping a parameter the body still uses is refused with the usages. The whole change is type-checked together before it is written, and `apply` is what writes it. Renaming a parameter is `code_rename`. `returns` changes the return type and `visibility` the visibility in the same edit; every file that calls the function is type-checked against the new declaration, so a body that no longer returns the new type, or a caller that no longer fits it, is reported. Rust: re-run your formatter afterwards. Reorders and removals are refused when argument evaluation or parameter destruction can change; field reads and reference coercions may invoke user Deref code, and primitive-looking names must be confirmed by the analyzer. Missing references and these semantic refusals cannot be overridden by force. Go (a `.go` file, through gopls v0.23.0) supports exactly one change: a permutation of the named parameters of a declared function or method, where `params` lists every declared parameter by name exactly once in the new order. Grouped parameters (`a, b int`) move one by one, a method keeps its receiver, named or unnamed results stay as declared, and a variadic parameter must stay last, its arguments staying at the end of every call. gopls rewrites the declaration and the calls; its edit is refused unless every call and the declaration come back as exactly the requested permutation with nothing else changed, and the whole result is type-checked before it is written. Refused for Go, with nothing written and `force` overriding none of it: adding (`name: Type = expression`) or removing a parameter, `returns`, `visibility`, `async`, `verify`, unnamed or blank `_` parameters, a generic function that has calls (gopls refuses it), a function or method used as a value instead of called, a call that gopls leaves in the old order (such as one through an interface), and any reorder of two arguments where either can have an effect the other sees (a call, receive, index, conversion or operator beside anything but a number, string, rune or function literal; `true`, `false` and `nil` count as variables because Go lets a scope redeclare them)."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -2584,6 +2584,11 @@ async fn handle_change_signature(
         force,
     )
     .await?;
+    // With `verify` the planner ran as a dry run and the compile gate writes; a reorder that
+    // compiles can still run differently through a reference it did not rewrite (#446).
+    if apply {
+        change.ensure_writable(force)?;
+    }
     let gate = if verify {
         let files = change.rewritten.clone();
         Some(
@@ -2652,6 +2657,7 @@ async fn handle_move(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &moved.unmatched)?;
     let gate = if verify {
         let files = moved.rewritten.clone();
         Some(
@@ -2748,6 +2754,7 @@ async fn handle_introduce_parameter_object(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify {
         let files = done.rewritten.clone();
         Some(
@@ -2829,6 +2836,7 @@ async fn handle_extract_parameter(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify {
         let files = done.rewritten.clone();
         Some(
@@ -2903,6 +2911,7 @@ async fn handle_extract_field(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3021,7 +3030,8 @@ async fn handle_invert_boolean(
         force,
     )
     .await?;
-    let gate = if verify {
+    refuse_incomplete(apply, &done.unmatched)?;
+    let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
@@ -3040,7 +3050,9 @@ async fn handle_invert_boolean(
     if gate.as_ref().is_some_and(|g| g.applied) {
         done.applied = true;
     }
-    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let clean = done.diagnostics.is_empty()
+        && done.blocked.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
     let mut text = done.render(6000);
     if let Some(gate) = &gate {
         text.push_str(&gate.text);
@@ -3081,6 +3093,7 @@ async fn handle_make_static(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3143,6 +3156,7 @@ async fn handle_convert_to_method(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify {
         let files = done.rewritten.clone();
         Some(
@@ -3316,7 +3330,8 @@ async fn handle_move_method(
         ),
     };
     let text = done.render(8000);
-    Ok(if done.diagnostics.is_empty() && done.blocked.is_empty() {
+    let clean = done.diagnostics.is_empty() && done.blocked.is_empty() && done.unmatched.is_empty();
+    Ok(if clean {
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)
@@ -3535,6 +3550,7 @@ async fn handle_wrap_return(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -3601,6 +3617,7 @@ async fn handle_encapsulate_field(
         force,
     )
     .await?;
+    refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
         Some(
@@ -5577,6 +5594,19 @@ pub async fn execute_lsp_query(
     // One long-lived session per checkout for the life of this process (see
     // crate::session::pooled_query): local edits are pushed before the query.
     crate::session::pooled_query(remote, workspace_root, file_path, method, params).await
+}
+
+/// Refuses to write a plan that left references it did not rewrite. With `verify: "compile"` the
+/// planner runs as a dry run and the compile gate writes its files, so its own refusal never
+/// comes; the gate judges compilation, and neither it nor `force` completes a plan (#446).
+fn refuse_incomplete(apply: bool, unmatched: &[String]) -> Result<()> {
+    anyhow::ensure!(
+        !apply || unmatched.is_empty(),
+        "{} reference(s) were not rewritten; nothing was written:\n  {}",
+        unmatched.len(),
+        unmatched.join("\n  ")
+    );
+    Ok(())
 }
 
 /// What asking the compiler added to a write tool's run.

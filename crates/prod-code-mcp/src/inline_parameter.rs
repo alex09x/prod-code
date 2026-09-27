@@ -182,14 +182,11 @@ pub async fn inline_parameter(
     let mut values: Vec<(String, String)> = Vec::new();
     let (fl, fc) = crate::signature::line_col_at(&text, fn_at);
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    for (path, l, c) in crate::signature::references(remote, root, file, fl, fc)
+    let refs = crate::signature::references(remote, root, file, fl, fc)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default())
-            .clone();
+        .with_context(|| format!("cannot find the calls to `{function}`; nothing was planned"))?;
+    for (path, l, c) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
             unmatched.push(format!("{site} (the position is not in the file)"));
@@ -322,8 +319,10 @@ pub async fn inline_parameter(
 
     let mut applied = false;
     if apply {
+        // A reference left as it was would still pass the parameter, or change type unseen; `force`
+        // overrides the analyzer, not a reference this did not rewrite (#446).
         anyhow::ensure!(
-            unmatched.is_empty() || force,
+            unmatched.is_empty(),
             "{} reference(s) to `{function}` are not a call passing `{param}`; nothing was \
              written:\n  {}",
             unmatched.len(),

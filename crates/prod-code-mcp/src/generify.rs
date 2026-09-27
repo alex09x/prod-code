@@ -221,9 +221,10 @@ pub async fn generify(
     // Every file that calls it is checked against the new signature.
     let (nl, nc) = crate::signature::line_col_at(&text, start);
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    // Without them the callers go unchecked, and a clean report would mean nothing (#446).
     let callers: BTreeSet<PathBuf> = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .unwrap_or_default()
+        .context("cannot find the callers to check against the new signature; nothing was planned")?
         .into_iter()
         .map(|(p, _, _)| p)
         .filter(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) != canonical)

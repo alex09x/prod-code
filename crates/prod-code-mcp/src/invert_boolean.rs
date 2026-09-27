@@ -31,6 +31,7 @@ pub struct Inverted {
     /// Uses that cannot keep their meaning under the inversion; nothing is written while any
     /// remains, unless `force`.
     pub blocked: Vec<String>,
+    /// References that were not negated; nothing is written while any remains, forced or not.
     pub unmatched: Vec<String>,
     pub rewritten: Vec<(String, String)>,
     pub diagnostics: Vec<String>,
@@ -95,7 +96,7 @@ impl Inverted {
         if !self.unmatched.is_empty() {
             out.push_str(&format!(
                 "\nnot rewritten ({} reference(s) that are not a call — a function used as a value \
-                 keeps its old meaning under its new name, so each needs a look):\n",
+                 keeps its old meaning under its new name; nothing is written while any remains):\n",
                 self.unmatched.len()
             ));
             for r in &self.unmatched {
@@ -328,14 +329,11 @@ pub async fn invert(
     let (mut negated, mut cancelled) = (0usize, 0usize);
     let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::line_col_at(&text, start);
-    for (path, l, c) in crate::signature::references(remote, root, file, nl, nc)
+    let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .unwrap_or_default()
-    {
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default())
-            .clone();
+        .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;
+    for (path, l, c) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
         let Some(at) = crate::signature::offset_of(&body, l, c) else {
             unmatched.push(format!("{site} (the position is not in the file)"));
@@ -414,6 +412,15 @@ pub async fn invert(
 
     let mut applied = false;
     if apply {
+        // A function used as a value keeps its old meaning under the new name, and still
+        // compiles; `force` overrides the analyzer, not a use this did not negate (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{name}` were not negated and would mean the opposite; nothing \
+             was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Pass `force: true` \
