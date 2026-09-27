@@ -23,6 +23,12 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Edit validation treats Rust `unlinked-file` reports as missing semantic evidence (#467),
+  including when the same hint existed before the edit. Read-only diagnostics retain the hint.
+  Missing, malformed or uncached `unchanged` diagnostic reports fail validation (#470), and
+  out-of-range coordinates no longer overflow. Unsupported manifest, lockfile and documentation
+  proposals are refused before querying a language server, with an explicit shadow-check path
+  instead of a VFS error (#465).
 - Slices report failed, malformed or unreadable dependency evidence as `INCOMPLETE` (#457),
   without claiming a reduction result is complete. Depth, byte and declaration bounds are
   labelled `BOUNDED`; invalid file URIs and positions outside the actual UTF-16 source
