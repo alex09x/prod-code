@@ -74,6 +74,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Shadow hypotheses use a storage-specific namespace with exclusive gateway ownership (#591).
+  Startup cleanup cannot sweep another running gateway's hypotheses; canonical aliases
+  contend on one stable lock, held until the last accepted session releases its state.
 - Dedicated editor sessions bound server-input and editor-output writes and teardown (#574).
   A stalled peer cannot retain its child process group; watched-file fanout retires only
   lagging sessions. Cleanup also retires descendants after their parent exits, and final
