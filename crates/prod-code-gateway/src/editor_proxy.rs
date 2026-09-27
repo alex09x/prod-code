@@ -14,7 +14,7 @@
 use crate::workspace::WatchedChange;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{transport::read_lsp_frame, PathTranslator, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{PathTranslator, ProdCodeCodec, WireMessage, transport::read_lsp_frame};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -244,6 +244,7 @@ pub async fn run(
         }
     });
 
+    let mut reader_finished = false;
     loop {
         tokio::select! {
             message = socket_rx.next() => match message {
@@ -259,12 +260,19 @@ pub async fn run(
                 Some(Ok(_)) => {}
             },
             // The server exited or closed its output: the session is over.
-            _ = &mut reader => break,
+            _ = &mut reader => {
+                reader_finished = true;
+                break;
+            },
         }
     }
     drop(registration);
-    reader.abort();
+    if !reader_finished {
+        reader.abort();
+        let _ = reader.await;
+    }
     writer.abort();
+    let _ = writer.await;
     drop(to_editor_tx);
     // What the server said last still reaches the editor.
     let _ = socket_writer.await;
