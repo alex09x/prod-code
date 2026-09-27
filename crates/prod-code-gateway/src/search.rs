@@ -916,9 +916,19 @@ fn candidates<'a>(
         .any(|t| matches!(t.as_str(), "test" | "spec" | "fixture" | "mock"));
     index
         .declarations()
-        .filter(|d| subpath.is_none_or(|p| d.decl.file.starts_with(p)))
+        .filter(|d| subpath.is_none_or(|p| path_is_in_scope(&d.decl.file, p)))
         .filter(|d| wants_tests || !d.decl.is_test)
         .collect()
+}
+
+/// Whether a workspace-relative indexed file is the scope itself or one of its descendants.
+/// Search paths are normalized before this is called, so a separator is the only valid
+/// component boundary and string prefixes such as `src/foo.rs` never match `src/foo.rsx`.
+fn path_is_in_scope(file: &str, scope: &str) -> bool {
+    file == scope
+        || file
+            .strip_prefix(scope)
+            .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
 /// The lexical ranking, and the dense one when a query vector is given, fused by reciprocal
@@ -1059,6 +1069,30 @@ fn count(tokens: &[String], term: &str) -> f64 {
     tokens.iter().filter(|t| t.as_str() == term).count() as f64
 }
 
+/// Normalizes a wire path without host path semantics, so every gateway rejects the same
+/// absolute, drive and parent-traversal forms. Empty and dot-only paths mean the workspace root.
+fn normalize_subpath(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let bytes = raw.as_bytes();
+    if raw.starts_with(['/', '\\']) {
+        return Err("must be relative");
+    }
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err("must not use a drive path");
+    }
+    let mut components = Vec::new();
+    for component in raw.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => return Err("must not contain parent traversal"),
+            component => components.push(component),
+        }
+    }
+    Ok((!components.is_empty()).then(|| components.join("/")))
+}
+
 /// The first sentence of a doc block, for a one-line result.
 fn first_sentence(doc: &str) -> String {
     let trimmed = doc.trim();
@@ -1118,8 +1152,24 @@ pub fn run_search(
     } else {
         req.limit
     };
-    let subpath = req.subpath.as_deref().filter(|p| !p.is_empty());
-    let found = indexes.search(&workspace, &req.query, limit, subpath);
+    let subpath = match normalize_subpath(req.subpath.as_deref()) {
+        Ok(subpath) => subpath,
+        Err(reason) => {
+            return SearchResponse {
+                server_workspace_root: workspace_str,
+                hits: Vec::new(),
+                indexed_files: 0,
+                indexed_declarations: 0,
+                took_ms: started.elapsed().as_millis() as u64,
+                error: Some(format!(
+                    "invalid search subpath {:?}: {reason}",
+                    req.subpath
+                )),
+                dense: None,
+            };
+        }
+    };
+    let found = indexes.search(&workspace, &req.query, limit, subpath.as_deref());
     SearchResponse {
         server_workspace_root: workspace_str,
         hits: found.hits,
@@ -1140,6 +1190,181 @@ mod tests {
             .into_iter()
             .map(Indexed::new)
             .collect()
+    }
+
+    fn scoped_request(workspace: &str, query: &str, subpath: Option<&str>) -> SearchRequest {
+        SearchRequest {
+            client_workspace_root: "/client/workspace".into(),
+            base_workspace_name: Some(workspace.into()),
+            query: query.into(),
+            limit: 20,
+            subpath: subpath.map(str::to_owned),
+            client_agent: None,
+            client_host: None,
+        }
+    }
+
+    fn hit_files(response: &SearchResponse) -> Vec<String> {
+        response.hits.iter().map(|hit| hit.file.clone()).collect()
+    }
+
+    fn write_scope_fixture(root: &Path) {
+        for (rel, source) in [
+            (
+                "src/foo/nested.rs",
+                "/// Scope target in the requested directory.\npub fn in_directory() {}\n",
+            ),
+            (
+                "src/foo.rs",
+                "/// Scope target in a sibling file.\npub fn sibling_file() {}\n",
+            ),
+            (
+                "src/foobar/outside.rs",
+                "/// Scope target in a sibling string prefix.\npub fn sibling_prefix() {}\n",
+            ),
+            (
+                "src/füß/δ.rs",
+                "/// Scope target in a Unicode directory.\npub fn unicode_directory() {}\n",
+            ),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+    }
+
+    #[test]
+    fn run_search_scopes_components_normalization_and_workspaces() {
+        let storage = tempfile::tempdir().unwrap();
+        let scope_root = storage.path().join("scope");
+        write_scope_fixture(&scope_root);
+        let other_root = storage.path().join("other");
+        std::fs::create_dir_all(other_root.join("src/foo")).unwrap();
+        std::fs::write(
+            other_root.join("src/foo/other.rs"),
+            "/// Scope target in another workspace.\npub fn other_workspace() {}\n",
+        )
+        .unwrap();
+        let indexes = SearchIndexes::new();
+
+        let scoped = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/foo")),
+        );
+        assert_eq!(hit_files(&scoped), vec!["src/foo/nested.rs"]);
+
+        let file = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/foo.rs")),
+        );
+        assert_eq!(hit_files(&file), vec!["src/foo.rs"]);
+
+        let unicode = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/füß")),
+        );
+        assert_eq!(hit_files(&unicode), vec!["src/füß/δ.rs"]);
+
+        let root = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", None),
+        );
+        for scope in [Some(""), Some("."), Some("./")] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", scope),
+            );
+            assert_eq!(hit_files(&response), hit_files(&root), "{scope:?}");
+        }
+        for scope in [Some("src/foo/"), Some("src/./foo"), Some("src\\.\\foo\\")] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", scope),
+            );
+            assert_eq!(hit_files(&response), vec!["src/foo/nested.rs"], "{scope:?}");
+        }
+
+        for scope in [
+            "/src/foo",
+            "../src/foo",
+            "src/../foo",
+            "C:\\src\\foo",
+            "\\\\server\\share",
+        ] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", Some(scope)),
+            );
+            assert!(
+                response
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("invalid search subpath")),
+                "{scope:?}: {response:?}"
+            );
+        }
+
+        let missing = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/missing")),
+        );
+        assert!(missing.error.is_none());
+        assert!(missing.hits.is_empty());
+
+        let other = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("other", "scope target", Some("src/foo")),
+        );
+        assert_eq!(hit_files(&other), vec!["src/foo/other.rs"]);
+    }
+
+    #[test]
+    fn run_search_scope_filters_dense_candidates_after_invalidation() {
+        let storage = tempfile::tempdir().unwrap();
+        let root = storage.path().join("dense");
+        for (rel, source) in [
+            (
+                "src/foo/dense.rs",
+                "/// Re-establishes the socket after a drop.\npub fn inside_scope() {}\n",
+            ),
+            (
+                "src/foobar.rs",
+                "/// Re-establishes the socket outside the requested directory.\npub fn sibling_scope() {}\n",
+            ),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let indexes = SearchIndexes::with_embedders(Box::new(Concepts), Box::new(Concepts));
+        let request = scoped_request("dense", "restore the connection", Some("src/foo"));
+        let first = run_search(&indexes, storage.path(), &request);
+        assert!(first.hits.is_empty(), "the lexical half shares no words");
+        indexes.embed_pending(&root, 100);
+        let dense = run_search(&indexes, storage.path(), &request);
+        assert!(dense.dense.as_ref().is_some_and(|status| status.used));
+        assert_eq!(hit_files(&dense), vec!["src/foo/dense.rs"]);
+
+        std::fs::write(
+            root.join("src/foo/dense.rs"),
+            "/// Re-establishes the socket after a drop again.\npub fn inside_scope() {}\n",
+        )
+        .unwrap();
+        indexes.invalidate(&root, ["src/foo/dense.rs"]);
+        let _ = run_search(&indexes, storage.path(), &request);
+        indexes.embed_pending(&root, 100);
+        let refreshed = run_search(&indexes, storage.path(), &request);
+        assert!(refreshed.dense.as_ref().is_some_and(|status| status.used));
+        assert_eq!(hit_files(&refreshed), vec!["src/foo/dense.rs"]);
     }
 
     #[test]

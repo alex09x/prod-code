@@ -66,6 +66,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Search scopes match an exact file or directory descendants, excluding sibling string prefixes
+  (#555). Root and dot components are normalized consistently; absolute and parent-traversal
+  scopes return an error. Lexical and dense ranking use the same scope.
 - Fallback LSP requests already answered by the gateway stay out of editor sessions (#554).
   Unknown server requests still reach the editor, while notifications and client responses
   preserve their routing even when server and client request IDs collide.
