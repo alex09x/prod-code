@@ -2154,7 +2154,9 @@ impl RustEngine {
     }
 }
 
-/// Convert 1-indexed (line, col) to 0-indexed byte offset.
+/// Convert 1-indexed (line, col) to 0-indexed byte offset. The column counts UTF-16 code units,
+/// as the LSP positions the gateway answers with do (#456); one between the two halves of a
+/// surrogate pair is on no character.
 fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<TextSize> {
     let mut current_line = 1;
     let mut line_start = 0;
@@ -2162,10 +2164,13 @@ fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<T
     for (i, c) in text.char_indices() {
         if current_line == target_line {
             let line_slice = &text[line_start..];
-            for (current_col, (col_offset, _)) in (1..).zip(line_slice.char_indices()) {
-                if current_col == target_col {
-                    return Some(TextSize::from((line_start + col_offset) as u32));
+            let mut current_col = 1u32;
+            for (col_offset, ch) in line_slice.char_indices() {
+                if current_col >= target_col {
+                    return (current_col == target_col)
+                        .then(|| TextSize::from((line_start + col_offset) as u32));
                 }
+                current_col += ch.len_utf16() as u32;
             }
             return Some(TextSize::from((line_start + line_slice.len()) as u32));
         }
@@ -2215,7 +2220,7 @@ fn imported_in_scope(node: &ra_ap_syntax::SyntaxNode, name: &str) -> bool {
     })
 }
 
-/// Convert 0-indexed byte offset to 1-indexed (line, col).
+/// Convert 0-indexed byte offset to 1-indexed (line, col), the column in UTF-16 code units.
 fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     let target = usize::from(offset);
     let mut line = 1;
@@ -2229,7 +2234,7 @@ fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
             line += 1;
             col = 1;
         } else {
-            col += 1;
+            col += c.len_utf16() as u32;
         }
     }
 
@@ -2319,6 +2324,27 @@ mod tests {
         // Line 2 Col 5 -> 'p' (offset 16)
         let off = line_col_to_offset(text, 2, 5).unwrap();
         assert_eq!(offset_to_line_col(text, off), (2, 5));
+    }
+
+    /// The columns the gateway answers LSP queries with count UTF-16 units, as a language
+    /// server's do: past 😀, two of them, the column is one more than the character count, and a
+    /// CRLF break keeps both of its bytes (#456).
+    #[test]
+    fn columns_count_utf16_units() {
+        let text = "fn a() {}\r\nfn f(😀: u8, x: u8) {}\r\n";
+        let x = text.find("x:").unwrap();
+        assert_eq!(offset_to_line_col(text, TextSize::from(x as u32)), (2, 14));
+        assert_eq!(
+            line_col_to_offset(text, 2, 14),
+            Some(TextSize::from(x as u32))
+        );
+        // Between the halves of 😀.
+        assert_eq!(line_col_to_offset(text, 2, 7), None);
+        let after = text.find(": u8, x").unwrap();
+        assert_eq!(
+            line_col_to_offset(text, 2, 8),
+            Some(TextSize::from(after as u32))
+        );
     }
 
     fn create_test_fixture() -> (tempfile::TempDir, PathBuf) {

@@ -3,7 +3,7 @@
 //! the diagnostics the gateway pushes after an edit.
 //!
 //! Positions are LSP's: 0-based lines and UTF-16 columns. The rest of the engine speaks 1-based
-//! lines and character columns to the agent tools, which is not what an editor sends.
+//! lines and the same UTF-16 columns to the agent tools (#456).
 
 use crate::{RustEngine, RustEngineSnapshot, line_col_to_offset};
 use anyhow::{Context, Result};

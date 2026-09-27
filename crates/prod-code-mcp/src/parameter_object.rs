@@ -603,7 +603,7 @@ async fn drop_glue(
     at: usize,
     name: &str,
 ) -> Result<(), String> {
-    let (line, col) = crate::signature::line_col_at(text, at);
+    let (line, col) = crate::signature::position_at(text, at).map_err(|e| e.to_string())?;
     let uri = url::Url::from_file_path(file)
         .map_err(|()| format!("{} has no file URI", file.display()))?
         .to_string();
@@ -1206,7 +1206,7 @@ pub async fn introduce(
         let Some(at) = text[open..close].find(&d.raw).map(|o| open + o) else {
             continue;
         };
-        let (l, c) = crate::signature::line_col_at(&text, at);
+        let (l, c) = crate::signature::position_at(&text, at)?;
         let refs = crate::signature::references(remote, root, file, l, c)
             .await
             .with_context(|| unlisted(&d.name, root, file, l, c))?;
@@ -1941,7 +1941,7 @@ async fn hover_type(
     at: usize,
     name: &str,
 ) -> Option<String> {
-    let (line, col) = crate::signature::line_col_at(text, at);
+    let (line, col) = crate::signature::line_col_at(text, at)?;
     let uri = url::Url::from_file_path(file).ok()?.to_string();
     let res = crate::tools::execute_lsp_query(
         remote,
@@ -3358,7 +3358,7 @@ async fn introduce_in(
     let mut uses: Vec<(usize, usize, String)> = Vec::new();
     for i in &bundled {
         let p = &declared[*i];
-        let (l, c) = crate::signature::line_col_at(&text, open + p.name_at);
+        let (l, c) = crate::signature::position_at(&text, open + p.name_at)?;
         let refs = crate::signature::references(remote, root, file, l, c)
             .await
             .with_context(|| unlisted(&p.name, root, file, l, c))?;
@@ -3414,7 +3414,7 @@ async fn introduce_in(
     uses.dedup();
     let body_uses = uses.len();
     if language == Language::JavaScript {
-        let line_of = |at: usize| crate::signature::line_col_at(&text, at).0;
+        let line_of = |at: usize| crate::signature::position_at(&text, at).map(|(line, _)| line);
         // `arguments` still counts and orders the arguments the call passed, which bundling
         // changes. A nested function has its own, but it is refused too rather than told apart.
         if let Some(at) = ident_uses(&text, body.0, body.1, "arguments").first() {
@@ -3422,7 +3422,7 @@ async fn introduce_in(
                 "`{callee}` reads `arguments` ({}:{}), whose length and order bundling changes; \
                  it is not bundled",
                 display(root, file),
-                line_of(*at)
+                line_of(*at)?
             );
         }
         // A name the function already has would shadow the object, or be shadowed by it; the
@@ -3438,7 +3438,7 @@ async fn introduce_in(
                 "`{binding}` is already a name in `{callee}` ({}:{}); the object would shadow \
                  it or be shadowed by it. Pass another `binding`",
                 display(root, file),
-                line_of(at)
+                line_of(at)?
             );
         }
     }
@@ -3833,7 +3833,8 @@ async fn container_line(
     text: &str,
     at: usize,
 ) -> usize {
-    let (line, _) = crate::signature::line_col_at(text, at);
+    // An offset on no position asks the server nothing and falls to the text below.
+    let line = crate::signature::line_col_at(text, at).map(|(line, _)| line);
     let answer = match url::Url::from_file_path(path) {
         Ok(uri) => crate::tools::execute_lsp_query(
             remote,
@@ -3849,7 +3850,8 @@ async fn container_line(
     let found = answer
         .as_ref()
         .and_then(|a| a.as_array())
-        .and_then(|symbols| outermost_container(symbols, u64::from(line - 1)))
+        .zip(line)
+        .and_then(|(symbols, line)| outermost_container(symbols, u64::from(line - 1)))
         .and_then(|l| crate::signature::offset_of(text, l as u32 + 1, 1));
     if let Some(start) = found {
         return start;
@@ -4143,7 +4145,7 @@ async fn introduce_c(
         let body = body_span(&def.text, def.name_at, def.close, language);
         for i in &bundled {
             let p = &declared[*i];
-            let (l, c) = crate::signature::line_col_at(&def.text, def.open + p.name_at);
+            let (l, c) = crate::signature::position_at(&def.text, def.open + p.name_at)?;
             let refs = crate::signature::references(remote, root, &def.path, l, c)
                 .await
                 .with_context(|| unlisted(&p.name, root, &def.path, l, c))?;

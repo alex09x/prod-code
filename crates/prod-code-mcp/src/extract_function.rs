@@ -698,7 +698,7 @@ pub async fn extract_function(
     for (n, k) in varying.iter().enumerate() {
         let (_, ts, te) = sel_tokens[*k];
         let literal = &selection[ts..te];
-        let (l, c) = crate::signature::line_col_at(&text, selection_at + ts);
+        let (l, c) = crate::signature::position_at(&text, selection_at + ts)?;
         let hover = crate::tools::execute_lsp_query(
             remote,
             root,
@@ -809,7 +809,7 @@ pub async fn extract_function(
             .unwrap_or(path)
             .to_string_lossy()
             .into_owned();
-        let line = crate::signature::line_col_at(path_text, c.from).0;
+        let line = crate::signature::position_at(path_text, c.from)?.0;
         let literals: Vec<String> = varying
             .iter()
             .map(|k| {
