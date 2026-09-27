@@ -45,6 +45,15 @@ The live suite starts real gateways and drives their language servers. Unit and 
 tests complement those scenarios. The required coverage floor is 80% of regions per source file
 (`python3 scripts/coverage.py --min 80`); missing measurements fail the gate.
 
+## Requirements
+
+Building `prod-code` and running its development checks require Rust 1.95.0 or newer. With
+rustup, install the supported minimum and the check components with:
+
+```sh
+rustup toolchain install 1.95.0 --profile minimal -c rustfmt -c clippy
+```
+
 ## Install
 
 ```sh
