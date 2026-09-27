@@ -1,0 +1,441 @@
+use futures_util::{SinkExt, StreamExt};
+use prod_code_gateway::workspace::{SharedWorkspace, WorkspaceManager};
+use prod_code_gateway::{ServerState, handle_client};
+use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use std::os::fd::AsRawFd;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use tokio::net::{TcpListener, TcpStream};
+use tokio_util::codec::Framed;
+
+#[tokio::test]
+async fn dropping_an_unregistered_acquisition_releases_its_workspace_count() {
+    let manager = Arc::new(WorkspaceManager::new());
+    let root = PathBuf::from("/synthetic/session-lifecycle");
+    let workspace = Arc::new(SharedWorkspace::new(
+        root.clone(),
+        "text".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let acquisition = manager.get_or_load(&root, "text").await.unwrap();
+    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 1);
+    drop(acquisition);
+    assert_eq!(
+        workspace.active_sessions.load(Ordering::Relaxed),
+        0,
+        "a canceled handshake must return its counted workspace acquisition"
+    );
+}
+
+async fn wait_for_retirement(
+    manager: &WorkspaceManager,
+    workspace: &SharedWorkspace,
+    worktree: &std::path::Path,
+    sessions: usize,
+    owners: usize,
+) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if workspace.active_sessions.load(Ordering::Relaxed) == sessions
+                && manager.worktree_owner_count_for_test(worktree) == owners
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("session ownership retired");
+}
+
+#[tokio::test]
+async fn canceled_view_retires_exactly_itself_and_preserves_an_independent_owner() {
+    let manager = Arc::new(WorkspaceManager::new());
+    let root = PathBuf::from("/synthetic/shared-workspace");
+    let worktree = PathBuf::from("/client/the-same-worktree");
+    let workspace = Arc::new(SharedWorkspace::new(
+        root.clone(),
+        "text".to_string(),
+        None,
+        None,
+        None,
+        None,
+    ));
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+
+    let first = manager
+        .register_session_view(
+            1,
+            worktree.clone(),
+            manager.get_or_load(&root, "text").await.unwrap(),
+        )
+        .await;
+    let second = manager
+        .register_session_view(
+            2,
+            worktree.clone(),
+            manager.get_or_load(&root, "text").await.unwrap(),
+        )
+        .await;
+    assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 2);
+    assert_eq!(manager.worktree_owner_count_for_test(&worktree), 2);
+
+    drop(first);
+    wait_for_retirement(&manager, &workspace, &worktree, 1, 1).await;
+    assert_eq!(second.session_id, 2, "the unrelated owner remains live");
+
+    manager.unregister_session_view(second).await;
+    wait_for_retirement(&manager, &workspace, &worktree, 0, 0).await;
+}
+
+async fn fake_generic_workspace(root: &std::path::Path) -> Arc<SharedWorkspace> {
+    let script = root.join("language-server.py");
+    std::fs::write(
+        &script,
+        r#"import json, sys
+def read():
+    length = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: return None
+        line = line.strip()
+        if not line: break
+        if line.lower().startswith(b"content-length:"): length = int(line.split(b":")[1])
+    return json.loads(sys.stdin.buffer.read(length)) if length else None
+def send(value):
+    body = json.dumps(value).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+    sys.stdout.buffer.flush()
+while True:
+    message = read()
+    if message is None: break
+    if message.get("method") == "initialize":
+        send({"jsonrpc":"2.0", "id":message["id"], "result":{"capabilities":{}}})
+"#,
+    )
+    .unwrap();
+    let engine = prod_code_engine_generic::GenericLspEngine::spawn(
+        root,
+        prod_code_engine_generic::GenericLspConfig {
+            command: "python3".to_string(),
+            args: vec![script.to_string_lossy().into_owned()],
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("fake generic engine starts");
+    Arc::new(SharedWorkspace::new(
+        root.to_path_buf(),
+        "python".to_string(),
+        None,
+        None,
+        Some(Arc::new(engine)),
+        None,
+    ))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn validation_wait_cancellation_and_failed_response_release_every_owner() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        None,
+    );
+    std::fs::create_dir_all(&server_root).unwrap();
+    let workspace = fake_generic_workspace(&server_root).await;
+    let validation_gate = Arc::clone(&workspace.generic_validation_session)
+        .lock_owned()
+        .await;
+    let manager = Arc::new(WorkspaceManager::new());
+    manager.insert_ready_for_test(Arc::clone(&workspace)).await;
+    let mut state = ServerState::new(storage.path().to_path_buf());
+    state.workspace_manager = Arc::clone(&manager);
+    let state = Arc::new(state);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = tokio::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            client_name: "session-lifecycle-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("python".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+        }))
+        .await
+        .unwrap();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if state.active_sessions.load(Ordering::Relaxed) == 1
+                && workspace.active_sessions.load(Ordering::Relaxed) == 1
+                && manager.worktree_owner_count_for_test(&client_root) == 1
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("handshake reached the held validation lock");
+
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+    drop(client);
+    drop(validation_gate);
+    wait_for_retirement(&manager, &workspace, &client_root, 0, 0).await;
+    assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0);
+
+    // Repeat the same attachment, but let validation finish after the peer has reset its
+    // socket. The fallible HandshakeResponse write must take the identical retirement path.
+    let validation_gate = Arc::clone(&workspace.generic_validation_session)
+        .lock_owned()
+        .await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_state = Arc::clone(&state);
+    let server = tokio::spawn(async move {
+        let (socket, peer) = listener.accept().await.unwrap();
+        handle_client(socket, peer, server_state).await
+    });
+    let mut client = Framed::new(
+        TcpStream::connect(addr).await.unwrap(),
+        ProdCodeCodec::new(),
+    );
+    client
+        .send(WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(vec![PROTOCOL_VERSION]),
+            client_name: "session-lifecycle-test".to_string(),
+            client_pid: std::process::id(),
+            auth_token: None,
+            client_workspace_root: client_root.to_string_lossy().into_owned(),
+            preferred_engine: Some("python".to_string()),
+            base_workspace_name: None,
+            engine_subpath: None,
+            client_agent: None,
+            client_host: None,
+            purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+        }))
+        .await
+        .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while workspace.active_sessions.load(Ordering::Relaxed) != 1
+            || manager.worktree_owner_count_for_test(&client_root) != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("second handshake reached the held validation lock");
+    let socket = client.into_inner();
+    let linger = libc::linger {
+        l_onoff: 1,
+        l_linger: 0,
+    };
+    let set = unsafe {
+        libc::setsockopt(
+            socket.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_LINGER,
+            (&linger as *const libc::linger).cast(),
+            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(set, 0, "set reset-on-close");
+    drop(socket);
+    drop(validation_gate);
+    let response = tokio::time::timeout(std::time::Duration::from_secs(30), server)
+        .await
+        .expect("failed response write returns")
+        .unwrap();
+    assert!(response.is_err(), "the reset handshake write must fail");
+    wait_for_retirement(&manager, &workspace, &client_root, 0, 0).await;
+    assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0);
+}
+
+struct WireSession {
+    framed: Framed<TcpStream, ProdCodeCodec>,
+    next_id: u64,
+    root: PathBuf,
+}
+
+impl WireSession {
+    async fn open(addr: std::net::SocketAddr, root: PathBuf) -> Self {
+        let mut framed = Framed::new(
+            TcpStream::connect(addr).await.unwrap(),
+            ProdCodeCodec::new(),
+        );
+        framed
+            .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(vec![PROTOCOL_VERSION]),
+                client_name: "session-lifecycle-real-engine".to_string(),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: root.to_string_lossy().into_owned(),
+                preferred_engine: Some("rust".to_string()),
+                base_workspace_name: Some("session-lifecycle-real".to_string()),
+                engine_subpath: None,
+                client_agent: None,
+                client_host: None,
+                purpose: None,
+            }))
+            .await
+            .unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(120), framed.next())
+            .await
+            .expect("real engine handshake completes");
+        assert!(matches!(
+            response,
+            Some(Ok(WireMessage::HandshakeResponse(_)))
+        ));
+        Self {
+            framed,
+            next_id: 1,
+            root,
+        }
+    }
+
+    fn uri(&self) -> String {
+        format!("file://{}/src/lib.rs", self.root.display())
+    }
+
+    async fn open_text(&mut self, text: &str) {
+        self.framed
+            .send(WireMessage::LspPayload(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "textDocument/didOpen",
+                    "params": { "textDocument": {
+                        "uri": self.uri(), "languageId": "rust", "version": 1, "text": text
+                    }}
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+    }
+
+    async fn symbols(&mut self) -> serde_json::Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.framed
+            .send(WireMessage::LspPayload(
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "method": "textDocument/documentSymbol",
+                    "params": { "textDocument": { "uri": self.uri() } }
+                })
+                .to_string(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let frame =
+                tokio::time::timeout(std::time::Duration::from_secs(120), self.framed.next())
+                    .await
+                    .expect("document symbols answer");
+            let Some(Ok(WireMessage::LspPayload(raw))) = frame else {
+                panic!("session ended before document symbols: {frame:?}");
+            };
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            if value.get("id") == Some(&serde_json::json!(id)) {
+                return value;
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn canceled_real_rust_session_restores_overlay_without_retiring_another_owner() {
+    let storage = tempfile::tempdir().unwrap();
+    let client = tempfile::tempdir().unwrap();
+    let client_root = std::fs::canonicalize(client.path()).unwrap();
+    let server_root = prod_code_gateway::workspace::server_workspace_path(
+        storage.path(),
+        &client_root.to_string_lossy(),
+        Some("session-lifecycle-real"),
+    );
+    std::fs::create_dir_all(server_root.join("src")).unwrap();
+    std::fs::write(
+        server_root.join("Cargo.toml"),
+        "[package]\nname = \"session-lifecycle-real\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        server_root.join("src/lib.rs"),
+        "pub fn disk_symbol() -> u32 { 7 }\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(ServerState::new(storage.path().to_path_buf()));
+    let manager = Arc::clone(&state.workspace_manager);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (abort_tx, mut abort_rx) = tokio::sync::mpsc::unbounded_channel();
+    let server_state = Arc::clone(&state);
+    let accept = tokio::spawn(async move {
+        while let Ok((socket, peer)) = listener.accept().await {
+            let state = Arc::clone(&server_state);
+            let task = tokio::spawn(async move { handle_client(socket, peer, state).await });
+            abort_tx.send(task.abort_handle()).unwrap();
+        }
+    });
+
+    let mut keeper = WireSession::open(addr, client_root.clone()).await;
+    let _keeper_task = abort_rx.recv().await.unwrap();
+    let mut canceled = WireSession::open(addr, client_root.clone()).await;
+    let canceled_task = abort_rx.recv().await.unwrap();
+    canceled
+        .open_text("pub fn overlay_symbol() -> u32 { 99 }\n")
+        .await;
+    let overlaid = canceled.symbols().await.to_string();
+    assert!(overlaid.contains("overlay_symbol"), "{overlaid}");
+
+    canceled_task.abort();
+    drop(canceled);
+    let loaded = manager.get_loaded(&server_root).await.unwrap();
+    wait_for_retirement(&manager, &loaded, &client_root, 1, 1).await;
+    assert_eq!(state.active_sessions.load(Ordering::Relaxed), 1);
+
+    let kept = keeper.symbols().await.to_string();
+    assert!(kept.contains("disk_symbol"), "{kept}");
+    assert!(!kept.contains("overlay_symbol"), "{kept}");
+    drop(keeper);
+    wait_for_retirement(&manager, &loaded, &client_root, 0, 0).await;
+
+    let mut fresh = WireSession::open(addr, client_root.clone()).await;
+    let _fresh_task = abort_rx.recv().await.unwrap();
+    let fresh_symbols = fresh.symbols().await.to_string();
+    assert!(fresh_symbols.contains("disk_symbol"), "{fresh_symbols}");
+    assert!(!fresh_symbols.contains("overlay_symbol"), "{fresh_symbols}");
+    drop(fresh);
+    wait_for_retirement(&manager, &loaded, &client_root, 0, 0).await;
+    accept.abort();
+}
