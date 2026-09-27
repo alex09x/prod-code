@@ -4549,3 +4549,53 @@ async fn the_checkouts_own_symbol_wins_a_tie_with_the_standard_librarys() {
     );
     assert!(text.contains("config.go"), "{text}");
 }
+
+#[tokio::test]
+async fn invalid_rename_coordinates_are_refused_before_any_analyzer_request_or_write() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for (line, character) in [
+        (0_u64, 8_u64),
+        (1, 0),
+        (u32::MAX as u64 + 2, 8),
+        (1, u32::MAX as u64 + 9),
+    ] {
+        for option in ["force", "comments", "accessors"] {
+            let ws = workspace();
+            let before = "pub fn old_name() {}\n";
+            let lib = write(&ws, "src/lib.rs", before);
+            commit(&ws);
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
+            let path = lib.clone();
+            let remote = scripted_gateway(Arc::new(move |method, _| {
+                observed.fetch_add(1, Ordering::SeqCst);
+                match method {
+                    "textDocument/rename" => {
+                        answers::whole_file(&path, before, "pub fn new_name() {}\n")
+                    }
+                    "textDocument/diagnostic" => answers::no_diagnostics(),
+                    _ => serde_json::Value::Null,
+                }
+            }))
+            .await;
+            let mut args = serde_json::json!({"path": "src/lib.rs", "line": line, "character": character, "new_name": "new_name"});
+            args[option] = serde_json::json!(true);
+            let result = execute_tool(remote, &ws.root(), "code_rename", args).await;
+            assert_eq!(
+                std::fs::read_to_string(&lib).unwrap(),
+                before,
+                "{line}:{character} {option}: {result:?}"
+            );
+            let error = result.expect_err("invalid coordinate must be rejected before dispatch");
+            assert!(
+                error.to_string().contains("one-based coordinate"),
+                "{error:#}"
+            );
+            assert_eq!(
+                requests.load(Ordering::SeqCst),
+                0,
+                "invalid input reached the analyzer"
+            );
+        }
+    }
+}
