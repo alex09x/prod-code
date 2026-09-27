@@ -1022,6 +1022,27 @@ func main() {
         assert!(engine.is_alive());
         assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
     }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notification_deadline_covers_a_blocked_frame() {
+        let (_dir, engine) =
+            fake_engine(Some(("FAKE_STOP_READING", "1")), Duration::from_millis(200)).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.send_notification("textDocument/didOpen", serde_json::json!({
+                "textDocument": {"uri": "file:///notification.go", "languageId":"go", "version":1, "text": "x".repeat(8 * 1024 * 1024)}
+            })),
+        ).await.expect("notification must honor its internal write budget");
+        let error = outcome.expect_err("the server never reads the notification");
+        let text = format!("{error:#}");
+        assert!(text.contains("textDocument/didOpen"), "{text}");
+        assert!(text.to_lowercase().contains("timeout"), "{text}");
+        assert!(
+            !engine.is_alive(),
+            "a partial document frame cannot be reused"
+        );
+    }
 }
 
 #[cfg(test)]

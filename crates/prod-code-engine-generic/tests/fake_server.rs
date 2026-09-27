@@ -2208,3 +2208,28 @@ async fn primary_review_invalid_incremental_ranges_preserve_the_whole_owner_stat
         "done\n"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn notification_deadline_covers_a_blocked_frame() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_STOP_READING".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_millis(200);
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        engine.send_notification("textDocument/didOpen", serde_json::json!({
+            "textDocument": {"uri": "file:///notification.txt", "languageId":"text", "version":1, "text": "x".repeat(8 * 1024 * 1024)}
+        })),
+    ).await.expect("notification must honor its internal write budget");
+    let error = outcome.expect_err("the server never reads the notification");
+    let text = format!("{error:#}");
+    assert!(text.contains("textDocument/didOpen"), "{text}");
+    assert!(text.to_lowercase().contains("timeout"), "{text}");
+    assert!(
+        !engine.is_alive(),
+        "a partial document frame cannot be reused"
+    );
+}
