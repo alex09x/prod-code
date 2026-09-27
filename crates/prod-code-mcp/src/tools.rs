@@ -4915,14 +4915,26 @@ async fn handle_rename(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument")? as u32;
-    let character = args
-        .get("character")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument")? as u32;
+    let coordinate = |name: &str| -> Result<u32> {
+        let value = args
+            .get(name)
+            .and_then(|v| v.as_u64())
+            .with_context(|| format!("Missing or invalid '{name}' argument"))?;
+        let value = u32::try_from(value).with_context(|| {
+            format!(
+                "'{name}' must be a one-based coordinate in 1..={}",
+                u32::MAX
+            )
+        })?;
+        anyhow::ensure!(
+            value > 0,
+            "'{name}' must be a one-based coordinate in 1..={}",
+            u32::MAX
+        );
+        Ok(value)
+    };
+    let line = coordinate("line")?;
+    let character = coordinate("character")?;
     let new_name = args
         .get("new_name")
         .and_then(|v| v.as_str())
