@@ -77,6 +77,10 @@
 - Gateway handshake and shared-session resources retire on errors and cancellation (#583).
   Workspace and worktree ownership remains held until the canceled session's overlays are
   restored, preserving independent sessions and subsequent single-owner behavior.
+- Dedicated editor sessions bound server-input and editor-output writes and teardown (#574).
+  A stalled peer cannot retain its child process group; watched-file fanout retires only
+  lagging sessions. Cleanup also retires descendants after their parent exits, and final
+  frames still reach a reading editor within the teardown budget.
 - Dedicated editor servers share the bounded LSP frame reader (#573). Duplicate or
   malformed headers, oversized or truncated frames and invalid UTF-8 end the owned
   session without forwarding corrupted text.
