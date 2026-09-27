@@ -83,6 +83,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Shadow hypotheses use a storage-specific namespace with exclusive gateway ownership (#591).
+  Startup cleanup cannot sweep another running gateway's hypotheses. Canonical aliases,
+  including absent-path `..` traversal and symlinks after it, contend on one stable lock
+  (#602), held until the last accepted session releases its state.
 - Gateway handshake and shared-session resources retire on errors and cancellation (#583).
   Workspace and worktree ownership remains held until the canceled session's overlays are
   restored, preserving independent sessions and subsequent single-owner behavior.
