@@ -3,7 +3,7 @@ use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, Wire
 use std::{
     io::{BufRead, BufReader},
     net::SocketAddr,
-    os::unix::fs::PermissionsExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
@@ -15,10 +15,40 @@ use tokio_util::codec::Framed;
 const WATCHDOG: Duration = Duration::from_secs(15);
 
 struct Gateway {
-    child: Child,
+    _process: OwnedProcess,
     addr: SocketAddr,
     _storage: tempfile::TempDir,
     _home: tempfile::TempDir,
+}
+
+struct OwnedProcess {
+    child: Child,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for OwnedProcess {
+    fn drop(&mut self) {
+        let group = -(self.child.id() as i32);
+        // The gateway and every fake server share this private process group.
+        // Reap descendants even when the gateway has already exited.
+        unsafe {
+            libc::kill(group, libc::SIGTERM);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            match self.child.try_wait() {
+                Ok(Some(_)) | Err(_) => break,
+                Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
+        unsafe {
+            libc::kill(group, libc::SIGKILL);
+        }
+        let _ = self.child.wait();
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
 }
 
 impl Gateway {
@@ -37,6 +67,7 @@ impl Gateway {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
+            .process_group(0)
             .env("HOME", home.path())
             .env("FAKE_GOPLS_LOG", log)
             .env("PROD_CODE_BIND", "127.0.0.1:0")
@@ -45,11 +76,13 @@ impl Gateway {
             .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let mut child = command.spawn().expect("gateway starts");
-        let stdout = child.stdout.take().expect("gateway stdout");
-        let addr = read_bound_address(stdout);
+        let mut process = OwnedProcess {
+            child: command.spawn().expect("gateway starts"),
+            reader: None,
+        };
+        let addr = read_bound_address(&mut process);
         let gateway = Self {
-            child,
+            _process: process,
             addr,
             _storage: storage,
             _home: home,
@@ -70,28 +103,10 @@ impl Gateway {
     }
 }
 
-impl Drop for Gateway {
-    fn drop(&mut self) {
-        let pid = self.child.id() as i32;
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-        let deadline = Instant::now() + WATCHDOG;
-        while Instant::now() < deadline {
-            match self.child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::yield_now(),
-                Err(_) => break,
-            }
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-fn read_bound_address(stdout: std::process::ChildStdout) -> SocketAddr {
+fn read_bound_address(process: &mut OwnedProcess) -> SocketAddr {
+    let stdout = process.child.stdout.take().expect("gateway stdout");
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    process.reader = Some(std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
         loop {
@@ -107,7 +122,7 @@ fn read_bound_address(stdout: std::process::ChildStdout) -> SocketAddr {
                 return;
             }
         }
-    });
+    }));
     rx.recv_timeout(WATCHDOG)
         .expect("gateway reports its bound address")
 }
@@ -154,6 +169,12 @@ async fn fallback_auto_replies_do_not_cross_the_session_boundary() {
     )
     .expect("go module");
 
+    timeout(WATCHDOG, exchange(&gateway, &client_root, &log))
+        .await
+        .expect("fallback exchange finishes within its watchdog");
+}
+
+async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path) {
     let stream = TcpStream::connect(gateway.addr)
         .await
         .expect("gateway connection");
@@ -276,7 +297,7 @@ async fn fallback_auto_replies_do_not_cross_the_session_boundary() {
         .await
         .expect("unknown request response reaches fallback");
 
-    wait_for_log(&log, |entries| {
+    wait_for_log(log, |entries| {
         has_reply(entries, serde_json::json!(700), serde_json::Value::Null)
             && has_reply(
                 entries,
@@ -342,7 +363,7 @@ while True:
     elif message.get("method") == "test/trigger":
         write({"jsonrpc":"2.0", "id":700, "method":"window/workDoneProgress/create", "params":{}})
         write({"jsonrpc":"2.0", "id":"capability", "method":"client/registerCapability", "params":{}})
-        write({"jsonrpc":"2.0", "id":19, "method":"workspace/configuration", "params":{}})
+        write({"jsonrpc":"2.0", "id":19, "method":"workspace/configuration", "params":{"items":[{}]}})
         write({"jsonrpc":"2.0", "method":"window/logMessage", "params":{"type":3, "message":"notice"}})
         write_raw('{"jsonrpc":"2.0","method":"window/logMessage","params":')
         write({"jsonrpc":"2.0", "method":"window/workDoneProgress/create", "params":{}})
