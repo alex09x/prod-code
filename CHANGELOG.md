@@ -31,6 +31,8 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rename refuses zero and overflowing one-based coordinates before asking the analyzer or
+  writing files (#495), including forced, comment-aware and accessor renames.
 - Rust refactoring planners and the native Rust engine now convert UTF-16 source columns
   consistently (#456), including supplementary characters and CRLF. Invalid planner positions
   are refused before edits; the editor bridge clamps positions to valid character and line
