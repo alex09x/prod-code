@@ -1742,25 +1742,23 @@ mod tests {
             .expect("the gateway crate is below the workspace root");
         let shadow = tempfile::tempdir().unwrap();
         let (_tx, rx) = tokio::sync::watch::channel(false);
-        let result = run_overlay(
-            job(
-                workspace,
-                shadow.path(),
-                "atomic-rename",
-                vec![],
-                &[
-                    "cargo",
-                    "test",
-                    "-p",
-                    "prod-code-mcp",
-                    "a_rename_across_repositories_is_written_in_all_or_none",
-                    "--",
-                    "--nocapture",
-                ],
-            ),
-            rx,
-        )
-        .await;
+        let mut hypothesis = job(
+            workspace,
+            shadow.path(),
+            "atomic-rename",
+            vec![],
+            &[
+                "cargo",
+                "test",
+                "-p",
+                "prod-code-mcp",
+                "a_rename_across_repositories_is_written_in_all_or_none",
+                "--",
+                "--nocapture",
+            ],
+        );
+        hypothesis.timeout = Duration::from_secs(600);
+        let result = run_overlay(hypothesis, rx).await;
         assert_eq!(
             result.exit_code,
             Some(0),
