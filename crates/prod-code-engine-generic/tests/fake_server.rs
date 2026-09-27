@@ -119,6 +119,10 @@ while True:
             items = [{"range": {"start": {"line": last, "character": 0}, "end": {"line": last, "character": 1}},
                       "severity": 1, "message": "cannot convert value of type 'String' to specified type 'Int'"}]
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"kind": "full", "items": items}})
+    elif method == "textDocument/diagnostic" and os.environ.get("FAKE_RESPONSE"):
+        response = json.loads(os.environ["FAKE_RESPONSE"])
+        response.update({"jsonrpc": "2.0", "id": message["id"]})
+        send(response)
     elif method == "textDocument/diagnostic":
         # A pull, answered as sourcekit-lsp answers it, or refused as clangd refuses it.
         if os.environ.get("FAKE_NO_PULL"):
@@ -902,4 +906,51 @@ fn python_settings_follow_the_project_into_its_virtual_environment() {
     // A section nothing knows about gets an empty object rather than a guess.
     let unknown = prod_code_engine_generic::settings_for_section(dir.path(), "ruby");
     assert_eq!(unknown, serde_json::json!({}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incomplete_pull_reports_are_not_complete_evidence() {
+    let cases = [
+        serde_json::json!({"result": {"kind": "unchanged", "resultId": "never-cached", "items": []}}),
+        serde_json::json!({"result": {"kind": "unknown", "items": []}}),
+        serde_json::json!({"result": {"kind": "", "items": []}}),
+        serde_json::json!({"result": {"items": []}}),
+        serde_json::json!({"result": {"kind": null, "items": []}}),
+        serde_json::json!({"result": {"kind": "full"}}),
+        serde_json::json!({"result": {"kind": "full", "items": null}}),
+        serde_json::json!({"result": {"kind": "full", "items": {}}}),
+        serde_json::json!({"error": {"code": -32001, "message": "unavailable"},
+            "result": {"kind": "full", "items": []}}),
+        serde_json::json!({"error": null, "result": {"kind": "full", "items": []}}),
+    ];
+    for response in cases {
+        let (dir, script) = workspace();
+        let mut settings = config(&script);
+        settings
+            .env
+            .insert("FAKE_RESPONSE".into(), response.to_string());
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let report = engine.pull_diagnostics("file:///wherever/a.txt").await;
+        assert!(
+            report.is_none(),
+            "{response} became a full report: {report:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn full_pull_reports_keep_empty_and_error_items() {
+    let diagnostic = serde_json::json!({"range": {"start": {"line": 0, "character": 0},
+        "end": {"line": 0, "character": 1}}, "severity": 1, "message": "type mismatch"});
+    for items in [vec![], vec![diagnostic]] {
+        let (dir, script) = workspace();
+        let mut settings = config(&script);
+        settings.env.insert(
+            "FAKE_RESPONSE".into(),
+            serde_json::json!({"result": {"kind": "full", "items": items}}).to_string(),
+        );
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let report = engine.pull_diagnostics("file:///wherever/a.txt").await;
+        assert_eq!(report, Some(items));
+    }
 }

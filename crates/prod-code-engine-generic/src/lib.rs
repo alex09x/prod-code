@@ -804,6 +804,16 @@ impl GenericLspEngine {
             self.pull_unsupported.store(true, Ordering::Relaxed);
             return None;
         }
+        // An unchanged report is only meaningful with a cached result id. We do not send
+        // one: stripping the kind here would turn missing evidence into a clean full report.
+        if answer.get("error").is_some()
+            || answer
+                .pointer("/result/kind")
+                .and_then(|kind| kind.as_str())
+                != Some("full")
+        {
+            return None;
+        }
         answer.pointer("/result/items")?.as_array().cloned()
     }
 

@@ -31,6 +31,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Generic LSP diagnostic pulls accept only complete `full` reports with array items and no
+  error envelope (#479). Uncached `unchanged`, unknown or malformed reports no longer become
+  clean results when their kind is stripped; an available publication must supply the fallback.
 - The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
   to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
   missing/malformed items, error responses and uncached unchanged reports stay refused.
