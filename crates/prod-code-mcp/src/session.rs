@@ -9,7 +9,10 @@ use crate::sync::{
 };
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    validate_selected_protocol_version,
+};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -176,9 +179,11 @@ impl LspSession {
         // A nested project's engine is named, so a directory with no manifest of its own (a
         // loose script's) is served by its language, not by detection there (#247).
         let preferred_engine = engine_subpath.as_ref().and(engine).map(str::to_string);
+        let supported_versions = supported_protocol_versions();
         framed
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(supported_versions.clone()),
                 client_name: "prod-code-batch".to_string(),
                 client_pid: std::process::id(),
                 auth_token: None,
@@ -198,6 +203,8 @@ impl LspSession {
             }
             other => anyhow::bail!("unexpected handshake response: {other:?}"),
         };
+        validate_selected_protocol_version(handshake.protocol_version, &supported_versions)
+            .context("gateway returned an incompatible MCP handshake response")?;
         let folder_name = root
             .file_name()
             .and_then(|n| n.to_str())
@@ -772,6 +779,76 @@ mod tests {
             "{error}"
         );
         hold.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_incompatible_gateway_selection_is_refused_before_initialize() {
+        let ws = prod_code_testkit::Workspace::new(&[("src/lib.rs", "pub fn a() {}\n")]);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            loop {
+                match framed.next().await.unwrap().unwrap() {
+                    WireMessage::SyncProbeRequest(req) => {
+                        framed
+                            .send(WireMessage::SyncProbeResponse(
+                                prod_code_protocol::SyncProbeResponse {
+                                    server_workspace_root: req.client_workspace_root,
+                                    seeded: false,
+                                    files_deleted: 0,
+                                    missing: Vec::new(),
+                                },
+                            ))
+                            .await
+                            .unwrap();
+                    }
+                    WireMessage::HandshakeRequest(req) => {
+                        assert_eq!(req.supported_versions, Some(supported_protocol_versions()));
+                        framed
+                            .send(WireMessage::HandshakeResponse(
+                                prod_code_protocol::HandshakeResponse {
+                                    protocol_version: 2,
+                                    server_pid: 1,
+                                    session_id: 1,
+                                    server_workspace_root: req.client_workspace_root,
+                                    detected_engine: "rust".to_string(),
+                                    stale_paths: Vec::new(),
+                                    engine_age_ms: None,
+                                    index_gated: false,
+                                },
+                            ))
+                            .await
+                            .unwrap();
+                        break;
+                    }
+                    other => panic!("unexpected setup message: {other:?}"),
+                }
+            }
+            assert!(
+                framed.next().await.is_none(),
+                "an incompatible selection must close before initialize"
+            );
+        });
+
+        let result = LspSession::open_with_budget(
+            addr,
+            &ws.root(),
+            None,
+            None,
+            std::time::Duration::from_secs(3),
+        )
+        .await;
+        let error = result
+            .err()
+            .expect("incompatible selection must fail")
+            .to_string();
+        assert!(
+            error.contains("incompatible MCP handshake response"),
+            "{error}"
+        );
+        peer.await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

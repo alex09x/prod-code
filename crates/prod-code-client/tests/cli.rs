@@ -24,8 +24,18 @@ use tokio_util::codec::Framed;
 pub struct MockGateway {
     pub addr: SocketAddr,
     pub calls: Arc<AtomicUsize>,
+    pub initializes: Arc<AtomicUsize>,
     pub fail_exec: Arc<AtomicBool>,
     pub custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+}
+
+struct MockState {
+    protocol_version: u32,
+    lsp: Answer,
+    calls: Arc<AtomicUsize>,
+    initializes: Arc<AtomicUsize>,
+    fail_exec: Arc<AtomicBool>,
+    custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
 impl MockGateway {
@@ -33,29 +43,39 @@ impl MockGateway {
     where
         F: Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
     {
+        Self::start_with_protocol_version(PROTOCOL_VERSION, answer_lsp).await
+    }
+
+    pub async fn start_with_protocol_version<F>(protocol_version: u32, answer_lsp: F) -> Self
+    where
+        F: Fn(&str, &serde_json::Value) -> serde_json::Value + Send + Sync + 'static,
+    {
         let lsp_fn: Answer = Arc::new(answer_lsp);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
         let addr = listener.local_addr().expect("local addr");
         let calls = Arc::new(AtomicUsize::new(0));
+        let initializes = Arc::new(AtomicUsize::new(0));
         let fail_exec = Arc::new(AtomicBool::new(false));
         let custom_exec = Arc::new(std::sync::Mutex::new(None));
 
-        let calls_clone = Arc::clone(&calls);
-        let fail_exec_clone = Arc::clone(&fail_exec);
-        let custom_exec_clone = Arc::clone(&custom_exec);
+        let state = Arc::new(MockState {
+            protocol_version,
+            lsp: lsp_fn,
+            calls: Arc::clone(&calls),
+            initializes: Arc::clone(&initializes),
+            fail_exec: Arc::clone(&fail_exec),
+            custom_exec: Arc::clone(&custom_exec),
+        });
 
         tokio::spawn(async move {
             loop {
                 let Ok((socket, _)) = listener.accept().await else {
                     return;
                 };
-                let lsp = Arc::clone(&lsp_fn);
-                let calls = Arc::clone(&calls_clone);
-                let fail_exec = Arc::clone(&fail_exec_clone);
-                let custom_exec = Arc::clone(&custom_exec_clone);
+                let state = Arc::clone(&state);
 
                 tokio::spawn(async move {
-                    let _ = handle_client(socket, addr, lsp, calls, fail_exec, custom_exec).await;
+                    let _ = handle_client(socket, addr, state).await;
                 });
             }
         });
@@ -63,6 +83,7 @@ impl MockGateway {
         Self {
             addr,
             calls,
+            initializes,
             fail_exec,
             custom_exec,
         }
@@ -72,10 +93,7 @@ impl MockGateway {
 async fn handle_client(
     socket: TcpStream,
     local_addr: SocketAddr,
-    lsp_fn: Answer,
-    calls: Arc<AtomicUsize>,
-    fail_exec: Arc<AtomicBool>,
-    custom_exec: Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    state: Arc<MockState>,
 ) -> anyhow::Result<()> {
     let mut framed = Framed::new(socket, ProdCodeCodec::new());
     while let Some(msg_res) = framed.next().await {
@@ -110,7 +128,7 @@ async fn handle_client(
             WireMessage::HandshakeRequest(req) => {
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                        protocol_version: PROTOCOL_VERSION,
+                        protocol_version: state.protocol_version,
                         server_pid: std::process::id(),
                         session_id: 1,
                         server_workspace_root: req.client_workspace_root,
@@ -219,7 +237,7 @@ async fn handle_client(
                     .await?;
             }
             WireMessage::ExecRequest(req) => {
-                let custom = custom_exec.lock().unwrap().clone();
+                let custom = state.custom_exec.lock().unwrap().clone();
                 if let Some(stdout) = custom {
                     framed
                         .send(WireMessage::ExecChunk(ExecChunk {
@@ -238,7 +256,7 @@ async fn handle_client(
                             platform: None,
                         }))
                         .await?;
-                } else if fail_exec.load(Ordering::Relaxed) {
+                } else if state.fail_exec.load(Ordering::Relaxed) {
                     framed
                         .send(WireMessage::ExecChunk(ExecChunk {
                             stderr: true,
@@ -338,6 +356,7 @@ async fn handle_client(
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
                 let result = if method == "initialize" {
+                    state.initializes.fetch_add(1, Ordering::Relaxed);
                     serde_json::json!({
                         "capabilities": {
                             "hoverProvider": true,
@@ -347,8 +366,8 @@ async fn handle_client(
                         }
                     })
                 } else {
-                    calls.fetch_add(1, Ordering::Relaxed);
-                    lsp_fn(method, &params)
+                    state.calls.fetch_add(1, Ordering::Relaxed);
+                    (state.lsp)(method, &params)
                 };
                 let response = serde_json::json!({
                     "jsonrpc": "2.0",
@@ -1408,6 +1427,41 @@ async fn cli_runs_pipelined_benchmark() {
 }
 
 #[tokio::test]
+async fn cli_and_benchmark_refuse_a_bad_selected_version_before_initialize() {
+    let ws = make_workspace();
+    let cli_gateway =
+        MockGateway::start_with_protocol_version(2, |_, _| serde_json::Value::Null).await;
+    let out = run_cli(&ws, cli_gateway.addr, &["hover", "src/lib.rs", "1", "1"]).await;
+    assert!(!out.status.success());
+    assert!(
+        stderr_of(&out).contains("incompatible handshake response"),
+        "{}",
+        stderr_of(&out)
+    );
+    assert_eq!(cli_gateway.initializes.load(Ordering::Relaxed), 0);
+
+    let bench_gateway =
+        MockGateway::start_with_protocol_version(2, |_, _| serde_json::Value::Null).await;
+    let out = run_cli(
+        &ws,
+        bench_gateway.addr,
+        &[
+            "bench",
+            "--concurrency",
+            "1",
+            "--depth",
+            "1",
+            "--duration-secs",
+            "1",
+        ],
+    )
+    .await;
+    assert!(out.status.success());
+    assert!(stdout_of(&out).contains("Errors:              1"));
+    assert_eq!(bench_gateway.initializes.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
 async fn cli_serves_mcp_protocol_over_stdio() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
@@ -1438,6 +1492,25 @@ async fn cli_serves_mcp_protocol_over_stdio() {
     assert!(output.status.success());
     let stdout = stdout_of(&output);
     assert!(stdout.contains("\"tools\""));
+}
+
+#[tokio::test]
+async fn public_mcp_tool_refuses_a_bad_selected_version_before_initialize() {
+    let ws = make_workspace();
+    let gw = MockGateway::start_with_protocol_version(2, |_, _| serde_json::Value::Null).await;
+    let input = concat!(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"0.1\"}}}\n",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"code_hover\",\"arguments\":{\"path\":\"src/lib.rs\",\"line\":1,\"character\":1}}}\n"
+    );
+    let output = run_cli_with_stdin(&ws, gw.addr, &["mcp"], input.as_bytes()).await;
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(
+        stdout_of(&output).contains("incompatible MCP handshake response"),
+        "{}",
+        stdout_of(&output)
+    );
+    assert_eq!(gw.initializes.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]
@@ -1477,6 +1550,32 @@ async fn cli_bridges_lsp_protocol_over_stdio() {
 
     let output = child.wait_with_output().await.expect("wait lsp");
     assert!(output.status.success());
+}
+
+#[tokio::test]
+async fn editor_bridge_refuses_a_bad_selected_version_before_initialize() {
+    let ws = make_workspace();
+    let gw = MockGateway::start_with_protocol_version(2, |_, _| serde_json::Value::Null).await;
+    let init_payload =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"capabilities\":{}}}";
+    let input = format!(
+        "Content-Length: {}\r\n\r\n{}",
+        init_payload.len(),
+        init_payload
+    );
+    let output = run_cli_with_stdin(&ws, gw.addr, &["lsp"], input.as_bytes()).await;
+    assert!(output.status.success());
+    assert!(
+        stderr_of(&output).contains("incompatible editor handshake response"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert!(
+        stdout_of(&output).contains("incompatible editor handshake response"),
+        "{}",
+        stdout_of(&output)
+    );
+    assert_eq!(gw.initializes.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

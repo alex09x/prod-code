@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- Session handshakes negotiate a mutually supported protocol version (#537). Legacy peers
+  remain compatible; empty or incompatible offers refuse before session creation, and clients
+  reject unsupported selections before initializing a language server.
 - Go signature changes can replace one unnamed primitive result on ordinary non-generic,
   non-variadic free functions (#529). The named parameter list must stay unchanged; complete
   direct-call evidence and remote compilation of packages and test callers are mandatory for
@@ -55,6 +58,13 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go, generic and fallback language servers accept complete LSP header blocks, including
+  Content-Type after Content-Length (#544). Header and body sizes are bounded; duplicate,
+  oversized or truncated frames terminate the stream and release pending requests.
+- Go and generic LSP notifications and automatic replies have complete write deadlines (#543).
+  Canceled or incomplete frames retire the owned child before releasing the writer; interrupted
+  document updates invalidate their generation, while a queued update that never changed state
+  leaves a healthy server available. Multi-document cleanup shares one deadline.
 - Fallback language servers require a valid initialization response before becoming available
   (#538). Initialization failures and timeouts remain errors, server requests cannot masquerade
   as the response, and an exited fallback makes its cached workspace eligible for reload.
