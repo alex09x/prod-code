@@ -469,10 +469,8 @@ fn declaration_at(symbols: &serde_json::Value, line: u32, text: &str) -> Option<
 
 /// The declaration of a *type* called `name`.
 ///
-/// The general symbol resolver refuses a name that resolves twice, and a type re-exported from
-/// a crate root, or sharing its name with an enum variant of a message type, always does. Here
-/// the kind is known: only a struct or an enum can be built, so the candidates are filtered by
-/// kind first and the ambiguity usually disappears.
+/// Filter by type kind and an explicit file hint, then require one distinct indexed location.
+/// A crate-root filename alone cannot distinguish a declaration from a re-export.
 async fn resolve_type(
     remote: SocketAddr,
     root: &Path,
@@ -490,44 +488,35 @@ async fn resolve_type(
             types = in_hint;
         }
     }
-    // `pub use messages::SearchHit;` in a crate root is indexed as a second declaration of the
-    // same type. When a candidate lives in a module of its own, the crate root is the re-export.
-    let declares = |h: &SymbolHit| {
-        !matches!(
-            h.path.file_name().and_then(|n| n.to_str()),
-            Some("lib.rs") | Some("mod.rs") | Some("main.rs")
-        )
-    };
-    if types.iter().any(declares) {
-        types.retain(declares);
-    }
+    // A filename does not prove that a hit is a re-export: real declarations can live in
+    // lib.rs, main.rs and mod.rs too. Only identical indexed locations are interchangeable.
+    // A re-export that the index lists separately needs an explicit declaring-file hint.
+    types.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
+    types.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.col == b.col);
     match types.len() {
         0 => anyhow::bail!("no struct or enum named `{name}` in this workspace"),
         1 => Ok(types.remove(0)),
         _ => {
-            types.sort_by_key(|h| h.path.to_string_lossy().len());
-            let first = types.remove(0);
-            if types.iter().any(|h| h.path != first.path) {
-                let list = std::iter::once(&first)
-                    .chain(types.iter())
-                    .map(|h| {
-                        format!(
-                            "  [{}] {} — {}:{}:{}",
-                            h.kind,
-                            h.name,
-                            h.path
-                                .strip_prefix(root)
-                                .unwrap_or(&h.path)
-                                .to_string_lossy(),
-                            h.line,
-                            h.col
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                anyhow::bail!("`{name}` is declared in more than one file; pass `path`:\n{list}");
-            }
-            Ok(first)
+            let list = types
+                .iter()
+                .map(|h| {
+                    format!(
+                        "  [{}] {} — {}:{}:{}",
+                        h.kind,
+                        h.name,
+                        h.path
+                            .strip_prefix(root)
+                            .unwrap_or(&h.path)
+                            .to_string_lossy(),
+                        h.line,
+                        h.col
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "`{name}` is declared in more than one file or position; pass `path` to the declaring file (multiple declarations in one file still need a unique name):\n{list}"
+            );
         }
     }
 }
@@ -766,5 +755,102 @@ mod tests {
         assert!(f.render().contains("the analyzer rejects it"));
         f.verified = false;
         assert!(f.render().contains("not verified"));
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::*;
+    use prod_code_testkit::{ScriptedGateway, Workspace, answers};
+
+    #[tokio::test]
+    async fn root_filenames_do_not_hide_distinct_declarations() {
+        for root_name in ["src/lib.rs", "src/main.rs", "src/nested/mod.rs"] {
+            let ws = Workspace::new(&[
+                (root_name, "pub struct Thing { pub root: u8 }\n"),
+                ("src/other.rs", "pub struct Thing { pub other: bool }\n"),
+            ]);
+            let first = ws.path(root_name);
+            let second = ws.path("src/other.rs");
+            let (a, b) = (first.clone(), second.clone());
+            let gateway = ScriptedGateway::start(move |method, _| match method {
+                "workspace/symbol" => serde_json::json!([
+                    answers::symbol("Thing", 23, &a, 1, 12),
+                    answers::symbol("Thing", 23, &b, 1, 12),
+                ]),
+                "textDocument/documentSymbol" => {
+                    serde_json::json!([answers::document_symbol("Thing", 23, 1, 1, 12),])
+                }
+                _ => serde_json::Value::Null,
+            })
+            .await;
+            let err = generate(gateway.addr(), &ws.root(), "Thing", 1, false, None)
+                .await
+                .expect_err("two real declarations need a hint");
+            let why = format!("{err:#}");
+            assert!(
+                why.contains(root_name) && why.contains("src/other.rs"),
+                "{why}"
+            );
+            for (path, field) in [(&first, "root: 0"), (&second, "other: false")] {
+                let generated = generate(gateway.addr(), &ws.root(), "Thing", 1, false, Some(path))
+                    .await
+                    .unwrap();
+                assert!(generated.value.contains(field), "{}", generated.value);
+                assert_eq!(
+                    generated.file,
+                    path.strip_prefix(ws.root()).unwrap().to_string_lossy()
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn only_identical_locations_can_be_deduplicated() {
+        let ws = Workspace::new(&[(
+            "src/lib.rs",
+            "mod a { pub struct Thing; }\nmod b { pub struct Thing; }\n",
+        )]);
+        let path = ws.path("src/lib.rs");
+        for second_line in [1, 2] {
+            let file = path.clone();
+            let gateway = ScriptedGateway::start(move |method, _| match method {
+                "workspace/symbol" => serde_json::json!([
+                    answers::symbol("Thing", 23, &file, 1, 20),
+                    answers::symbol("Thing", 23, &file, second_line, 20),
+                ]),
+                _ => serde_json::Value::Null,
+            })
+            .await;
+            let result = resolve_type(gateway.addr(), &ws.root(), "Thing", Some(&path)).await;
+            assert_eq!(result.is_ok(), second_line == 1, "{result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_separately_indexed_reexport_requires_the_declaring_file() {
+        let ws = Workspace::new(&[
+            ("src/lib.rs", "pub use other::Thing;\n"),
+            ("src/other.rs", "pub struct Thing;\n"),
+        ]);
+        let (lib, module) = (ws.path("src/lib.rs"), ws.path("src/other.rs"));
+        let m = module.clone();
+        let gateway = ScriptedGateway::start(move |method, _| match method {
+            "workspace/symbol" => serde_json::json!([
+                answers::symbol("Thing", 23, &lib, 1, 16),
+                answers::symbol("Thing", 23, &m, 1, 12),
+            ]),
+            _ => serde_json::Value::Null,
+        })
+        .await;
+        assert!(
+            resolve_type(gateway.addr(), &ws.root(), "Thing", None)
+                .await
+                .is_err()
+        );
+        let hit = resolve_type(gateway.addr(), &ws.root(), "Thing", Some(&module))
+            .await
+            .unwrap();
+        assert_eq!(hit.path, module);
     }
 }
