@@ -55,6 +55,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go and generic LSP notifications and automatic replies have complete write deadlines (#543).
+  Canceled or incomplete frames retire the owned child before releasing the writer; interrupted
+  document updates invalidate their generation, while a queued update that never changed state
+  leaves a healthy server available. Multi-document cleanup shares one deadline.
 - Fallback language servers require a valid initialization response before becoming available
   (#538). Initialization failures and timeouts remain errors, server requests cannot masquerade
   as the response, and an exited fallback makes its cached workspace eligible for reload.

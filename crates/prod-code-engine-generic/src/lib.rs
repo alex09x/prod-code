@@ -2250,7 +2250,7 @@ while True:
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn notification_expiring_before_document_lock_does_not_mutate_state() {
+    async fn queued_notifications_and_requests_preserve_healthy_state() {
         let dir = tempfile::tempdir().expect("tempdir");
         let script = dir.path().join("notification-server.py");
         std::fs::write(
@@ -2272,22 +2272,28 @@ def send(message):
     body = json.dumps(message).encode()
     sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
     sys.stdout.buffer.flush()
+seen = []
 while True:
     message = read()
     if message is None:
         break
+    seen.append(message.get("method"))
     if message.get("method") == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": seen})
 "#,
         )
         .expect("fake server");
         let config = GenericLspConfig {
             command: "python3".to_string(),
             args: vec![script.to_string_lossy().into_owned()],
-            request_timeout: Duration::from_millis(50),
+            request_timeout: Duration::from_secs(2),
             ..Default::default()
         };
-        let engine = Arc::new(GenericLspEngine::spawn(dir.path(), config).await.unwrap());
+        let mut engine = GenericLspEngine::spawn(dir.path(), config).await.unwrap();
+        engine.config.request_timeout = Duration::from_millis(50);
+        let engine = Arc::new(engine);
         let documents = engine.documents.lock().await;
         let uri = "file:///queued.py";
         let queued = {
@@ -2319,6 +2325,28 @@ while True:
             )
             .await
             .expect("a later notification remains healthy");
+
+        // Hold the writer explicitly: serialization speed must not determine test order.
+        let writer = engine.stdin.lock().await;
+        let error = engine
+            .send_request("prodCode/queued", serde_json::json!({}))
+            .await
+            .expect_err("writer contention must consume the request budget");
+        assert!(format!("{error:#}").contains("Timeout"));
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+        assert!(engine.is_alive());
+        drop(writer);
+        let seen = engine
+            .send_request("prodCode/seen", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(
+            !seen["result"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|method| method == "prodCode/queued")
+        );
     }
 
     #[test]
