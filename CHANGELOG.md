@@ -31,6 +31,8 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go signature changes reject zero one-based coordinates, CRLF terminator interiors and
+  UTF-16 surrogate interiors before planning or applying native edits (#486).
 - Relative source paths passed to library diagnostics and validation select their engine
   relative to the supplied checkout, so nested Python files in Rust projects reach Python
   instead of failing in the Rust VFS (#488). Absolute paths retain the same behavior.
