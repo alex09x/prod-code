@@ -70,6 +70,19 @@ success of `tail`, `grep`, or a logging step does not mean the test passed. Comp
 on the same build profile, workload, cache state, and node class. Report cold and warm runs
 separately, including errors and timeouts rather than percentiles of successes alone.
 
+Remote checks have an execution identity as well as a command. When a tool returns a running
+session or job handle, retain it and resume that execution until its terminal status is known.
+A quiet or yielded command is still running; do not launch the same check again merely because
+its handle or output was lost. First inspect the owned execution. If its result cannot be
+recovered, record that evidence gap and establish that it has finished before a replacement run.
+
+Use a bounded remote timeout and cancel only the exact execution or process group owned by
+that check. Do not use process-name patterns, `pkill` or `killall` to clean up a shared build
+node. Keep complete command output with its revision and final status; tail excerpts are useful
+for progress but cannot establish full test counts. A callback or interrupted client is not
+proof that the remote process finished or was canceled. Reuse completed verification when the
+source is unchanged; repeat a check only after a relevant change, failure or unresolved concern.
+
 A released dependency bump remains a version/lockfile change followed by the consumer's
 existing checks. Do not add tests of the dependency's own algorithms or an extra audit unless
 the requested work includes that scope.
