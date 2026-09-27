@@ -667,3 +667,21 @@ async fn canceled_real_rust_session_restores_overlay_without_retiring_another_ow
     wait_for_retirement(&manager, &loaded, &client_root, 0, 0).await;
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn dropping_a_public_cold_acquisition_releases_its_workspace_count() {
+    let manager = Arc::new(WorkspaceManager::new());
+    let fixture = tempfile::tempdir().expect("workspace directory");
+    let root = fixture.path().to_path_buf();
+    for _ in 0..2 {
+        let acquisition = manager.get_or_load(&root, "text").await.unwrap();
+        let workspace = manager.get_loaded(&root).await.expect("loaded workspace");
+        assert_eq!(workspace.active_sessions.load(Ordering::Relaxed), 1);
+        drop(acquisition);
+        assert_eq!(
+            workspace.active_sessions.load(Ordering::Relaxed),
+            0,
+            "a canceled handshake must return its counted workspace acquisition"
+        );
+    }
+}
