@@ -48,6 +48,9 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 - [x] **1.2. Bi-directional Path Translation**
   - Canonical URI/path rewriting between client workspace roots (`file:///Users/me/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
+  - The editor's remote-file mirror shares the structured location traversal (#568): source,
+    edit and documentation text remain unchanged, encoded paths round-trip, and URI keys in
+    workspace edits are translated alongside location values.
 - [~] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
   - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
