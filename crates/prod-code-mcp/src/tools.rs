@@ -757,7 +757,11 @@ pub fn list_tools() -> Vec<McpTool> {
                     },
                     "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
                 },
-                "required": ["edits"]
+                "anyOf": [
+                    { "required": ["edits"] },
+                    { "required": ["diff"] },
+                    { "required": ["workspace_edit"] }
+                ]
             }),
         },
         McpTool {
@@ -7524,12 +7528,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_edits_schema_takes_a_list_of_edits() {
+    fn validate_edits_schema_accepts_alternative_inputs() {
         let tool = list_tools()
             .into_iter()
             .find(|t| t.name == "code_validate_edits")
             .unwrap();
-        assert_eq!(tool.input_schema["required"], serde_json::json!(["edits"]));
+        // Each public input form stands alone: a diff or WorkspaceEdit must not need
+        // an unrelated, dummy `edits` list to satisfy MCP client validation.
+        assert!(tool.input_schema.get("required").is_none());
+        assert_eq!(
+            tool.input_schema["anyOf"],
+            serde_json::json!([
+                { "required": ["edits"] },
+                { "required": ["diff"] },
+                { "required": ["workspace_edit"] }
+            ])
+        );
         assert_eq!(
             tool.input_schema["properties"]["edits"]["items"]["required"],
             serde_json::json!(["path", "new_text"])
