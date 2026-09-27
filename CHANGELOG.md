@@ -66,6 +66,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Delayed search embeddings carry a file-entry generation, so a same-size edit or an index
+  recreation cannot attach an older vector to a current declaration (#556). Search indexing
+  skips descendant file and directory symlinks, removes invalidated linked sources, and ignores
+  absolute or parent-traversal invalidations (#557). Checkout-root aliases remain supported.
 - Search scopes match an exact file or directory descendants, excluding sibling string prefixes
   (#555). Root and dot components are normalized consistently; absolute and parent-traversal
   scopes return an error. Lexical and dense ranking use the same scope.
