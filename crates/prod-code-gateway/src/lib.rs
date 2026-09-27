@@ -177,6 +177,11 @@ pub struct ServerState {
     pub engine_allowlist: Vec<String>,
     /// Where shadow runs keep the upper directories of their overlays (`--shadow-dir`).
     pub shadow_root: PathBuf,
+    /// Exclusive ownership follows every state clone held by an accepted session.
+    ///
+    /// Only gateway startup installs this guard; constructed test and embedding states do not
+    /// claim a filesystem namespace until they explicitly opt into one.
+    _shadow_root_owner: Option<shadow::ShadowRootOwner>,
     /// Per-workspace declaration indexes for `code_search`.
     pub search_indexes: search::SearchIndexes,
     /// The token every connection must open with (#402); `None` takes every connection.
@@ -240,6 +245,7 @@ impl ServerState {
             next_session_id: AtomicU64::new(1),
             active_sessions: AtomicUsize::new(0),
             shadow_root: shadow::default_root(&storage_root),
+            _shadow_root_owner: None,
             search_indexes: search::SearchIndexes::with_model_dir(embed::model_dir(&storage_root)),
             storage_root,
             workspace_manager: Arc::new(WorkspaceManager::new()),
@@ -5560,6 +5566,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         "connection token (PROD_CODE_AUTH_TOKEN or PROD_CODE_AUTH_TOKEN_FILE)"
     );
     state.shadow_root = shadow_root;
+    // Accepted sessions retain an Arc<ServerState>, so they must also retain exclusive ownership
+    // after the accept loop returns on a shutdown signal.
+    state._shadow_root_owner = Some(shadow_owner);
     match shadow::overlay_unavailable() {
         None => {
             tracing::info!(dir = %state.shadow_root.display(), "shadow runs: overlay mode (user namespaces + overlayfs)")
@@ -5656,6 +5665,33 @@ mod tests {
     use super::*;
     use prod_code_protocol::{HostResources, PROTOCOL_VERSION};
     use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn shadow_root_ownership_follows_the_last_server_state_reference() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("shadow");
+        let mut state = ServerState::new(fixture.path().join("storage"));
+        state.shadow_root = root.clone();
+        state._shadow_root_owner = Some(shadow::ShadowRootOwner::acquire(&root).unwrap());
+
+        let accept_state = Arc::new(state);
+        let session_state = Arc::clone(&accept_state);
+        drop(accept_state);
+
+        let refused = shadow::ShadowRootOwner::acquire(&root)
+            .err()
+            .expect("a retained session state must keep ownership");
+        assert!(
+            refused
+                .to_string()
+                .contains("already owned by another gateway"),
+            "{refused:#}"
+        );
+
+        drop(session_state);
+        shadow::ShadowRootOwner::acquire(&root)
+            .expect("the final state release must release ownership");
+    }
 
     #[tokio::test]
     async fn incompatible_protocol_offers_are_refused_before_session_or_workspace_side_effects() {
