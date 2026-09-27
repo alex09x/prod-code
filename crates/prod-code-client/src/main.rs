@@ -984,7 +984,8 @@ enum Commands {
     },
     /// Change what a function takes, with its call sites: Rust reorders, adds and removes
     /// parameters; Go reorders, removes provably unused ones, adds typed literal parameters, or
-    /// replaces one primitive result of an ordinary free function.
+    /// replaces one primitive result of an ordinary free function or named value/pointer receiver
+    /// method.
     ///
     /// Rust: refuses changes to argument evaluation or destruction order (including possible
     /// Deref coercions).
@@ -993,8 +994,9 @@ enum Commands {
     /// declared function or method, optionally omitting unused parameters. Grouped parameters
     /// (`a, b int`) move one by one; receivers stay as declared. `--returns` replaces only a
     /// single unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free
-    /// function, and requires the named parameter list to be exactly unchanged. A retained
-    /// variadic parameter stays last; removing it removes its entire argument tail.
+    /// function or named value/pointer receiver method, and requires the named parameter list to
+    /// be exactly unchanged. A retained variadic parameter stays last; removing it removes its
+    /// entire argument tail.
     /// Both body inspection and gopls references must prove every removed parameter unused.
     /// Dropped arguments must be literals or simple variables; calls, selectors, indexing,
     /// receives, conversions and operators are refused because their evaluation can matter.
@@ -1007,9 +1009,10 @@ enum Commands {
     /// Packages and test callers must compile on the node before preview or apply. This preserves
     /// the node's build flags and does not require Go on the client.
     /// Refused for Go without writing, whatever `--force` says: arbitrary added values,
-    /// `--visibility`, `--async`, `--verify`, named/multiple/void/composite results, receiver or
-    /// generic or variadic result changes, shadowed primitive names, parameter changes combined with
-    /// `--returns`, unnamed or `_` parameters, any generic removal,
+    /// `--visibility`, `--async`, `--verify`, named/multiple/void/composite results, generic or
+    /// variadic result changes, receiver methods with interface obligations or non-call references,
+    /// shadowed primitive names, parameter changes combined with `--returns`, unnamed or `_`
+    /// parameters, any generic removal,
     /// a generic function that has calls, a function used as a value, an unreconciled call,
     /// and uncertain argument reordering (`true`, `false` and `nil` count as variables).
     ChangeSignature {
@@ -1029,7 +1032,8 @@ enum Commands {
         #[arg(long, conflicts_with = "params")]
         remove_all: bool,
         /// Rust: the return type it should have; `()` removes it. Go: replaces one existing,
-        /// unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free function;
+        /// unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free
+        /// function or named value/pointer receiver method;
         /// parameters must be listed exactly as declared and Go compiler verification always runs
         /// remotely.
         #[arg(long)]

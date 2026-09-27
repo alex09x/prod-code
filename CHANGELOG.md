@@ -7,10 +7,13 @@
   remain compatible; empty or incompatible offers refuse before session creation, and clients
   reject unsupported selections before initializing a language server.
 - Go signature changes can replace one unnamed primitive result on ordinary non-generic,
-  non-variadic free functions (#529). The named parameter list must stay unchanged; complete
+  non-variadic free functions (#529) and named value/pointer receiver methods (#542). The named
+  parameter list must stay unchanged; complete
   direct-call evidence and remote compilation of packages and test callers are mandatory for
   preview and apply, including no-ops. Shadowed primitive names, linked package sources and
-  unsupported result shapes refuse before writing, even with force. Broader Go signatures
+  unsupported result shapes refuse before writing, even with force. Receiver methods additionally
+  require empty interface-implementation evidence and direct selector calls; method values and
+  expressions refuse. Broader Go signatures
   remain open (#448).
 - Generic Rust inherent implementations can now use `code_extract_trait` (#505). Ordinary
   lifetime, type and const parameters, inline bounds and `where` clauses are carried to the

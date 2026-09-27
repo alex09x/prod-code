@@ -8,7 +8,8 @@
 //! the declared parameters reordered, some of them left out (adding one, changing a type or the
 //! results is refused), and rewrites every call by inlining a wrapper. A deliberately narrow
 //! result replacement is performed here instead: it changes only one primitive result token of
-//! an ordinary free function, then proves every direct caller with the remote Go compiler.
+//! an ordinary free function or named value/pointer receiver method, then proves every direct
+//! caller with the remote Go compiler.
 //! That inliner runs with
 //! effect analysis switched off, so `f(mark(a), mark(b))` comes back as `f(mark(b), mark(a))`,
 //! and the argument of a removed parameter is dropped whatever it does: `f(1, g())` becomes
@@ -45,7 +46,7 @@ pub const GOPLS_VERSION: &str = "v0.23.0";
 const STILL_OPEN: &str = "Go signature changes here are limited to reordering named parameters, \
      removing ones proven unused, and adding explicitly typed primitive parameters with literal \
      arguments to ordinary non-generic functions and named value or pointer receiver methods, plus \
-     replacing one unnamed primitive result of an ordinary non-generic free function; \
+     replacing one unnamed primitive result of an ordinary non-generic free function or named value or pointer receiver method; \
      variadics, generic functions or receivers, combined additions with removals, reorders or type \
      changes, named or multiple results, result removal or addition from void, scope-dependent or \
      composite results, method expressions or values, interface signatures or dispatch, and broader modifiers \
@@ -553,8 +554,9 @@ pub async fn change_with(
     })
 }
 
-/// Replaces the sole unnamed primitive result of an ordinary free function. gopls cannot make
-/// this edit, and a result change can make an otherwise untouched caller ill typed, so the
+/// Replaces the sole unnamed primitive result of an ordinary free function or named value/pointer
+/// receiver method. gopls cannot make this edit, and a result change can make an otherwise
+/// untouched caller ill typed, so the
 /// reference proof and compiler-shadow gate are mandatory even for a preview and even for a
 /// no-op request.
 #[allow(clippy::too_many_arguments)]
@@ -569,14 +571,17 @@ async fn replace_result(
     requested_result: &str,
     apply: bool,
 ) -> Result<SignatureChange> {
-    anyhow::ensure!(
-        decl.receiver.is_none(),
-        "{}",
-        refusal(format!(
-            "changing the result of receiver method `{}` is not supported",
-            decl.name
-        ))
-    );
+    let receiver = decl
+        .receiver
+        .as_deref()
+        .map(ordinary_receiver)
+        .transpose()
+        .map_err(|why| {
+            refusal(format!(
+                "changing the result of `{}` is refused: {why}",
+                decl.name
+            ))
+        })?;
     anyhow::ensure!(
         !decl.generic,
         "{}",
@@ -638,6 +643,16 @@ async fn replace_result(
     // stale coordinate or malformed reference is evidence we do not have, not an empty caller.
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    if receiver.is_some() {
+        receiver_interface_evidence(remote, root, file, &text, &decl)
+            .await
+            .map_err(|why| {
+                refusal(format!(
+                    "changing the result of receiver method `{}` is refused: {why:#}",
+                    decl.name
+                ))
+            })?;
+    }
     let (originals, calls) = function_reference_evidence(
         remote,
         root,
@@ -645,7 +660,7 @@ async fn replace_result(
         &canonical_root,
         &text,
         &decl,
-        None,
+        receiver.as_ref().map(|receiver| receiver.ty.as_str()),
     )
     .await
     .map_err(|why| {
