@@ -6,7 +6,40 @@
 
 use prod_code_gateway::backend::BackendWorker;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
+
+fn fixture_payload(id: u64) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "fixture/fill",
+        "params": { "padding": "x".repeat(4 * 1024 * 1024) }
+    })
+    .to_string()
+}
+
+async fn receive_matching(
+    replies: &mut tokio::sync::broadcast::Receiver<String>,
+    description: &str,
+    matches: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let message = replies
+                .recv()
+                .await
+                .expect("fixture response stream stays open");
+            let value: serde_json::Value = serde_json::from_str(&message).expect("fixture JSON");
+            if matches(&value) {
+                return value;
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {description}"))
+}
 
 /// The daemon puts the user's toolchain directories first on PATH before it looks for a
 /// language server, so a test that looks for one has to do the same — otherwise it quietly
@@ -182,16 +215,34 @@ async fn fallback_initialization_requires_a_valid_response() {
             )
             .await
             .expect("invalid framing must close the response stream promptly")
+        } else if matches!(
+            mode.as_str(),
+            "blocked-send" | "queue-health" | "partial-cancel" | "drop-child" | "eof-after-init"
+        ) {
+            BackendWorker::spawn_with_write_timeout(dir.path(), "go", Duration::from_millis(150))
+                .await
         } else {
             BackendWorker::spawn(dir.path(), "go").await
         };
         if matches!(
             mode.as_str(),
-            "valid" | "collision" | "content-type-after" | "content-type-before"
+            "valid"
+                | "collision"
+                | "content-type-after"
+                | "content-type-before"
+                | "blocked-send"
+                | "queue-health"
+                | "partial-cancel"
+                | "drop-child"
+                | "eof-after-init"
         ) {
-            let worker = outcome.unwrap_or_else(|error| panic!("{mode}: {error:#}"));
+            let worker = Arc::new(outcome.unwrap_or_else(|error| panic!("{mode}: {error:#}")));
             let capabilities = worker.capabilities.read().await.clone();
-            assert_eq!(capabilities, Some(serde_json::json!({})), "{mode}");
+            if mode == "drop-child" {
+                assert!(capabilities.as_ref().unwrap()["fixturePid"].is_number());
+            } else {
+                assert_eq!(capabilities, Some(serde_json::json!({})), "{mode}");
+            }
             if mode.starts_with("content-type-") {
                 let mut replies = worker.subscribe();
                 worker
@@ -206,6 +257,177 @@ async fn fallback_initialization_requires_a_valid_response() {
                     .unwrap();
                 let response: serde_json::Value = serde_json::from_str(&response).unwrap();
                 assert_eq!(response["result"]["contents"], "fixture hover");
+            }
+            if mode == "blocked-send" {
+                let mut replies = worker.subscribe();
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":3,"method":"fixture/arm"}"#)
+                    .await
+                    .unwrap();
+                receive_matching(&mut replies, "arm response", |value| value["id"] == 3).await;
+                let error = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    worker.send_lsp(&fixture_payload(4)),
+                )
+                .await
+                .expect("send_lsp must enforce its own finite write budget")
+                .expect_err("the unread pipe must reject the blocked write");
+                assert!(error.to_string().contains("timed out"), "{error:#}");
+                assert!(
+                    !worker.is_alive(),
+                    "a partially written frame poisons the worker"
+                );
+                let follower = worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","method":"fixture/follower"}"#)
+                    .await
+                    .expect_err("a follower must not append to a partial frame");
+                assert!(follower.to_string().contains("exited"), "{follower:#}");
+            }
+            if mode == "partial-cancel" {
+                let mut replies = worker.subscribe();
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":3,"method":"fixture/arm"}"#)
+                    .await
+                    .unwrap();
+                receive_matching(&mut replies, "arm response", |value| value["id"] == 3).await;
+                let first_worker = Arc::clone(&worker);
+                let first = tokio::spawn(async move {
+                    first_worker
+                        .send_lsp_with_write_timeout(&fixture_payload(4), Duration::from_secs(5))
+                        .await
+                });
+                receive_matching(&mut replies, "observed partial frame", |value| {
+                    value["method"] == "fixture/partial"
+                })
+                .await;
+
+                let follower_payload = fixture_payload(5);
+                let mut follower = Box::pin(worker.send_lsp(&follower_payload));
+                assert!(matches!(
+                    futures_util::poll!(follower.as_mut()),
+                    Poll::Pending
+                ));
+                first.abort();
+                assert!(
+                    first
+                        .await
+                        .expect_err("the first send is cancelled")
+                        .is_cancelled()
+                );
+                let follower_error = tokio::time::timeout(Duration::from_secs(1), follower)
+                    .await
+                    .expect("the queued follower is woken")
+                    .expect_err("the queued follower sees a retired connection");
+                assert!(
+                    follower_error.to_string().contains("exited"),
+                    "{follower_error:#}"
+                );
+                assert!(!worker.is_alive());
+            }
+            if mode == "queue-health" {
+                let mut replies = worker.subscribe();
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":3,"method":"fixture/arm"}"#)
+                    .await
+                    .unwrap();
+                receive_matching(&mut replies, "arm response", |value| value["id"] == 3).await;
+                let first_worker = Arc::clone(&worker);
+                let first = tokio::spawn(async move {
+                    first_worker
+                        .send_lsp_with_write_timeout(&fixture_payload(4), Duration::from_secs(5))
+                        .await
+                });
+                receive_matching(&mut replies, "observed partial frame", |value| {
+                    value["method"] == "fixture/partial"
+                })
+                .await;
+
+                let queue_error = worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","method":"fixture/queued"}"#)
+                    .await
+                    .expect_err("a queued writer has a finite lock budget");
+                assert!(
+                    queue_error.to_string().contains("waiting"),
+                    "{queue_error:#}"
+                );
+                assert!(
+                    worker.is_alive(),
+                    "a writer that emitted no bytes cannot poison framing"
+                );
+
+                let cancelled_payload = fixture_payload(6);
+                let mut cancelled = Box::pin(worker.send_lsp(&cancelled_payload));
+                assert!(matches!(
+                    futures_util::poll!(cancelled.as_mut()),
+                    Poll::Pending
+                ));
+                drop(cancelled);
+                assert!(
+                    worker.is_alive(),
+                    "queue cancellation emitted no frame bytes"
+                );
+
+                receive_matching(
+                    &mut replies,
+                    "reader progress after automatic reply timeout",
+                    |value| value["method"] == "fixture/after-auto",
+                )
+                .await;
+                assert!(worker.is_alive());
+
+                std::fs::write(dir.path().join("release-write"), b"release").unwrap();
+                tokio::time::timeout(Duration::from_secs(2), first)
+                    .await
+                    .expect("the released frame finishes")
+                    .expect("writer task joins")
+                    .expect("released frame is written");
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":8,"method":"fixture/ping"}"#)
+                    .await
+                    .expect("healthy writer accepts another frame");
+                let pong =
+                    receive_matching(&mut replies, "post-timeout ping", |value| value["id"] == 8)
+                        .await;
+                assert_eq!(pong["result"], "pong");
+            }
+            if mode == "eof-after-init" {
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","method":"fixture/eof"}"#)
+                    .await
+                    .unwrap();
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while worker.is_alive() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("EOF marks the worker dead");
+                let error = worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","method":"fixture/after-eof"}"#)
+                    .await
+                    .expect_err("EOF wakes and rejects later writers");
+                assert!(error.to_string().contains("exited"), "{error:#}");
+            }
+            if mode == "drop-child" {
+                let pid = capabilities
+                    .as_ref()
+                    .and_then(|value| value["fixturePid"].as_i64())
+                    .expect("fixture reports its child pid")
+                    as libc::pid_t;
+                drop(worker);
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        let result = unsafe { libc::kill(pid, 0) };
+                        if result == -1
+                            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                        {
+                            break;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("dropping the worker kills and reaps its owned child");
             }
         } else {
             let error = match outcome {
@@ -236,7 +458,7 @@ async fn fallback_initialization_requires_a_valid_response() {
     std::fs::write(&script, r#"#!/usr/bin/env python3
 import json, os, sys, threading
 
-def read():
+def read_length():
     n = 0
     while True:
         line = sys.stdin.buffer.readline()
@@ -246,6 +468,12 @@ def read():
             break
         if line.lower().startswith(b'content-length:'):
             n = int(line.split(b':', 1)[1])
+    return n
+
+def read():
+    n = read_length()
+    if n is None:
+        return None
     return json.loads(sys.stdin.buffer.read(n))
 
 def send(value):
@@ -287,13 +515,34 @@ if mode == 'error':
 elif mode == 'malformed':
     send({'jsonrpc': '2.0', 'id': 1, 'result': {}})
 else:
-    send({'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+    capabilities = {'fixturePid': os.getpid()} if mode == 'drop-child' else {}
+    send({'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': capabilities}})
 while True:
     request = read()
     if request is None:
         break
     if request.get('method') == 'textDocument/hover':
         send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'contents': 'fixture hover'}})
+    elif request.get('method') == 'fixture/arm':
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': None})
+        if mode == 'blocked-send':
+            threading.Event().wait()
+        if mode in ('queue-health', 'partial-cancel'):
+            n = read_length()
+            first = sys.stdin.buffer.read(1)
+            send({'jsonrpc': '2.0', 'method': 'fixture/partial'})
+            if mode == 'partial-cancel':
+                threading.Event().wait()
+            send({'jsonrpc': '2.0', 'id': 99, 'method': 'workspace/configuration', 'params': {'items': [{}]}})
+            send({'jsonrpc': '2.0', 'method': 'fixture/after-auto'})
+            released = os.path.join(os.getcwd(), 'release-write')
+            while not os.path.exists(released):
+                threading.Event().wait(0.01)
+            json.loads(first + sys.stdin.buffer.read(n - 1))
+    elif request.get('method') == 'fixture/ping':
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'pong'})
+    elif request.get('method') == 'fixture/eof':
+        sys.exit(0)
 "#).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::join_paths(
@@ -307,6 +556,11 @@ while True:
         "collision",
         "content-type-after",
         "content-type-before",
+        "blocked-send",
+        "queue-health",
+        "partial-cancel",
+        "drop-child",
+        "eof-after-init",
         "error",
         "malformed",
         "eof",
@@ -316,18 +570,22 @@ while True:
         "frame-header",
         "frame-truncated",
     ] {
-        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "fallback_initialization_requires_a_valid_response",
-                "--nocapture",
-            ])
-            .env(MODE, mode)
-            .env("PATH", &path)
-            .kill_on_drop(true)
-            .output()
-            .await
-            .unwrap();
+        let output = tokio::time::timeout(
+            Duration::from_secs(15),
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "fallback_initialization_requires_a_valid_response",
+                    "--nocapture",
+                ])
+                .env(MODE, mode)
+                .env("PATH", &path)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{mode}: fixture child exceeded external watchdog"))
+        .unwrap();
         if !output.status.success() {
             failures.push(format!(
                 "{mode}: {}{}",
