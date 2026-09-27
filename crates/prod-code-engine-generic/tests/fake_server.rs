@@ -18,7 +18,7 @@ use std::time::Duration;
 
 /// A language server that does only what these tests need.
 const SERVER: &str = r#"
-import json, os, sys, threading
+import json, os, sys, threading, time
 
 LOCK = threading.Lock()
 
@@ -54,10 +54,19 @@ def read():
             length = int(line.split(b":")[1])
     if not length:
         return None
-    return json.loads(sys.stdin.buffer.read(length))
+    body = b""
+    while len(body) < length:
+        chunk = sys.stdin.buffer.read(min(length - len(body), 4096))
+        if not chunk:
+            return None
+        body += chunk
+        if os.environ.get("FAKE_SLOW_READ"):
+            time.sleep(float(os.environ["FAKE_SLOW_READ"]))
+    return json.loads(body)
 
 PULLS = {}
 LINES = {}
+REQUESTS = []
 INDEXED = [not os.environ.get("FAKE_INDEXING")]
 
 def end_indexing():
@@ -69,12 +78,19 @@ while True:
     if message is None:
         break
     method = message.get("method", "")
+    REQUESTS.append(method)
     if method == "textDocument/didOpen":
         LINES[message["params"]["textDocument"]["uri"]] = len(message["params"]["textDocument"]["text"].splitlines())
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {
             "capabilities": {"hoverProvider": True, "diagnosticProvider": {"interFileDependencies": False}}
         }})
+    elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
+        os.close(0)
+        threading.Event().wait()
+    elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
+        # Keep the process alive but abandon stdin, as a wedged language server can.
+        threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_INDEXING"):
         # As clangd does: create a progress token, begin indexing, report, and end it after
         # FAKE_INDEXING seconds (or never), answering workspace/symbol with nothing until then.
@@ -176,6 +192,15 @@ while True:
     elif method == "textDocument/didClose":
         # What clangd does for a document just closed: clears its diagnostics, without a version.
         publish_items(message["params"]["textDocument"]["uri"], None, [])
+    elif method == "prodCode/delay":
+        threading.Timer(0.4, send, ({"jsonrpc": "2.0", "id": message["id"], "result": "late"},)).start()
+    elif method == "prodCode/seen":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": REQUESTS})
+    elif method == "prodCode/publishTwoVersions":
+        uri = message["params"]["uri"]
+        publish(uri, message["params"]["first"], message["params"]["firstMessage"])
+        publish(uri, message["params"]["second"], message["params"]["secondMessage"])
+        send({"jsonrpc": "2.0", "id": message["id"], "result": None})
     elif method == "prodCode/silence":
         # Answer nothing at all, so the caller's timeout is the only way out.
         pass
@@ -582,6 +607,77 @@ async fn the_diagnostics_answered_are_for_the_text_last_sent() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_older_publication_does_not_replace_a_newer_one() {
+    let (dir, script) = workspace();
+    let engine = GenericLspEngine::spawn(dir.path(), config(&script))
+        .await
+        .expect("the fake server starts");
+    let uri = format!("file://{}/ordered.c", dir.path().display());
+    open(&engine, &uri, "// silent\n").await;
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [ { "text": "// stale-only\n" } ]
+            }),
+        )
+        .await
+        .expect("didChange is sent");
+
+    engine
+        .send_request(
+            "prodCode/publishTwoVersions",
+            serde_json::json!({
+                "uri": uri,
+                "first": 2,
+                "firstMessage": "newer publication",
+                "second": 1,
+                "secondMessage": "late older publication"
+            }),
+        )
+        .await
+        .expect("both publications were sent before this answer");
+
+    let current = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect("the newer publication remains current");
+    assert_eq!(current[0]["message"], "newer publication");
+    assert_eq!(
+        engine.diagnostics_for(&uri).await.expect("published")[0]["message"],
+        "newer publication"
+    );
+
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await
+        .expect("didClose is sent");
+    open(&engine, &uri, "// silent reopened\n").await;
+    engine
+        .send_request(
+            "prodCode/publishTwoVersions",
+            serde_json::json!({
+                "uri": uri,
+                "first": 2,
+                "firstMessage": "stale closed generation",
+                "second": 1,
+                "secondMessage": "valid reset publication"
+            }),
+        )
+        .await
+        .expect("both publications were sent before this answer");
+    let reopened = engine
+        .current_diagnostics_for(&uri, Duration::from_millis(20))
+        .await
+        .expect("the reopened document accepts its lower reset version");
+    assert_eq!(reopened[0]["message"], "valid reset publication");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_published_diagnostic_is_kept_for_the_file_it_belongs_to() {
     let (dir, script) = workspace();
     let engine = GenericLspEngine::spawn(dir.path(), config(&script))
@@ -649,6 +745,214 @@ async fn a_request_the_server_never_answers_comes_back_as_a_timeout() {
     assert!(
         engine.is_alive(),
         "and the server is still there for the next request"
+    );
+}
+
+/// A request deadline covers pipe backpressure as well as the response wait (#533).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_whose_full_frame_cannot_be_written_obeys_its_deadline() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_STOP_READING".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_millis(200);
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the fake server starts");
+
+    let observed = tokio::time::timeout(
+        Duration::from_secs(2),
+        engine.send_request(
+            "prodCode/large",
+            serde_json::json!({ "payload": "x".repeat(8 * 1024 * 1024) }),
+        ),
+    )
+    .await;
+    let result = observed.expect("the configured request deadline includes a blocked write");
+    let error = result.expect_err("the server stopped reading before the frame fit");
+    let text = format!("{error:#}");
+    assert!(text.contains("prodCode/large"), "{text}");
+    assert!(text.to_lowercase().contains("timeout"), "{text}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_request_waiting_for_the_writer_times_out_without_being_sent_later() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_SLOW_READ".to_string(), "0.003".to_string());
+    settings.request_timeout = Duration::from_millis(100);
+    let engine = std::sync::Arc::new(
+        GenericLspEngine::spawn(dir.path(), settings)
+            .await
+            .expect("the fake server starts"),
+    );
+
+    let writing = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_notification(
+                    "prodCode/largeNotification",
+                    serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let error = engine
+        .send_request("prodCode/queued", serde_json::json!({}))
+        .await
+        .expect_err("the writer stays occupied beyond the request deadline");
+    let text = format!("{error:#}");
+    assert!(text.contains("prodCode/queued"), "{text}");
+    assert!(text.to_lowercase().contains("timeout"), "{text}");
+    writing
+        .await
+        .expect("the notification task")
+        .expect("the complete notification is written");
+
+    let seen = engine
+        .send_request("prodCode/seen", serde_json::json!({}))
+        .await
+        .expect("the connection remains synchronized");
+    assert!(
+        !seen["result"]
+            .as_array()
+            .expect("methods")
+            .iter()
+            .any(|method| method == "prodCode/queued"),
+        "the expired request was written after its caller returned: {seen}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_write_error_names_the_request_and_retires_the_child() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_CLOSE_STDIN".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_secs(2);
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the fake server starts");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let error = engine
+        .send_request(
+            "prodCode/brokenWrite",
+            serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
+        )
+        .await
+        .expect_err("the server closed its read end");
+    let text = format!("{error:#}");
+    assert!(text.contains("prodCode/brokenWrite"), "{text}");
+    assert!(text.to_lowercase().contains("write"), "{text}");
+    assert!(!engine.is_alive(), "a possibly partial stream is retired");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_partial_frame_retires_only_that_child_and_wakes_waiters() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings
+        .env
+        .insert("FAKE_STOP_READING".to_string(), "1".to_string());
+    settings.request_timeout = Duration::from_secs(10);
+    let engine = std::sync::Arc::new(
+        GenericLspEngine::spawn(dir.path(), settings)
+            .await
+            .expect("the fake server starts"),
+    );
+
+    let writing = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request(
+                    "prodCode/cancelled",
+                    serde_json::json!({ "payload": "x".repeat(8 * 1024 * 1024) }),
+                )
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let waiting = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("prodCode/waiting", serde_json::json!({}))
+                .await
+        })
+    };
+    writing.abort();
+    assert!(
+        writing
+            .await
+            .expect_err("the write was cancelled")
+            .is_cancelled()
+    );
+    let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .expect("retirement wakes a request waiting behind the writer")
+        .expect("the waiting task")
+        .expect_err("the retired child cannot answer");
+    assert!(
+        format!("{error:#}").contains("prodCode/waiting"),
+        "{error:#}"
+    );
+    assert!(!engine.is_alive(), "the desynchronized child was retired");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_frames_support_cancellation_and_concurrent_healthy_responses() {
+    let (dir, script) = workspace();
+    let engine = std::sync::Arc::new(
+        GenericLspEngine::spawn(dir.path(), config(&script))
+            .await
+            .expect("the fake server starts"),
+    );
+
+    let cancelled = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("prodCode/delay", serde_json::json!({}))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    cancelled.abort();
+    assert!(cancelled.await.expect_err("cancelled").is_cancelled());
+
+    let first = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("textDocument/hover", serde_json::json!({}))
+                .await
+        })
+    };
+    let second = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move {
+            engine
+                .send_request("textDocument/hover", serde_json::json!({}))
+                .await
+        })
+    };
+    for response in [first, second] {
+        assert_eq!(
+            response.await.expect("task").expect("healthy response")["result"]["contents"]["value"],
+            "the fake server answered"
+        );
+    }
+    assert!(
+        engine.is_alive(),
+        "complete-frame cancellation keeps the child"
     );
 }
 

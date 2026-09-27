@@ -10,8 +10,8 @@ use prod_code_protocol::readiness::{
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -363,7 +363,7 @@ pub struct GenericLspEngine {
     pub config: GenericLspConfig,
     stdin: Arc<Mutex<ChildStdin>>,
     next_req_id: AtomicU64,
-    pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     broadcast_tx: broadcast::Sender<String>,
     last_activity: Arc<RwLock<Instant>>,
@@ -372,7 +372,7 @@ pub struct GenericLspEngine {
     diagnostics: Arc<RwLock<HashMap<String, Published>>>,
     /// The text last sent per document URI (`didOpen`, `didChange`), which a publication has
     /// to cover before it answers for the document (#293).
-    sent: RwLock<HashMap<String, Sent>>,
+    sent: Arc<RwLock<HashMap<String, Sent>>>,
     /// Whether the server has published with a document version, as clangd does: then a
     /// publication without one (clangd's, for a document just closed) describes no text sent.
     versioned: Arc<AtomicBool>,
@@ -389,7 +389,39 @@ pub struct GenericLspEngine {
     /// False once a retained-document generation is full. Replacing the whole engine is the
     /// only safe eviction for pyright: closing just one retained document revives #466.
     accepts_documents: AtomicBool,
-    _child: Arc<Mutex<Child>>,
+    _child: Arc<StdMutex<Child>>,
+}
+
+struct PendingRequest {
+    id: u64,
+    pending: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    child: Arc<StdMutex<Child>>,
+    is_alive: Arc<AtomicBool>,
+    frame_written: bool,
+}
+
+impl PendingRequest {
+    fn retire_if_partial(&self) {
+        if self.frame_written {
+            return;
+        }
+        self.is_alive.store(false, Ordering::Release);
+        let _ = lock_unpoisoned(&self.child).start_kill();
+        lock_unpoisoned(&self.pending).clear();
+    }
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        lock_unpoisoned(&self.pending).remove(&self.id);
+        self.retire_if_partial();
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> StdMutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Default)]
@@ -463,14 +495,16 @@ impl GenericLspEngine {
         let diagnostics: Arc<RwLock<HashMap<String, Published>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let diagnostics_writer = diagnostics.clone();
+        let sent = Arc::new(RwLock::new(HashMap::<String, Sent>::new()));
+        let sent_reader = Arc::clone(&sent);
         let versioned = Arc::new(AtomicBool::new(false));
         let versioned_writer = Arc::clone(&versioned);
         let apply_edit_waiter: Arc<Mutex<Option<oneshot::Sender<serde_json::Value>>>> =
             Arc::new(Mutex::new(None));
         let apply_edit_slot = apply_edit_waiter.clone();
 
-        let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
 
         let stdin_arc = Arc::new(Mutex::new(stdin));
@@ -527,7 +561,7 @@ impl GenericLspEngine {
                                         if val.get("method").is_none()
                                             && let Some(id) = id_val.as_u64()
                                         {
-                                            let mut pending = pending_clone.lock().await;
+                                            let mut pending = lock_unpoisoned(&pending_clone);
                                             if let Some(tx) = pending.remove(&id) {
                                                 let _ = tx.send(val.clone());
                                                 continue;
@@ -657,14 +691,29 @@ impl GenericLspEngine {
                                         if version.is_some() {
                                             versioned_writer.store(true, Ordering::Relaxed);
                                         }
-                                        diagnostics_writer.write().await.insert(
-                                            uri.to_string(),
-                                            Published {
-                                                version,
-                                                at: Instant::now(),
-                                                items,
-                                            },
+                                        let publication = Published {
+                                            version,
+                                            at: Instant::now(),
+                                            items,
+                                        };
+                                        let sent_version = sent_reader
+                                            .read()
+                                            .await
+                                            .get(uri)
+                                            .and_then(|sent| sent.version);
+                                        let mut diagnostics = diagnostics_writer.write().await;
+                                        let is_late_older = matches!(
+                                            (
+                                                diagnostics.get(uri).and_then(|p| p.version),
+                                                publication.version,
+                                                sent_version,
+                                            ),
+                                            (Some(current), Some(incoming), Some(sent))
+                                                if current == sent && incoming < current
                                         );
+                                        if !is_late_older {
+                                            diagnostics.insert(uri.to_string(), publication);
+                                        }
                                     }
                                     let _ = bcast_tx_clone.send(json_str);
                                 }
@@ -677,7 +726,7 @@ impl GenericLspEngine {
             is_alive_clone.store(false, Ordering::Relaxed);
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the request timeout (#355).
-            pending_clone.lock().await.clear();
+            lock_unpoisoned(&pending_clone).clear();
             tracing::info!("Generic LSP reader loop finished");
         });
 
@@ -691,7 +740,7 @@ impl GenericLspEngine {
             broadcast_tx: bcast_tx,
             last_activity,
             diagnostics,
-            sent: RwLock::new(HashMap::new()),
+            sent,
             versioned,
             pull_unsupported: AtomicBool::new(false),
             apply_edit_waiter,
@@ -699,7 +748,7 @@ impl GenericLspEngine {
             readiness,
             documents: Mutex::new(DocumentLifecycle::default()),
             accepts_documents: AtomicBool::new(true),
-            _child: Arc::new(Mutex::new(child)),
+            _child: Arc::new(StdMutex::new(child)),
         };
 
         // Initialize LSP server
@@ -1018,8 +1067,8 @@ impl GenericLspEngine {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
-        if !self.is_alive.load(Ordering::Relaxed) {
-            anyhow::bail!("Language server process has exited");
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("Language server process has exited before request '{method}'");
         }
         // A question answered from the index waits until the server has built it; one still
         // not built when the wait ends is answered with a note of how far it got (#391).
@@ -1029,14 +1078,8 @@ impl GenericLspEngine {
             None
         };
 
+        let deadline = tokio::time::Instant::now() + self.config.request_timeout;
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-
-        {
-            let mut pending = self.pending_requests.lock().await;
-            pending.insert(req_id, tx);
-        }
-
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "id": req_id,
@@ -1044,10 +1087,41 @@ impl GenericLspEngine {
             "params": params
         });
 
-        Self::write_frame_raw(&self.stdin, &payload).await?;
+        let body = payload.to_string();
+        let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut writer = tokio::time::timeout_at(deadline, self.stdin.lock())
+            .await
+            .with_context(|| format!("Timeout waiting to send LSP request '{method}'"))?;
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("Language server process has exited before request '{method}'");
+        }
+        let (tx, rx) = oneshot::channel();
+        lock_unpoisoned(&self.pending_requests).insert(req_id, tx);
+        // Declared after `writer`: cancellation or a write error retires the partial stream
+        // while this request still owns the writer lock, before a queued writer can wake.
+        let mut pending = PendingRequest {
+            id: req_id,
+            pending: Arc::clone(&self.pending_requests),
+            child: Arc::clone(&self._child),
+            is_alive: Arc::clone(&self.is_alive),
+            frame_written: false,
+        };
+        tokio::time::timeout_at(deadline, writer.write_all(frame.as_bytes()))
+            .await
+            .with_context(|| format!("Timeout writing LSP request '{method}'"))?
+            .with_context(|| format!("Failed to write LSP request '{method}'"))?;
+        tokio::time::timeout_at(deadline, writer.flush())
+            .await
+            .with_context(|| format!("Timeout flushing LSP request '{method}'"))?
+            .with_context(|| format!("Failed to flush LSP request '{method}'"))?;
+        pending.frame_written = true;
+        drop(writer);
 
-        match tokio::time::timeout(self.config.request_timeout, rx).await {
+        match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
+                if !self.is_alive.load(Ordering::Acquire) {
+                    anyhow::bail!("Language server process has exited while answering '{method}'");
+                }
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
                 }
@@ -1057,8 +1131,6 @@ impl GenericLspEngine {
                 anyhow::bail!("Language server process has exited while answering '{method}'")
             }
             Err(_) => {
-                let mut pending = self.pending_requests.lock().await;
-                pending.remove(&req_id);
                 anyhow::bail!("Timeout waiting for response to '{method}'");
             }
         }
@@ -1829,6 +1901,131 @@ mod tests {
 
         let ts_config = GenericLspConfig::for_typescript();
         assert!(!ts_config.command.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dropping_request_ownership_cleans_pending_and_retires_only_partial_frames() {
+        let spawn_child = || {
+            let mut command = Command::new("python3");
+            command.kill_on_drop(true);
+            command
+                .args(["-c", "import time; time.sleep(60)"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("supervised child")
+        };
+
+        for (frame_written, retired) in [(true, false), (false, true)] {
+            let pending: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
+                Arc::new(StdMutex::new(HashMap::new()));
+            let (tx, _rx) = oneshot::channel();
+            lock_unpoisoned(&pending).insert(7, tx);
+            let child = Arc::new(StdMutex::new(spawn_child()));
+            let is_alive = Arc::new(AtomicBool::new(true));
+            drop(PendingRequest {
+                id: 7,
+                pending: Arc::clone(&pending),
+                child: Arc::clone(&child),
+                is_alive: Arc::clone(&is_alive),
+                frame_written,
+            });
+
+            assert!(lock_unpoisoned(&pending).is_empty());
+            assert_eq!(!is_alive.load(Ordering::Relaxed), retired);
+            let _ = lock_unpoisoned(&child).start_kill();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_request_rechecks_retirement_before_writing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("queued-server.py");
+        let seen = dir.path().join("seen");
+        std::fs::write(
+            &script,
+            r#"import json, os, sys
+def read():
+    length = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":")[1])
+    return json.loads(sys.stdin.buffer.read(length))
+def send(message):
+    body = json.dumps(message).encode()
+    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+    sys.stdout.buffer.flush()
+while True:
+    message = read()
+    if message is None:
+        break
+    method = message.get("method", "")
+    with open(os.environ["FAKE_SEEN_FILE"], "a") as log:
+        log.write(method + "\n")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
+    elif "id" in message:
+        send({"jsonrpc": "2.0", "id": message["id"], "result": "unexpected success"})
+"#,
+        )
+        .expect("fake server");
+        let mut config = GenericLspConfig {
+            command: "python3".to_string(),
+            args: vec![script.to_string_lossy().into_owned()],
+            ..Default::default()
+        };
+        config.env.insert(
+            "FAKE_SEEN_FILE".to_string(),
+            seen.to_string_lossy().into_owned(),
+        );
+        let engine = Arc::new(
+            GenericLspEngine::spawn(dir.path(), config)
+                .await
+                .expect("the fake server starts"),
+        );
+        let writer = engine.stdin.lock().await;
+        let before = engine.next_req_id.load(Ordering::Relaxed);
+        let waiting = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("prodCode/queuedAfterRetirement", serde_json::json!({}))
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.next_req_id.load(Ordering::Relaxed) == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the request reached the occupied writer");
+
+        engine.is_alive.store(false, Ordering::Release);
+        drop(writer);
+        let error = waiting
+            .await
+            .expect("request task")
+            .expect_err("a retired engine cannot answer successfully");
+        assert!(
+            format!("{error:#}").contains("exited before request"),
+            "{error:#}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let methods = std::fs::read_to_string(seen).expect("request log");
+        assert!(
+            !methods
+                .lines()
+                .any(|method| method == "prodCode/queuedAfterRetirement"),
+            "{methods}"
+        );
     }
 
     #[test]
