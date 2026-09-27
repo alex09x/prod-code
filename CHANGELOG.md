@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- Go safe-delete supports ordinary unexported, ASCII-named, non-generic top-level functions
+  with bodies (#550). Exact gopls declaration/reference evidence and remote package/test
+  compilation precede the write. Used functions, generated or linked sources, uncertain
+  evidence and unsupported declarations refuse without changes, including with force.
+  Verification uses the active build flags; imports are not removed automatically.
 - Session handshakes negotiate a mutually supported protocol version (#537). Legacy peers
   remain compatible; empty or incompatible offers refuse before session creation, and clients
   reject unsupported selections before initializing a language server.

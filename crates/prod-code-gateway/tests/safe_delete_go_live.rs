@@ -40,15 +40,18 @@ impl Gateway {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .process_group(0);
-        let mut child = command.spawn().expect("gateway starts");
-        let stdout = child.stdout.take().expect("gateway stdout");
-        let (addr, stdout_reader) = bound_address(stdout);
-        Self {
+        Self::from_child(command.spawn().expect("gateway starts"), storage)
+    }
+
+    fn from_child(child: Child, storage: tempfile::TempDir) -> Self {
+        let mut gateway = Self {
             child,
-            addr,
-            stdout_reader: Some(stdout_reader),
+            addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+            stdout_reader: None,
             _storage: storage,
-        }
+        };
+        gateway.addr = bound_address(&mut gateway);
+        gateway
     }
 }
 
@@ -99,9 +102,10 @@ fn retire_owned_group(
     }
 }
 
-fn bound_address(stdout: std::process::ChildStdout) -> (SocketAddr, std::thread::JoinHandle<()>) {
+fn bound_address(gateway: &mut Gateway) -> SocketAddr {
+    let stdout = gateway.child.stdout.take().expect("gateway stdout");
     let (send, receive) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || {
+    gateway.stdout_reader = Some(std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(stdout);
         let mut line = String::new();
         loop {
@@ -116,11 +120,10 @@ fn bound_address(stdout: std::process::ChildStdout) -> (SocketAddr, std::thread:
                 let _ = send.send(addr);
             }
         }
-    });
-    let addr = receive
+    }));
+    receive
         .recv_timeout(Duration::from_secs(60))
-        .expect("gateway reports its address");
-    (addr, reader)
+        .expect("gateway reports its address")
 }
 
 fn checkout(source: &str, test: &str) -> (tempfile::TempDir, PathBuf) {
@@ -325,7 +328,7 @@ async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
 
 const SOURCE: &str = "package main\n\ntype Mystruct struct{ value string }\n\nfunc unused() Mystruct { return Mystruct{value: `unused } {`} }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() { println(keep(`same`)) }\n";
 const TEST: &str = "package main\n\nimport `testing`\n\nfunc TestKeep(t *testing.T) {\n\tif keep(`x`) != `x!` { t.Fatal(`keep`) }\n}\n";
-const COMPILE_FAIL_SOURCE: &str = "package main\n\nimport `strings`\n\nfunc unused() string { return strings.TrimSpace(` x `) }\n\nfunc main() {}\n";
+const COMPILE_FAIL_SOURCE: &str = "package main\n\nimport `strings`\n\nfunc unused() string { return strings.TrimSpace(` x `) }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() {}\n";
 
 async fn sentinel_child() {
     let root = PathBuf::from(std::env::var_os(SENTINEL_ROOT).expect("sentinel root"));
@@ -415,6 +418,15 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     );
 
     let (_failure_dir, failure_root) = checkout(COMPILE_FAIL_SOURCE, TEST);
+    let (baseline_compiles, baseline_output) = run(
+        &failure_root.join("project"),
+        "go",
+        &["test", "-count=1", "./..."],
+    );
+    assert!(
+        baseline_compiles,
+        "refusal fixture must compile before deletion: {baseline_output}"
+    );
     wait_for_gopls(gateway.addr, &failure_root).await;
     let untouched = snapshot(&failure_root);
     let (ok, output) = cli(
@@ -488,4 +500,28 @@ fn gateway_cleanup_retires_term_ignoring_owned_group_members() {
     }
     let _ = child.wait();
     panic!("gateway cleanup left a TERM-ignoring owned group member alive");
+}
+
+#[test]
+fn gateway_startup_failure_reaps_its_owned_process() {
+    let storage = tempfile::tempdir().expect("startup storage");
+    let child = Command::new("python3")
+        .args(["-c", "import os,time; os.close(1); time.sleep(60)"])
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("owned silent startup child");
+    let pid = child.id() as i32;
+    let result = std::panic::catch_unwind(|| Gateway::from_child(child, storage));
+    let survived = unsafe { libc::kill(pid, 0) == 0 };
+    // A broken constructor still gets an exact owned-PID cleanup before asserting RED.
+    if survived {
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+    }
+    assert!(result.is_err(), "silent startup must refuse");
+    assert!(!survived, "startup failure leaked its owned process");
 }

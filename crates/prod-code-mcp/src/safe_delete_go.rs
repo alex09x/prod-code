@@ -801,7 +801,7 @@ fn refuse_attached_directives(text: &str, start: usize) -> Result<()> {
 
 fn is_generated(text: &str) -> bool {
     let bytes = text.as_bytes();
-    let mut cursor = 0usize;
+    let mut cursor = usize::from(text.starts_with('\u{feff}')) * '\u{feff}'.len_utf8();
     while cursor < bytes.len() {
         while bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
             cursor += 1;
@@ -812,7 +812,7 @@ fn is_generated(text: &str) -> bool {
                 .iter()
                 .position(|byte| *byte == b'\n')
                 .map_or(bytes.len(), |offset| cursor + offset);
-            let line = &text[cursor..end];
+            let line = text[cursor..end].trim_end_matches('\r');
             if let Some(marker) = line.strip_prefix("// Code generated ")
                 && marker.ends_with(" DO NOT EDIT.")
             {
