@@ -908,10 +908,7 @@ fn fallback_answers_request(json: &str) -> bool {
 
 /// Sends the client the note an engine attached to an answer given while its server was still
 /// loading or indexing, just before the answer, and takes it off the answer (#391).
-async fn send_busy_note(
-    resp: &mut serde_json::Value,
-    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
-) {
+async fn send_busy_note(resp: &mut serde_json::Value, out_tx: &SharedOutputSender) {
     let Some(busy) = resp
         .as_object_mut()
         .and_then(|o| o.remove(prod_code_protocol::readiness::BUSY_MEMBER))
@@ -3000,7 +2997,9 @@ async fn run_session_loop(
     let (mut socket_tx, mut socket_rx) = framed.split();
     // rapidfire MPSC: every engine task sends, one writer drains in batches and flushes the
     // socket once per batch.
-    let (out_tx, mut out_rx) = rapidfire::mpsc::bounded::<WireMessage>(4096);
+    let (raw_out_tx, mut out_rx) =
+        rapidfire::mpsc::bounded::<SharedOutputFrame>(SHARED_OUTPUT_CAPACITY);
+    let out_tx = SharedOutputSender::new(raw_out_tx, SHARED_OUTPUT_WRITE_BUDGET);
 
     // Requests in flight, keyed by JSON-RPC id, so every answer — whichever engine produced
     // it — becomes one metrics event with its duration.
@@ -3008,11 +3007,21 @@ async fn run_session_loop(
         Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
     let pending_writer = Arc::clone(&pending);
     let meta_writer = Arc::clone(&meta);
+    let writer_output = out_tx.clone();
     let writer_handle = tokio::spawn(async move {
-        let mut batch: Vec<WireMessage> = Vec::with_capacity(64);
-        'writer: while out_rx.recv_many(&mut batch, 64).await.is_ok() {
-            for msg in batch.drain(..) {
-                if let WireMessage::LspPayload(ref raw) = msg
+        let _lifetime = SharedWriterLifetime::start(writer_output);
+        let mut batch: Vec<SharedOutputFrame> = Vec::with_capacity(SHARED_OUTPUT_BATCH);
+        while out_rx
+            .recv_many(&mut batch, SHARED_OUTPUT_BATCH)
+            .await
+            .is_ok()
+        {
+            let mut flush_deadline = None;
+            for frame in batch.drain(..) {
+                if tokio::time::Instant::now() >= frame.deadline {
+                    anyhow::bail!("shared output frame expired while queued");
+                }
+                if let WireMessage::LspPayload(ref raw) = frame.message
                     && let Ok(val) = serde_json::from_str::<serde_json::Value>(raw)
                     && let Some(id) = val.get("id").filter(|i| !i.is_null())
                     && val.get("method").is_none()
@@ -3044,15 +3053,25 @@ async fn run_session_loop(
                         meta_writer.metrics.record(ev);
                     }
                 }
-                if socket_tx.feed(msg).await.is_err() {
-                    break 'writer;
-                }
+                tokio::time::timeout_at(frame.deadline, socket_tx.feed(frame.message))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("shared socket feed deadline elapsed"))??;
+                flush_deadline = Some(match flush_deadline {
+                    Some(current) => std::cmp::min(current, frame.deadline),
+                    None => frame.deadline,
+                });
             }
-            if socket_tx.flush().await.is_err() {
-                break;
+            if let Some(deadline) = flush_deadline {
+                tokio::time::timeout_at(deadline, socket_tx.flush())
+                    .await
+                    .map_err(|_| anyhow::anyhow!("shared socket flush deadline elapsed"))??;
             }
         }
+        Ok(())
     });
+    // Install abort ownership before the session can reach another await. Cancellation of the
+    // handler must cancel this exact writer, whose lifetime guard closes every producer queue.
+    let mut writer = OwnedJoin::new(writer_handle);
 
     // gopls and the supervised servers answer their own requests (`window/workDoneProgress/create`,
     // `workspace/configuration`) in the engine; passed on, one carried the id of a client's
@@ -3067,8 +3086,16 @@ async fn run_session_loop(
         view.workspace.backend.as_ref().map(|b| b.subscribe())
     };
 
+    let mut writer_finished = false;
+    let mut session_result = Ok(());
     loop {
         tokio::select! {
+            writer_result = writer.task_mut() => {
+                writer.clear_finished();
+                writer_finished = true;
+                session_result = flatten_writer_result(writer_result);
+                break;
+            }
             client_msg_res = socket_rx.next() => {
                 match on_client_message(client_msg_res, &out_tx, translator, view, &meta, &pending).await {
                     Flow::Next => continue,
@@ -3107,9 +3134,147 @@ async fn run_session_loop(
             }
         }
     }
-    drop(out_tx);
-    let _ = writer_handle.await;
-    Ok(())
+    out_tx.close();
+    if !writer_finished {
+        let teardown_deadline = tokio::time::Instant::now() + SHARED_OUTPUT_TEARDOWN_BUDGET;
+        match tokio::time::timeout_at(teardown_deadline, writer.task_mut()).await {
+            Ok(writer_result) => {
+                writer.clear_finished();
+                let writer_result = flatten_writer_result(writer_result);
+                if session_result.is_ok() {
+                    session_result = writer_result;
+                }
+            }
+            Err(_) => {
+                writer.abort();
+                // Once aborted, await the exact task so no writer is detached. This is cleanup
+                // after the single teardown deadline, not a second drain budget.
+                let writer_result = writer.task_mut().await;
+                writer.clear_finished();
+                if let Err(error) = writer_result
+                    && !error.is_cancelled()
+                {
+                    tracing::warn!(%error, "shared output writer failed while being aborted");
+                }
+                if session_result.is_ok() {
+                    session_result = Err(anyhow::anyhow!(
+                        "shared output writer exceeded teardown budget"
+                    ));
+                }
+            }
+        }
+    }
+    session_result
+}
+
+const SHARED_OUTPUT_CAPACITY: usize = 64;
+const SHARED_OUTPUT_BATCH: usize = 64;
+const SHARED_OUTPUT_WRITE_BUDGET: Duration = Duration::from_secs(2);
+const SHARED_OUTPUT_TEARDOWN_BUDGET: Duration = Duration::from_secs(3);
+
+#[doc(hidden)]
+pub static ACTIVE_SHARED_OUTPUT_WRITERS: AtomicUsize = AtomicUsize::new(0);
+
+struct SharedOutputFrame {
+    message: WireMessage,
+    deadline: tokio::time::Instant,
+}
+
+#[derive(Clone)]
+struct SharedOutputSender {
+    inner: rapidfire::mpsc::Sender<SharedOutputFrame>,
+    write_budget: Duration,
+}
+
+#[derive(Debug)]
+enum SharedOutputSendError {
+    Closed,
+    Deadline,
+}
+
+impl SharedOutputSender {
+    fn new(inner: rapidfire::mpsc::Sender<SharedOutputFrame>, write_budget: Duration) -> Self {
+        Self {
+            inner,
+            write_budget,
+        }
+    }
+
+    async fn send(&self, message: WireMessage) -> std::result::Result<(), SharedOutputSendError> {
+        let deadline = tokio::time::Instant::now() + self.write_budget;
+        let frame = SharedOutputFrame { message, deadline };
+        match tokio::time::timeout_at(deadline, self.inner.send(frame)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) => Err(SharedOutputSendError::Closed),
+            Err(_) => {
+                // One expired producer expires the generation. This wakes every queue waiter and
+                // prevents later notifications from repeatedly extending a dead client's life.
+                self.close();
+                Err(SharedOutputSendError::Deadline)
+            }
+        }
+    }
+
+    fn close(&self) {
+        self.inner.close();
+    }
+}
+
+struct SharedWriterLifetime {
+    output: SharedOutputSender,
+}
+
+impl SharedWriterLifetime {
+    fn start(output: SharedOutputSender) -> Self {
+        ACTIVE_SHARED_OUTPUT_WRITERS.fetch_add(1, Ordering::Relaxed);
+        Self { output }
+    }
+}
+
+impl Drop for SharedWriterLifetime {
+    fn drop(&mut self) {
+        self.output.close();
+        ACTIVE_SHARED_OUTPUT_WRITERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+struct OwnedJoin<T> {
+    task: Option<tokio::task::JoinHandle<T>>,
+}
+
+impl<T> OwnedJoin<T> {
+    fn new(task: tokio::task::JoinHandle<T>) -> Self {
+        Self { task: Some(task) }
+    }
+
+    fn task_mut(&mut self) -> &mut tokio::task::JoinHandle<T> {
+        self.task.as_mut().expect("owned task is live")
+    }
+
+    fn abort(&self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+
+    fn clear_finished(&mut self) {
+        let task = self.task.take().expect("owned task is live");
+        debug_assert!(task.is_finished());
+    }
+}
+
+impl<T> Drop for OwnedJoin<T> {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
+}
+
+fn flatten_writer_result(
+    result: std::result::Result<Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    result.map_err(|error| anyhow::anyhow!("shared output writer task failed: {error}"))?
 }
 
 /// The capabilities an editor's `initialize` is answered with (#310).
@@ -3228,7 +3393,7 @@ fn native_position_params(
 }
 
 async fn send_invalid_params(
-    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     id: &serde_json::Value,
     method: &str,
@@ -3254,7 +3419,7 @@ async fn send_invalid_params(
 /// file inferred it as one body (#86). Out here it is ordinary code.
 async fn on_client_message(
     client_msg_res: Option<std::result::Result<WireMessage, std::io::Error>>,
-    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     meta: &Arc<SessionMeta>,
@@ -4181,7 +4346,7 @@ async fn on_client_message(
 }
 
 fn lsp_call_hierarchy(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4290,7 +4455,7 @@ fn analyzer_panic_report(message: &str) -> serde_json::Value {
 }
 
 fn lsp_safe_delete(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4360,7 +4525,7 @@ fn lsp_safe_delete(
 }
 
 fn lsp_structural_replace(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4456,7 +4621,7 @@ fn lsp_structural_replace(
 }
 
 fn lsp_rename(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4542,7 +4707,7 @@ fn lsp_rename(
 }
 
 fn lsp_assists(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     method: Option<&str>,
@@ -4638,7 +4803,7 @@ fn lsp_assists(
 }
 
 fn lsp_workspace_symbol(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4712,7 +4877,7 @@ fn lsp_workspace_symbol(
 }
 
 fn lsp_document_symbol(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4839,7 +5004,7 @@ fn lsp_document_symbol(
 }
 
 fn lsp_references(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -4944,7 +5109,7 @@ fn lsp_references(
 }
 
 fn lsp_definition(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -5049,7 +5214,7 @@ fn lsp_definition(
 }
 
 fn lsp_hover(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -5160,7 +5325,7 @@ fn lsp_hover(
 /// hints, highlights, code actions, formatting), answered by the in-memory Rust engine in the
 /// session's view (#310).
 fn lsp_editor_request(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     id: &Option<serde_json::Value>,
@@ -5215,7 +5380,7 @@ const EDITOR_DIAGNOSTICS_DELAY: Duration = Duration::from_millis(300);
 /// changing for [`EDITOR_DIAGNOSTICS_DELAY`] (#310). Sessions of agents and tools ask for
 /// diagnostics when they want them and get none pushed.
 fn publish_rust_diagnostics(
-    out_tx: &rapidfire::Sender<WireMessage>,
+    out_tx: &SharedOutputSender,
     translator: &PathTranslator,
     view: &SessionView,
     meta: &Arc<SessionMeta>,
@@ -5663,6 +5828,40 @@ mod tests {
     use super::*;
     use prod_code_protocol::{HostResources, PROTOCOL_VERSION};
     use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn shared_output_queue_deadline_closes_every_generation_sender() {
+        let (raw_tx, _rx) = rapidfire::mpsc::bounded(1);
+        let output = SharedOutputSender::new(raw_tx, Duration::from_millis(10));
+        output.send(WireMessage::Ping).await.unwrap();
+
+        assert!(matches!(
+            output.send(WireMessage::Ping).await,
+            Err(SharedOutputSendError::Deadline)
+        ));
+        assert!(matches!(
+            output.send(WireMessage::Ping).await,
+            Err(SharedOutputSendError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn owned_join_aborts_and_observes_the_exact_writer_task() {
+        let task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        });
+        let mut owned = OwnedJoin::new(task);
+        owned.abort();
+        let result = owned.task_mut().await;
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(tokio::task::JoinError::is_cancelled)
+        );
+        assert!(flatten_writer_result(result).is_err());
+        owned.clear_finished();
+    }
 
     #[test]
     fn shadow_root_ownership_follows_the_last_server_state_reference() {
