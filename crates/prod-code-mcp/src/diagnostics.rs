@@ -307,8 +307,236 @@ fn symbol_names(result: &serde_json::Value) -> BTreeSet<String> {
     out
 }
 
+/// A Rust identifier token found in executable source code (outside comments, strings,
+/// character literals, numbers and lifetimes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RustIdent {
+    name: String,
+    line: u32,
+    col: u32,
+}
+
+/// Converts a 0-based byte offset in `text` to 1-based (line, UTF-16 column).
+fn byte_to_line_col(line_starts: &[usize], text: &str, byte_offset: usize) -> (u32, u32) {
+    let line_idx = line_starts
+        .partition_point(|&s| s <= byte_offset)
+        .saturating_sub(1);
+    let line_no = line_idx as u32 + 1;
+    let line_start = line_starts[line_idx];
+    let col = text[line_start..byte_offset]
+        .chars()
+        .map(|c| c.len_utf16())
+        .sum::<usize>() as u32
+        + 1;
+    (line_no, col)
+}
+
+/// Checks whether a raw string (e.g. `r"..."`, `r#"..."#`, `br#"..."#`, `cr#"..."#`) starts at `i`.
+/// Returns `Some((content_start_char_idx, num_hashes))` if so.
+fn raw_string_start(chars: &[(usize, char)], i: usize) -> Option<(usize, usize)> {
+    let at = |idx: usize| chars.get(idx).map(|&(_, c)| c);
+    let mut p = i;
+    if matches!(at(p), Some('b') | Some('c')) && at(p + 1) == Some('r') {
+        p += 2;
+    } else if at(p) == Some('r') {
+        p += 1;
+    } else {
+        return None;
+    }
+    let mut hashes = 0;
+    while at(p) == Some('#') {
+        hashes += 1;
+        p += 1;
+    }
+    if at(p) == Some('"') {
+        Some((p + 1, hashes))
+    } else {
+        None
+    }
+}
+
+/// Checks whether a quoted string (`"..."`, `b"..."`, `c"..."`) starts at `i`.
+/// Returns `Some(content_start_char_idx)` if so.
+fn quoted_string_start(chars: &[(usize, char)], i: usize) -> Option<usize> {
+    let at = |idx: usize| chars.get(idx).map(|&(_, c)| c);
+    if at(i) == Some('"') {
+        Some(i + 1)
+    } else if matches!(at(i), Some('b') | Some('c')) && at(i + 1) == Some('"') {
+        Some(i + 2)
+    } else {
+        None
+    }
+}
+
+/// Scans `text` for Rust identifier tokens, skipping whitespace, line/doc/nested block
+/// comments, string literals (ordinary, raw, byte, C), character literals, numbers,
+/// and lifetime identifiers. Returns identifier tokens with their 1-based line and 1-based
+/// UTF-16 column.
+fn rust_code_identifiers(text: &str) -> Vec<RustIdent> {
+    let line_starts: Vec<usize> = std::iter::once(0)
+        .chain(text.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let at = |idx: usize| chars.get(idx).map(|&(_, c)| c);
+    let offset = |idx: usize| chars.get(idx).map_or(text.len(), |&(o, _)| o);
+    let ident_start = |c: char| c == '_' || unicode_ident::is_xid_start(c);
+    let ident_char = |c: char| c == '_' || unicode_ident::is_xid_continue(c);
+
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while let Some(c) = at(i) {
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '/' && at(i + 1) == Some('/') {
+            // Line comment (including /// doc comments and //! inner doc comments)
+            i += 2;
+            while at(i).is_some_and(|ch| ch != '\n') {
+                i += 1;
+            }
+        } else if c == '/' && at(i + 1) == Some('*') {
+            // Block comment (including /** doc comments and nested /* /* */ */)
+            let mut depth = 1usize;
+            i += 2;
+            while i < chars.len() && depth > 0 {
+                if at(i) == Some('/') && at(i + 1) == Some('*') {
+                    depth += 1;
+                    i += 2;
+                } else if at(i) == Some('*') && at(i + 1) == Some('/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        } else if let Some((content_start, hashes)) = raw_string_start(&chars, i) {
+            // Raw string (r"...", r#"..."#, br"...", br#"..."#, cr"...", cr#"..."#)
+            let mut p = content_start;
+            while p < chars.len() {
+                if at(p) == Some('"') && (1..=hashes).all(|k| at(p + k) == Some('#')) {
+                    p += 1 + hashes;
+                    break;
+                }
+                p += 1;
+            }
+            i = p;
+        } else if let Some(content_start) = quoted_string_start(&chars, i) {
+            // Quoted string ("...", b"...", c"...")
+            let mut p = content_start;
+            while p < chars.len() {
+                match at(p) {
+                    Some('\\') => p += 2,
+                    Some('"') => {
+                        p += 1;
+                        break;
+                    }
+                    _ => p += 1,
+                }
+            }
+            i = p;
+        } else if c == 'b' && at(i + 1) == Some('\'') {
+            // Byte character literal: b'a', b'\'', b'\\'
+            let mut j = i + 2;
+            if at(j) == Some('\\') {
+                j += 1;
+                while at(j).is_some_and(|ch| ch != '\'' && ch != '\n') {
+                    j += 1;
+                }
+                if at(j) == Some('\'') {
+                    j += 1;
+                }
+            } else if at(j).is_some() && at(j + 1) == Some('\'') && at(j) != Some('\n') {
+                j += 2;
+            } else {
+                while at(j).is_some_and(|ch| ch != '\'' && ch != '\n') {
+                    j += 1;
+                }
+                if at(j) == Some('\'') {
+                    j += 1;
+                }
+            }
+            i = j;
+        } else if c == '\'' {
+            // Character literal vs lifetime
+            if at(i + 1) == Some('\\') {
+                // Escaped char literal: '\'', '\\', '\n', '\u{1F600}'
+                let mut j = i + 2;
+                while at(j).is_some_and(|ch| ch != '\'' && ch != '\n') {
+                    j += 1;
+                }
+                if at(j) == Some('\'') {
+                    j += 1;
+                }
+                i = j;
+            } else if at(i + 1).is_some() && at(i + 2) == Some('\'') && at(i + 1) != Some('\n') {
+                // Single character literal: 'a', '0', ' '
+                i += 3;
+            } else if at(i + 1).is_some_and(ident_start) {
+                // Lifetime identifier: 'static, 'a, 'r#life
+                i += 1;
+                if at(i) == Some('r')
+                    && at(i + 1) == Some('#')
+                    && at(i + 2).is_some_and(ident_start)
+                {
+                    i += 2;
+                }
+                while at(i).is_some_and(ident_char) {
+                    i += 1;
+                }
+            } else {
+                i += 1;
+            }
+        } else if c == 'r' && at(i + 1) == Some('#') && at(i + 2).is_some_and(ident_start) {
+            // Raw identifier: r#foo
+            let token_start = offset(i);
+            i += 2;
+            let name_start = offset(i);
+            while at(i).is_some_and(ident_char) {
+                i += 1;
+            }
+            let name_end = offset(i);
+            let name = &text[name_start..name_end];
+            let (line, col) = byte_to_line_col(&line_starts, text, token_start);
+            tokens.push(RustIdent {
+                name: name.to_string(),
+                line,
+                col,
+            });
+        } else if ident_start(c) {
+            // Normal identifier: foo
+            let token_start = offset(i);
+            while at(i).is_some_and(ident_char) {
+                i += 1;
+            }
+            let token_end = offset(i);
+            let name = &text[token_start..token_end];
+            let (line, col) = byte_to_line_col(&line_starts, text, token_start);
+            tokens.push(RustIdent {
+                name: name.to_string(),
+                line,
+                col,
+            });
+        } else if c.is_ascii_digit() {
+            // Number literal: 123, 0x1f, 1.5e3
+            while at(i).is_some_and(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                || (at(i) == Some('.') && at(i + 1).is_some_and(|ch| ch.is_ascii_digit()))
+            {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    tokens
+}
+
 /// Whether `line` mentions `name` as a whole identifier.
 fn mentions_identifier(line: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
     let bytes = line.as_bytes();
     let mut from = 0;
     while let Some(pos) = line[from..].find(name) {
@@ -364,46 +592,109 @@ fn annotate_missing_symbols(
             )
         };
         let mut flagged: BTreeSet<u32> = BTreeSet::new();
-        for item in report.items.iter_mut() {
-            if item.severity != "error" && item.severity != "warning" {
-                continue;
+        let is_rust = report.file.ends_with(".rs");
+
+        if is_rust {
+            let tokens = rust_code_identifiers(text);
+            let mut line_matches: HashMap<u32, Vec<(&str, &str, u32)>> = HashMap::new();
+            for tok in &tokens {
+                for (name, from) in &relevant {
+                    let clean_name = name.strip_prefix("r#").unwrap_or(name);
+                    if tok.name == clean_name {
+                        line_matches.entry(tok.line).or_default().push((
+                            name.as_str(),
+                            from.as_str(),
+                            tok.col,
+                        ));
+                        break;
+                    }
+                }
             }
-            let Some(line) = lines.get(item.line.saturating_sub(1) as usize) else {
-                continue;
-            };
-            if let Some((name, from)) = relevant
-                .iter()
-                .find(|(name, _)| mentions_identifier(line, name))
-            {
-                item.note = Some(note_for(name, from));
-                flagged.insert(item.line);
+
+            for item in report.items.iter_mut() {
+                if item.severity != "error" && item.severity != "warning" {
+                    continue;
+                }
+                if let Some(matches) = line_matches.get(&item.line)
+                    && let Some(&(name, from, _)) = matches.first()
+                {
+                    item.note = Some(note_for(name, from));
+                    flagged.insert(item.line);
+                }
             }
-        }
-        for (idx, line) in lines.iter().enumerate() {
-            let line_no = idx as u32 + 1;
-            if flagged.contains(&line_no) {
-                continue;
+
+            for (idx, _) in lines.iter().enumerate() {
+                let line_no = idx as u32 + 1;
+                if flagged.contains(&line_no) {
+                    continue;
+                }
+                let Some(matches) = line_matches.get(&line_no) else {
+                    continue;
+                };
+                let Some(&(name, from, col)) = matches.first() else {
+                    continue;
+                };
+                report.items.push(DocDiagnostic {
+                    severity: "warning".to_string(),
+                    code: Some(STALE_REFERENCE.to_string()),
+                    message: format!(
+                        "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                    ),
+                    line: line_no,
+                    col,
+                    source: Some("prod-code".to_string()),
+                    note: Some(note_for(name, from)),
+                    end: None,
+                });
+                report.warnings += 1;
             }
-            let Some((name, from)) = relevant
-                .iter()
-                .find(|(name, _)| mentions_identifier(line, name))
-            else {
-                continue;
-            };
-            let col = line.find(name.as_str()).unwrap_or(0) as u32 + 1;
-            report.items.push(DocDiagnostic {
-                severity: "warning".to_string(),
-                code: Some(STALE_REFERENCE.to_string()),
-                message: format!(
-                    "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
-                ),
-                line: line_no,
-                col,
-                source: Some("prod-code".to_string()),
-                note: Some(note_for(name, from)),
-                end: None,
-            });
-            report.warnings += 1;
+        } else {
+            for item in report.items.iter_mut() {
+                if item.severity != "error" && item.severity != "warning" {
+                    continue;
+                }
+                let Some(line) = lines.get(item.line.saturating_sub(1) as usize) else {
+                    continue;
+                };
+                if let Some((name, from)) = relevant
+                    .iter()
+                    .find(|(name, _)| mentions_identifier(line, name))
+                {
+                    item.note = Some(note_for(name, from));
+                    flagged.insert(item.line);
+                }
+            }
+            for (idx, line) in lines.iter().enumerate() {
+                let line_no = idx as u32 + 1;
+                if flagged.contains(&line_no) {
+                    continue;
+                }
+                let Some((name, from)) = relevant
+                    .iter()
+                    .find(|(name, _)| mentions_identifier(line, name))
+                else {
+                    continue;
+                };
+                let byte_pos = line.find(name.as_str()).unwrap_or(0);
+                let col = line[..byte_pos]
+                    .chars()
+                    .map(|c| c.len_utf16())
+                    .sum::<usize>() as u32
+                    + 1;
+                report.items.push(DocDiagnostic {
+                    severity: "warning".to_string(),
+                    code: Some(STALE_REFERENCE.to_string()),
+                    message: format!(
+                        "uses `{name}`, which the proposed edits remove or rename (the analyzer reports no error for a plain call to a missing function; run code_check to be sure)"
+                    ),
+                    line: line_no,
+                    col,
+                    source: Some("prod-code".to_string()),
+                    note: Some(note_for(name, from)),
+                    end: None,
+                });
+                report.warnings += 1;
+            }
         }
         report.items.sort_by_key(|d| (d.line, d.col));
     }
@@ -1241,5 +1532,231 @@ mod tests {
             reports[1].items.is_empty(),
             "the file the symbol vanished from is not flagged"
         );
+    }
+
+    #[test]
+    fn doc_and_line_comments_mentioning_removed_symbol_are_not_flagged() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "/// covers `excess` bytes. Only engines without a session\n\
+//! covers the whole tree\n\
+// ordinary line comment with covers\n\
+pub fn work() {}\n"
+                .to_string(),
+        );
+        let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 0, "no false warnings on comments");
+        assert!(reports[0].items.is_empty(), "{:?}", reports[0].items);
+
+        let mut reports_with_warning = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 1,
+            items: vec![DocDiagnostic {
+                severity: "warning".to_string(),
+                code: Some("dead_code".to_string()),
+                message: "unused".to_string(),
+                line: 1,
+                col: 1,
+                source: None,
+                note: None,
+                end: None,
+            }],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        annotate_missing_symbols(&mut reports_with_warning, &sources, &missing);
+        assert!(reports_with_warning[0].items[0].note.is_none());
+    }
+
+    #[test]
+    fn block_comments_nested_and_multiline_are_not_flagged() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "/*\n * multiline comment\n * covers\n */\n\
+/* outer /* inner covers */ still comment */\n\
+/** doc block comment covers */\n\
+/*! inner doc block covers */\n\
+pub fn work() {}\n"
+                .to_string(),
+        );
+        let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 0);
+        assert!(reports[0].items.is_empty());
+    }
+
+    #[test]
+    fn strings_and_literals_are_not_flagged_as_stale_references() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "fn run() {\n\
+    let a = \"covers\";\n\
+    let b = \"multiline \\\n             covers string\";\n\
+    let c = \"escaped \\\" covers \\\"\";\n\
+    let d = r#\"raw covers string\"#;\n\
+    let e = r##\"nested # raw covers string\"##;\n\
+    let f = b\"byte covers\";\n\
+    let g = br#\"raw byte covers\"#;\n\
+    let h = c\"c string covers\";\n\
+    let i = 'c';\n\
+    let j = '\\'';\n\
+    let k = b'\\n';\n\
+}\n\
+fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
+                .to_string(),
+        );
+        let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 0, "{:?}", reports[0].items);
+        assert!(reports[0].items.is_empty());
+    }
+
+    #[test]
+    fn real_code_tokens_attach_at_token_position_even_with_preceding_prose() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            r#"fn run() {
+    /* covers comment */ workspace::covers(&ws);
+    let msg = "covers in string"; covers();
+    r#covers();
+    self.covers();
+    // 🦀 covers emoji
+    let 🦀 = covers();
+}
+"#
+            .to_string(),
+        );
+        let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 5, "{:?}", reports[0].items);
+
+        let d0 = &reports[0].items[0];
+        assert_eq!(d0.line, 2);
+        assert_eq!(d0.col, 37);
+
+        let d1 = &reports[0].items[1];
+        assert_eq!(d1.line, 3);
+        assert_eq!(d1.col, 35);
+
+        let d2 = &reports[0].items[2];
+        assert_eq!(d2.line, 4);
+        assert_eq!(d2.col, 5);
+
+        let d3 = &reports[0].items[3];
+        assert_eq!(d3.line, 5);
+        assert_eq!(d3.col, 10);
+
+        let d4 = &reports[0].items[4];
+        assert_eq!(d4.line, 7);
+        assert_eq!(d4.col, 14);
+    }
+
+    #[test]
+    fn whole_identifier_boundaries_do_not_flag_substring_matches() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "crates/gateway/src/workspace.rs".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "crates/gateway/src/workspace.rs".to_string(),
+            "fn run() {\n\
+    undercovers();\n\
+    covers_everything();\n\
+    my_covers_fn();\n\
+}\n"
+            .to_string(),
+        );
+        let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 0);
+        assert!(reports[0].items.is_empty());
+    }
+
+    #[test]
+    fn non_rust_files_preserve_existing_behavior_and_utf16_columns() {
+        let mut reports = vec![DiagnosticsReport {
+            file: "gateway/workspace.go".to_string(),
+            errors: 0,
+            warnings: 0,
+            items: vec![],
+            preexisting: vec![],
+            in_derive: vec![],
+            auto_trait: vec![],
+        }];
+        let mut sources = HashMap::new();
+        sources.insert(
+            "gateway/workspace.go".to_string(),
+            "package main\nfunc run() {\n    // 🚀 covers()\n}\n".to_string(),
+        );
+        let missing = vec![("covers".to_string(), "engine/lib.go".to_string())];
+        annotate_missing_symbols(&mut reports, &sources, &missing);
+        assert_eq!(reports[0].warnings, 1);
+        assert_eq!(reports[0].items[0].line, 3);
+        assert_eq!(reports[0].items[0].col, 11);
+    }
+}
+
+#[cfg(test)]
+mod identifier_boundary_regressions {
+    #[test]
+    fn combining_marks_remain_in_the_identifier() {
+        let tokens = super::rust_code_identifiers(
+            "fn run() { covers\u{0301}(); r#covers\u{0301}(); covers(); }",
+        );
+        let names: Vec<_> = tokens.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["fn", "run", "covers\u{0301}", "covers\u{0301}", "covers"]
+        );
+        assert!(!super::mentions_identifier("covers()", ""));
     }
 }
