@@ -12,6 +12,8 @@
 //! compiles. Nothing is written, and a fixture that does not type-check is reported as such
 //! rather than handed over.
 
+pub mod builder;
+
 use crate::tools::{SymbolHit, workspace_symbol_search};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
