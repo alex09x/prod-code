@@ -17,13 +17,14 @@
 //! symlinks, which the in-place mode would write through), and a proposal replaces or deletes
 //! a regular file or a symlink itself, never a directory, a special file or a link's target.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     FileDelta, ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse,
     WireMessage,
 };
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
@@ -34,6 +35,8 @@ use tokio_util::codec::Framed;
 /// Bytes of output kept per hypothesis unless the request says otherwise.
 pub const DEFAULT_TAIL_BYTES: usize = 16 * 1024;
 const DEFAULT_TIMEOUT_SECS: u64 = 3600;
+pub const OWNERSHIP_LOCK_FILE: &str = ".prod-code-shadow-owner.lock";
+pub const HYPOTHESIS_DIR_PREFIX: &str = ".prod-code-hypothesis-";
 
 /// The script every overlay hypothesis runs inside its own user + mount namespace: mount the
 /// overlay over the workspace path, apply deletions, then drops the namespace-root capabilities
@@ -86,12 +89,121 @@ impl TailBuffer {
     }
 }
 
-/// `shadow` next to the workspace storage directory (same filesystem as the workspaces).
+/// A storage-specific shadow namespace next to the workspace storage directory. Canonical
+/// aliases of one storage directory choose the same namespace, while sibling storage roots do
+/// not share one.
 pub fn default_root(storage_root: &Path) -> PathBuf {
-    storage_root
+    let identity = storage_identity(storage_root);
+    let label: String = identity
+        .file_name()
+        .unwrap_or_else(|| OsStr::new("storage"))
+        .to_string_lossy()
+        .chars()
+        .take(32)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let hash = identity
+        .as_os_str()
+        .as_encoded_bytes()
+        .iter()
+        .fold(0xcbf29ce484222325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    identity
         .parent()
-        .map(|p| p.join("shadow"))
-        .unwrap_or_else(|| storage_root.join(".shadow"))
+        .map(|parent| parent.join(format!(".prod-code-shadow-{label}-{hash:016x}")))
+        .unwrap_or_else(|| identity.join(format!(".shadow-{hash:016x}")))
+}
+
+fn storage_identity(storage_root: &Path) -> PathBuf {
+    if let Ok(canonical) = storage_root.canonicalize() {
+        return canonical;
+    }
+    if let (Some(parent), Some(name)) = (storage_root.parent(), storage_root.file_name())
+        && let Ok(canonical_parent) = parent.canonicalize()
+    {
+        return canonical_parent.join(name);
+    }
+    if storage_root.is_absolute() {
+        storage_root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(storage_root)
+    }
+}
+
+/// Exclusive ownership of one shadow namespace. The lock file is never replaced or swept, so
+/// canonical aliases contend on the same inode and dropping this guard releases ownership on
+/// every normal return or startup error path.
+pub struct ShadowRootOwner {
+    root: PathBuf,
+    _lock: File,
+}
+
+impl ShadowRootOwner {
+    pub fn acquire(root: &Path) -> Result<Self> {
+        std::fs::create_dir_all(root)
+            .with_context(|| format!("cannot create shadow root {}", root.display()))?;
+        let root = root
+            .canonicalize()
+            .with_context(|| format!("cannot resolve shadow root {}", root.display()))?;
+        let lock_path = root.join(OWNERSHIP_LOCK_FILE);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let lock = options.open(&lock_path).with_context(|| {
+            format!("cannot open shadow ownership lock {}", lock_path.display())
+        })?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => bail!(
+                "shadow root {} is already owned by another gateway; stop that gateway or choose a distinct --shadow-dir / PROD_CODE_SHADOW_DIR",
+                root.display()
+            ),
+            Err(std::fs::TryLockError::Error(err)) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "cannot lock shadow root ownership at {}",
+                        lock_path.display()
+                    )
+                });
+            }
+        }
+        Ok(Self { root, _lock: lock })
+    }
+
+    /// Removes abandoned hypothesis directories from this exclusively owned namespace. Other
+    /// entries, including the stable ownership lock, are never touched.
+    pub fn sweep(&self) -> usize {
+        let Ok(entries) = std::fs::read_dir(&self.root) else {
+            return 0;
+        };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            if !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(HYPOTHESIS_DIR_PREFIX)
+                || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            {
+                continue;
+            }
+            remove_shadow_dir(&entry.path());
+            removed += 1;
+        }
+        removed
+    }
 }
 
 /// `None` when this node can run hypotheses as overlay shadows, otherwise why it cannot.
@@ -195,19 +307,6 @@ pub fn remove_shadow_dir(dir: &Path) {
     if dir.exists() {
         tracing::warn!(dir = %dir.display(), "could not remove shadow directory");
     }
-}
-
-/// Removes every leftover hypothesis directory (from a crashed or killed gateway).
-pub fn sweep(shadow_root: &Path) -> usize {
-    let Ok(entries) = std::fs::read_dir(shadow_root) else {
-        return 0;
-    };
-    let mut removed = 0;
-    for entry in entries.flatten() {
-        remove_shadow_dir(&entry.path());
-        removed += 1;
-    }
-    removed
 }
 
 /// A relative path that stays inside the workspace, or `None`. Control characters are refused:
@@ -334,7 +433,7 @@ fn dir_name(workspace: &Path, hypothesis: &str, nonce: u64) -> String {
             }
         })
         .collect();
-    format!("{ws}--{safe}-{nonce:x}")
+    format!("{HYPOTHESIS_DIR_PREFIX}{ws}--{safe}-{nonce:x}")
 }
 
 fn failed(name: &str, error: String) -> ShadowHypothesisResult {
@@ -1558,7 +1657,7 @@ mod tests {
     #[test]
     fn dir_names_are_filesystem_safe() {
         let name = dir_name(Path::new("/srv/ws/repo--wt-1"), "fix: use/slice", 255);
-        assert_eq!(name, "repo--wt-1--fix__use_slice-ff");
+        assert_eq!(name, ".prod-code-hypothesis-repo--wt-1--fix__use_slice-ff");
     }
 
     #[tokio::test]

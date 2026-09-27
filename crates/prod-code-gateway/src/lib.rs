@@ -142,8 +142,8 @@ pub struct ServerCli {
     pub engines: Vec<String>,
 
     /// Directory for the overlays of shadow runs (one upper directory per hypothesis, holding
-    /// what its build wrote). Default: `shadow` next to the storage directory; a tmpfs path
-    /// (`/dev/shm/prod-code-shadow`) keeps hypothesis builds in RAM.
+    /// what its build wrote). Default: a storage-specific directory next to the storage directory;
+    /// a tmpfs path (`/dev/shm/prod-code-shadow`) keeps hypothesis builds in RAM.
     #[arg(long, env = "PROD_CODE_SHADOW_DIR")]
     pub shadow_dir: Option<PathBuf>,
 
@@ -5519,6 +5519,17 @@ async fn janitor(
 /// Runs the gateway: bind, serve, and return when a signal says to stop.
 pub async fn run(cli: ServerCli) -> Result<()> {
     prefer_rustup_toolchain();
+    let shadow_root = cli
+        .shadow_dir
+        .clone()
+        .unwrap_or_else(|| shadow::default_root(&cli.storage));
+    // Ownership precedes cleanup: no startup may sweep another live gateway's hypotheses.
+    // The guard remains in this async frame until every return path drops it.
+    let shadow_owner = shadow::ShadowRootOwner::acquire(&shadow_root)?;
+    let swept = shadow_owner.sweep();
+    if swept > 0 {
+        tracing::info!(dir = %shadow_root.display(), swept, "removed leftover shadow directories");
+    }
     // Probe once here, while nothing is waiting on us, rather than on the first request.
     let engines = refresh_available_engines();
     tracing::info!(?engines, "engines detected");
@@ -5548,13 +5559,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         required = state.auth_token.is_some(),
         "connection token (PROD_CODE_AUTH_TOKEN or PROD_CODE_AUTH_TOKEN_FILE)"
     );
-    if let Some(dir) = cli.shadow_dir.clone() {
-        state.shadow_root = dir;
-    }
-    let swept = shadow::sweep(&state.shadow_root);
-    if swept > 0 {
-        tracing::info!(dir = %state.shadow_root.display(), swept, "removed leftover shadow directories");
-    }
+    state.shadow_root = shadow_root;
     match shadow::overlay_unavailable() {
         None => {
             tracing::info!(dir = %state.shadow_root.display(), "shadow runs: overlay mode (user namespaces + overlayfs)")
