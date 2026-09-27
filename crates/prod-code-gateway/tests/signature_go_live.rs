@@ -141,6 +141,59 @@ func TestShip(t *testing.T) {
 }
 "#;
 
+const RECEIVER_LIB: &str = r#"package main
+
+import "fmt"
+
+var trace []string
+
+type Meter struct { total int }
+
+func mark(tag string, value int) int {
+	trace = append(trace, tag)
+	return value
+}
+
+func markMeter(tag string, meter *Meter) *Meter {
+	trace = append(trace, tag)
+	return meter
+}
+
+func (meter Meter) Add(qty int) string {
+	meter.total += qty
+	trace = append(trace, fmt.Sprintf("Add(%d)", meter.total))
+	return fmt.Sprint(meter.total)
+}
+
+func (meter *Meter) Scale(qty int) string {
+	meter.total *= qty
+	trace = append(trace, fmt.Sprintf("Scale(%d)", meter.total))
+	return fmt.Sprint(meter.total)
+}
+"#;
+
+const RECEIVER_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	meter := Meter{total: 3}
+	fmt.Println(markMeter("value receiver", &meter).Add(mark("value argument", 2)))
+	fmt.Println(markMeter("pointer receiver", &meter).Scale(mark("pointer argument", 4)))
+}
+"#;
+
+const RECEIVER_TEST: &str = r#"package main
+
+import "testing"
+
+func TestReceiverMethods(t *testing.T) {
+	meter := Meter{total: 2}
+	if got := meter.Add(3); got != "5" { t.Fatalf("Add = %s", got) }
+	if got := (&meter).Scale(2); got != "4" { t.Fatalf("Scale = %s", got) }
+}
+"#;
+
 /// A committed checkout whose Go module is nested below the repository root.
 fn checkout() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
@@ -164,6 +217,58 @@ fn checkout() -> (tempfile::TempDir, PathBuf) {
         ("project/lib.go", LIB),
         ("project/main.go", MAIN),
         ("project/main_test.go", TEST),
+    ] {
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["add", "-A"]);
+    git(&[
+        "-c",
+        "user.email=test@example.invalid",
+        "-c",
+        "user.name=test",
+        "commit",
+        "-qm",
+        "fixture",
+    ]);
+    let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+    (dir, root)
+}
+
+fn receiver_checkout() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("gosigreceiver")
+        .tempdir()
+        .expect("checkout dir");
+    for (rel, text) in [
+        ("go.work", "go 1.22\n\nuse ./project\n"),
+        (
+            "project/go.mod",
+            "module example.com/gosigreceiver\n\ngo 1.22\n",
+        ),
+        (
+            "project/tag_enabled.go",
+            "//go:build prodcode_signature\n\npackage main\nconst requiredBuildTag = 1\n",
+        ),
+        (
+            "project/tag_required.go",
+            "package main\nvar _ = requiredBuildTag\n",
+        ),
+        ("project/lib.go", RECEIVER_LIB),
+        ("project/main.go", RECEIVER_MAIN),
+        ("project/main_test.go", RECEIVER_TEST),
     ] {
         let path = dir.path().join(rel);
         std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("mkdir");
@@ -489,5 +594,103 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     assert_eq!(
         after, before,
         "the changed program or its tests run differently"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receiver_method_additions_use_only_direct_selector_calls() {
+    let (ok, version) = run(Path::new("."), "gopls", &["version"]);
+    assert!(ok, "gopls version: {version}");
+    let gateway = Gateway::start();
+    let (_dir, root) = receiver_checkout();
+    let project = root.join("project");
+    let before = behaviour(&project);
+    let untouched = snapshot(&root);
+    let addr = gateway.addr;
+
+    let at_add = serde_json::json!({ "path": "project/lib.go", "line": 19, "character": 20 });
+    let mut hover = String::new();
+    for _ in 1..=60 {
+        hover = tool(addr, &root, "code_hover", at_add.clone()).await;
+        if hover.contains("Add") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(hover.contains("Add"), "gopls loaded: {hover}");
+
+    let preview = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Add", "params": ["qty", "note: string = \"road\""] }),
+    )
+    .await;
+    assert!(
+        !preview.contains("adding parameters to the receiver method `Add` is not supported"),
+        "receiver additions are supported: {preview}"
+    );
+    assert!(!preview.starts_with("error: "), "preview: {preview}");
+    assert_eq!(snapshot(&root), untouched, "a receiver preview wrote");
+
+    let applied = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Add", "params": ["qty", "note: string = \"road\""], "apply": true }),
+    )
+    .await;
+    assert!(!applied.starts_with("error: "), "apply: {applied}");
+    let lib = std::fs::read_to_string(project.join("lib.go")).expect("lib");
+    let main = std::fs::read_to_string(project.join("main.go")).expect("main");
+    let test = std::fs::read_to_string(project.join("main_test.go")).expect("test");
+    assert!(
+        lib.contains("func (meter Meter) Add(qty int, note string) string"),
+        "{lib}"
+    );
+    assert!(
+        main.contains("Add(mark(\"value argument\", 2), \"road\")"),
+        "{main}"
+    );
+    assert!(test.contains("meter.Add(3, \"road\")"), "{test}");
+
+    let pointer_preview = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Scale", "params": ["qty", "factor: int = 1"] }),
+    )
+    .await;
+    assert!(
+        !pointer_preview.starts_with("error: "),
+        "pointer preview: {pointer_preview}"
+    );
+    let pointer_applied = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Scale", "params": ["qty", "factor: int = 1"], "apply": true }),
+    )
+    .await;
+    assert!(
+        !pointer_applied.starts_with("error: "),
+        "pointer apply: {pointer_applied}"
+    );
+    let lib = std::fs::read_to_string(project.join("lib.go")).expect("lib");
+    let main = std::fs::read_to_string(project.join("main.go")).expect("main");
+    let test = std::fs::read_to_string(project.join("main_test.go")).expect("test");
+    assert!(
+        lib.contains("func (meter *Meter) Scale(qty int, factor int) string"),
+        "{lib}"
+    );
+    assert!(
+        main.contains("Scale(mark(\"pointer argument\", 4), 1)"),
+        "{main}"
+    );
+    assert!(test.contains("(&meter).Scale(2, 1)"), "{test}");
+    assert_eq!(
+        behaviour(&project),
+        before,
+        "receiver addition changed behavior"
     );
 }
