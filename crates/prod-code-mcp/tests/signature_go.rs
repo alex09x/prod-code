@@ -7,12 +7,112 @@
 //! change, and what they print — including the order in which their arguments' effects
 //! happened — must not change. `go` and `gopls` are required: without them these tests fail.
 
+use futures_util::{SinkExt, StreamExt};
 use prod_code_mcp::protocol::McpContentItem;
 use prod_code_mcp::signature::{Modifiers, Param, SignatureChange};
+use prod_code_protocol::{
+    ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, WireMessage,
+};
 use prod_code_testkit::ScriptedGateway;
 use prod_code_testkit::gopls::{GoModule, GoplsBridge, require_go_toolchain, uri};
 use serde_json::json;
 use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use tokio_util::codec::Framed;
+
+/// Adds the compiler-shadow part of the protocol to the LSP-only test gateway. The response is
+/// deliberately strict about the command and complete proposals, and models the one compiler
+/// failure fixture; the source-built gateway test supplies the real remote compiler proof.
+async fn with_compiler_shadow(upstream: SocketAddr) -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind proxy");
+    let addr = listener.local_addr().expect("proxy address");
+    tokio::spawn(async move {
+        loop {
+            let Ok((client, _)) = listener.accept().await else {
+                return;
+            };
+            tokio::spawn(async move {
+                let server = tokio::net::TcpStream::connect(upstream)
+                    .await
+                    .expect("connect scripted gateway");
+                let mut client = Framed::new(client, ProdCodeCodec::new());
+                let mut server = Framed::new(server, ProdCodeCodec::new());
+                loop {
+                    tokio::select! {
+                        incoming = client.next() => match incoming {
+                            Some(Ok(WireMessage::ShadowRunRequest(req))) => {
+                                client.send(WireMessage::ShadowRunResponse(mock_compile(req)))
+                                    .await.expect("send compiler response");
+                            }
+                            Some(Ok(message)) => {
+                                server.send(message).await.expect("forward to scripted gateway");
+                            }
+                            _ => return,
+                        },
+                        outgoing = server.next() => match outgoing {
+                            Some(Ok(message)) => {
+                                client.send(message).await.expect("forward to client");
+                            }
+                            _ => return,
+                        },
+                    }
+                }
+            });
+        }
+    });
+    addr
+}
+
+fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
+    let expected = ["go", "test", "-c", "-o", ".prod-code-testbins/", "./..."];
+    let malformed = req.command.iter().map(String::as_str).ne(expected)
+        || req.timeout_secs != 120
+        || req.parallel != 1
+        || req.tail_bytes != 16 * 1024
+        || req.env
+            != [
+                ("GOTOOLCHAIN".into(), "local".into()),
+                ("GOFLAGS".into(), "-mod=readonly".into()),
+            ]
+        || req.hypotheses.len() != 1
+        || req.hypotheses[0].name != "go-compiler-verification"
+        || req.hypotheses[0].files.is_empty()
+        || req.hypotheses[0].files.iter().any(|file| {
+            !file.relative_path.ends_with(".go") || file.content.as_ref().is_none_or(Vec::is_empty)
+        });
+    if malformed {
+        return ShadowRunResponse {
+            server_workspace_root: req.client_workspace_root,
+            mode: String::new(),
+            results: Vec::new(),
+            error: Some("malformed compiler shadow request".into()),
+        };
+    }
+    let proposal = req.hypotheses[0]
+        .files
+        .iter()
+        .filter_map(|file| file.content.as_deref())
+        .flatten()
+        .copied()
+        .collect::<Vec<_>>();
+    let proposal = String::from_utf8_lossy(&proposal);
+    let fails = proposal.contains("bad string") && proposal.contains("Keep(1, 2, 1)");
+    let output = fails.then(|| b"cannot use 1 as string value in argument to Keep\n".to_vec());
+    ShadowRunResponse {
+        server_workspace_root: req.client_workspace_root,
+        mode: "overlay".into(),
+        results: vec![ShadowHypothesisResult {
+            name: "go-compiler-verification".into(),
+            exit_code: Some(if fails { 1 } else { 0 }),
+            duration_ms: 1,
+            timed_out: false,
+            error: None,
+            output_len: output.as_ref().map_or(0, |text| text.len() as u64),
+            output_tail: output,
+        }],
+        error: None,
+    }
+}
 
 fn keep(names: &[&str]) -> Vec<Param> {
     names.iter().map(|n| Param::Keep(n.to_string())).collect()
@@ -359,6 +459,7 @@ async fn typed_literal_parameters_are_added_without_reordering_old_argument_effe
     assert!(before.contains("[amount label Blend(7,pear)]"), "{before}");
     let untouched = fixture.snapshot();
     let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
     let request = vec![
         add("prefix", "string", "\"p,)\""),
         Param::Keep("amount".into()),
@@ -368,7 +469,7 @@ async fn typed_literal_parameters_are_added_without_reordering_old_argument_effe
         add("suffix", "string", "`s,)`"),
     ];
     let preview = change_with(
-        bridge.addr(),
+        remote,
         &fixture,
         "lib.go",
         "Blend(amount",
@@ -401,7 +502,7 @@ async fn typed_literal_parameters_are_added_without_reordering_old_argument_effe
     );
 
     let applied = change_with(
-        bridge.addr(),
+        remote,
         &fixture,
         "lib.go",
         "Blend(amount",
@@ -497,8 +598,8 @@ async fn additions_refuse_untrusted_function_reference_evidence() {
             true,
         )
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
+        let error = format!("{error:#}");
         assert!(error.contains(said), "{said}: {error}");
         assert_eq!(fixture.snapshot(), untouched, "{said} wrote");
     }
@@ -537,8 +638,6 @@ func UsesLen(a int) int { return a + len("x") }
 
 func Spread(a int, rest ...int) int { return a + len(rest) }
 
-func External(a int) int
-
 func bump(p *int) int { *p += 10; return *p }
 
 // shadowed passes a variable that is called true: a read, not a constant.
@@ -573,12 +672,16 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         ("go.mod", "module example.com/refuse\n\ngo 1.22\n"),
         ("lib.go", REFUSE_LIB),
         ("main.go", REFUSE_MAIN),
+        (
+            "external.go",
+            "//go:build ignore\n\npackage main\n\nfunc External(a int) int\n",
+        ),
     ]);
     let before = fixture.run();
     eprintln!("original program:\n{before}");
     let untouched = fixture.snapshot();
     let bridge = GoplsBridge::start(&fixture).await;
-    let remote = bridge.addr();
+    let remote = with_compiler_shadow(bridge.addr()).await;
     let open = "remain open requirements";
     let err = |r: anyhow::Result<SignatureChange>| match r {
         Ok(c) => panic!("expected a refusal, got {}", c.render(2000)),
@@ -658,8 +761,9 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         added.contains("must be one numeric, string or rune literal"),
         "{added}"
     );
-    for (needle, request, said) in [
+    for (rel, needle, request, said) in [
         (
+            "lib.go",
             "Keep(a",
             vec![
                 Param::Keep("b".into()),
@@ -669,11 +773,13 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
             "retain every old parameter exactly once",
         ),
         (
+            "lib.go",
             "UsesLen(a",
             vec![add("len", "int", "0"), Param::Keep("a".into())],
             "shadow existing references",
         ),
         (
+            "lib.go",
             ") Add(x",
             vec![
                 Param::Keep("x".into()),
@@ -683,6 +789,7 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
             "receiver method",
         ),
         (
+            "lib.go",
             "Pair[T",
             vec![
                 Param::Keep("t".into()),
@@ -692,6 +799,7 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
             "generic function",
         ),
         (
+            "lib.go",
             "Spread(a",
             vec![
                 Param::Keep("a".into()),
@@ -701,6 +809,7 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
             "variadic function",
         ),
         (
+            "external.go",
             "External(a",
             vec![Param::Keep("a".into()), add("z", "int", "0")],
             "no body",
@@ -709,7 +818,7 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         let refused = err(change_with(
             remote,
             &fixture,
-            "lib.go",
+            rel,
             needle,
             &request,
             &Modifiers::default(),
@@ -880,7 +989,7 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
     let before = fixture.run();
     let untouched = fixture.snapshot();
     let bridge = GoplsBridge::start(&fixture).await;
-    let remote = bridge.addr();
+    let remote = with_compiler_shadow(bridge.addr()).await;
     let root = fixture.root().to_path_buf();
     let run = |args: serde_json::Value| {
         let root = root.clone();
@@ -949,7 +1058,7 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
             "results",
         ),
         (
-            json!({ "symbol": "Price", "params": ["label", "unit", "qty", "discount", "extra: int = qty + 1"], "apply": true }),
+            json!({ "symbol": "Price", "params": ["qty", "unit", "discount", "label", "extra: int = qty + 1"], "apply": true }),
             "must be one numeric, string or rune literal",
         ),
         (

@@ -745,7 +745,7 @@ async fn add_parameters(
         .iter()
         .map(|(path, source)| (path.clone(), source.clone()))
         .collect();
-    let compiler = crate::verify::compile_go_shadow(root, &proposal)
+    let compiler = crate::verify::compile_go_shadow(remote, root, file, &proposal)
         .await
         .context(
             "the complete Go proposal could not be compiled in its private shadow; nothing was written",

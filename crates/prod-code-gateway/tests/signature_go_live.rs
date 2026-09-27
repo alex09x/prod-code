@@ -140,19 +140,25 @@ func TestShip(t *testing.T) {
 }
 "#;
 
-/// A committed Go module in a directory Go tools do not skip (a `.tmp…` name hides it).
+/// A committed checkout whose Go module is nested below the repository root.
 fn checkout() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("gosiglive")
         .tempdir()
         .expect("checkout dir");
     for (rel, text) in [
-        ("go.mod", "module example.com/gosiglive\n\ngo 1.22\n"),
-        ("lib.go", LIB),
-        ("main.go", MAIN),
-        ("main_test.go", TEST),
+        ("go.work", "go 1.22\n\nuse ./project\n"),
+        (
+            "project/go.mod",
+            "module example.com/gosiglive\n\ngo 1.22\n",
+        ),
+        ("project/lib.go", LIB),
+        ("project/main.go", MAIN),
+        ("project/main_test.go", TEST),
     ] {
-        std::fs::write(dir.path().join(rel), text).expect("write");
+        let path = dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("fixture parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
     }
     let git = |args: &[&str]| {
         let status = Command::new("git")
@@ -181,15 +187,28 @@ fn checkout() -> (tempfile::TempDir, PathBuf) {
 
 /// Every file of the checkout but `.git`, and its bytes.
 fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
-    std::fs::read_dir(root)
-        .expect("read_dir")
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.is_file())
-        .map(|p| {
-            let bytes = std::fs::read(&p).expect("read");
-            (p.file_name().unwrap().to_string_lossy().into_owned(), bytes)
-        })
-        .collect()
+    fn visit(root: &Path, dir: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let path = entry.expect("directory entry").path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .expect("file below root")
+                        .to_string_lossy()
+                        .into_owned(),
+                    std::fs::read(path).expect("read"),
+                );
+            }
+        }
+    }
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
 }
 
 /// Runs a command in the checkout; whether it succeeded, and what it printed.
@@ -198,7 +217,7 @@ fn run(root: &Path, program: &str, args: &[&str]) -> (bool, String) {
         .args(args)
         .current_dir(root)
         .env("GOTOOLCHAIN", "local")
-        .env("GOFLAGS", "-mod=mod")
+        .env("GOFLAGS", "-mod=readonly")
         .output()
         .unwrap_or_else(|e| {
             panic!("{program} is a prerequisite of this real-server test and does not run: {e}")
@@ -259,9 +278,10 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     eprintln!("gopls on this node: {}", version.trim());
     let gateway = Gateway::start();
     let (_dir, root) = checkout();
+    let project = root.join("project");
     let addr = gateway.addr;
     eprintln!("gateway from this revision listening on {addr}");
-    let before = behaviour(&root);
+    let before = behaviour(&project);
     eprintln!(
         "original program:\n{}\noriginal tests:\n{}",
         before.0, before.1
@@ -273,7 +293,7 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
     let untouched = snapshot(&root);
 
     // Until gopls has loaded the module its answers are empty; the hover says when it has.
-    let at_ship = serde_json::json!({ "path": "lib.go", "line": 14, "character": 6 });
+    let at_ship = serde_json::json!({ "path": "project/lib.go", "line": 14, "character": 6 });
     let mut hover = String::new();
     for attempt in 1..=60 {
         hover = tool(addr, &root, "code_hover", at_ship.clone()).await;
@@ -335,7 +355,7 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         &root,
         "code_change_signature",
         serde_json::json!({
-            "path": "lib.go", "line": 14, "character": 1, "params": order, "apply": true
+            "path": "project/lib.go", "line": 14, "character": 1, "params": order, "apply": true
         }),
     )
     .await;
@@ -344,9 +364,9 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         !applied.starts_with("error: ") && applied.contains("[applied to 3 file(s)]"),
         "{applied}"
     );
-    let lib = std::fs::read_to_string(root.join("lib.go")).expect("lib.go");
-    let main = std::fs::read_to_string(root.join("main.go")).expect("main.go");
-    let test = std::fs::read_to_string(root.join("main_test.go")).expect("main_test.go");
+    let lib = std::fs::read_to_string(project.join("lib.go")).expect("lib.go");
+    let main = std::fs::read_to_string(project.join("main.go")).expect("main.go");
+    let test = std::fs::read_to_string(project.join("main_test.go")).expect("main_test.go");
     eprintln!("transformed lib.go:\n{lib}\ntransformed main.go:\n{main}");
     assert!(
         lib.contains("func Ship(dest string, qty int) string {"),
@@ -368,6 +388,53 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         "only the parameter list of the declaration changed"
     );
 
+    // The gateway inherited the real toolchain. Replace only the client's `go` with a failing
+    // sentinel: remote compiler verification must neither find nor execute this program.
+    let sentinel = tempfile::tempdir().expect("sentinel dir");
+    let marker = sentinel.path().join("invoked");
+    let fake_go = sentinel.path().join("go");
+    std::fs::write(
+        &fake_go,
+        "#!/bin/sh\nprintf invoked > \"$PROD_CODE_GO_SENTINEL\"\nexit 97\n",
+    )
+    .expect("write sentinel");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_go, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod sentinel");
+    }
+    let original_path = std::env::var_os("PATH").expect("PATH");
+    let client_path = std::env::join_paths(
+        std::iter::once(sentinel.path().to_path_buf()).chain(std::env::split_paths(&original_path)),
+    )
+    .expect("client PATH");
+    // This test binary contains one test, and the server is already a separate process with its
+    // original environment, so the temporary client-only process environment is isolated here.
+    unsafe {
+        std::env::set_var("PATH", &client_path);
+        std::env::set_var("PROD_CODE_GO_SENTINEL", &marker);
+    }
+
+    let before_refusal = snapshot(&root);
+    let refused_addition = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Ship",
+            "params": ["dest", "qty", "bad: string = 1"],
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await;
+    assert!(
+        refused_addition.starts_with("error: ") && refused_addition.contains("does not compile"),
+        "{refused_addition}"
+    );
+    assert_eq!(snapshot(&root), before_refusal, "compiler refusal wrote");
+
     // The source-built gateway also carries an explicitly typed addition through public MCP.
     // gopls supplies the complete reference set; the adapter inserts only the pure literal and
     // compiles every source and test caller in a private shadow before writing.
@@ -388,16 +455,24 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         !added.starts_with("error: ") && added.contains("[applied to 3 file(s)]"),
         "{added}"
     );
-    let lib = std::fs::read_to_string(root.join("lib.go")).expect("lib.go");
-    let main = std::fs::read_to_string(root.join("main.go")).expect("main.go");
-    let test = std::fs::read_to_string(root.join("main_test.go")).expect("main_test.go");
+    unsafe {
+        std::env::set_var("PATH", original_path);
+        std::env::remove_var("PROD_CODE_GO_SENTINEL");
+    }
+    assert!(
+        !marker.exists(),
+        "the client invoked its failing Go sentinel"
+    );
+    let lib = std::fs::read_to_string(project.join("lib.go")).expect("lib.go");
+    let main = std::fs::read_to_string(project.join("main.go")).expect("main.go");
+    let test = std::fs::read_to_string(project.join("main_test.go")).expect("main_test.go");
     assert!(
         lib.contains("func Ship(dest string, qty int, route string) string {"),
         "{lib}"
     );
     assert!(main.contains("Ship(\"LA\", 3, \"road,air\")"), "{main}");
     assert!(test.contains("Ship(\"SF\", 2, \"road,air\")"), "{test}");
-    let after = behaviour(&root);
+    let after = behaviour(&project);
     eprintln!(
         "transformed program:\n{}\ntransformed tests:\n{}",
         after.0, after.1
