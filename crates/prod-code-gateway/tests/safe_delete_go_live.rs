@@ -173,10 +173,16 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
         for entry in std::fs::read_dir(directory).expect("read fixture") {
             let path = entry.expect("fixture entry").path();
-            if path.file_name().is_some_and(|name| name == ".git") {
-                continue;
-            }
             if path.is_dir() {
+                files.insert(
+                    format!(
+                        "{}/",
+                        path.strip_prefix(root)
+                            .expect("directory below root")
+                            .to_string_lossy()
+                    ),
+                    Vec::new(),
+                );
                 visit(root, &path, files);
             } else {
                 files.insert(
@@ -300,9 +306,9 @@ async fn tool(
     }
 }
 
-async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
+async fn wait_for_gopls(addr: SocketAddr, root: &Path, needle: &str, expected: &str) {
     let source = std::fs::read_to_string(root.join("project/main.go")).expect("fixture source");
-    let offset = source.find("unused").expect("unused declaration");
+    let offset = source.find(needle).expect("declaration needle");
     let before = &source[..offset];
     let args = serde_json::json!({
         "path": "project/main.go",
@@ -318,7 +324,7 @@ async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
     for _ in 0..60 {
         let (_, text) = tool(addr, root, "code_hover", args.clone()).await;
         answer = text;
-        if answer.contains("func unused") {
+        if answer.contains(expected) {
             return;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -329,6 +335,26 @@ async fn wait_for_gopls(addr: SocketAddr, root: &Path) {
 const SOURCE: &str = "package main\n\ntype Mystruct struct{ value string }\n\nfunc unused() Mystruct { return Mystruct{value: `unused } {`} }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() { println(keep(`same`)) }\n";
 const TEST: &str = "package main\n\nimport `testing`\n\nfunc TestKeep(t *testing.T) {\n\tif keep(`x`) != `x!` { t.Fatal(`keep`) }\n}\n";
 const COMPILE_FAIL_SOURCE: &str = "package main\n\nimport `strings`\n\nfunc unused() string { return strings.TrimSpace(` x `) }\n\nfunc keep(value string) string { return value + `!` }\n\nfunc main() {}\n";
+const METHOD_VALUE_SOURCE: &str = "package main\n\ntype item struct{ value string }\n\nfunc (value item) unusedValue() string { return value.value }\n\nfunc main() {}\n";
+const METHOD_POINTER_SOURCE: &str = "package main\n\ntype item struct{ value string }\n\nfunc (value *item) unusedPointer() string { return value.value }\n\nfunc main() {}\n";
+const METHOD_USES_SOURCE: &str = "package main\n\ntype item struct{}\n\nfunc (value item) direct() {}\nfunc (value item) recursive() { value.recursive() }\nfunc (value item) methodValue() {}\nfunc (value *item) methodExpression() {}\n\nfunc uses(value item) {\n\tvalue.direct()\n\t_ = value.methodValue\n\t_ = (*item).methodExpression\n}\nfunc main() {}\n";
+const METHOD_INTERFACES_SOURCE: &str = "package main\n\ntype item struct{}\n\nfunc (value item) localContract() {}\nfunc (value item) asserted() {}\n\ntype local interface { localContract() }\nvar _ local = item{}\nfunc runtime(value any) { _, _ = value.(interface { asserted() }) }\nfunc main() {}\n";
+const EMPTY_TEST: &str = "package main\n";
+
+fn tool_position(source: &str, needle: &str) -> (u32, u32) {
+    let offset = source.find(needle).expect("tool position needle");
+    let before = &source[..offset];
+    (
+        before.matches('\n').count() as u32 + 1,
+        before
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .encode_utf16()
+            .count() as u32
+            + 1,
+    )
+}
 
 async fn sentinel_child() {
     let root = PathBuf::from(std::env::var_os(SENTINEL_ROOT).expect("sentinel root"));
@@ -355,7 +381,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     let (_cli_dir, cli_root) = checkout(SOURCE, TEST);
     let cli_project = cli_root.join("project");
     let before = behaviour(&cli_project);
-    wait_for_gopls(gateway.addr, &cli_root).await;
+    wait_for_gopls(gateway.addr, &cli_root, "unused", "func unused").await;
 
     let fake_bin = tempfile::tempdir().expect("fake client bin");
     let fake_go = fake_bin.path().join("go");
@@ -398,7 +424,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
     let (_mcp_dir, mcp_root) = checkout(SOURCE, TEST);
     let mcp_project = mcp_root.join("project");
     let before = behaviour(&mcp_project);
-    wait_for_gopls(gateway.addr, &mcp_root).await;
+    wait_for_gopls(gateway.addr, &mcp_root, "unused", "func unused").await;
     let (ok, output) = tool(
         gateway.addr,
         &mcp_root,
@@ -417,6 +443,103 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         "MCP deletion changed behavior"
     );
 
+    let (_value_dir, value_root) = checkout(METHOD_VALUE_SOURCE, EMPTY_TEST);
+    let value_project = value_root.join("project");
+    let before = behaviour(&value_project);
+    wait_for_gopls(
+        gateway.addr,
+        &value_root,
+        "unusedValue",
+        "func (value item) unusedValue",
+    )
+    .await;
+    let (ok, output) = cli(
+        &value_root,
+        gateway.addr,
+        &["safe-delete", "project/main.go", "5", "19"],
+    );
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert!(!std::fs::read_to_string(value_project.join("main.go")).unwrap().contains("unusedValue"));
+    assert_eq!(behaviour(&value_project), before, "value-method CLI deletion changed behavior");
+
+    let (_pointer_dir, pointer_root) = checkout(METHOD_POINTER_SOURCE, EMPTY_TEST);
+    let pointer_project = pointer_root.join("project");
+    let before = behaviour(&pointer_project);
+    wait_for_gopls(
+        gateway.addr,
+        &pointer_root,
+        "unusedPointer",
+        "func (value *item) unusedPointer",
+    )
+    .await;
+    let (line, character) = tool_position(METHOD_POINTER_SOURCE, "unusedPointer");
+    let (ok, output) = tool(
+        gateway.addr,
+        &pointer_root,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": "project/main.go",
+            "line": line,
+            "character": character
+        }),
+    )
+    .await;
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert!(!std::fs::read_to_string(pointer_project.join("main.go")).unwrap().contains("unusedPointer"));
+    assert_eq!(behaviour(&pointer_project), before, "pointer-method MCP deletion changed behavior");
+
+    let (_uses_dir, uses_root) = checkout(METHOD_USES_SOURCE, EMPTY_TEST);
+    wait_for_gopls(gateway.addr, &uses_root, "direct", "func (value item) direct").await;
+    for method in ["direct", "recursive", "methodValue", "methodExpression"] {
+        let untouched = snapshot(&uses_root);
+        let (line, character) = tool_position(METHOD_USES_SOURCE, method);
+        let (ok, output) = tool(
+            gateway.addr,
+            &uses_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go",
+                "line": line,
+                "character": character,
+                "force": true
+            }),
+        )
+        .await;
+        assert!(!ok && output.contains("still referenced"), "{method}: {output}");
+        assert_eq!(snapshot(&uses_root), untouched, "{method} refusal wrote");
+    }
+
+    let (_interfaces_dir, interfaces_root) = checkout(METHOD_INTERFACES_SOURCE, EMPTY_TEST);
+    wait_for_gopls(
+        gateway.addr,
+        &interfaces_root,
+        "localContract",
+        "func (value item) localContract",
+    )
+    .await;
+    for method in ["localContract", "asserted"] {
+        let untouched = snapshot(&interfaces_root);
+        let (line, character) = tool_position(METHOD_INTERFACES_SOURCE, method);
+        let (ok, output) = tool(
+            gateway.addr,
+            &interfaces_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go",
+                "line": line,
+                "character": character,
+                "force": true
+            }),
+        )
+        .await;
+        assert!(
+            !ok && (output.contains("implementation evidence")
+                || output.contains("local interface obligation")),
+            "{method}: {output}"
+        );
+        assert_eq!(snapshot(&interfaces_root), untouched, "{method} refusal wrote");
+    }
+
     let (_failure_dir, failure_root) = checkout(COMPILE_FAIL_SOURCE, TEST);
     let (baseline_compiles, baseline_output) = run(
         &failure_root.join("project"),
@@ -427,7 +550,7 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         baseline_compiles,
         "refusal fixture must compile before deletion: {baseline_output}"
     );
-    wait_for_gopls(gateway.addr, &failure_root).await;
+    wait_for_gopls(gateway.addr, &failure_root, "unused", "func unused").await;
     let untouched = snapshot(&failure_root);
     let (ok, output) = cli(
         &failure_root,

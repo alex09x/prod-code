@@ -644,7 +644,7 @@ async fn replace_result(
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
     if receiver.is_some() {
-        receiver_interface_evidence(remote, root, file, &text, &decl)
+        receiver_interface_evidence(remote, root, file, &text, &decl.name, decl.name_at)
             .await
             .map_err(|why| {
                 refusal(format!(
@@ -894,7 +894,7 @@ async fn add_parameters(
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
     if receiver.is_some() {
-        receiver_interface_evidence(remote, root, file, &text, &decl)
+        receiver_interface_evidence(remote, root, file, &text, &decl.name, decl.name_at)
             .await
             .map_err(|why| {
                 refusal(format!(
@@ -1571,14 +1571,15 @@ fn parameter_piece_has_type(piece: &str) -> bool {
 /// A receiver method may satisfy an imported interface even when no source interface declaration
 /// or interface-typed call names it. gopls reports those relations from the concrete method, so
 /// an empty result is the proof that extending this method does not alter an interface contract.
-async fn receiver_interface_evidence(
+pub(crate) async fn receiver_interface_evidence(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
     declaration_text: &str,
-    decl: &Decl,
+    name: &str,
+    name_at: usize,
 ) -> Result<()> {
-    let (line, character) = line_col_utf16(declaration_text, decl.name_at);
+    let (line, character) = line_col_utf16(declaration_text, name_at);
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?
         .to_string();
@@ -1598,7 +1599,7 @@ async fn receiver_interface_evidence(
     anyhow::ensure!(
         implementations.is_empty(),
         "`{}` has interface implementation evidence at {}; interface dispatch cannot be reconciled",
-        decl.name,
+        name,
         implementations
             .iter()
             .map(|(path, line, column)| format!("{}:{line}:{column}", path.display()))
@@ -1860,6 +1861,61 @@ fn interface_method_file(root: &Path, name: &str) -> Result<Option<PathBuf>> {
         Ok(None)
     }
     visit(root, name)
+}
+
+/// An unexported method name has package identity. Safe deletion therefore scans only regular Go
+/// files in the declaring package for local interface obligations; an interface with the same
+/// spelling in a different package is unrelated. Signature changes retain the broader recursive
+/// scan above because narrowing that established planner is outside this helper's contract.
+pub(crate) fn package_interface_method_file(file: &Path, name: &str) -> Result<Option<PathBuf>> {
+    let directory = file
+        .parent()
+        .with_context(|| format!("{} has no containing package directory", file.display()))?;
+    let declaration_text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+    let package = package_name(&declaration_text)
+        .with_context(|| format!("cannot identify the Go package in {}", file.display()))?;
+    for entry in std::fs::read_dir(directory).with_context(|| {
+        format!(
+            "cannot inspect {} while checking package interface obligations",
+            directory.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "cannot inspect an entry in {} while checking package interface obligations",
+                directory.display()
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "go") {
+            continue;
+        }
+        let kind = entry.file_type().with_context(|| {
+            format!(
+                "cannot inspect {} while checking package interface obligations",
+                path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            !kind.is_symlink(),
+            "linked Go source {} cannot be inspected for package interface obligations",
+            path.display()
+        );
+        if !kind.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "cannot read {} while checking package interface obligations",
+                path.display()
+            )
+        })?;
+        if package_name(&text) == Some(package) && declares_interface_method(&text, name) {
+            return Ok(Some(path));
+        }
+    }
+    Ok(None)
 }
 
 /// The use of a receiver method must be a selector call. An interface member declaration and a

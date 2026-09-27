@@ -1,4 +1,4 @@
-//! Safe deletion of a deliberately narrow Go function subset.
+//! Safe deletion of a deliberately narrow Go function and receiver-method subset.
 //!
 //! gopls supplies the declaration range and a complete reference answer. The local source is
 //! then checked against both answers, lexed without treating braces in comments or literals as
@@ -22,6 +22,12 @@ struct FunctionRange {
     end: usize,
     name_start: usize,
     name_end: usize,
+    receiver: Option<Receiver>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Receiver {
+    type_name: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,11 +94,50 @@ pub async fn delete_function(
     let function = function_at(&canonical_file, &original, requested, &symbols)
         .context("Go safe delete refused; nothing was written")?;
 
+    let receiver_sources = if let Some(receiver) = &function.receiver {
+        let sources = receiver_source_evidence(&canonical_file, &original, receiver)
+            .context("Go receiver-method safe delete refused; nothing was written")?;
+        crate::signature_go::receiver_interface_evidence(
+            remote,
+            &canonical_root,
+            &canonical_file,
+            &original,
+            &function.name,
+            function.name_start,
+        )
+        .await
+        .context(
+            "Go receiver-method safe delete requires empty gopls implementation evidence; nothing was written",
+        )?;
+        if let Some(path) = crate::signature_go::package_interface_method_file(
+            &canonical_file,
+            &function.name,
+        )
+        .context(
+            "Go receiver-method safe delete could not inspect local interface obligations; nothing was written",
+        )? {
+            anyhow::bail!(
+                "Go receiver-method safe delete refused; {} has a local interface obligation in {}; nothing was written",
+                function.name,
+                display(&canonical_root, &path)
+            );
+        }
+        Some(sources)
+    } else {
+        None
+    };
+
     anyhow::ensure!(
         current_text(&canonical_file, &original)?,
         "{} changed while its declaration was inspected; nothing was written",
         display(&canonical_root, &canonical_file)
     );
+    if let Some(expected) = &receiver_sources {
+        anyhow::ensure!(
+            package_sources(&canonical_file, &original)? == *expected,
+            "the declaring Go package changed while receiver-method evidence was compiled; nothing was written"
+        );
+    }
     reference_evidence(
         remote,
         &canonical_root,
@@ -124,6 +169,12 @@ pub async fn delete_function(
         "{} changed while the deletion was compiled; nothing was written",
         display(&canonical_root, &canonical_file)
     );
+    if let Some(expected) = &receiver_sources {
+        anyhow::ensure!(
+            package_sources(&canonical_file, &original)? == *expected,
+            "the declaring Go package changed while the receiver-method deletion was compiled; nothing was written"
+        );
+    }
 
     let mut files = BTreeMap::new();
     files.insert(canonical_file.clone(), proposed);
@@ -161,15 +212,15 @@ fn function_at(
     );
     let (name, kind, range, selection) = selected.pop().expect("one selected symbol");
     anyhow::ensure!(
-        kind == 12,
-        "the position names a {}, not an ordinary top-level function",
-        if kind == 6 {
-            "receiver method"
-        } else {
-            "non-function declaration"
-        }
+        matches!(kind, 6 | 12),
+        "the position names a non-function declaration, not an ordinary function or receiver method"
     );
-    parse_function(text, &name, range, selection)
+    let function = parse_function(text, &name, range, selection)?;
+    anyhow::ensure!(
+        matches!((kind, function.receiver.is_some()), (6, true) | (12, false)),
+        "the analyzer's declaration kind does not match the current function declaration"
+    );
+    Ok(function)
 }
 
 fn collect_selected(
@@ -305,9 +356,14 @@ fn parse_function(
     ensure_top_level(text, start)?;
     refuse_attached_directives(text, start)?;
     let mut cursor = skip_trivia(text, start + 4)?;
-    if text.as_bytes().get(cursor) == Some(&b'(') {
-        anyhow::bail!("receiver methods are not supported");
-    }
+    let receiver = if text.as_bytes().get(cursor) == Some(&b'(') {
+        let close = matching(text, cursor)?;
+        let receiver = parse_receiver(&text[cursor + 1..close])?;
+        cursor = skip_trivia(text, close + 1)?;
+        Some(receiver)
+    } else {
+        None
+    };
     let name_start = cursor;
     let name_end = ascii_identifier_end(text, name_start)
         .context("the function declaration has no ordinary ASCII name")?;
@@ -375,7 +431,308 @@ fn parse_function(
         end,
         name_start,
         name_end,
+        receiver,
     })
+}
+
+fn parse_receiver(source: &str) -> Result<Receiver> {
+    anyhow::ensure!(
+        !source.contains("//") && !source.contains("/*"),
+        "receiver comments make the declaration ambiguous"
+    );
+    let pieces: Vec<&str> = source.split_ascii_whitespace().collect();
+    anyhow::ensure!(
+        pieces.len() == 2 && ascii_identifier(pieces[0]) && pieces[0] != "_",
+        "a receiver method must bind exactly one ordinary named receiver"
+    );
+    let named = pieces[1].strip_prefix('*').unwrap_or(pieces[1]);
+    anyhow::ensure!(
+        ascii_identifier(named),
+        "receiver type {} is generic, qualified, aliased, or otherwise ambiguous",
+        pieces[1]
+    );
+    Ok(Receiver {
+        type_name: named.to_string(),
+    })
+}
+
+fn receiver_source_evidence(
+    file: &Path,
+    text: &str,
+    receiver: &Receiver,
+) -> Result<BTreeMap<PathBuf, String>> {
+    let sources = package_sources(file, text)?;
+    let declarations: Vec<(bool, bool)> = sources
+        .values()
+        .flat_map(|source| type_declarations(source, &receiver.type_name))
+        .collect();
+    anyhow::ensure!(
+        declarations.len() == 1,
+        "receiver type {} has {} package declarations instead of exactly one",
+        receiver.type_name,
+        declarations.len()
+    );
+    let (alias, generic) = declarations[0];
+    anyhow::ensure!(
+        !alias,
+        "receiver type {} is an alias",
+        receiver.type_name
+    );
+    anyhow::ensure!(
+        !generic,
+        "receiver type {} is generic or parameterized",
+        receiver.type_name
+    );
+    for (path, source) in &sources {
+        anyhow::ensure!(
+            !embeds_receiver(source, &receiver.type_name)?,
+            "receiver type {} is embedded or promoted in {}",
+            receiver.type_name,
+            path.display()
+        );
+    }
+    Ok(sources)
+}
+
+fn package_sources(file: &Path, declaration_text: &str) -> Result<BTreeMap<PathBuf, String>> {
+    let directory = file
+        .parent()
+        .with_context(|| format!("{} has no containing package directory", file.display()))?;
+    let package = go_package_name(declaration_text)
+        .with_context(|| format!("cannot identify the Go package in {}", file.display()))?;
+    let mut sources = BTreeMap::new();
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("cannot inspect Go package directory {}", directory.display()))?
+    {
+        let entry = entry.with_context(|| {
+            format!("cannot inspect an entry in Go package directory {}", directory.display())
+        })?;
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "go") {
+            continue;
+        }
+        let kind = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        anyhow::ensure!(
+            !kind.is_symlink(),
+            "linked Go source {} cannot be inspected",
+            path.display()
+        );
+        if !kind.is_file() {
+            continue;
+        }
+        let source = if same_file(file, &path) {
+            declaration_text.to_string()
+        } else {
+            std::fs::read_to_string(&path)
+                .with_context(|| format!("cannot read {}", path.display()))?
+        };
+        if go_package_name(&source) == Some(package) {
+            sources.insert(path, source);
+        }
+    }
+    anyhow::ensure!(
+        sources.keys().any(|path| same_file(path, file)),
+        "the declaring Go source disappeared from its package"
+    );
+    Ok(sources)
+}
+
+fn go_package_name(text: &str) -> Option<&str> {
+    let at = skip_trivia(text, 0).ok()?;
+    if !text[at..].starts_with("package") || !token_boundary(text.as_bytes(), at, 7) {
+        return None;
+    }
+    let start = skip_trivia(text, at + 7).ok()?;
+    let end = ascii_identifier_end(text, start)?;
+    Some(&text[start..end])
+}
+
+/// Returns `(alias, generic)` for every package-level declaration of `wanted`.
+fn type_declarations(text: &str, wanted: &str) -> Vec<(bool, bool)> {
+    let bytes = text.as_bytes();
+    let (mut braces, mut brackets, mut parens, mut cursor) = (0usize, 0usize, 0usize, 0usize);
+    let mut found = Vec::new();
+    while cursor < bytes.len() {
+        if let Ok(Some(end)) = opaque_end(text, cursor) {
+            cursor = end;
+            continue;
+        }
+        match bytes[cursor] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b't'
+                if braces == 0
+                    && brackets == 0
+                    && parens == 0
+                    && bytes[cursor..].starts_with(b"type")
+                    && token_boundary(bytes, cursor, 4) =>
+            {
+                let Ok(start) = skip_trivia(text, cursor + 4) else {
+                    return found;
+                };
+                if bytes.get(start) == Some(&b'(') {
+                    let Ok(close) = matching(text, start) else {
+                        return found;
+                    };
+                    grouped_type_declarations(text, start, close, wanted, &mut found);
+                    cursor = close + 1;
+                    continue;
+                }
+                if let Some(end) = ascii_identifier_end(text, start) {
+                    if &text[start..end] == wanted {
+                        let after = skip_trivia(text, end).unwrap_or(end);
+                        found.push((
+                            bytes.get(after) == Some(&b'='),
+                            bytes.get(after) == Some(&b'['),
+                        ));
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    found
+}
+
+fn grouped_type_declarations(
+    text: &str,
+    open: usize,
+    close: usize,
+    wanted: &str,
+    found: &mut Vec<(bool, bool)>,
+) {
+    let bytes = text.as_bytes();
+    let (mut braces, mut brackets, mut parens) = (0usize, 0usize, 0usize);
+    let (mut cursor, mut spec_start) = (open + 1, true);
+    while cursor < close {
+        if let Ok(Some(end)) = opaque_end(text, cursor) {
+            if text[cursor..end].contains('\n') && braces == 0 && brackets == 0 && parens == 0 {
+                spec_start = true;
+            }
+            cursor = end;
+            continue;
+        }
+        if spec_start && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+            continue;
+        }
+        if spec_start
+            && braces == 0
+            && brackets == 0
+            && parens == 0
+            && let Some(end) = ascii_identifier_end(text, cursor)
+        {
+            if &text[cursor..end] == wanted {
+                let after = skip_trivia(text, end).unwrap_or(end);
+                found.push((
+                    bytes.get(after) == Some(&b'='),
+                    bytes.get(after) == Some(&b'['),
+                ));
+            }
+            spec_start = false;
+            cursor = end;
+            continue;
+        }
+        match bytes[cursor] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b';' if braces == 0 && brackets == 0 && parens == 0 => spec_start = true,
+            b'\n' if braces == 0 && brackets == 0 && parens == 0 => spec_start = true,
+            _ => {}
+        }
+        cursor += 1;
+    }
+}
+
+fn embeds_receiver(text: &str, receiver: &str) -> Result<bool> {
+    let bytes = text.as_bytes();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        if let Some(end) = opaque_end(text, cursor)? {
+            cursor = end;
+            continue;
+        }
+        if bytes[cursor..].starts_with(b"struct") && token_boundary(bytes, cursor, 6) {
+            let open = skip_trivia(text, cursor + 6)?;
+            if bytes.get(open) == Some(&b'{') {
+                let close = matching(text, open)?;
+                if struct_body_embeds(&text[open + 1..close], receiver)? {
+                    return Ok(true);
+                }
+                cursor = close + 1;
+                continue;
+            }
+        }
+        cursor += 1;
+    }
+    Ok(false)
+}
+
+fn struct_body_embeds(body: &str, receiver: &str) -> Result<bool> {
+    let bytes = body.as_bytes();
+    let (mut braces, mut brackets, mut parens, mut start, mut cursor) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    while cursor <= bytes.len() {
+        if cursor == bytes.len() {
+            return field_embeds(&body[start..cursor], receiver);
+        }
+        if let Some(end) = opaque_end(body, cursor)? {
+            cursor = end;
+            continue;
+        }
+        match bytes[cursor] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b';' | b'\n' if braces == 0 && brackets == 0 && parens == 0 => {
+                if field_embeds(&body[start..cursor], receiver)? {
+                    return Ok(true);
+                }
+                start = cursor + 1;
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Ok(false)
+}
+
+fn field_embeds(field: &str, receiver: &str) -> Result<bool> {
+    let mut cursor = skip_trivia(field, 0)?;
+    if field.as_bytes().get(cursor) == Some(&b'*') {
+        cursor += 1;
+    }
+    let Some(end) = ascii_identifier_end(field, cursor) else {
+        return Ok(false);
+    };
+    if &field[cursor..end] != receiver {
+        return Ok(false);
+    }
+    cursor = skip_trivia(field, end)?;
+    if cursor == field.len() {
+        return Ok(true);
+    }
+    if matches!(field.as_bytes().get(cursor), Some(b'"' | b'\'' | b'\x60')) {
+        let tag_end = opaque_end(field, cursor)?.context("an embedded field tag is malformed")?;
+        return Ok(skip_trivia(field, tag_end)? == field.len());
+    }
+    Ok(false)
 }
 
 fn function_start_for_name(text: &str, name_start: usize) -> Result<usize> {
@@ -758,6 +1115,42 @@ fn ascii_unexported_name(name: &str) -> bool {
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+}
+
+fn ascii_identifier(name: &str) -> bool {
+    let Some(end) = ascii_identifier_end(name, 0) else {
+        return false;
+    };
+    end == name.len()
+        && name != "_"
+        && !matches!(
+            name,
+            "break"
+                | "default"
+                | "func"
+                | "interface"
+                | "select"
+                | "case"
+                | "defer"
+                | "go"
+                | "map"
+                | "struct"
+                | "chan"
+                | "else"
+                | "goto"
+                | "package"
+                | "switch"
+                | "const"
+                | "fallthrough"
+                | "if"
+                | "range"
+                | "type"
+                | "continue"
+                | "for"
+                | "import"
+                | "return"
+                | "var"
+        )
 }
 
 fn token_boundary(bytes: &[u8], start: usize, len: usize) -> bool {

@@ -276,6 +276,53 @@ async fn unreferenced_go_function_is_deleted_through_public_mcp() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreferenced_value_and_pointer_receiver_methods_are_deleted() {
+    require_go_toolchain();
+    for (declaration, receiver, method) in [
+        (
+            "type item struct{ value string }",
+            "item",
+            "unusedValue",
+        ),
+        (
+            "type item struct{ value string }",
+            "*item",
+            "unusedPointer",
+        ),
+        (
+            "type (\n\titem struct{ value string }\n)",
+            "item",
+            "unusedGrouped",
+        ),
+    ] {
+        let source = format!(
+            "package main\n\n{declaration}\n\nfunc (value {receiver}) {method}() string {{ return value.value }}\n\nfunc main() {{}}\n"
+        );
+        let fixture = GoModule::new(&[
+            ("go.mod", "module example.com/methoddelete\n\ngo 1.22\n"),
+            ("main.go", &source),
+        ]);
+        std::fs::create_dir(fixture.path("sub")).expect("subpackage directory");
+        std::fs::write(
+            fixture.path("sub/other.go"),
+            "package sub\n\ntype unrelated interface { unusedValue(); unusedPointer() }\n",
+        )
+        .expect("subpackage source");
+        let bridge = GoplsBridge::start(&fixture).await;
+        let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+
+        let result = call(proxy.addr(), &fixture, "main.go", method, false).await;
+        let output = text_of(&result);
+        assert!(!result.is_error, "{receiver}: {output}");
+        assert!(output.contains("compiler-verified"), "{output}");
+        let written = fixture.read("main.go");
+        assert!(!written.contains(method), "{written}");
+        assert!(written.contains("item struct{ value string }"));
+        assert!(written.contains("func main() {}"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unsupported_shapes_and_non_name_positions_are_refused_without_writes() {
     require_go_toolchain();
     let fixture = GoModule::new(&[
@@ -292,7 +339,7 @@ async fn unsupported_shapes_and_non_name_positions_are_refused_without_writes() 
         ("Exported", "unexported ASCII", true),
         ("main() {}", "entry point", false),
         ("init() {}", "entry point", false),
-        ("method", "receiver method", false),
+        ("method", "named receiver", false),
         ("generic", "generic", false),
         ("π() {}", "ordinary ASCII", false),
         ("param int", "declaration names", false),
@@ -370,6 +417,46 @@ async fn every_real_reference_shape_blocks_deletion() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receiver_calls_recursion_values_and_expressions_refuse_unchanged() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/methoduses\n\ngo 1.22\n"),
+        (
+            "main.go",
+            "package main\n\ntype item struct{}\n\nfunc (value item) direct() {}\nfunc (value item) recursive() { value.recursive() }\nfunc (value item) methodValue() {}\nfunc (value *item) methodExpression() {}\n\nfunc uses(value item) {\n\tvalue.direct()\n\t_ = value.methodValue\n\t_ = (*item).methodExpression\n}\nfunc main() {}\n",
+        ),
+    ]);
+    let bridge = GoplsBridge::start(&fixture).await;
+    let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+    for method in ["direct", "recursive", "methodValue", "methodExpression"] {
+        let output = refused(proxy.addr(), &fixture, "main.go", method, true).await;
+        assert!(output.contains("still referenced"), "{method}: {output}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn local_interface_and_runtime_assertion_obligations_refuse_unchanged() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/methodinterfaces\n\ngo 1.22\n"),
+        (
+            "main.go",
+            "package main\n\ntype item struct{}\n\nfunc (value item) localContract() {}\nfunc (value item) asserted() {}\n\ntype local interface { localContract() }\nvar _ local = item{}\nfunc runtime(value any) { _, _ = value.(interface { asserted() }) }\nfunc main() {}\n",
+        ),
+    ]);
+    let bridge = GoplsBridge::start(&fixture).await;
+    let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+    for method in ["localContract", "asserted"] {
+        let output = refused(proxy.addr(), &fixture, "main.go", method, true).await;
+        assert!(
+            output.contains("implementation evidence")
+                || output.contains("local interface obligation"),
+            "{method}: {output}"
+        );
+    }
+}
+
 fn one_function() -> GoModule {
     GoModule::new(&[
         ("go.mod", "module example.com/evidence\n\ngo 1.22\n"),
@@ -402,6 +489,105 @@ fn declaration_reference(path: &std::path::Path) -> Value {
     }])
 }
 
+fn one_method() -> GoModule {
+    GoModule::new(&[
+        ("go.mod", "module example.com/methodevidence\n\ngo 1.22\n"),
+        (
+            "main.go",
+            "package main\n\ntype item struct{}\n\nfunc (value item) hidden() {}\n",
+        ),
+    ])
+}
+
+fn method_symbol() -> Value {
+    json!([{
+        "name": "item.hidden",
+        "kind": 6,
+        "range": {
+            "start": { "line": 4, "character": 0 },
+            "end": { "line": 4, "character": 29 }
+        },
+        "selectionRange": {
+            "start": { "line": 4, "character": 18 },
+            "end": { "line": 4, "character": 24 }
+        }
+    }])
+}
+
+fn method_declaration_reference(path: &std::path::Path) -> Value {
+    json!([{
+        "uri": url::Url::from_file_path(path).unwrap().to_string(),
+        "range": {
+            "start": { "line": 4, "character": 18 },
+            "end": { "line": 4, "character": 24 }
+        }
+    }])
+}
+
+fn method_symbol_for(source: &str, method: &str) -> Value {
+    let start = source.find("func (").expect("method declaration");
+    let name = source[start..]
+        .find(method)
+        .map(|offset| start + offset)
+        .expect("method name");
+    let end = source[start..]
+        .find('\n')
+        .map_or(source.len(), |offset| start + offset);
+    let position = |offset: usize| {
+        let before = &source[..offset];
+        json!({
+            "line": before.matches('\n').count(),
+            "character": before
+                .rsplit('\n')
+                .next()
+                .unwrap_or_default()
+                .encode_utf16()
+                .count()
+        })
+    };
+    json!([{
+        "name": method,
+        "kind": 6,
+        "range": { "start": position(start), "end": position(end) },
+        "selectionRange": {
+            "start": position(name),
+            "end": position(name + method.len())
+        }
+    }])
+}
+
+#[tokio::test]
+async fn alias_generic_and_embedded_receivers_refuse_unchanged() {
+    for (source, expected) in [
+        (
+            "package main\n\ntype original struct{}\ntype item = original\n\nfunc (value item) hidden() {}\n",
+            "alias",
+        ),
+        (
+            "package main\n\ntype item[T any] struct{}\n\nfunc (value item[T]) hidden() {}\n",
+            "generic",
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype outer struct{ item }\n\nfunc (value item) hidden() {}\n",
+            "embedded or promoted",
+        ),
+    ] {
+        let fixture = GoModule::new(&[
+            ("go.mod", "module example.com/methodshape\n\ngo 1.22\n"),
+            ("main.go", source),
+        ]);
+        let symbols = method_symbol_for(source, "hidden");
+        let gateway = ScriptedGateway::start(move |method, _params| match method {
+            "textDocument/documentSymbol" => symbols.clone(),
+            "textDocument/implementation" => json!([]),
+            _ => Value::Null,
+        })
+        .await;
+        let output = refused(gateway.addr(), &fixture, "main.go", "hidden", true).await;
+        assert!(output.contains(expected), "{output}");
+    }
+}
+
 async fn evidence_gateway(references: Value) -> ScriptedGateway {
     ScriptedGateway::start(move |method, _params| match method {
         "textDocument/documentSymbol" => declaration_symbol(),
@@ -410,6 +596,37 @@ async fn evidence_gateway(references: Value) -> ScriptedGateway {
         _ => Value::Null,
     })
     .await
+}
+
+#[tokio::test]
+async fn failed_malformed_and_nonempty_implementation_evidence_refuses_unchanged() {
+    for (implementation, expected) in [
+        (answers::failure("implementation unavailable"), "could not list"),
+        (json!("malformed"), "not a location"),
+        (
+            json!([{
+                "uri": "file:///interface.go",
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 0, "character": 6 }
+                }
+            }]),
+            "implementation evidence",
+        ),
+    ] {
+        let fixture = one_method();
+        let path = fixture.path("main.go");
+        let references = method_declaration_reference(&path);
+        let gateway = ScriptedGateway::start(move |method, _params| match method {
+            "textDocument/documentSymbol" => method_symbol(),
+            "textDocument/implementation" => implementation.clone(),
+            "textDocument/references" => references.clone(),
+            _ => Value::Null,
+        })
+        .await;
+        let output = refused(gateway.addr(), &fixture, "main.go", "hidden", true).await;
+        assert!(output.contains(expected), "{output}");
+    }
 }
 
 #[tokio::test]
