@@ -58,6 +58,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go, generic and fallback language servers accept complete LSP header blocks, including
+  Content-Type after Content-Length (#544). Header and body sizes are bounded; duplicate,
+  oversized or truncated frames terminate the stream and release pending requests.
 - Go and generic LSP notifications and automatic replies have complete write deadlines (#543).
   Canceled or incomplete frames retire the owned child before releasing the writer; interrupted
   document updates invalidate their generation, while a queued update that never changed state

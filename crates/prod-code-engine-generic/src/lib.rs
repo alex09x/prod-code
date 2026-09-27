@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
@@ -571,216 +571,189 @@ impl GenericLspEngine {
         // Background reader loop: decodes Content-Length frames
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
-            let mut header_line = String::new();
-
             'reader: loop {
-                header_line.clear();
-                match reader.read_line(&mut header_line).await {
-                    Ok(0) => break, // Process exited / EOF
-                    Ok(_) => {
-                        if header_line.starts_with("Content-Length:") {
-                            let len_str = header_line.trim_start_matches("Content-Length:").trim();
-                            if let Ok(len) = len_str.parse::<usize>() {
-                                header_line.clear();
-                                let _ = reader.read_line(&mut header_line).await;
+                let json_str =
+                    match prod_code_protocol::transport::read_lsp_frame(&mut reader).await {
+                        Ok(Some(json)) => json,
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(%error, "Invalid language-server LSP frame");
+                            break;
+                        }
+                    };
+                {
+                    let mut act = activity_updater.write().await;
+                    *act = Instant::now();
+                }
 
-                                let mut body = vec![0u8; len];
-                                if reader.read_exact(&mut body).await.is_err() {
-                                    continue;
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    readiness_reader.on_message(&val);
+                    if let Some(id_val) = val.get("id") {
+                        // Only an answer is ours: a request from the server
+                        // (`window/workDoneProgress/create`) numbers its own ids
+                        // from 1 too, and taken for the answer to ours it left
+                        // the server waiting and our question empty (#391).
+                        if val.get("method").is_none()
+                            && let Some(id) = id_val.as_u64()
+                        {
+                            let mut pending = lock_unpoisoned(&pending_clone);
+                            if let Some(tx) = pending.remove(&id) {
+                                let _ = tx.send(val.clone());
+                                continue;
+                            }
+                        }
+
+                        // Auto-respond to server requests
+                        let method = val.get("method").and_then(|m| m.as_str());
+                        if let Some(m) = method {
+                            let resp = match m {
+                                "window/workDoneProgress/create" | "client/registerCapability" => {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": null
+                                    })
                                 }
-                                let Ok(json_str) = String::from_utf8(body) else {
-                                    continue;
+                                "workspace/configuration" => {
+                                    // One empty settings object per requested
+                                    // item: pyright stalls on `null` settings, and
+                                    // a short array leaves the server waiting.
+                                    let sections: Vec<String> = val
+                                        .get("params")
+                                        .and_then(|p| p.get("items"))
+                                        .and_then(|i| i.as_array())
+                                        .map(|items| {
+                                            items
+                                                .iter()
+                                                .map(|item| {
+                                                    item.get("section")
+                                                        .and_then(|s| s.as_str())
+                                                        .unwrap_or("")
+                                                        .to_string()
+                                                })
+                                                .collect()
+                                        })
+                                        .unwrap_or_else(|| vec![String::new()]);
+                                    let values: Vec<serde_json::Value> = sections
+                                        .iter()
+                                        .map(|section| settings_for_section(&config_root, section))
+                                        .collect();
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": values
+                                    })
+                                }
+                                "workspace/applyEdit" => {
+                                    // A command's edit: hand it to whoever is
+                                    // waiting (applyAssist) and confirm.
+                                    let edit = val
+                                        .get("params")
+                                        .and_then(|p| p.get("edit"))
+                                        .cloned()
+                                        .unwrap_or(serde_json::Value::Null);
+                                    if let Some(tx) = apply_edit_slot.lock().await.take() {
+                                        let _ = tx.send(edit);
+                                    }
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": { "applied": true }
+                                    })
+                                }
+                                "workspace/workspaceFolders" => {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": null
+                                    })
+                                }
+                                other => {
+                                    // Unknown server request: refuse it instead of
+                                    // leaving the server blocked on the answer.
+                                    tracing::debug!(
+                                        method = other,
+                                        "unsupported server request refused"
+                                    );
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "error": { "code": -32601, "message": format!("{other} is not supported by prod-code") }
+                                    })
+                                }
+                            };
+                            if let Err(error) = Self::write_frame_until(
+                                &stdin_writer,
+                                &resp,
+                                tokio::time::Instant::now() + auto_reply_timeout,
+                                m,
+                                &child_writer,
+                                &pending_writer,
+                                &Arc::downgrade(&is_alive_clone),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    method = m,
+                                    error = %error,
+                                    "failed to answer language-server request; retiring process"
+                                );
+                                let mut retirement = FrameWrite {
+                                    child: child_writer.clone(),
+                                    pending: pending_writer.clone(),
+                                    is_alive: Arc::downgrade(&is_alive_clone),
+                                    started: true,
+                                    complete: false,
                                 };
-
-                                {
-                                    let mut act = activity_updater.write().await;
-                                    *act = Instant::now();
-                                }
-
-                                if let Ok(val) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    readiness_reader.on_message(&val);
-                                    if let Some(id_val) = val.get("id") {
-                                        // Only an answer is ours: a request from the server
-                                        // (`window/workDoneProgress/create`) numbers its own ids
-                                        // from 1 too, and taken for the answer to ours it left
-                                        // the server waiting and our question empty (#391).
-                                        if val.get("method").is_none()
-                                            && let Some(id) = id_val.as_u64()
-                                        {
-                                            let mut pending = lock_unpoisoned(&pending_clone);
-                                            if let Some(tx) = pending.remove(&id) {
-                                                let _ = tx.send(val.clone());
-                                                continue;
-                                            }
-                                        }
-
-                                        // Auto-respond to server requests
-                                        let method = val.get("method").and_then(|m| m.as_str());
-                                        if let Some(m) = method {
-                                            let resp = match m {
-                                                "window/workDoneProgress/create"
-                                                | "client/registerCapability" => {
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": null
-                                                    })
-                                                }
-                                                "workspace/configuration" => {
-                                                    // One empty settings object per requested
-                                                    // item: pyright stalls on `null` settings, and
-                                                    // a short array leaves the server waiting.
-                                                    let sections: Vec<String> = val
-                                                        .get("params")
-                                                        .and_then(|p| p.get("items"))
-                                                        .and_then(|i| i.as_array())
-                                                        .map(|items| {
-                                                            items
-                                                                .iter()
-                                                                .map(|item| {
-                                                                    item.get("section")
-                                                                        .and_then(|s| s.as_str())
-                                                                        .unwrap_or("")
-                                                                        .to_string()
-                                                                })
-                                                                .collect()
-                                                        })
-                                                        .unwrap_or_else(|| vec![String::new()]);
-                                                    let values: Vec<serde_json::Value> = sections
-                                                        .iter()
-                                                        .map(|section| {
-                                                            settings_for_section(
-                                                                &config_root,
-                                                                section,
-                                                            )
-                                                        })
-                                                        .collect();
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": values
-                                                    })
-                                                }
-                                                "workspace/applyEdit" => {
-                                                    // A command's edit: hand it to whoever is
-                                                    // waiting (applyAssist) and confirm.
-                                                    let edit = val
-                                                        .get("params")
-                                                        .and_then(|p| p.get("edit"))
-                                                        .cloned()
-                                                        .unwrap_or(serde_json::Value::Null);
-                                                    if let Some(tx) =
-                                                        apply_edit_slot.lock().await.take()
-                                                    {
-                                                        let _ = tx.send(edit);
-                                                    }
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": { "applied": true }
-                                                    })
-                                                }
-                                                "workspace/workspaceFolders" => {
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": null
-                                                    })
-                                                }
-                                                other => {
-                                                    // Unknown server request: refuse it instead of
-                                                    // leaving the server blocked on the answer.
-                                                    tracing::debug!(
-                                                        method = other,
-                                                        "unsupported server request refused"
-                                                    );
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "error": { "code": -32601, "message": format!("{other} is not supported by prod-code") }
-                                                    })
-                                                }
-                                            };
-                                            if let Err(error) = Self::write_frame_until(
-                                                &stdin_writer,
-                                                &resp,
-                                                tokio::time::Instant::now() + auto_reply_timeout,
-                                                m,
-                                                &child_writer,
-                                                &pending_writer,
-                                                &Arc::downgrade(&is_alive_clone),
-                                            )
-                                            .await
-                                            {
-                                                tracing::warn!(
-                                                    method = m,
-                                                    error = %error,
-                                                    "failed to answer language-server request; retiring process"
-                                                );
-                                                let mut retirement = FrameWrite {
-                                                    child: child_writer.clone(),
-                                                    pending: pending_writer.clone(),
-                                                    is_alive: Arc::downgrade(&is_alive_clone),
-                                                    started: true,
-                                                    complete: false,
-                                                };
-                                                retirement.retire();
-                                                retirement.complete = true;
-                                                break 'reader;
-                                            }
-                                        }
-                                    }
-
-                                    if val.get("method").and_then(|m| m.as_str())
-                                        == Some("textDocument/publishDiagnostics")
-                                        && let Some(uri) = val
-                                            .get("params")
-                                            .and_then(|p| p.get("uri"))
-                                            .and_then(|u| u.as_str())
-                                    {
-                                        let items = val
-                                            .get("params")
-                                            .and_then(|p| p.get("diagnostics"))
-                                            .and_then(|d| d.as_array())
-                                            .cloned()
-                                            .unwrap_or_default();
-                                        let version =
-                                            val.pointer("/params/version").and_then(|v| v.as_i64());
-                                        if version.is_some() {
-                                            versioned_writer.store(true, Ordering::Relaxed);
-                                        }
-                                        let publication = Published {
-                                            version,
-                                            at: Instant::now(),
-                                            items,
-                                        };
-                                        let sent_version = sent_reader
-                                            .read()
-                                            .await
-                                            .get(uri)
-                                            .and_then(|sent| sent.version);
-                                        let mut diagnostics = diagnostics_writer.write().await;
-                                        let is_late_older = matches!(
-                                            (
-                                                diagnostics.get(uri).and_then(|p| p.version),
-                                                publication.version,
-                                                sent_version,
-                                            ),
-                                            (Some(current), Some(incoming), Some(sent))
-                                                if current == sent && incoming < current
-                                        );
-                                        if !is_late_older {
-                                            diagnostics.insert(uri.to_string(), publication);
-                                        }
-                                    }
-                                    let _ = bcast_tx_clone.send(json_str);
-                                }
+                                retirement.retire();
+                                retirement.complete = true;
+                                break 'reader;
                             }
                         }
                     }
-                    Err(_) => break,
+
+                    if val.get("method").and_then(|m| m.as_str())
+                        == Some("textDocument/publishDiagnostics")
+                        && let Some(uri) = val
+                            .get("params")
+                            .and_then(|p| p.get("uri"))
+                            .and_then(|u| u.as_str())
+                    {
+                        let items = val
+                            .get("params")
+                            .and_then(|p| p.get("diagnostics"))
+                            .and_then(|d| d.as_array())
+                            .cloned()
+                            .unwrap_or_default();
+                        let version = val.pointer("/params/version").and_then(|v| v.as_i64());
+                        if version.is_some() {
+                            versioned_writer.store(true, Ordering::Relaxed);
+                        }
+                        let publication = Published {
+                            version,
+                            at: Instant::now(),
+                            items,
+                        };
+                        let sent_version = sent_reader
+                            .read()
+                            .await
+                            .get(uri)
+                            .and_then(|sent| sent.version);
+                        let mut diagnostics = diagnostics_writer.write().await;
+                        let is_late_older = matches!(
+                            (
+                                diagnostics.get(uri).and_then(|p| p.version),
+                                publication.version,
+                                sent_version,
+                            ),
+                            (Some(current), Some(incoming), Some(sent))
+                                if current == sent && incoming < current
+                        );
+                        if !is_late_older {
+                            diagnostics.insert(uri.to_string(), publication);
+                        }
+                    }
+                    let _ = bcast_tx_clone.send(json_str);
                 }
             }
             is_alive_clone.store(false, Ordering::Relaxed);

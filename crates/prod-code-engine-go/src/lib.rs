@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
 
@@ -248,108 +248,88 @@ impl GoEngine {
         // Background reader loop: decodes LSP frames and routes responses to oneshot channels
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
-            let mut header_line = String::new();
-
             'reader: loop {
-                header_line.clear();
-                match reader.read_line(&mut header_line).await {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        if header_line.starts_with("Content-Length:") {
-                            let len_str = header_line.trim_start_matches("Content-Length:").trim();
-                            if let Ok(len) = len_str.parse::<usize>() {
-                                // Read the blank line separator (\r\n)
-                                header_line.clear();
-                                let _ = reader.read_line(&mut header_line).await;
+                let json_str =
+                    match prod_code_protocol::transport::read_lsp_frame(&mut reader).await {
+                        Ok(Some(json)) => json,
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(%error, "Invalid language-server LSP frame");
+                            break;
+                        }
+                    };
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    readiness_reader.on_message(&val);
+                    // 1. Check if this is a response to our pending request
+                    if let Some(id_val) = val.get("id") {
+                        // Only an answer is ours: gopls numbers its own requests
+                        // (`window/workDoneProgress/create`) from 1 too (#391).
+                        if val.get("method").is_none()
+                            && let Some(id) = id_val.as_u64()
+                        {
+                            let mut pending = lock_unpoisoned(&pending_clone);
+                            if let Some(tx) = pending.remove(&id) {
+                                let _ = tx.send(val.clone());
+                                continue;
+                            }
+                        }
 
-                                let mut body = vec![0u8; len];
-                                if reader.read_exact(&mut body).await.is_err() {
-                                    continue;
+                        // Server-initiated request requiring auto-reply
+                        let method = val.get("method").and_then(|m| m.as_str());
+                        if let Some(m) = method {
+                            let auto_resp = match m {
+                                "window/workDoneProgress/create" | "client/registerCapability" => {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": null
+                                    })
                                 }
-                                let Ok(json_str) = String::from_utf8(body) else {
-                                    continue;
+                                "workspace/configuration" => {
+                                    serde_json::json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id_val,
+                                        "result": [{}]
+                                    })
+                                }
+                                _ => serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id_val,
+                                    "error": { "code": -32601, "message": format!("{m} is not supported by prod-code") }
+                                }),
+                            };
+                            if let Err(error) = Self::write_frame_until(
+                                &stdin_writer,
+                                &auto_resp,
+                                tokio::time::Instant::now() + auto_reply_timeout,
+                                m,
+                                &child_writer,
+                                &pending_writer,
+                                &Arc::downgrade(&is_alive_reader),
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    method = m,
+                                    error = %error,
+                                    "failed to answer gopls request; retiring process"
+                                );
+                                let mut retirement = FrameWrite {
+                                    child: child_writer.clone(),
+                                    pending: pending_writer.clone(),
+                                    is_alive: Arc::downgrade(&is_alive_reader),
+                                    started: true,
+                                    complete: false,
                                 };
-
-                                if let Ok(val) =
-                                    serde_json::from_str::<serde_json::Value>(&json_str)
-                                {
-                                    readiness_reader.on_message(&val);
-                                    // 1. Check if this is a response to our pending request
-                                    if let Some(id_val) = val.get("id") {
-                                        // Only an answer is ours: gopls numbers its own requests
-                                        // (`window/workDoneProgress/create`) from 1 too (#391).
-                                        if val.get("method").is_none()
-                                            && let Some(id) = id_val.as_u64()
-                                        {
-                                            let mut pending = lock_unpoisoned(&pending_clone);
-                                            if let Some(tx) = pending.remove(&id) {
-                                                let _ = tx.send(val.clone());
-                                                continue;
-                                            }
-                                        }
-
-                                        // Server-initiated request requiring auto-reply
-                                        let method = val.get("method").and_then(|m| m.as_str());
-                                        if let Some(m) = method {
-                                            let auto_resp = match m {
-                                                "window/workDoneProgress/create"
-                                                | "client/registerCapability" => {
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": null
-                                                    })
-                                                }
-                                                "workspace/configuration" => {
-                                                    serde_json::json!({
-                                                        "jsonrpc": "2.0",
-                                                        "id": id_val,
-                                                        "result": [{}]
-                                                    })
-                                                }
-                                                _ => serde_json::json!({
-                                                    "jsonrpc": "2.0",
-                                                    "id": id_val,
-                                                    "error": { "code": -32601, "message": format!("{m} is not supported by prod-code") }
-                                                }),
-                                            };
-                                            if let Err(error) = Self::write_frame_until(
-                                                &stdin_writer,
-                                                &auto_resp,
-                                                tokio::time::Instant::now() + auto_reply_timeout,
-                                                m,
-                                                &child_writer,
-                                                &pending_writer,
-                                                &Arc::downgrade(&is_alive_reader),
-                                            )
-                                            .await
-                                            {
-                                                tracing::warn!(
-                                                    method = m,
-                                                    error = %error,
-                                                    "failed to answer gopls request; retiring process"
-                                                );
-                                                let mut retirement = FrameWrite {
-                                                    child: child_writer.clone(),
-                                                    pending: pending_writer.clone(),
-                                                    is_alive: Arc::downgrade(&is_alive_reader),
-                                                    started: true,
-                                                    complete: false,
-                                                };
-                                                retirement.retire();
-                                                retirement.complete = true;
-                                                break 'reader;
-                                            }
-                                        }
-                                    }
-
-                                    // Broadcast notification to listeners
-                                    let _ = bcast_tx_clone.send(json_str);
-                                }
+                                retirement.retire();
+                                retirement.complete = true;
+                                break 'reader;
                             }
                         }
                     }
-                    Err(_) => break,
+
+                    // Broadcast notification to listeners
+                    let _ = bcast_tx_clone.send(json_str);
                 }
             }
             is_alive_reader.store(false, Ordering::Relaxed);
@@ -743,7 +723,13 @@ if os.environ.get("FAKE_PID_FILE"):
 def send(message):
     body = json.dumps(message).encode()
     with LOCK:
-        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        header = b"Content-Length: %d\r\n" % len(body)
+        content_type = b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n"
+        if os.environ.get("FAKE_CONTENT_TYPE") == "before":
+            header = content_type + header
+        elif os.environ.get("FAKE_CONTENT_TYPE") == "after":
+            header += content_type
+        sys.stdout.buffer.write(header + b"\r\n")
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
 
@@ -786,6 +772,19 @@ while True:
         send({"jsonrpc": "2.0", "id": 7001, "method": "x" * (8 * 1024 * 1024), "params": {}})
         threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
+        threading.Event().wait()
+    elif method == "prodCode/brokenFrame":
+        kind = message["params"]["kind"]
+        data = {
+            "duplicate": b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+            "oversize": b"Content-Length: 268435457\r\n\r\n",
+            "header": b"A" * 65537,
+            "truncated": b"Content-Length: 10\r\n\r\n{}",
+        }[kind]
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        if kind == "truncated":
+            sys.exit(0)
         threading.Event().wait()
     elif method == "textDocument/hover":
         send({"jsonrpc": "2.0", "id": message["id"], "result": {"contents": "healthy"}})
@@ -1247,6 +1246,41 @@ func main() {
         let (dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
         drop(engine);
         assert_process_exits(&dir.path().join("pid")).await;
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn optional_response_headers_keep_gopls_messages_aligned() {
+        for order in ["before", "after"] {
+            let (_dir, engine) =
+                fake_engine(Some(("FAKE_CONTENT_TYPE", order)), Duration::from_secs(2)).await;
+            let response = engine
+                .send_request("textDocument/hover", serde_json::json!({}))
+                .await
+                .unwrap();
+            assert_eq!(response["result"]["contents"], "healthy", "{order}");
+            assert!(engine.is_alive());
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn malformed_frames_retire_gopls_and_wake_pending_requests() {
+        for kind in ["duplicate", "oversize", "header", "truncated"] {
+            let (dir, engine) = fake_engine(None, Duration::from_secs(30)).await;
+            let error = tokio::time::timeout(
+                Duration::from_secs(2),
+                engine.send_request("prodCode/brokenFrame", serde_json::json!({"kind":kind})),
+            )
+            .await
+            .expect("bad frames must wake requests before their request deadline")
+            .expect_err("malformed input must not become a response");
+            assert!(
+                format!("{error:#}").contains("prodCode/brokenFrame"),
+                "{error:#}"
+            );
+            assert!(!engine.is_alive());
+            assert_process_exits(&dir.path().join("pid")).await;
+        }
     }
 }
 

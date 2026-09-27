@@ -28,7 +28,10 @@ if os.environ.get("FAKE_PID_FILE"):
 def send(message):
     body = json.dumps(message).encode()
     with LOCK:
-        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n" % len(body))
+        if os.environ.get("FAKE_CONTENT_TYPE"):
+            sys.stdout.buffer.write(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+        sys.stdout.buffer.write(b"\r\n")
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
 
@@ -213,6 +216,19 @@ while True:
         publish(uri, message["params"]["first"], message["params"]["firstMessage"])
         publish(uri, message["params"]["second"], message["params"]["secondMessage"])
         send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+    elif method == "prodCode/brokenFrame":
+        kind = message["params"]["kind"]
+        data = {
+            "duplicate": b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+            "oversize": b"Content-Length: 268435457\r\n\r\n",
+            "header": b"A" * 65537,
+            "truncated": b"Content-Length: 10\r\n\r\n{}",
+        }[kind]
+        sys.stdout.buffer.write(data)
+        sys.stdout.buffer.flush()
+        if kind == "truncated":
+            sys.exit(0)
+        threading.Event().wait()
     elif method == "prodCode/silence":
         # Answer nothing at all, so the caller's timeout is the only way out.
         pass
@@ -2397,4 +2413,54 @@ async fn dropping_the_engine_kills_a_reader_owned_server() {
     let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
     drop(engine);
     assert_process_exits(&pid_file).await;
+}
+
+#[tokio::test]
+async fn a_content_type_header_after_length_keeps_frames_aligned() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.request_timeout = Duration::from_millis(200);
+    settings.env.insert("FAKE_CONTENT_TYPE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the optional Content-Type header must not break initialization");
+    let answer = engine
+        .send_request("textDocument/hover", serde_json::json!({}))
+        .await
+        .expect("successive messages must stay aligned");
+    assert_eq!(
+        answer
+            .pointer("/result/contents/value")
+            .and_then(|v| v.as_str()),
+        Some("the fake server answered")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn malformed_frames_retire_the_generic_server_and_wake_pending_requests() {
+    for kind in ["duplicate", "oversize", "header", "truncated"] {
+        let (dir, script) = workspace();
+        let pid_file = dir.path().join("pid");
+        let mut settings = config(&script);
+        settings.request_timeout = Duration::from_secs(30);
+        settings.env.insert(
+            "FAKE_PID_FILE".into(),
+            pid_file.to_string_lossy().into_owned(),
+        );
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.send_request("prodCode/brokenFrame", serde_json::json!({"kind":kind})),
+        )
+        .await
+        .expect("bad frames must wake requests before their request deadline")
+        .expect_err("malformed input must not become a response");
+        assert!(
+            format!("{error:#}").contains("prodCode/brokenFrame"),
+            "{error:#}"
+        );
+        assert!(!engine.is_alive());
+        assert_process_exits(&pid_file).await;
+    }
 }

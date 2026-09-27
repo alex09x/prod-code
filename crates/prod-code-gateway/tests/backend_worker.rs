@@ -175,11 +175,38 @@ async fn fallback_initialization_requires_a_valid_response() {
     const MODE: &str = "PROD_CODE_BACKEND_LIFECYCLE_CASE";
     if let Ok(mode) = std::env::var(MODE) {
         let dir = tempfile::tempdir().unwrap();
-        let outcome = BackendWorker::spawn(dir.path(), "go").await;
-        if matches!(mode.as_str(), "valid" | "collision") {
+        let outcome = if mode.starts_with("frame-") {
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                BackendWorker::spawn(dir.path(), "go"),
+            )
+            .await
+            .expect("invalid framing must close the response stream promptly")
+        } else {
+            BackendWorker::spawn(dir.path(), "go").await
+        };
+        if matches!(
+            mode.as_str(),
+            "valid" | "collision" | "content-type-after" | "content-type-before"
+        ) {
             let worker = outcome.unwrap_or_else(|error| panic!("{mode}: {error:#}"));
             let capabilities = worker.capabilities.read().await.clone();
             assert_eq!(capabilities, Some(serde_json::json!({})), "{mode}");
+            if mode.starts_with("content-type-") {
+                let mut replies = worker.subscribe();
+                worker
+                    .send_lsp(
+                        r#"{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{}}"#,
+                    )
+                    .await
+                    .unwrap();
+                let response = tokio::time::timeout(Duration::from_secs(2), replies.recv())
+                    .await
+                    .expect("framing must stay aligned")
+                    .unwrap();
+                let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+                assert_eq!(response["result"]["contents"], "fixture hover");
+            }
         } else {
             let error = match outcome {
                 Ok(_) => panic!("{mode}: invalid initialization was accepted"),
@@ -192,7 +219,8 @@ async fn fallback_initialization_requires_a_valid_response() {
             match mode.as_str() {
                 "error" => assert!(error.contains("fixture refused initialization"), "{error}"),
                 "malformed" => assert!(error.contains("capabilities"), "{error}"),
-                "eof" => assert!(
+                "eof" | "frame-duplicate" | "frame-oversize" | "frame-header"
+                | "frame-truncated" => assert!(
                     error.contains("exited") || error.contains("closed"),
                     "{error}"
                 ),
@@ -222,12 +250,30 @@ def read():
 
 def send(value):
     body = json.dumps(value).encode()
-    sys.stdout.buffer.write(b'Content-Length: %d\r\n\r\n' % len(body) + body)
+    header = b'Content-Length: %d\r\n' % len(body)
+    content_type = b'Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n'
+    if mode == 'content-type-after':
+        header += content_type
+    elif mode == 'content-type-before':
+        header = content_type + header
+    sys.stdout.buffer.write(header + b'\r\n' + body)
     sys.stdout.buffer.flush()
 
 initial = read()
 assert initial['method'] == 'initialize'
 mode = os.environ['PROD_CODE_BACKEND_LIFECYCLE_CASE']
+if mode.startswith('frame-'):
+    malformed = {
+        'frame-duplicate': b'Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}',
+        'frame-oversize': b'Content-Length: 268435457\r\n\r\n',
+        'frame-header': b'A' * 65537,
+        'frame-truncated': b'Content-Length: 10\r\n\r\n{}',
+    }[mode]
+    sys.stdout.buffer.write(malformed)
+    sys.stdout.buffer.flush()
+    if mode == 'frame-truncated':
+        sys.exit(0)
+    threading.Event().wait()
 if mode == 'eof':
     sys.exit(0)
 if mode == 'silent':
@@ -242,8 +288,12 @@ elif mode == 'malformed':
     send({'jsonrpc': '2.0', 'id': 1, 'result': {}})
 else:
     send({'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
-while read() is not None:
-    pass
+while True:
+    request = read()
+    if request is None:
+        break
+    if request.get('method') == 'textDocument/hover':
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': {'contents': 'fixture hover'}})
 "#).unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::join_paths(
@@ -252,7 +302,20 @@ while read() is not None:
     )
     .unwrap();
     let mut failures = Vec::new();
-    for mode in ["valid", "collision", "error", "malformed", "eof", "silent"] {
+    for mode in [
+        "valid",
+        "collision",
+        "content-type-after",
+        "content-type-before",
+        "error",
+        "malformed",
+        "eof",
+        "silent",
+        "frame-duplicate",
+        "frame-oversize",
+        "frame-header",
+        "frame-truncated",
+    ] {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
