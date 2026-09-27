@@ -847,7 +847,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_generate_fixture".to_string(),
-            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only."
+            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only. With `builder: true`, instead generate a typed builder for a named-field, non-generic struct: one setter per field and an explicit missing-field error from build, with no guessed defaults. `builder_name` overrides TypeBuilder; `depth` is value mode only. Builder verification checks names and generated code in the declaring scope; incomplete or rejected verification is an error. `verify: false` returns an explicitly unverified draft. Unsupported shapes and name collisions are refused."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -855,6 +855,8 @@ pub fn list_tools() -> Vec<McpTool> {
                     "symbol": { "type": "string", "description": "The type to build (`Config`, `SliceReport`)" },
                     "path": { "type": "string", "description": "The file that declares it, when the name is ambiguous (a re-export makes a type resolve twice)" },
                     "depth": { "type": "integer", "description": "How deep to build nested workspace types before falling back to Default::default() (default 2)" },
+                    "builder": { "type": "boolean", "description": "Generate a typed Rust builder instead of a value (default false); omit depth" },
+                    "builder_name": { "type": "string", "description": "Generated builder name (default TypeBuilder); requires builder=true" },
                     "verify": { "type": "boolean", "description": "Type-check the fixture before returning it (default true)" }
                 },
                 "required": ["symbol"]
@@ -2489,15 +2491,56 @@ async fn handle_generate_fixture(
         .get("symbol")
         .and_then(|v| v.as_str())
         .context("Missing 'symbol' argument")?;
-    let depth = args
-        .get("depth")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
+    let builder = args
+        .get("builder")
+        .map(|value| value.as_bool().context("'builder' must be a boolean"))
+        .transpose()?
+        .unwrap_or(false);
+    let builder_name = args
+        .get("builder_name")
+        .map(|value| value.as_str().context("'builder_name' must be a string"))
+        .transpose()?;
+    anyhow::ensure!(
+        builder || builder_name.is_none(),
+        "'builder_name' requires builder=true"
+    );
+    anyhow::ensure!(
+        !builder || args.get("depth").is_none(),
+        "'depth' applies to value fixtures only; omit it for builder=true"
+    );
     let verify = args.get("verify").and_then(|v| v.as_bool()).unwrap_or(true);
+    if builder {
+        anyhow::ensure!(
+            args.get("verify").is_none_or(|v| v.is_boolean()),
+            "'verify' must be a boolean"
+        );
+    }
     let hint = args
         .get("path")
         .and_then(|v| v.as_str())
         .map(|p| resolve_file_path(workspace_root, p));
+    if builder {
+        let preview = crate::fixture::builder::preview(
+            remote,
+            workspace_root,
+            &crate::fixture::builder::BuilderRequest {
+                symbol,
+                hint: hint.as_deref(),
+                builder_name,
+                verify,
+            },
+        )
+        .await?;
+        return Ok(if !verify || preview.verified() {
+            McpToolCallResult::text(preview.render())
+        } else {
+            McpToolCallResult::error(preview.render())
+        });
+    }
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
     let fixture = crate::fixture::generate(
         remote,
         workspace_root,
