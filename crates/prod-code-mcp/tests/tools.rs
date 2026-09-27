@@ -2974,6 +2974,7 @@ async fn code_rename_writes_the_analyzers_edit_into_the_checkout() {
         "textDocument/rename" => {
             answers::whole_file(&path, "pub fn old_name() {}\n", "pub fn new_name() {}\n")
         }
+        "textDocument/diagnostic" => answers::no_diagnostics(),
         _ => serde_json::Value::Null,
     }))
     .await;
