@@ -120,7 +120,12 @@ pub async fn change_with(
     refuse_modifiers(modifiers)?;
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let at = offset_at(&text, line.saturating_sub(1), col.saturating_sub(1))
+    anyhow::ensure!(
+        line > 0 && col > 0,
+        "{}:{line}:{col} is not in the file",
+        file.display()
+    );
+    let at = offset_at(&text, line - 1, col - 1)
         .with_context(|| format!("{}:{line}:{col} is not in the file", file.display()))?;
     let decl = declarations(&text)
         .into_iter()
@@ -940,7 +945,8 @@ fn offset_at(text: &str, line: u32, col: u32) -> Option<usize> {
         start += text[start..].find('\n')? + 1;
     }
     let rest = &text[start..];
-    let end = rest.find('\n').unwrap_or(rest.len());
+    let line_end = rest.find('\n').unwrap_or(rest.len());
+    let end = line_end - usize::from(line_end < rest.len() && rest[..line_end].ends_with('\r'));
     let mut units = 0u32;
     for (i, ch) in rest[..end].char_indices() {
         if units >= col {
@@ -2032,6 +2038,22 @@ mod tests {
         assert_eq!(offset_at(text, l, c), Some(at));
         assert_eq!(offset_at(text, 0, 8), None, "inside a surrogate pair");
         assert_eq!(offset_at(text, 3, 0), None);
+        let crlf = "ab\r\ncd\n";
+        assert_eq!(offset_at(crlf, 0, 2), Some(2), "line end precedes CR");
+        assert_eq!(offset_at(crlf, 0, 3), None, "CR is not a position");
+        assert_eq!(offset_at(crlf, 1, 0), Some(4));
+        assert_eq!(offset_at(crlf, 2, 0), Some(7), "empty final line");
+        assert_eq!(line_col_utf16(crlf, 2), (0, 2));
+        assert_eq!(line_col_utf16(crlf, 4), (1, 0));
+        let emoji = "😀\r\n";
+        assert_eq!(offset_at(emoji, 0, 0), Some(0));
+        assert_eq!(offset_at(emoji, 0, 1), None, "inside a surrogate pair");
+        assert_eq!(
+            offset_at(emoji, 0, 2),
+            Some(4),
+            "emoji occupies two UTF-16 units"
+        );
+        assert_eq!(offset_at(emoji, 0, 3), None, "CR is not a position");
         let open = at + 1;
         let edits = vec![
             (open + 1, open + 2, "yy".to_string()),
@@ -2163,6 +2185,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty[&file], Vec::<TextEdit>::new());
+    }
+
+    #[test]
+    fn native_edits_inside_crlf_or_surrogates_are_refused_without_mutation() {
+        let ws = tempfile::Builder::new().prefix("gosig").tempdir().unwrap();
+        let root = std::fs::canonicalize(ws.path()).unwrap();
+        let file = root.join("strict.go");
+        std::fs::write(&file, "ab\r\n😀\r\n").unwrap();
+        let uri = format!("file://{}", file.display());
+        let before = std::fs::read(&file).unwrap();
+        let edit = |line: u32, character: u32| {
+            serde_json::json!({ "changes": { uri.clone(): [ {
+                "range": {
+                    "start": { "line": line, "character": character },
+                    "end": { "line": 2, "character": 0 }
+                },
+                "newText": "x"
+            } ] } })
+        };
+        for (line, character) in [(0, 3), (1, 1), (1, 3), (2, 1), (3, 0)] {
+            let mut originals = BTreeMap::new();
+            let err = edits_by_file(&root, &edit(line, character), &mut originals)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("out of range or malformed") && err.contains("nothing was written"),
+                "{line}:{character}: {err}"
+            );
+            assert_eq!(
+                std::fs::read(&file).unwrap(),
+                before,
+                "{line}:{character} wrote"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn public_positions_do_not_saturate_zero_to_one() {
+        let ws = tempfile::Builder::new().prefix("gosig").tempdir().unwrap();
+        let root = std::fs::canonicalize(ws.path()).unwrap();
+        let file = root.join("a.go");
+        std::fs::write(&file, "package a\nfunc F(a int) {}\n").unwrap();
+        let remote = "127.0.0.1:1".parse().unwrap();
+        for (line, col) in [(0, 1), (1, 0), (0, 0)] {
+            let err = change_with(
+                remote,
+                &root,
+                &file,
+                line,
+                col,
+                &[],
+                &Modifiers::default(),
+                false,
+                false,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not in the file"), "{line}:{col}: {err}");
+        }
     }
 }
 
