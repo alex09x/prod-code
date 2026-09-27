@@ -699,20 +699,26 @@ fn starts_impl_item(text: &str, code: &[bool], impl_at: usize) -> bool {
             continue;
         }
         match byte {
-            b'(' | b'[' => delimiters.push(byte),
-            b')' => {
-                if delimiters.last() == Some(&b'(') {
+            b'{' | b'(' | b'[' => delimiters.push(byte),
+            b'}' | b')' | b']' => {
+                let expected = match byte {
+                    b'}' => b'{',
+                    b')' => b'(',
+                    b']' => b'[',
+                    _ => unreachable!(),
+                };
+                if delimiters.last() == Some(&expected) {
                     delimiters.pop();
                 }
-            }
-            b']' if delimiters.last() == Some(&b'[') => {
-                delimiters.pop();
             }
             _ => {}
         }
     }
     let macro_invocation = inside_macro_invocation(text, code, impl_at);
-    if !delimiters.is_empty() && !inside_macro(text, impl_at) && !macro_invocation {
+    if matches!(delimiters.last(), Some(b'(' | b'['))
+        && !inside_macro(text, impl_at)
+        && !macro_invocation
+    {
         return false;
     }
     if macro_invocation {
@@ -1534,5 +1540,21 @@ mod position_and_capture_tests {
             "{error:#}"
         );
         assert!(impl_block("fn outside() {}", 3).is_err());
+    }
+}
+
+#[cfg(test)]
+mod parenthesized_item_probe {
+    use super::*;
+    #[test]
+    fn an_impl_inside_a_block_expression_is_still_an_item() {
+        for source in [
+            "fn main() { let _ = ({ struct Local; impl Local { fn value(&self) {} } 0 }); }",
+            "fn main() { let _ = [{ struct Local; impl Local { fn value(&self) {} } 0 }]; }",
+        ] {
+            let block = impl_block(source, source.find("impl Local").unwrap())
+                .expect("an item inside an expression block is valid");
+            assert_eq!(block.self_ty, "Local");
+        }
     }
 }

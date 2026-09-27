@@ -3592,14 +3592,28 @@ pub fn call() -> u8 {
     checkout.write("src/main.rs", MAIN);
     checkout.write("src/api.rs", API);
     checkout.write("src/callers.rs", CALLERS);
+    let local_body = "{ struct Local(u8); impl Local { fn value(&self, input: impl Copy) -> u8 { let _ = input; self.0 } } Local(9).value(()) }";
+    let local_sources = [
+        (
+            "src/bin/local_parenthesized.rs",
+            format!("fn main() {{ let value = ({local_body}); println!(\"{{value}}\"); }}"),
+        ),
+        (
+            "src/bin/local_array.rs",
+            format!("fn main() {{ let values = [{local_body}]; println!(\"{{}}\", values[0]); }}"),
+        ),
+    ];
+    for (path, source) in &local_sources {
+        checkout.write(path, source);
+    }
     checkout.commit();
     let root = checkout.root();
     let api = checkout.path("src/api.rs");
-    let compile_and_run = || {
+    let compile_and_run = |source: &str| {
         let temp = tempfile::tempdir().unwrap();
         let binary = temp.path().join("opaque-argument-fixture");
         let built = Command::new("rustc")
-            .args(["--edition", "2021", "src/main.rs", "-o"])
+            .args(["--edition", "2021", source, "-o"])
             .arg(&binary)
             .current_dir(&root)
             .output()
@@ -3617,7 +3631,7 @@ pub fn call() -> u8 {
         );
         ran.stdout
     };
-    let before = compile_and_run();
+    let before = compile_and_run("src/main.rs");
     let cursor = API.find("let _").unwrap();
     let line_start = API[..cursor].rfind('\n').map_or(0, |i| i + 1);
     let line = API[..cursor].matches('\n').count() + 1;
@@ -3636,7 +3650,11 @@ pub fn call() -> u8 {
         API,
         "preview writes nothing"
     );
-    assert_eq!(compile_and_run(), before, "preview preserves execution");
+    assert_eq!(
+        compile_and_run("src/main.rs"),
+        before,
+        "preview preserves execution"
+    );
 
     let applied = tool(gateway.addr, &root, "code_extract_trait", args(true)).await;
     assert!(!applied.is_error, "{}", text_of(&applied));
@@ -3655,10 +3673,49 @@ pub fn call() -> u8 {
         text_of(&applied)
     );
     assert_eq!(
-        compile_and_run(),
+        compile_and_run("src/main.rs"),
         before,
         "applied extraction preserves execution"
     );
+
+    for (path, source) in &local_sources {
+        let original_output = compile_and_run(path);
+        assert_eq!(original_output, b"9\n");
+        let cursor = source.find("let _").unwrap();
+        let params = |apply| {
+            serde_json::json!({
+                "path": path, "line": 1,
+                "character": source[..cursor].encode_utf16().count() + 1,
+                "methods": ["value"], "name": "LocalValue", "apply": apply
+            })
+        };
+        let preview = tool(gateway.addr, &root, "code_extract_trait", params(false)).await;
+        assert!(
+            !preview.is_error,
+            "local preview {path}: {}",
+            text_of(&preview)
+        );
+        assert_eq!(
+            std::fs::read_to_string(checkout.path(path)).unwrap(),
+            *source
+        );
+        let applied = tool(gateway.addr, &root, "code_extract_trait", params(true)).await;
+        assert!(
+            !applied.is_error,
+            "local apply {path}: {}",
+            text_of(&applied)
+        );
+        assert!(
+            std::fs::read_to_string(checkout.path(path))
+                .unwrap()
+                .contains("impl LocalValue for Local")
+        );
+        assert_eq!(
+            compile_and_run(path),
+            original_output,
+            "local impl changed execution: {path}"
+        );
+    }
 
     let current_api = std::fs::read_to_string(&api).unwrap();
     let outside = current_api.find("outside").unwrap();
