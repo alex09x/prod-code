@@ -317,7 +317,13 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                 })
                 .await;
                 assert!(shared.has_dead_server());
-                assert!(worker.capabilities.read().await.is_none());
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    while worker.capabilities.read().await.is_some() {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                })
+                .await
+                .expect("retirement clears capabilities after the worker stops");
                 assert_eq!(worker.health_probe_completions(), 0);
             }
             "success" | "error" => {

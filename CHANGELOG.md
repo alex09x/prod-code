@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- Fallback language-server workers also probe initialized idle dispatch (#600). Private
+  probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
+  retire the owned worker. Controlled failures and a real gopls run verify replies before
+  and after scheduled probes. Dedicated editor-server probing and loaded-project stress
+  policy remain open.
 - TypeScript safe-delete supports ordinary private ASCII-named top-level functions in
   contained ES-module projects (#594). Exact native declaration/reference evidence and
   remote TypeScript compilation precede transactional application. Exports, uncertain or
