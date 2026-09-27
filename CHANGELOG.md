@@ -23,6 +23,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Fixture generation requires one distinct type location (#461). Declarations in `lib.rs`,
+  `main.rs` and `mod.rs` are no longer discarded by filename. Ambiguous names list every
+  location and require a declaring-file hint, including separately indexed re-exports.
 - Rust parameter objects preserve destruction order (#441), including types named like
   primitives. Analyzer evidence distinguishes builtin scalars from shadowing types with `Drop`.
   Interleaved owned values and async or older-edition capture cases are refused when bundling
