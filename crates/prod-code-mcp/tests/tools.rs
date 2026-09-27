@@ -4599,3 +4599,115 @@ async fn invalid_rename_coordinates_are_refused_before_any_analyzer_request_or_w
         }
     }
 }
+
+#[tokio::test]
+async fn advertised_position_tools_reject_invalid_numbers_before_dispatch() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let ws = rust_workspace("pub fn old_name() {}\n");
+    let before = std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let remote = scripted_gateway(Arc::new(move |_, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        serde_json::Value::Null
+    }))
+    .await;
+    for tool in prod_code_mcp::tools::list_tools() {
+        for field in ["line", "character", "end_line", "end_character"] {
+            if tool.input_schema["properties"].get(field).is_none() {
+                continue;
+            }
+            assert_eq!(tool.input_schema["properties"][field]["minimum"], 1);
+            assert_eq!(tool.input_schema["properties"][field]["maximum"], u32::MAX);
+            for invalid in [
+                serde_json::json!(0),
+                serde_json::json!(u32::MAX as u64 + 2),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("1"),
+                serde_json::Value::Null,
+            ] {
+                let mut args = serde_json::json!({"path":"src/lib.rs", "line":1, "character":8, "end_line":1, "end_character":9, "new_name":"changed", "id":"extract_variable", "force":true, "apply":true});
+                args[field] = invalid;
+                let error = execute_tool(remote, &ws.root(), &tool.name, args)
+                    .await
+                    .expect_err("invalid position must precede all other dispatch");
+                assert!(
+                    error.to_string().contains("one-based coordinate"),
+                    "{} {field}: {error:#}",
+                    tool.name
+                );
+            }
+        }
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn an_assist_refuses_partial_and_backwards_selections_without_writing() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let before = "pub fn a() { 1 + 1; }\n";
+    let ws = rust_workspace(before);
+    let path = ws.root().join("src/lib.rs");
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = requests.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        match method {
+            "prodCode/applyAssist" => {
+                answers::whole_file(&path, before, "pub fn a() { let x = 1 + 1; }\n")
+            }
+            _ => serde_json::Value::Null,
+        }
+    }))
+    .await;
+    for extra in [
+        serde_json::json!({"end_line":1}),
+        serde_json::json!({"end_character":14}),
+        serde_json::json!({"end_line":1,"end_character":13}),
+    ] {
+        let mut args = serde_json::json!({"path":"src/lib.rs","line":1,"character":14,"id":"extract_variable"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let result = execute_tool(remote, &ws.root(), "code_assist", args).await;
+        assert!(result.is_err(), "invalid selection: {result:?}");
+        assert_eq!(
+            std::fs::read_to_string(ws.root().join("src/lib.rs")).unwrap(),
+            before
+        );
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn primary_review_zero_assist_line_must_not_apply_to_first_line() {
+    let ws = workspace();
+    let before = "pub fn a() { 1 + 1; }\n";
+    let lib = write(&ws, "src/lib.rs", before);
+    commit(&ws);
+    let path = lib.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "prodCode/applyAssist" => {
+            answers::whole_file(&path, before, "pub fn a() { let x = 1 + 1; }\n")
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_assist",
+        serde_json::json!({"path":"src/lib.rs","line":0,"character":14,"id":"extract_variable"}),
+    )
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        before,
+        "invalid one-based line applied an action to a different position: {result:?}"
+    );
+}

@@ -31,6 +31,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- All MCP tools with source positions reject zero, overflowing or malformed coordinates
+  before dispatch (#500). Selection endpoints must be supplied together and cannot precede
+  the start; CLI assist application shares the same guard. Discovery schemas advertise bounds.
 - Linux overlay shadow commands drop mount-time namespace capabilities before running (#491),
   so read-only files are refused as in ordinary execution. Overlay support now requires
   `setpriv` on the gateway PATH; the capability probe reports when it is unavailable.
