@@ -45,6 +45,24 @@ async fn hover_before_and_after_probes(
     character: u32,
 ) {
     config.health_probe_interval = Some(Duration::from_millis(100));
+    #[cfg(unix)]
+    let pid_file = root.join("native-server.pid");
+    #[cfg(unix)]
+    {
+        let command = std::mem::replace(&mut config.command, "/bin/sh".to_string());
+        let args = std::mem::take(&mut config.args);
+        config.args = vec![
+            "-c".to_string(),
+            "printf '%s\\n' \"$$\" > \"$PROD_CODE_NATIVE_PID_FILE\"; exec \"$@\"".to_string(),
+            "owned-native-server".to_string(),
+            command,
+        ];
+        config.args.extend(args);
+        config.env.insert(
+            "PROD_CODE_NATIVE_PID_FILE".to_string(),
+            pid_file.to_string_lossy().into_owned(),
+        );
+    }
     let engine = GenericLspEngine::spawn(root, config)
         .await
         .expect("the required native language server initializes");
@@ -89,7 +107,31 @@ async fn hover_before_and_after_probes(
         text,
         "health probing leaves the fixture source hash/content unchanged"
     );
+    #[cfg(unix)]
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("owned native PID")
+        .trim()
+        .parse()
+        .expect("native PID is numeric");
     drop(engine);
+    #[cfg(unix)]
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let status = std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("inspect the exact owned native PID");
+            if !status.success() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("dropping the adapter reaps its exact native child");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

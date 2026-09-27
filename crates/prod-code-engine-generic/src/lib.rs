@@ -1146,6 +1146,14 @@ impl GenericLspEngine {
                 let Some(ids_allocator) = next_probe_id.upgrade() else {
                     break;
                 };
+                let Some(epoch) = ordinary_epoch.upgrade() else {
+                    break;
+                };
+                let activity_before_wait = epoch.load(Ordering::Acquire);
+                let Some(state) = probe_state.upgrade() else {
+                    break;
+                };
+                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 let sequence = ids_allocator.fetch_add(1, Ordering::AcqRel);
                 let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
                 let payload = serde_json::json!({
@@ -1205,14 +1213,6 @@ impl GenericLspEngine {
                 drop(health_pending_slot);
                 drop(pending_requests);
 
-                let Some(epoch) = ordinary_epoch.upgrade() else {
-                    break;
-                };
-                let activity_before_wait = epoch.load(Ordering::Acquire);
-                let Some(state) = probe_state.upgrade() else {
-                    break;
-                };
-                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 match tokio::time::timeout_at(deadline, rx).await {
                     Ok(Ok(response)) if valid_health_response(&response, &id) => {}
                     Ok(Ok(_)) => {

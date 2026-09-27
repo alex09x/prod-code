@@ -736,6 +736,14 @@ impl GoEngine {
                 let Some(ids_allocator) = next_probe_id.upgrade() else {
                     break;
                 };
+                let Some(epoch) = ordinary_epoch.upgrade() else {
+                    break;
+                };
+                let activity_before_wait = epoch.load(Ordering::Acquire);
+                let Some(state) = probe_state.upgrade() else {
+                    break;
+                };
+                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 let sequence = ids_allocator.fetch_add(1, Ordering::AcqRel);
                 let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
                 let payload = serde_json::json!({
@@ -796,14 +804,6 @@ impl GoEngine {
                 drop(health_pending_slot);
                 drop(pending_requests);
 
-                let Some(epoch) = ordinary_epoch.upgrade() else {
-                    break;
-                };
-                let activity_before_wait = epoch.load(Ordering::Acquire);
-                let Some(state) = probe_state.upgrade() else {
-                    break;
-                };
-                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 match tokio::time::timeout_at(deadline, rx).await {
                     Ok(Ok(response)) if valid_health_response(&response, &id) => {}
                     Ok(Ok(_)) => {
@@ -1814,6 +1814,15 @@ func main() {
             ..Default::default()
         };
         let engine = GoEngine::load(dir.path(), config).await.unwrap();
+        #[cfg(unix)]
+        let native_pid_file = {
+            let native_pid = lock_unpoisoned(&engine._child)
+                .id()
+                .expect("owned native gopls PID");
+            let path = dir.path().join("native-gopls.pid");
+            std::fs::write(&path, native_pid.to_string()).unwrap();
+            path
+        };
 
         let file_path = dir.path().join("main.go");
         let file_uri = format!("file://{}", file_path.to_string_lossy());
@@ -1864,6 +1873,9 @@ func main() {
         let refs = engine.references(&file_uri, 4, 6).await.unwrap();
         assert!(refs.is_array());
         assert!(refs.as_array().unwrap().len() >= 2);
+        drop(engine);
+        #[cfg(unix)]
+        assert_process_exits(&native_pid_file).await;
     }
 
     /// The first `workspace/symbol` of a fresh gopls waits for its package loading and finds
@@ -2293,6 +2305,100 @@ func main() {
             assert!(!engine.is_alive());
             assert_process_exits(&dir.path().join("pid")).await;
         }
+    }
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn primary_delayed_probe_without_ordinary_traffic_stays_alive() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay")),
+            Duration::from_millis(40),
+            Duration::from_millis(60),
+        )
+        .await;
+        let seen_file = dir.path().join("seen");
+        let observation = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let seen = std::fs::read_to_string(&seen_file).unwrap_or_default();
+                let scheduled = seen
+                    .lines()
+                    .filter(|method| *method == HEALTH_PROBE_METHOD)
+                    .count();
+                if !engine.is_alive() || scheduled >= 5 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        let seen = std::fs::read_to_string(&seen_file).expect("probe log");
+        let scheduled = seen
+            .lines()
+            .filter(|method| *method == HEALTH_PROBE_METHOD)
+            .count();
+        let alive = engine.is_alive();
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
+        assert!(
+            alive,
+            "valid matching delayed probe replies must keep the responsive generation alive without ordinary traffic: {seen}"
+        );
+        assert!(
+            observation.is_ok(),
+            "scheduled probes must settle within their absolute observation budget: {seen}"
+        );
+        assert!(
+            scheduled >= 5,
+            "five scheduled probes reached the controlled server: {seen}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_blocked_scheduled_probe_write_retires_its_exact_owned_child() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_STOP_READING", "1")),
+            Duration::from_millis(80),
+            Duration::from_millis(50),
+        )
+        .await;
+        let mut writer = engine.stdin.lock().await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap_or_default();
+                if seen.lines().any(|method| method == "initialized") {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("controlled child stops reading after initialization");
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(30);
+        loop {
+            match tokio::time::timeout_at(deadline, writer.write(&[b'x'; 8192])).await {
+                Ok(Ok(0)) => panic!("the owned pipe unexpectedly closed"),
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("filling the controlled pipe failed: {error}"),
+                Err(_) => break,
+            }
+        }
+        drop(writer);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the complete probe write budget retires the stalled stream");
+        let refusal = engine
+            .send_notification("prodCode/afterRetirement", serde_json::json!({}))
+            .await;
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
+        assert!(
+            refusal.is_err(),
+            "a queued notification cannot reuse the retired probe stream"
+        );
     }
 }
 
