@@ -70,6 +70,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Session registry tracking active client IDs, workspace paths, and leased resources.
   - Failed handshakes and canceled shared sessions retire their counted resources (#583);
     overlays are restored before workspace and worktree ownership is released.
+  - Shared-session socket output has a bounded queue, per-frame deadline and owned writer
+    teardown (#598); an unread connected peer cannot block another session.
   - Non-blocking status reporting endpoint (`prod-code status`) returning instant JSON health snapshots.
   - Status (audited 2026-09-26): `prod-code status --json` and `prod-code cluster --json` followed on 2026-09-26 (#398). The status carries engines, sessions, running commands, the host's memory and disk, `healthy` and `pressure`; the cluster snapshot carries the gossip view and each node's snapshot or error.
 
