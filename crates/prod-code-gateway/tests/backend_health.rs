@@ -1,11 +1,123 @@
 use prod_code_gateway::backend::BackendWorker;
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::process::ExitStatus;
 use std::sync::Arc;
 use std::time::Duration;
+#[cfg(unix)]
+use tokio::io::AsyncReadExt;
 
 const INTERVAL: Duration = Duration::from_millis(25);
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(55);
 const PROBE_PREFIX: &str = "prod-code-backend-health:";
+
+#[cfg(unix)]
+struct FixtureGroup(libc::pid_t);
+
+#[cfg(unix)]
+impl FixtureGroup {
+    fn new(child: &tokio::process::Child) -> Self {
+        Self(child.id().expect("spawned fixture pid") as libc::pid_t)
+    }
+
+    fn retire(&self) -> std::io::Result<()> {
+        let result = unsafe { libc::kill(-self.0, libc::SIGKILL) };
+        if result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for FixtureGroup {
+    fn drop(&mut self) {
+        let _ = self.retire();
+    }
+}
+
+#[cfg(unix)]
+struct FixtureRun {
+    status: ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+}
+
+#[cfg(unix)]
+async fn finish_capture(
+    task: &mut tokio::task::JoinHandle<std::io::Result<Vec<u8>>>,
+    deadline: tokio::time::Instant,
+    stream: &str,
+) -> Result<Vec<u8>, String> {
+    match tokio::time::timeout_at(deadline, &mut *task).await {
+        Ok(Ok(Ok(bytes))) => Ok(bytes),
+        Ok(Ok(Err(error))) => Err(format!("failed reading fixture {stream}: {error}")),
+        Ok(Err(error)) => Err(format!("fixture {stream} reader failed: {error}")),
+        Err(_) => {
+            task.abort();
+            let _ = task.await;
+            Err(format!("timed out draining fixture {stream}"))
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn run_fixture_child(
+    mut child: tokio::process::Child,
+    group: FixtureGroup,
+    watchdog: Duration,
+) -> Result<FixtureRun, String> {
+    const MAX_CAPTURE: u64 = 1024 * 1024;
+    let stdout = child.stdout.take().ok_or("fixture stdout was not piped")?;
+    let stderr = child.stderr.take().ok_or("fixture stderr was not piped")?;
+    let mut stdout_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stdout.take(MAX_CAPTURE).read_to_end(&mut bytes).await?;
+        Ok(bytes)
+    });
+    let mut stderr_task = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        stderr.take(MAX_CAPTURE).read_to_end(&mut bytes).await?;
+        Ok(bytes)
+    });
+
+    let waited = tokio::time::timeout(watchdog, child.wait()).await;
+    let timed_out = waited.is_err();
+    let retire_result = group.retire();
+    let cleanup_deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let status = match waited {
+        Ok(status) => status.map_err(|error| format!("failed waiting for fixture: {error}")),
+        Err(_) => match tokio::time::timeout_at(cleanup_deadline, child.wait()).await {
+            Ok(Ok(status)) => Ok(status),
+            Ok(Err(error)) => Err(format!("failed reaping fixture leader: {error}")),
+            Err(_) => Err("timed out reaping fixture leader".to_string()),
+        },
+    };
+    let stdout = finish_capture(&mut stdout_task, cleanup_deadline, "stdout").await;
+    let stderr = finish_capture(&mut stderr_task, cleanup_deadline, "stderr").await;
+    let group_gone = tokio::time::timeout_at(cleanup_deadline, async {
+        loop {
+            let result = unsafe { libc::kill(-group.0, 0) };
+            if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(|_| "timed out retiring fixture process group".to_string());
+    drop(group);
+    retire_result.map_err(|error| format!("failed retiring fixture process group: {error}"))?;
+    group_gone?;
+    Ok(FixtureRun {
+        status: status?,
+        stdout: stdout?,
+        stderr: stderr?,
+        timed_out,
+    })
+}
 
 async fn wait_until(deadline: Duration, description: &str, mut ready: impl FnMut() -> bool) {
     tokio::time::timeout(deadline, async {
@@ -30,17 +142,28 @@ async fn receive_id(
     replies: &mut tokio::sync::broadcast::Receiver<String>,
     id: u64,
 ) -> serde_json::Value {
+    receive_matching(replies, &format!("response {id}"), |value| {
+        value.get("id").and_then(serde_json::Value::as_u64) == Some(id)
+    })
+    .await
+}
+
+async fn receive_matching(
+    replies: &mut tokio::sync::broadcast::Receiver<String>,
+    description: &str,
+    matches: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let message = replies.recv().await.expect("response stream remains open");
             let value: serde_json::Value = serde_json::from_str(&message).expect("response JSON");
-            if value.get("id").and_then(serde_json::Value::as_u64) == Some(id) {
+            if matches(&value) {
                 return value;
             }
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("timed out waiting for response {id}"))
+    .unwrap_or_else(|_| panic!("timed out waiting for {description}"))
 }
 
 fn assert_no_private_frames(replies: &mut tokio::sync::broadcast::Receiver<String>) {
@@ -49,6 +172,22 @@ fn assert_no_private_frames(replies: &mut tokio::sync::broadcast::Receiver<Strin
             !message.contains(PROBE_PREFIX),
             "private health identity leaked to a subscriber: {message}"
         );
+    }
+}
+
+fn assert_only_private_server_requests(replies: &mut tokio::sync::broadcast::Receiver<String>) {
+    while let Ok(message) = replies.try_recv() {
+        if message.contains(PROBE_PREFIX) {
+            let value: serde_json::Value =
+                serde_json::from_str(&message).expect("private frame JSON");
+            assert!(
+                value
+                    .get("method")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some(),
+                "private probe response leaked to a subscriber: {message}"
+            );
+        }
     }
 }
 
@@ -64,6 +203,63 @@ async fn controlled_worker(workspace: &std::path::Path) -> Arc<BackendWorker> {
         .await
         .expect("controlled backend initializes"),
     )
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fixture_watchdog_retires_pipe_holding_process_groups() {
+    let workspace = tempfile::tempdir().expect("watchdog workspace");
+    let descendant_pid = workspace.path().join("descendant.pid");
+    let mut early = tokio::process::Command::new("sh");
+    early
+        .args([
+            "-c",
+            r#"sh -c 'trap "" TERM; printf "%s" "$$" > "$1"; while :; do sleep 1; done' sh "$1" & while [ ! -s "$1" ]; do :; done; exit 7"#,
+            "sh",
+        ])
+        .arg(&descendant_pid)
+        .process_group(0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let early = early.spawn().expect("early-exit fixture");
+    let early_group = FixtureGroup::new(&early);
+    let output = run_fixture_child(early, early_group, Duration::from_millis(500))
+        .await
+        .expect("early-exit fixture is retired and drained");
+    assert!(!output.timed_out);
+    assert_eq!(output.status.code(), Some(7));
+    let pid = std::fs::read_to_string(&descendant_pid)
+        .expect("descendant pid")
+        .parse()
+        .expect("numeric descendant pid");
+    wait_reaped(pid).await;
+
+    let leader_pid = workspace.path().join("leader.pid");
+    let mut stalled = tokio::process::Command::new("sh");
+    stalled
+        .args([
+            "-c",
+            r#"trap "" TERM; printf "%s" "$$" > "$1"; while :; do sleep 1; done"#,
+            "sh",
+        ])
+        .arg(&leader_pid)
+        .process_group(0)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let stalled = stalled.spawn().expect("stalled fixture");
+    let stalled_group = FixtureGroup::new(&stalled);
+    let output = run_fixture_child(stalled, stalled_group, Duration::from_millis(75))
+        .await
+        .expect("timed-out fixture is retired, reaped, and drained");
+    assert!(output.timed_out);
+    assert!(!output.status.success());
+    let pid = std::fs::read_to_string(&leader_pid)
+        .expect("leader pid")
+        .parse()
+        .expect("numeric leader pid");
+    wait_reaped(pid).await;
 }
 
 #[cfg(unix)]
@@ -149,7 +345,7 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                 )
                 .await;
                 assert_eq!(worker.health_probe_completions(), 0);
-                assert_no_private_frames(&mut replies);
+                assert_only_private_server_requests(&mut replies);
             }
             "activity" => {
                 for id in 10..18 {
@@ -201,6 +397,78 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                 .await;
                 assert!(worker.retained_health_responses() <= 1);
                 assert_no_private_frames(&mut replies);
+            }
+            "identity" => {
+                let observed = receive_matching(&mut replies, "observed health probe", |value| {
+                    value["method"] == "fixture/observedProbe"
+                })
+                .await;
+                let private_id = observed["params"]["id"]
+                    .as_str()
+                    .expect("fixture reports the private string id")
+                    .to_owned();
+                wait_until(Duration::from_millis(300), "validated health probe", || {
+                    worker.health_probe_completions() >= 1
+                })
+                .await;
+
+                for ordinary_id in [
+                    "prod-code-backend-health:1",
+                    "prod-code-backend-health:999999",
+                ] {
+                    worker
+                        .send_lsp(
+                            &serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": ordinary_id,
+                                "method": "fixture/ping"
+                            })
+                            .to_string(),
+                        )
+                        .await
+                        .expect("legacy prefix is a legal ordinary string id");
+                    let pong = receive_matching(&mut replies, "ordinary prefixed reply", |value| {
+                        value["id"] == ordinary_id
+                    })
+                    .await;
+                    assert_eq!(pong["result"], "pong");
+                }
+
+                let collision = worker
+                    .send_lsp(
+                        &serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": private_id,
+                            "method": "fixture/ping"
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .expect_err("an allocated private identity is rejected before writing");
+                assert!(
+                    collision.to_string().contains("health probe"),
+                    "{collision:#}"
+                );
+
+                worker
+                    .send_lsp(r#"{"jsonrpc":"2.0","id":700,"method":"fixture/collide"}"#)
+                    .await
+                    .expect("collision trigger is written");
+                assert_eq!(receive_id(&mut replies, 700).await["result"], "pong");
+                let request = receive_matching(
+                    &mut replies,
+                    "server request reusing a private identity",
+                    |value| {
+                        value["id"] == private_id && value["method"] == "workspace/configuration"
+                    },
+                )
+                .await;
+                assert_eq!(request["params"]["items"], serde_json::json!([]));
+                receive_matching(&mut replies, "handled collision notification", |value| {
+                    value["method"] == "fixture/probeCollisionHandled"
+                })
+                .await;
+                assert!(worker.is_alive());
             }
             "drop" => {}
             other => panic!("unknown fixture mode {other}"),
@@ -255,8 +523,11 @@ while True:
         break
     method = request.get('method')
     if method == 'prodCode/healthProbe':
-        if mode in ('success', 'flood', 'drop'):
+        if mode in ('success', 'flood', 'drop', 'identity'):
             send({'jsonrpc': '2.0', 'id': request['id'], 'result': None})
+            if mode == 'identity' and 'actual_probe_id' not in globals():
+                actual_probe_id = request['id']
+                send({'jsonrpc': '2.0', 'method': 'fixture/observedProbe', 'params': {'id': actual_probe_id}})
         elif mode == 'error':
             send({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'unknown method'}})
         elif mode == 'late':
@@ -270,6 +541,12 @@ while True:
             send({'jsonrpc': '2.0', 'id': request['id'], 'result': None, 'error': {'code': -1, 'message': 'both'}})
     elif method == 'fixture/ping':
         send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'pong'})
+    elif method == 'fixture/collide':
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': 'pong'})
+        send({'jsonrpc': '2.0', 'id': actual_probe_id, 'method': 'workspace/configuration', 'params': {'items': []}})
+        reply = read()
+        assert reply['id'] == actual_probe_id and reply['result'] == [], reply
+        send({'jsonrpc': '2.0', 'method': 'fixture/probeCollisionHandled'})
     elif method == 'fixture/lost':
         pass
 "#,
@@ -290,6 +567,7 @@ while True:
         "malformed",
         "activity",
         "flood",
+        "identity",
         "drop",
         "cancel-init",
     ] {
@@ -307,15 +585,18 @@ while True:
             .kill_on_drop(true)
             .spawn()
             .expect("fixture test child");
-        let group = child.id().expect("pid") as libc::pid_t;
-        let output = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+        let group = FixtureGroup::new(&child);
+        let output = run_fixture_child(child, group, Duration::from_secs(10))
             .await
-            .unwrap_or_else(|_| panic!("{mode}: fixture test exceeded watchdog"))
-            .expect("fixture output");
-        unsafe { libc::kill(-group, libc::SIGKILL) };
-        if !output.status.success() {
+            .unwrap_or_else(|error| panic!("{mode}: {error}"));
+        if output.timed_out || !output.status.success() {
             failures.push(format!(
-                "{mode}: {}{}",
+                "{mode}{}: {}{}",
+                if output.timed_out {
+                    " (watchdog timeout)"
+                } else {
+                    ""
+                },
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             ));

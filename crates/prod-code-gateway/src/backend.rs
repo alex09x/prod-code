@@ -18,6 +18,7 @@ const MAX_IDLE_PROBE_TIMEOUTS: usize = 3;
 const HEALTH_PROBE_METHOD: &str = "prodCode/healthProbe";
 const HEALTH_PROBE_ID_PREFIX: &str = "prod-code-backend-health:";
 const MAX_RETAINED_DISPATCH_IDENTITIES: usize = 256;
+static NEXT_HEALTH_PROBE_NAMESPACE: AtomicU64 = AtomicU64::new(1);
 
 fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -54,14 +55,10 @@ impl Drop for ProbePending {
     }
 }
 
-fn health_probe_sequence(response: &serde_json::Value, next_probe_id: u64) -> Option<u64> {
-    let suffix = response
-        .get("id")?
-        .as_str()?
-        .strip_prefix(HEALTH_PROBE_ID_PREFIX)?;
+fn health_probe_sequence(id: &serde_json::Value, id_prefix: &str) -> Option<u64> {
+    let suffix = id.as_str()?.strip_prefix(id_prefix)?;
     let sequence = suffix.parse::<u64>().ok()?;
-    (sequence != 0 && sequence < next_probe_id && sequence.to_string() == suffix)
-        .then_some(sequence)
+    (sequence != 0 && sequence.to_string() == suffix).then_some(sequence)
 }
 
 fn valid_dispatch_response(response: &serde_json::Value) -> bool {
@@ -195,6 +192,7 @@ struct FrameWriter {
     last_activity: Arc<StdMutex<Instant>>,
     probe_state: Arc<StdMutex<ProbeState>>,
     issued_requests: Arc<StdMutex<IssuedRequestHistory>>,
+    health_probe_id_prefix: Arc<str>,
 }
 
 impl FrameWriter {
@@ -231,10 +229,7 @@ impl FrameWriter {
             self.engine
         );
 
-        self.ordinary_epoch.fetch_add(1, Ordering::AcqRel);
-        *lock_unpoisoned(&self.last_activity) = Instant::now();
-        lock_unpoisoned(&self.probe_state).consecutive_timeouts = 0;
-        let mut registration = serde_json::from_str::<serde_json::Value>(json_payload)
+        let ordinary_request = serde_json::from_str::<serde_json::Value>(json_payload)
             .ok()
             .filter(|value| {
                 value.get("jsonrpc").and_then(serde_json::Value::as_str) == Some("2.0")
@@ -243,15 +238,26 @@ impl FrameWriter {
                         .and_then(serde_json::Value::as_str)
                         .is_some()
                     && value.get("id").is_some_and(|id| !id.is_null())
-            })
-            .map(|value| {
-                let token = lock_unpoisoned(&self.issued_requests).insert(value["id"].clone());
-                IssuedRequestRegistration {
-                    history: Arc::downgrade(&self.issued_requests),
-                    token,
-                    committed: false,
-                }
             });
+        if let Some(request) = &ordinary_request {
+            anyhow::ensure!(
+                health_probe_sequence(&request["id"], &self.health_probe_id_prefix).is_none(),
+                "request id is reserved for private {} backend health probes",
+                self.engine
+            );
+        }
+
+        self.ordinary_epoch.fetch_add(1, Ordering::AcqRel);
+        *lock_unpoisoned(&self.last_activity) = Instant::now();
+        lock_unpoisoned(&self.probe_state).consecutive_timeouts = 0;
+        let mut registration = ordinary_request.map(|value| {
+            let token = lock_unpoisoned(&self.issued_requests).insert(value["id"].clone());
+            IssuedRequestRegistration {
+                history: Arc::downgrade(&self.issued_requests),
+                token,
+                committed: false,
+            }
+        });
 
         self.write_frame_with_timeout(json_payload, timeout).await?;
         if let Some(registration) = &mut registration {
@@ -486,6 +492,10 @@ impl BackendWorker {
         let last_activity = Arc::new(StdMutex::new(Instant::now()));
         let probe_state = Arc::new(StdMutex::new(ProbeState::default()));
         let next_probe_id = Arc::new(AtomicU64::new(1));
+        let health_probe_id_prefix: Arc<str> = Arc::from(format!(
+            "{HEALTH_PROBE_ID_PREFIX}{}:",
+            NEXT_HEALTH_PROBE_NAMESPACE.fetch_add(1, Ordering::Relaxed)
+        ));
         let health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>> =
             Arc::new(StdMutex::new(None));
         let issued_requests = Arc::new(StdMutex::new(IssuedRequestHistory::default()));
@@ -501,12 +511,14 @@ impl BackendWorker {
             last_activity: Arc::clone(&last_activity),
             probe_state: Arc::clone(&probe_state),
             issued_requests: Arc::clone(&issued_requests),
+            health_probe_id_prefix: Arc::clone(&health_probe_id_prefix),
         };
         let reader_writer = writer.clone();
         let reader_ordinary_epoch = Arc::clone(&ordinary_epoch);
         let reader_last_activity = Arc::clone(&last_activity);
         let reader_probe_state = Arc::clone(&probe_state);
         let reader_next_probe_id = Arc::clone(&next_probe_id);
+        let reader_health_probe_id_prefix = Arc::clone(&health_probe_id_prefix);
         let reader_health_pending = Arc::clone(&health_probe_pending);
         let reader_issued_requests = Arc::clone(&issued_requests);
 
@@ -526,8 +538,15 @@ impl BackendWorker {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
                     let id = val.get("id");
                     let method = val.get("method").and_then(|m| m.as_str());
-                    let probe_sequence =
-                        health_probe_sequence(&val, reader_next_probe_id.load(Ordering::Acquire));
+                    let probe_identity_sequence = id
+                        .and_then(|id| health_probe_sequence(id, &reader_health_probe_id_prefix))
+                        .filter(|sequence| {
+                            *sequence < reader_next_probe_id.load(Ordering::Acquire)
+                        });
+                    let probe_sequence = method
+                        .is_none()
+                        .then_some(probe_identity_sequence)
+                        .flatten();
                     if method.is_none()
                         && let (Some(id), Some(sequence)) =
                             (id.and_then(serde_json::Value::as_str), probe_sequence)
@@ -553,9 +572,9 @@ impl BackendWorker {
                                 let _ = response.send(val);
                             }
                         }
-                        // Every issued private identity remains classifiable from the bounded
-                        // sequence range after its one pending slot is cleared. Invalid and late
-                        // probe replies therefore never leak into editor subscriptions.
+                        // Every issued private identity remains classifiable from this worker's
+                        // private namespace after its one pending slot is cleared. Invalid and
+                        // late probe replies therefore never leak into editor subscriptions.
                         continue;
                     }
 
@@ -571,7 +590,7 @@ impl BackendWorker {
                                 &reader_probe_state,
                             );
                         }
-                    } else if probe_sequence.is_none()
+                    } else if probe_identity_sequence.is_none()
                         && val.get("jsonrpc").and_then(serde_json::Value::as_str) == Some("2.0")
                     {
                         // Genuine server requests, progress and indexing notifications defer
@@ -711,6 +730,7 @@ impl BackendWorker {
         let next_probe_id = Arc::downgrade(&self.next_probe_id);
         let health_pending = Arc::downgrade(&self.health_probe_pending);
         let issued_requests = Arc::downgrade(&self.issued_requests);
+        let health_probe_id_prefix = Arc::clone(&self.writer.health_probe_id_prefix);
         let engine = Arc::clone(&self.writer.engine);
 
         self.health_task = Some(OwnedTask(tokio::spawn(async move {
@@ -755,7 +775,7 @@ impl BackendWorker {
                     break;
                 };
                 let sequence = ids.fetch_add(1, Ordering::AcqRel);
-                let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
+                let id = format!("{health_probe_id_prefix}{sequence}");
                 let Some(pending_slot) = health_pending.upgrade() else {
                     break;
                 };
@@ -785,6 +805,7 @@ impl BackendWorker {
                     last_activity: Arc::clone(&activity),
                     probe_state: Arc::clone(&state),
                     issued_requests: history,
+                    health_probe_id_prefix: Arc::clone(&health_probe_id_prefix),
                 };
                 let payload = serde_json::json!({
                     "jsonrpc": "2.0",
