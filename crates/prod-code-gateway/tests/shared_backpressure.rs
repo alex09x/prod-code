@@ -167,12 +167,39 @@ async fn next_message(client: &mut Framed<TcpStream, ProdCodeCodec>) -> WireMess
         .expect("valid shared response")
 }
 
+async fn wait_for_large_response_header(client: &Framed<TcpStream, ProdCodeCodec>) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let mut header = [0u8; 4];
+    loop {
+        let peeked = tokio::time::timeout_at(deadline, client.get_ref().peek(&mut header))
+            .await
+            .expect("large response header deadline")
+            .expect("peek large response header");
+        if peeked < header.len() {
+            tokio::task::yield_now().await;
+            continue;
+        }
+        let advertised = u32::from_be_bytes(header) as usize;
+        assert!(
+            advertised > 8 * 1024 * 1024,
+            "large response advertises {advertised} bytes"
+        );
+        return;
+    }
+}
+
 async fn next_response_id(
     client: &mut Framed<TcpStream, ProdCodeCodec>,
     expected: serde_json::Value,
 ) {
+    let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        let WireMessage::LspPayload(raw) = next_message(client).await else {
+        let WireMessage::LspPayload(raw) = tokio::time::timeout_at(deadline, client.next())
+            .await
+            .expect("shared response-id deadline")
+            .expect("shared connection remains open")
+            .expect("valid shared response")
+        else {
             continue;
         };
         let response: serde_json::Value = serde_json::from_str(&raw).expect("JSON response");
@@ -204,6 +231,11 @@ async fn unread_connected_client_cannot_hold_shared_handler_after_disconnect() {
         ))
         .await
         .expect("queue large initialize request");
+    client
+        .flush()
+        .await
+        .expect("flush large initialize request");
+    wait_for_large_response_header(&client).await;
 
     // A second client remains fully responsive while the first writer is blocked. Exercise both
     // control and ordinary finite LSP responses before cleanly draining its final response.
@@ -408,8 +440,12 @@ async fn unread_connected_client_cannot_hold_shared_handler_after_disconnect() {
             .to_string(),
         ))
         .await
-        .expect("send cancellation probe");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+        .expect("queue cancellation probe");
+    cancel_client
+        .flush()
+        .await
+        .expect("flush cancellation probe");
+    wait_for_large_response_header(&cancel_client).await;
     cancel_handler.abort_and_join().await;
     wait_for_writers(0).await;
     drop(cancel_client);
