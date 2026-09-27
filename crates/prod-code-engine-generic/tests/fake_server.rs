@@ -107,6 +107,11 @@ while True:
         # The build of the opened text finds nothing, and says so, for its version, a moment later.
         document = message["params"]["textDocument"]
         threading.Timer(0.4, publish_items, (document["uri"], document["version"], [])).start()
+    elif method == "textDocument/didOpen" and os.environ.get("FAKE_ECHO_CHANGE"):
+        # Ownership probes compare exact text. Version their first publication too so an
+        # in-flight unversioned open cannot race a subsequent restore notification.
+        document = message["params"]["textDocument"]
+        publish(document["uri"], document["version"], document["text"])
     elif method == "textDocument/didOpen":
         uri = message["params"]["textDocument"]["uri"]
         send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {
