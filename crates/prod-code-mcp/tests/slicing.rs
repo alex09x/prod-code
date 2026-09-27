@@ -246,7 +246,10 @@ async fn slice_stops_at_the_byte_budget_and_counts_what_it_left_out() {
     );
     assert_eq!(report.truncated, 1);
     assert!(
-        report.render().contains("further item(s) omitted"),
+        report.render().contains(&format!(
+            "byte budget of {} bytes reached: 1 queued item(s) left out",
+            seed.len()
+        )),
         "{}",
         report.render()
     );
