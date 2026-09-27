@@ -31,6 +31,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Native Rust-engine and editor position conversion now treat CRLF as one logical line break
+  (#456). UTF-16 columns cannot name the byte between `\r` and `\n`; end-of-line and next-line
+  positions agree in both conversion directions, while split-surrogate and out-of-line positions
+  remain refused.
 - The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
   to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
   missing/malformed items, error responses and uncached unchanged reports stay refused.

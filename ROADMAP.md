@@ -405,7 +405,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     in a shadow of the workspace and writes only what the compiler accepts too. The applicator is
     transactional for text edits since #70. The #425 repair extends rollback across ordered create,
     rename and delete operations, uses UTF-16 columns, rechecks containment after directory moves,
-    and removes backups from their final paths. Rust outcomes send rewrites before moves. Resource
+    and removes backups from their final paths. Rust outcomes send rewrites before moves. The
+    #456 coordinate repair makes planner and native-editor positions UTF-16, with strict source
+    line bounds: CRLF is one logical break and no position can split it or a surrogate pair.
+    Resource
     operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
     a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.

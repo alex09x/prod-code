@@ -2156,9 +2156,9 @@ impl RustEngine {
 
 /// Convert 1-indexed (line, col) to 0-indexed byte offset. The column counts UTF-16 code units,
 /// as the LSP positions the gateway answers with do (#456); one between the two halves of a
-/// surrogate pair is on no character. A `\r` before a line's `\n` stays part of the line, so its
-/// column counts it too. A zero line or column, or a column past the end of its own line (rather
-/// than clamped into whatever text follows), is on no position: `None`, never a nearby offset.
+/// surrogate pair is on no character. A CRLF pair is one line break, so neither byte adds a
+/// source column. A zero line or column, or a column past the end of its own line (rather than
+/// clamped into whatever text follows), is on no position: `None`, never a nearby offset.
 fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<TextSize> {
     if target_line == 0 || target_col == 0 {
         return None;
@@ -2173,6 +2173,12 @@ fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<T
             let line_end = text[line_start..]
                 .find('\n')
                 .map_or(text.len(), |rel| line_start + rel);
+            // A CR immediately before LF is part of the line encoding, not a source column.
+            let line_end = if line_end > line_start && text.as_bytes()[line_end - 1] == b'\r' {
+                line_end - 1
+            } else {
+                line_end
+            };
             let line_slice = &text[line_start..line_end];
             let mut current_col = 1u32;
             for (col_offset, ch) in line_slice.char_indices() {
@@ -2231,6 +2237,8 @@ fn imported_in_scope(node: &ra_ap_syntax::SyntaxNode, name: &str) -> bool {
 }
 
 /// Convert 0-indexed byte offset to 1-indexed (line, col), the column in UTF-16 code units.
+/// A CRLF pair is one logical line break, so an offset at either delimiter never produces a
+/// position between them.
 fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     let target = usize::from(offset);
     let mut line = 1;
@@ -2243,7 +2251,7 @@ fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
         if c == '\n' {
             line += 1;
             col = 1;
-        } else {
+        } else if c != '\r' || text.as_bytes().get(i + 1) != Some(&b'\n') {
             col += c.len_utf16() as u32;
         }
     }
@@ -2384,7 +2392,7 @@ mod tests {
 
     /// The columns the gateway answers LSP queries with count UTF-16 units, as a language
     /// server's do: past 😀, two of them, the column is one more than the character count, and a
-    /// CRLF break keeps both of its bytes (#456).
+    /// CRLF pair is one line break (#456).
     #[test]
     fn columns_count_utf16_units() {
         let text = "fn a() {}\r\nfn f(😀: u8, x: u8) {}\r\n";
@@ -2401,6 +2409,19 @@ mod tests {
             line_col_to_offset(text, 2, 8),
             Some(TextSize::from(after as u32))
         );
+    }
+
+    /// A CRLF sequence has no source position between its two bytes. The end of the first line
+    /// is before `\r`, and the next line begins after `\n` (#456).
+    #[test]
+    fn a_crlf_pair_has_no_between_bytes_position() {
+        let text = "ab\r\ncd";
+        assert_eq!(line_col_to_offset(text, 1, 3), Some(TextSize::from(2)));
+        assert_eq!(line_col_to_offset(text, 1, 4), None);
+        assert_eq!(line_col_to_offset(text, 2, 1), Some(TextSize::from(4)));
+        assert_eq!(offset_to_line_col(text, TextSize::from(2)), (1, 3));
+        assert_eq!(offset_to_line_col(text, TextSize::from(3)), (1, 3));
+        assert_eq!(offset_to_line_col(text, TextSize::from(4)), (2, 1));
     }
 
     fn create_test_fixture() -> (tempfile::TempDir, PathBuf) {
