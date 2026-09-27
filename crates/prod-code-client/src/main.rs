@@ -994,8 +994,10 @@ enum Commands {
     /// receives, conversions and operators are refused because their evaluation can matter.
     /// Every call and the declaration must match exactly, and the result is type-checked.
     /// Go additions retain every old parameter in order and use explicit primitive types with
-    /// numeric/string/rune literals. Only ordinary non-generic free functions are supported;
-    /// methods, variadics, grouped-parameter interior insertion and combined changes refuse.
+    /// numeric/string/rune literals. Ordinary non-generic functions and named value/pointer
+    /// receiver methods are supported. Method values/expressions, interface obligations,
+    /// generic receivers, receiver-name capture, variadics, grouped-parameter interior insertion
+    /// and combined changes refuse.
     /// Packages and test callers must compile on the node before preview or apply. This preserves
     /// the node's build flags and does not require Go on the client.
     /// Refused for Go without writing, whatever `--force` says: arbitrary added values, `--returns`,

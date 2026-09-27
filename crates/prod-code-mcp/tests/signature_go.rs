@@ -13,8 +13,8 @@ use prod_code_mcp::signature::{Modifiers, Param, SignatureChange};
 use prod_code_protocol::{
     ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, WireMessage,
 };
-use prod_code_testkit::ScriptedGateway;
 use prod_code_testkit::gopls::{GoModule, GoplsBridge, require_go_toolchain, uri};
+use prod_code_testkit::{ScriptedGateway, answers};
 use serde_json::json;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
@@ -100,7 +100,7 @@ fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
         .copied()
         .collect::<Vec<_>>();
     let proposal = String::from_utf8_lossy(&proposal);
-    let fails = proposal.contains("bad string") && proposal.contains("Keep(1, 2, 1)");
+    let fails = proposal.contains("bad string");
     let output = fails.then(|| b"cannot use 1 as string value in argument to Keep\n".to_vec());
     ShadowRunResponse {
         server_workspace_root: req.client_workspace_root,
@@ -961,6 +961,313 @@ fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Public-tool refusals must be just as non-mutating as adapter refusals, even when callers set
+/// both `apply` and `force`. Keeping this helper at the MCP boundary prevents a direct adapter
+/// test from accidentally proving the wrong entry point.
+async fn public_go_refusal(
+    remote: SocketAddr,
+    fixture: &GoModule,
+    args: serde_json::Value,
+    said: &str,
+) {
+    assert_eq!(
+        args["apply"],
+        json!(true),
+        "refusal must request apply: {args}"
+    );
+    assert_eq!(
+        args["force"],
+        json!(true),
+        "refusal must request force: {args}"
+    );
+    let untouched = fixture.snapshot();
+    let error = prod_code_mcp::tools::execute_tool(
+        remote,
+        fixture.root(),
+        "code_change_signature",
+        args.clone(),
+    )
+    .await
+    .expect_err("the public MCP tool refuses this Go change");
+    let error = format!("{error:#}");
+    assert!(error.contains(said), "{args}: {error}");
+    assert!(error.contains("nothing was written"), "{args}: {error}");
+    assert_eq!(fixture.snapshot(), untouched, "{args}: refusal wrote");
+}
+
+const PUBLIC_REFUSAL_LIB: &str = r#"package main
+
+import "fmt"
+
+type Meter struct{}
+
+func (meter Meter) Value(n int) string { return fmt.Sprint(n) }
+func (meter Meter) String() string { return "meter" }
+func (meter Meter) Expression(n int) string { return fmt.Sprint(n) }
+func (meter *Meter) Pointer(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Direct(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Dynamic(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Capture(existing int) string { captured := existing; return fmt.Sprint(captured) }
+
+type Box[T any] struct{ value T }
+func (box Box[T]) Generic(n int) T { return box.value }
+
+func Compile(n int) string { return fmt.Sprint(n) }
+"#;
+
+const PUBLIC_REFUSAL_INTERFACES: &str = r#"package main
+
+type Directer interface { Direct(int) string }
+type Dynamicer interface { Dynamic(int) string }
+"#;
+
+const PUBLIC_REFUSAL_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	meter := Meter{}
+	value := meter.Value
+	expression := Meter.Expression
+	pointer := (*Meter).Pointer
+	var direct Directer = meter
+	_, dynamic := any(meter).(Dynamicer)
+	_, stringer := any(meter).(fmt.Stringer)
+	box := Box[int]{value: 7}
+	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), direct.Direct(4), dynamic, box.Generic(5), meter.Capture(6), Compile(7), stringer)
+}
+"#;
+
+/// Receiver methods have safety obligations beyond ordinary calls. Exercise each refusal through
+/// the public MCP schema with `apply: true, force: true`, including interface evidence that is
+/// present without an interface call and a compiler-shadow rejection. Every fixture first runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_mcp_refuses_unsafe_receiver_changes_and_preserves_every_byte() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/publicrefusal\n\ngo 1.22\n"),
+        ("lib.go", PUBLIC_REFUSAL_LIB),
+        ("interface.go", PUBLIC_REFUSAL_INTERFACES),
+        ("main.go", PUBLIC_REFUSAL_MAIN),
+    ]);
+    let before = fixture.run();
+    assert!(before.contains("1 2 3 4 true 7 6 7 true"), "{before}");
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+    macro_rules! refuse {
+        ($needle:expr, $params:expr, $said:expr $(,)?) => {{
+            let (line, character) = at(&fixture, "lib.go", $needle);
+            public_go_refusal(
+                remote,
+                &fixture,
+                json!({
+                    "path": "lib.go", "line": line, "character": character, "params": $params,
+                    "apply": true, "force": true
+                }),
+                $said,
+            )
+            .await;
+        }};
+    }
+
+    // Method values, value method expressions, and pointer method expressions have reference
+    // shapes that cannot be reconciled by a source-only parameter insertion.
+    refuse!("Value(n", json!(["n", "extra: int = 0"]), "used as a value");
+    // `fmt.Stringer` is imported, so a checkout-only interface scan has no declaration to find.
+    // gopls's implementation relation is the proof that this receiver method cannot grow.
+    refuse!(
+        "String()",
+        json!(["extra: int = 0"]),
+        "interface implementation evidence",
+    );
+    refuse!(
+        "Expression(n",
+        json!(["n", "extra: int = 0"]),
+        "method expression",
+    );
+    refuse!(
+        "Pointer(n",
+        json!(["n", "extra: int = 0"]),
+        "method expression",
+    );
+
+    // `Directer` is invoked through its interface. `Dynamicer` is deliberately only asserted in
+    // `interface.go`: the dynamic membership probe must still make a receiver change uncertain.
+    refuse!(
+        "Direct(n",
+        json!(["n", "extra: int = 0"]),
+        "interface implementation evidence",
+    );
+    refuse!(
+        "Dynamic(n",
+        json!(["n", "extra: int = 0"]),
+        "interface implementation evidence",
+    );
+    refuse!(
+        "Generic(n",
+        json!(["n", "extra: int = 0"]),
+        "not an ordinary named value",
+    );
+    refuse!(
+        "Capture(existing",
+        json!(["existing", "meter: int = 0"]),
+        "duplicates the receiver binding",
+    );
+    refuse!(
+        "Capture(existing",
+        json!(["existing", "captured: int = 0"]),
+        "shadow existing references",
+    );
+    refuse!(
+        "Compile(n",
+        json!(["n", "bad: string = 1"]),
+        "does not compile",
+    );
+    assert_eq!(
+        fixture.run(),
+        before,
+        "a public refusal changed program behavior"
+    );
+
+    // gopls cannot naturally omit a reference here, so the existing scripted gateway supplies
+    // that broken evidence while the public tool remains the exercised boundary.
+    let evidence = GoModule::new(&[
+        ("go.mod", "module example.com/publicevidence\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\n\nimport \"fmt\"\nfunc Evidence(n int) string { return fmt.Sprint(n) }\n",
+        ),
+        (
+            "main.go",
+            "package main\n\nimport \"fmt\"\nfunc main() { fmt.Println(Evidence(1)) }\n",
+        ),
+    ]);
+    let evidence_before = evidence.run();
+    let missing = ScriptedGateway::start(|method, _| {
+        if method == "textDocument/references" {
+            json!([])
+        } else {
+            serde_json::Value::Null
+        }
+    })
+    .await;
+    let (line, character) = at(&evidence, "lib.go", "Evidence(n");
+    public_go_refusal(
+        missing.addr(),
+        &evidence,
+        json!({
+            "path": "lib.go", "line": line, "character": character,
+            "params": ["n", "extra: int = 0"], "apply": true, "force": true
+        }),
+        "declaration",
+    )
+    .await;
+    assert_eq!(
+        evidence.run(),
+        evidence_before,
+        "missing evidence changed the program"
+    );
+}
+
+/// Receiver additions ask the implementation relation before function references. A transport
+/// error or malformed evidence is a refusal, but gopls's ordinary `null` result remains a valid
+/// empty relation so regular methods stay available through the public MCP boundary.
+#[tokio::test]
+async fn public_mcp_requires_well_formed_receiver_implementation_evidence() {
+    let fixture = GoModule::new(&[
+        (
+            "go.mod",
+            "module example.com/implementationevidence\n\ngo 1.22\n",
+        ),
+        (
+            "lib.go",
+            "package main\n\ntype Meter struct{}\n\nfunc (meter Meter) Add(qty int) int { return qty }\n",
+        ),
+        (
+            "main.go",
+            "package main\n\nfunc main() { var meter Meter; _ = meter.Add(1) }\n",
+        ),
+    ]);
+    let location = |rel: &str, needle: &str| {
+        let text = fixture.read(rel);
+        let offset = text
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle} in {rel}"));
+        let before = &text[..offset];
+        let line = before.matches('\n').count() as u32;
+        let character = before.rsplit('\n').next().unwrap().encode_utf16().count() as u32;
+        json!({
+            "uri": uri(&fixture.path(rel)),
+            "range": {
+                "start": { "line": line, "character": character },
+                "end": { "line": line, "character": character + 3 }
+            }
+        })
+    };
+    let declaration = location("lib.go", "Add(qty");
+    let call = location("main.go", "Add(1)");
+    let (line, character) = at(&fixture, "lib.go", "Add(qty");
+    let args = json!({
+        "path": "lib.go", "line": line, "character": character,
+        "params": ["qty", "extra: int = 0"], "apply": true, "force": true
+    });
+    let untouched = fixture.snapshot();
+    let external = json!([{
+        "uri": "file:///runtime/interface.go",
+        "range": { "start": { "line": 0, "character": 0 } }
+    }]);
+    for (implementation, said) in [
+        (
+            answers::failure("implementation unavailable"),
+            "could not list",
+        ),
+        (
+            json!({ "uri": uri(&fixture.path("lib.go")) }),
+            "no file or start",
+        ),
+        (external, "interface implementation evidence"),
+    ] {
+        let declaration = declaration.clone();
+        let call = call.clone();
+        let gateway = ScriptedGateway::start(move |method, _| match method {
+            "textDocument/implementation" => implementation.clone(),
+            "textDocument/references" => json!([declaration.clone(), call.clone()]),
+            _ => serde_json::Value::Null,
+        })
+        .await;
+        public_go_refusal(gateway.addr(), &fixture, args.clone(), said).await;
+        assert_eq!(fixture.snapshot(), untouched, "{said} wrote");
+    }
+
+    let declaration = declaration.clone();
+    let call = call.clone();
+    let gateway = ScriptedGateway::start(move |method, _| match method {
+        "textDocument/implementation" => serde_json::Value::Null,
+        "textDocument/references" => json!([declaration.clone(), call.clone()]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+    let remote = with_compiler_shadow(gateway.addr()).await;
+    let preview = prod_code_mcp::tools::execute_tool(
+        remote,
+        fixture.root(),
+        "code_change_signature",
+        json!({
+            "path": "lib.go", "line": line, "character": character,
+            "params": ["qty", "extra: int = 0"], "apply": false, "force": true
+        }),
+    )
+    .await
+    .expect("a null implementation result permits an ordinary receiver method");
+    let rendered = text_of(&preview);
+    assert!(rendered.contains("now: (qty int, extra int)"), "{rendered}");
+    assert_eq!(
+        fixture.snapshot(),
+        untouched,
+        "a null implementation preview wrote"
+    );
 }
 
 /// The public MCP tool `code_change_signature` reaches the Go adapter through

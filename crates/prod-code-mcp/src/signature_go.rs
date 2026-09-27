@@ -41,9 +41,10 @@ pub const GOPLS_VERSION: &str = "v0.23.0";
 /// The part of the requirement that a refusal leaves open, so that it stays visible.
 const STILL_OPEN: &str = "Go signature changes here are limited to reordering named parameters, \
      removing ones proven unused, and adding explicitly typed primitive parameters with literal \
-     arguments to ordinary non-generic functions; receiver methods, variadics, generic functions, \
-     combined additions with removals, reorders or type changes, changing results, and rewriting \
-     function values remain open requirements";
+     arguments to ordinary non-generic functions and named value or pointer receiver methods; \
+     variadics, generic functions or receivers, combined additions with removals, reorders or type \
+     changes, method expressions or values, interface signatures or dispatch, and broader modifiers \
+     remain open requirements (#448)";
 
 /// A parameter as the declaration declares it, flattened out of Go's grouping: `a, b int` is two.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,9 +551,16 @@ struct Addition {
     value: String,
 }
 
-/// Adds explicitly typed primitive parameters to an ordinary function. Unlike reorders and
-/// removals, gopls has no native edit for this shape, so its complete reference answer is used as
-/// the proof obligation and the adapter makes insertion-only edits itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Receiver {
+    binding: String,
+    ty: String,
+}
+
+/// Adds explicitly typed primitive parameters to an ordinary function or named value/pointer
+/// receiver method. Unlike reorders and removals, gopls has no native edit for this shape, so its
+/// complete reference answer is used as the proof obligation and the adapter makes insertion-only
+/// edits itself.
 #[allow(clippy::too_many_arguments)]
 async fn add_parameters(
     remote: SocketAddr,
@@ -564,14 +572,17 @@ async fn add_parameters(
     request: &[Param],
     apply: bool,
 ) -> Result<SignatureChange> {
-    anyhow::ensure!(
-        decl.receiver.is_none(),
-        "{}",
-        refusal(format!(
-            "adding parameters to the receiver method `{}` is not supported",
-            decl.name
-        ))
-    );
+    let receiver = decl
+        .receiver
+        .as_deref()
+        .map(ordinary_receiver)
+        .transpose()
+        .map_err(|why| {
+            refusal(format!(
+                "adding parameters to `{}` is refused: {why}",
+                decl.name
+            ))
+        })?;
     anyhow::ensure!(
         !decl.generic,
         "{}",
@@ -602,6 +613,15 @@ async fn add_parameters(
     );
     let additions = addition_plan(&declared, request)?;
     for added in &additions {
+        if receiver
+            .as_ref()
+            .is_some_and(|receiver| receiver.binding == added.name)
+        {
+            return Err(refusal(format!(
+                "adding `{}` is refused because it duplicates the receiver binding of `{}`",
+                added.name, decl.name
+            )));
+        }
         let captures: Vec<String> = identifier_uses(&text, body.0, body.1, &added.name)
             .into_iter()
             .map(|at| position(root, file, &text, at))
@@ -619,6 +639,17 @@ async fn add_parameters(
 
     let canonical_root = std::fs::canonicalize(root)
         .with_context(|| format!("cannot resolve the checkout {}", root.display()))?;
+    if receiver.is_some() {
+        receiver_interface_evidence(remote, root, file, &text, &decl)
+            .await
+            .map_err(|why| {
+                refusal(format!(
+                    "adding parameters to `{}` is refused because its interface implementations \
+                     cannot be proven absent: {why:#}",
+                    decl.name
+                ))
+            })?;
+    }
     let (originals, calls) = function_reference_evidence(
         remote,
         root,
@@ -626,14 +657,15 @@ async fn add_parameters(
         &canonical_root,
         &text,
         &decl,
+        receiver.as_ref().map(|receiver| receiver.ty.as_str()),
     )
     .await
-    .with_context(|| {
-        format!(
-            "cannot prove every reference to `{}` is a supported direct call or its declaration; \
-             nothing was written",
+    .map_err(|why| {
+        refusal(format!(
+            "cannot prove every reference to `{}` is a supported direct call or its declaration: \
+             {why:#}",
             decl.name
-        )
+        ))
     })?;
     let arity = declared.len();
     for call in &calls {
@@ -1105,6 +1137,46 @@ fn parameter_piece_has_type(piece: &str) -> bool {
         && !rest.is_empty()
 }
 
+/// A receiver method may satisfy an imported interface even when no source interface declaration
+/// or interface-typed call names it. gopls reports those relations from the concrete method, so
+/// an empty result is the proof that extending this method does not alter an interface contract.
+async fn receiver_interface_evidence(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    declaration_text: &str,
+    decl: &Decl,
+) -> Result<()> {
+    let (line, character) = line_col_utf16(declaration_text, decl.name_at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?
+        .to_string();
+    let answer = crate::tools::execute_lsp_query(
+        remote,
+        root,
+        file,
+        "textDocument/implementation",
+        serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+        }),
+    )
+    .await
+    .context("gopls could not list the method's interface implementations")?;
+    let implementations = crate::refactor::lsp_locations(&answer, "interface implementations")?;
+    anyhow::ensure!(
+        implementations.is_empty(),
+        "`{}` has interface implementation evidence at {}; interface dispatch cannot be reconciled",
+        decl.name,
+        implementations
+            .iter()
+            .map(|(path, line, column)| format!("{}:{line}:{column}", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Ok(())
+}
+
 /// gopls's complete reference answer for the function. The declaration must occur exactly once;
 /// every other location must be current, inside the checkout and a direct call.
 async fn function_reference_evidence(
@@ -1114,6 +1186,7 @@ async fn function_reference_evidence(
     canonical_root: &Path,
     declaration_text: &str,
     decl: &Decl,
+    receiver_type: Option<&str>,
 ) -> Result<(BTreeMap<PathBuf, String>, Vec<Call>)> {
     let (line, character) = line_col_utf16(declaration_text, decl.name_at);
     let uri = url::Url::from_file_path(file)
@@ -1227,6 +1300,21 @@ async fn function_reference_evidence(
             continue;
         }
         let at = format!("{}:{}:{}", display(root, &path), line + 1, column + 1);
+        if let Some(receiver_type) = receiver_type {
+            anyhow::ensure!(
+                !declares_interface_method(source, &decl.name),
+                "`{}` has an interface declaration in {}; interface dispatch cannot be reconciled",
+                decl.name,
+                display(root, &path)
+            );
+            receiver_selector_call(source, offset, receiver_type).with_context(|| {
+                format!(
+                    "`{}` is not a direct selector call at {at}; interface dispatch, method \
+                     values and method expressions are not supported",
+                    decl.name
+                )
+            })?;
+        }
         let (open, close) = call_parens(source, offset).with_context(|| {
             format!(
                 "`{}` is used as a value or another unsupported shape at {at}",
@@ -1246,7 +1334,160 @@ async fn function_reference_evidence(
         "gopls listed the declaration of `{}` {declarations} times instead of exactly once",
         decl.name
     );
+    if receiver_type.is_some()
+        && let Some(path) = interface_method_file(canonical_root, &decl.name)?
+    {
+        anyhow::bail!(
+            "`{}` has an interface declaration in {}; interface dispatch cannot be reconciled",
+            decl.name,
+            display(root, &path)
+        );
+    }
     Ok((originals, calls))
+}
+
+/// A receiver method satisfying an interface cannot be extended without changing that interface
+/// too. The reference response does not distinguish the interface-typed selector from a concrete
+/// one, so a current interface declaration of the same method makes the whole plan uncertain.
+fn declares_interface_method(text: &str, name: &str) -> bool {
+    let bytes = text.as_bytes();
+    for at in identifier_uses(text, 0, text.len(), "interface") {
+        let open = skip_space(text, at + "interface".len());
+        if bytes.get(open) != Some(&b'{') {
+            continue;
+        }
+        let Some(close) = closing(text, open) else {
+            continue;
+        };
+        let mut cursor = open + 1;
+        while cursor < close {
+            cursor = skip_space(text, cursor);
+            if cursor >= close {
+                break;
+            }
+            if let Some(end) = skip_opaque(bytes, cursor) {
+                cursor = end;
+            } else if matches!(bytes[cursor], b'(' | b'[' | b'{') {
+                cursor = closing(text, cursor).map_or(close, |end| end + 1);
+            } else if let Some(word) = ident_at(text, cursor) {
+                let after = skip_space(text, cursor + word.len());
+                if word == name && bytes.get(after) == Some(&b'(') {
+                    return true;
+                }
+                cursor += word.len();
+            } else {
+                cursor += 1;
+            }
+        }
+    }
+    false
+}
+
+/// An interface obligation need not be reported by gopls as a reference to a concrete method.
+/// Scan the checkout before extending a receiver method so an omitted interface declaration
+/// cannot let an interface dispatch compile only after a destructive write.
+fn interface_method_file(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    fn visit(dir: &Path, name: &str) -> Result<Option<PathBuf>> {
+        for entry in std::fs::read_dir(dir).with_context(|| {
+            format!(
+                "cannot read {} while checking interface obligations",
+                dir.display()
+            )
+        })? {
+            let entry = entry.with_context(|| {
+                format!(
+                    "cannot inspect {} while checking interface obligations",
+                    dir.display()
+                )
+            })?;
+            let path = entry.path();
+            let kind = entry.file_type().with_context(|| {
+                format!(
+                    "cannot inspect {} while checking interface obligations",
+                    path.display()
+                )
+            })?;
+            if kind.is_dir() {
+                if entry.file_name() != ".git"
+                    && let Some(found) = visit(&path, name)?
+                {
+                    return Ok(Some(found));
+                }
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "go")
+            {
+                let text = std::fs::read_to_string(&path).with_context(|| {
+                    format!(
+                        "cannot read {} while checking interface obligations",
+                        path.display()
+                    )
+                })?;
+                if declares_interface_method(&text, name) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
+    }
+    visit(root, name)
+}
+
+/// The use of a receiver method must be a selector call. An interface member declaration and a
+/// method value have no dot before the name; a selector whose receiver spells the receiver type
+/// is a method expression. The latter is rejected even when a local happens to use that name:
+/// no spelling-only check can prove that it is a value rather than a type.
+fn receiver_selector_call(text: &str, name_at: usize, receiver_type: &str) -> Result<()> {
+    let mut dot = name_at;
+    while dot > 0 && matches!(text.as_bytes()[dot - 1], b' ' | b'\t') {
+        dot -= 1;
+    }
+    anyhow::ensure!(
+        dot > 0 && text.as_bytes()[dot - 1] == b'.',
+        "the method name is not preceded by a selector"
+    );
+    let before = text[..dot - 1].trim_end();
+    let receiver_type = receiver_type.trim_start_matches('*');
+    let bare_type = before
+        .strip_suffix(')')
+        .and_then(|before| before.strip_suffix(receiver_type))
+        .and_then(|before| before.strip_suffix("(*"))
+        .is_some()
+        || before == receiver_type
+        || before.strip_suffix(receiver_type).is_some_and(|prefix| {
+            prefix.is_empty()
+                || !is_ident_byte(prefix.as_bytes().last().copied().unwrap_or_default())
+        });
+    anyhow::ensure!(
+        !bare_type,
+        "the selector receiver can be the receiver type `{receiver_type}`, a method expression"
+    );
+    Ok(())
+}
+
+/// A receiver is safe for insertion only when it binds one ordinary value name to one named type
+/// or pointer-to-named-type. Parameterized receivers and receiver aliases need type information
+/// beyond the source proof this adapter has, so they remain refused.
+fn ordinary_receiver(receiver: &str) -> Result<Receiver> {
+    let receiver = canonical(receiver);
+    let binding_end = receiver
+        .bytes()
+        .position(|byte| !is_ident_byte(byte))
+        .unwrap_or(receiver.len());
+    let binding = &receiver[..binding_end];
+    anyhow::ensure!(
+        go_identifier(binding),
+        "the receiver does not bind one ordinary name"
+    );
+    let ty = receiver[binding_end..].trim();
+    let named = ty.strip_prefix('*').unwrap_or(ty);
+    anyhow::ensure!(
+        is_ident(named) && !named.is_empty(),
+        "the receiver type `{}` is not an ordinary named value or pointer type",
+        ty
+    );
+    Ok(Receiver {
+        binding: binding.to_string(),
+        ty: ty.to_string(),
+    })
 }
 
 /// An error that says why, that nothing was written, and what stays open.
@@ -2347,6 +2588,49 @@ mod tests {
     }
 
     #[test]
+    fn only_named_value_or_pointer_receivers_can_be_extended() {
+        assert_eq!(
+            ordinary_receiver("meter Meter").unwrap(),
+            Receiver {
+                binding: "meter".into(),
+                ty: "Meter".into()
+            }
+        );
+        assert_eq!(
+            ordinary_receiver("meter *Meter").unwrap(),
+            Receiver {
+                binding: "meter".into(),
+                ty: "*Meter".into()
+            }
+        );
+        for receiver in [
+            "_ Meter",
+            "meter Meter[T]",
+            "meter pkg.Meter",
+            "meter *pkg.Meter",
+            "left, right Meter",
+        ] {
+            assert!(ordinary_receiver(receiver).is_err(), "{receiver}");
+        }
+        let direct = "meter.Add(1)";
+        receiver_selector_call(direct, direct.find("Add").unwrap(), "Meter").unwrap();
+        for source in ["Add(1)", "Meter.Add(1)", "(*Meter).Add(1)"] {
+            assert!(
+                receiver_selector_call(source, source.find("Add").unwrap(), "Meter").is_err(),
+                "{source}"
+            );
+        }
+        assert!(declares_interface_method(
+            "type I interface { Add(x int) }",
+            "Add"
+        ));
+        assert!(!declares_interface_method(
+            "type I interface { Other(x int) }",
+            "Add"
+        ));
+    }
+
+    #[test]
     fn arguments_are_split_and_classified() {
         let text = "x := f(a, g(b, c), \"s,)\", `r,`, '(', // c,\n\tt.u, &v, -1.5e-3, func(a int) {}, h(),\n)";
         let at = text.find("f(").unwrap();
@@ -3017,5 +3301,32 @@ mod literal_expression_regression {
             assert!(!super::is_literal(expression), "{expression}");
             assert!(!super::scalar_literal(expression), "{expression}");
         }
+    }
+}
+
+#[cfg(test)]
+mod interface_name_boundary_primary_probe {
+    use super::*;
+    #[test]
+    fn an_unrelated_interface_member_does_not_block_receiver_addition() {
+        assert!(
+            !declares_interface_method("type Unrelated interface { NotAdd(x int) string }", "Add"),
+            "NotAdd is not Add"
+        );
+        assert!(!declares_interface_method(
+            "type Unrelated interface { Other(Add (int)) }",
+            "Add"
+        ));
+        assert!(
+            !declares_interface_method("const note = `interface { Add(int) string }`", "Add"),
+            "source text in a string is not an interface obligation"
+        );
+        assert!(
+            declares_interface_method(
+                "type Related interface { Add /* comment */ (int) string }",
+                "Add"
+            ),
+            "whitespace/comments are allowed before the parameter list"
+        );
     }
 }

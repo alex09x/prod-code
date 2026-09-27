@@ -30,9 +30,12 @@
   unused ones from functions and methods, including grouped parameters and variadic tails.
   CLI and MCP preview or apply only fully reconciled, type-checked edits; dropped arguments
   must be literals or simple variables. `--remove-all` (MCP `params: []`) explicitly requests
-  an empty list. Typed literal additions to ordinary non-generic functions (#502) preserve
-  old argument order and require remote compiler verification, including test callers and inherited
-  build flags. Broader additions, modifier changes, generic removals, indirect calls, incomplete
+  an empty list. Typed literal additions to ordinary non-generic functions (#502) and named
+  value/pointer receiver methods (#513) preserve receiver and old argument evaluation and require
+  remote compiler verification, including test callers and inherited build flags. Method
+  values/expressions, local or imported interface obligations (#520), generic receivers and
+  receiver-name capture refuse; failed or malformed required evidence cannot bypass those guards.
+  Broader additions, modifier changes, generic removals, indirect calls, incomplete
   references and uncertain argument effects remain refused.
 - Parameter objects in JavaScript and JSX (#428): pass a plain object and update body uses,
   imported aliases and supported calls. Unsupported call/default shapes are refused before
