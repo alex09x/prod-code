@@ -19,12 +19,21 @@
 //! listed, and a body naming more names than are resolved per item are gaps: each is named and
 //! the report is incomplete. A walk in which the analyzer gave no usable answer to any
 //! definition query is an error rather than a slice of the seed alone. The depth limit and the
-//! byte budget are the caller's bounds, and the report says where they cut the walk.
+//! byte budget are the caller's bounds, and the report says where they cut the walk: such a
+//! slice has complete evidence but is bounded, not the whole dependency closure.
+//!
+//! Coordinates are checked against the file they point into. A location's URI must be an
+//! absolute `file:` URI of a local path without query or fragment, or another scheme, which is a
+//! source outside the workspace the slicer cannot read; anything else is malformed. A position
+//! must lie on a line of the file, at most at the end of that line and not between the two
+//! UTF-16 units of one character; a line ends at `\n`, and a `\r` before it is not part of the
+//! line, as in the Rust engine's own line index.
 
 use crate::session::LspSession;
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::net::SocketAddr;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// How many bytes of slice to return before stopping, unless the caller says otherwise.
@@ -97,6 +106,9 @@ pub struct SliceReport {
     pub source_bytes: usize,
     /// Names that resolved outside the workspace (std, crates.io) and were not followed.
     pub external: Vec<String>,
+    /// Names that resolved to a URI of another scheme than `file:` (a class in a jar, a
+    /// generated document), as `name (scheme:)`; outside the workspace and not readable.
+    pub unsupported: Vec<String>,
     /// Names that resolved in the workspace outside any declaration the slicer includes (a
     /// module, a field of no listed item), as `name (file:line)`; not followed.
     pub unsliced: Vec<String>,
@@ -128,14 +140,38 @@ impl SliceReport {
     }
 
     /// Whether every dependency lookup of the walk had a usable answer.
-    pub fn is_complete(&self) -> bool {
+    pub fn has_complete_evidence(&self) -> bool {
         self.gaps.is_empty()
+    }
+
+    /// Whether the walk stopped before the whole dependency closure: at the depth limit, at the
+    /// byte budget, or at a target in the workspace outside any declaration it slices.
+    pub fn is_bounded(&self) -> bool {
+        self.unexpanded > 0 || self.truncated > 0 || !self.unsliced.is_empty()
+    }
+
+    /// Whether the slice is the seed's whole dependency closure in the workspace: every lookup
+    /// answered and nothing left behind a bound. Names outside the workspace are never followed
+    /// and do not count against it.
+    pub fn is_complete(&self) -> bool {
+        self.has_complete_evidence() && !self.is_bounded()
     }
 
     pub fn render(&self) -> String {
         let mut out = if self.is_complete() {
             format!(
                 "slice of `{}`: {} item(s), {} bytes from {} bytes of source ({:.0}% smaller)\n",
+                self.seed,
+                self.items.len(),
+                self.slice_bytes(),
+                self.source_bytes,
+                self.reduction_percent()
+            )
+        } else if self.has_complete_evidence() {
+            format!(
+                "BOUNDED slice of `{}`: {} item(s), {} bytes from {} bytes of source ({:.0}% \
+                 smaller); every dependency lookup was answered, but the walk stopped at the \
+                 bounds below, so it is not the whole dependency closure\n",
                 self.seed,
                 self.items.len(),
                 self.slice_bytes(),
@@ -179,6 +215,11 @@ impl SliceReport {
             &mut out,
             "outside the workspace, not followed",
             &self.external,
+        );
+        push_list(
+            &mut out,
+            "outside the workspace in a source of an unsupported URI scheme, not followed",
+            &self.unsupported,
         );
         push_list(
             &mut out,
@@ -582,13 +623,77 @@ fn is_keyword(word: &str) -> bool {
     KEYWORDS.contains(&word)
 }
 
-/// Text of lines `start..=end` (1-based, inclusive).
-fn lines_of(text: &str, start: u32, end: u32) -> String {
-    text.lines()
-        .skip(start.saturating_sub(1) as usize)
-        .take(end.saturating_sub(start) as usize + 1)
-        .collect::<Vec<_>>()
-        .join("\n")
+/// The byte range of each line of `text` without its line break: lines end at `\n`, and a `\r`
+/// before it belongs to the break. A text ending in a line break has an empty last line, the
+/// place a position just past the final break points at.
+fn line_bounds(text: &str) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for (at, _) in text.match_indices('\n') {
+        let end = if text[start..at].ends_with('\r') {
+            at - 1
+        } else {
+            at
+        };
+        lines.push(start..end);
+        start = at + 1;
+    }
+    lines.push(start..text.len());
+    lines
+}
+
+/// Whether the source holds `pos`: its line exists, and its character, in UTF-16 code units, is
+/// at most the line's length and falls between characters, not inside a surrogate pair. The
+/// message counts lines and columns from 1, as the report does.
+fn check_pos(text: &str, lines: &[Range<usize>], pos: Pos) -> Result<(), String> {
+    let (line, character) = (pos.line as usize, u64::from(pos.character));
+    let at = format!("position {}:{}", u64::from(pos.line) + 1, character + 1);
+    let bounds = lines.get(line).ok_or_else(|| {
+        format!(
+            "{at} is past the last line of the source, which has {} line(s)",
+            lines.len()
+        )
+    })?;
+    let mut units = 0u64;
+    for c in text[bounds.clone()].chars() {
+        if units >= character {
+            break;
+        }
+        units += c.len_utf16() as u64;
+    }
+    match units.cmp(&character) {
+        std::cmp::Ordering::Equal => Ok(()),
+        std::cmp::Ordering::Greater => {
+            Err(format!("{at} splits a surrogate pair on line {}", line + 1))
+        }
+        std::cmp::Ordering::Less => Err(format!(
+            "{at} is past the end of line {}, which is {units} UTF-16 unit(s) long",
+            line + 1
+        )),
+    }
+}
+
+fn check_span(text: &str, lines: &[Range<usize>], span: Span) -> Result<(), String> {
+    check_pos(text, lines, span.start)?;
+    check_pos(text, lines, span.end)
+}
+
+/// Text of lines `start..=end` (1-based, inclusive), joined by `\n`; `None` when the source
+/// has no such lines.
+fn lines_of(text: &str, lines: &[Range<usize>], start: u32, end: u32) -> Option<String> {
+    let first = start.checked_sub(1)? as usize;
+    let last = end.checked_sub(1)? as usize;
+    if first > last {
+        return None;
+    }
+    Some(
+        lines
+            .get(first..=last)?
+            .iter()
+            .map(|r| &text[r.clone()])
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 fn relative(root: &Path, file: &Path) -> String {
@@ -601,9 +706,19 @@ fn relative(root: &Path, file: &Path) -> String {
 /// Everything the slicer needs to know about one file, fetched once.
 struct FileFacts {
     text: String,
+    lines: Vec<Range<usize>>,
     decls: Vec<Decl>,
 }
 
+impl FileFacts {
+    fn check(&self, span: Span) -> Result<(), String> {
+        check_span(&self.text, &self.lines, span)
+    }
+}
+
+/// Reads a file and lists its declarations. A declaration whose range or name the file cannot
+/// hold makes the answer malformed, like a declaration without a range: slicing it would cut
+/// lines that are not there.
 async fn file_facts(session: &mut LspSession, file: &Path) -> Result<FileFacts> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
@@ -615,13 +730,23 @@ async fn file_facts(session: &mut LspSession, file: &Path) -> Result<FileFacts> 
             serde_json::json!({ "textDocument": { "uri": uri } }),
         )
         .await?;
-    let decls = parse_decls(&symbols).map_err(|e| {
-        anyhow::anyhow!(
-            "malformed textDocument/documentSymbol answer for {}: {e}",
-            file.display()
-        )
-    })?;
-    Ok(FileFacts { text, decls })
+    let lines = line_bounds(&text);
+    let decls = parse_decls(&symbols)
+        .and_then(|decls| {
+            for decl in &decls {
+                check_span(&text, &lines, decl.range)
+                    .and_then(|()| check_span(&text, &lines, decl.selection))
+                    .map_err(|e| format!("symbol `{}`: {e}", decl.name))?;
+            }
+            Ok(decls)
+        })
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "malformed textDocument/documentSymbol answer for {}: {e}",
+                file.display()
+            )
+        })?;
+    Ok(FileFacts { text, lines, decls })
 }
 
 /// The declaration at `pos`: the innermost one whose name is there, else the smallest one
@@ -639,11 +764,21 @@ fn decl_at(decls: &[Decl], pos: Pos) -> Option<&Decl> {
         })
 }
 
-/// A place a definition answer points at.
+/// What a location's URI names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Source {
+    /// A local file.
+    File(PathBuf),
+    /// A document of another scheme, such as a class inside a jar: outside the workspace and
+    /// not a file the slicer can read.
+    Other { scheme: String },
+}
+
+/// A place a definition answer points at: the source and the range the answer gives there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Target {
-    uri: String,
-    pos: Pos,
+    source: Source,
+    range: Span,
 }
 
 /// Every location of a `textDocument/definition` answer. Null and an empty list are the
@@ -678,9 +813,43 @@ fn parse_location(value: &serde_json::Value) -> Result<Target, String> {
     };
     let uri = uri.as_str().ok_or("a location's uri is not a string")?;
     Ok(Target {
-        uri: uri.to_string(),
-        pos: parse_span(range)?.start,
+        source: parse_source(uri)?,
+        range: parse_span(range)?,
     })
+}
+
+/// The source a location's URI names. It must be an absolute URI. A `file:` URI must spell an
+/// absolute path (`file:///a.rs`, `file:/a.rs`, `file://localhost/a.rs`) of a local file, with
+/// no query or fragment; the URL parser would otherwise read `file:a.rs` as `/a.rs` and drop a
+/// query, turning a malformed answer into a real-looking path.
+fn parse_source(uri: &str) -> Result<Source, String> {
+    let url =
+        url::Url::parse(uri).map_err(|e| format!("uri `{uri}` is not an absolute URI: {e}"))?;
+    if url.scheme() != "file" {
+        if url.path().is_empty() {
+            return Err(format!("uri `{uri}` names nothing after its scheme"));
+        }
+        return Ok(Source::Other {
+            scheme: url.scheme().to_string(),
+        });
+    }
+    let spelled_absolute = uri
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("file:/"));
+    if !spelled_absolute {
+        return Err(format!("uri `{uri}` is not an absolute file URI"));
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(format!(
+            "file uri `{uri}` has a query or fragment, which no file path has"
+        ));
+    }
+    if url.path().ends_with('/') {
+        return Err(format!("file uri `{uri}` names a directory, not a file"));
+    }
+    url.to_file_path()
+        .map(Source::File)
+        .map_err(|()| format!("file uri `{uri}` does not name a path on this machine"))
 }
 
 /// Builds the slice. `seed` is a file and a 1-based position on the symbol's name.
@@ -731,6 +900,14 @@ async fn slice_with(
         seed_file.to_path_buf(),
         file_facts(session, seed_file).await?,
     );
+    // A column past the line would still find the declaration spanning the line; a caller that
+    // only knows the line gives column 1, which every line holds.
+    if let Err(e) = check_pos(&facts[seed_file].text, &facts[seed_file].lines, seed_pos) {
+        anyhow::bail!(
+            "no declaration at {}:{seed_line}:{seed_col}: the seed {e}",
+            relative(root, seed_file)
+        );
+    }
 
     let seed_decl = decl_at(&facts[seed_file].decls, seed_pos)
         .cloned()
@@ -758,7 +935,19 @@ async fn slice_with(
     let (mut asked, mut answered) = (0usize, 0usize);
     let mut bytes = 0usize;
     while let Some((file, decl, item_depth, because)) = queue.pop_front() {
-        let text = lines_of(&facts[&file].text, decl.start_line(), decl.end_line());
+        let text = {
+            let f = &facts[&file];
+            // `file_facts` checked every declaration's range against the file.
+            lines_of(&f.text, &f.lines, decl.start_line(), decl.end_line()).with_context(|| {
+                format!(
+                    "`{}` at {}:{}-{} is outside its file",
+                    decl.name,
+                    relative(root, &file),
+                    decl.start_line(),
+                    decl.end_line()
+                )
+            })?
+        };
         if bytes.saturating_add(text.len()) > max_bytes {
             if report.items.is_empty() {
                 report.seed_over_budget = true;
@@ -832,15 +1021,25 @@ async fn slice_with(
                     continue;
                 }
             };
-            answered += 1;
+            // An answer is usable when it is empty or at least one of its targets is not
+            // malformed evidence.
+            let mut usable = targets.is_empty();
             for target in targets {
-                let path = PathBuf::from(crate::remote_fs::uri_to_path(&target.uri));
+                let path = match target.source {
+                    Source::File(path) => path,
+                    Source::Other { scheme } => {
+                        usable = true;
+                        report.unsupported.push(format!("{name} ({scheme}:)"));
+                        continue;
+                    }
+                };
                 if crate::remote_fs::is_external(root, &path.to_string_lossy()) {
+                    usable = true;
                     report.external.push(name.clone());
                     continue;
                 }
                 // Coordinates are below `u32::MAX`, so the 1-based line fits.
-                let there = format!("{}:{}", relative(root, &path), target.pos.line + 1);
+                let there = format!("{}:{}", relative(root, &path), target.range.start.line + 1);
                 if !facts.contains_key(&path) {
                     let why = match unreadable.get(&path) {
                         Some(why) => Some(why.clone()),
@@ -857,6 +1056,7 @@ async fn slice_with(
                         },
                     };
                     if let Some(why) = why {
+                        usable = true;
                         report.gaps.push(SliceGap {
                             kind: GapKind::Unreadable,
                             item: decl.name.clone(),
@@ -865,7 +1065,17 @@ async fn slice_with(
                         continue;
                     }
                 }
-                let Some(target_decl) = decl_at(&facts[&path].decls, target.pos).cloned() else {
+                if let Err(e) = facts[&path].check(target.range) {
+                    report.gaps.push(SliceGap {
+                        kind: GapKind::Malformed,
+                        item: decl.name.clone(),
+                        detail: format!("{at} resolves to {there}, but its {e}"),
+                    });
+                    continue;
+                }
+                usable = true;
+                let Some(target_decl) = decl_at(&facts[&path].decls, target.range.start).cloned()
+                else {
                     report.unsliced.push(format!("{name} ({there})"));
                     continue;
                 };
@@ -876,6 +1086,9 @@ async fn slice_with(
                 if queued.insert((path.clone(), target_decl.range.start)) {
                     queue.push_back((path, target_decl, item_depth + 1, Some(decl.name.clone())));
                 }
+            }
+            if usable {
+                answered += 1;
             }
         }
     }
@@ -1029,27 +1242,87 @@ mod tests {
 
     #[test]
     fn lines_of_is_inclusive_and_one_based() {
-        let text = "a\nb\nc\nd";
-        assert_eq!(lines_of(text, 2, 3), "b\nc");
-        assert_eq!(lines_of(text, 1, 1), "a");
+        let text = "a\nb\r\nc\nd";
+        let lines = line_bounds(text);
+        assert_eq!(lines_of(text, &lines, 2, 3).as_deref(), Some("b\nc"));
+        assert_eq!(lines_of(text, &lines, 1, 1).as_deref(), Some("a"));
+        assert_eq!(lines_of(text, &lines, 4, 4).as_deref(), Some("d"));
+        // Lines the text does not have are refused, not cut to the ones it has.
+        assert_eq!(lines_of(text, &lines, 3, 5), None);
+        assert_eq!(lines_of(text, &lines, 0, 1), None);
+        assert_eq!(lines_of(text, &lines, 3, 2), None);
+    }
+
+    #[test]
+    fn line_bounds_leave_the_line_break_out_and_keep_a_final_empty_line() {
+        let text = "ab\r\n\ncd\r\n";
+        let lines: Vec<&str> = line_bounds(text).into_iter().map(|r| &text[r]).collect();
+        assert_eq!(lines, vec!["ab", "", "cd", ""]);
+        // A lone `\r` is not a line break, as in the Rust engine's line index.
+        let lone = "a\rb";
+        assert_eq!(line_bounds(lone), vec![0..3]);
+        assert_eq!(line_bounds(""), vec![0..0]);
+    }
+
+    #[test]
+    fn check_pos_counts_utf16_units_and_refuses_what_the_source_cannot_hold() {
+        let text = "é😀x\r\nfn\n";
+        let lines = line_bounds(text);
+        // `é` is one unit, `😀` two, `x` one: the first line is 4 units long.
+        for character in [0, 1, 3, 4] {
+            assert_eq!(
+                check_pos(text, &lines, at(0, character)),
+                Ok(()),
+                "{character}"
+            );
+        }
+        let err = |line, character| check_pos(text, &lines, at(line, character)).unwrap_err();
+        assert!(err(0, 2).contains("splits a surrogate pair on line 1"));
+        // Unit 5 would be between `\r` and `\n`.
+        assert!(err(0, 5).contains("past the end of line 1, which is 4 UTF-16 unit(s) long"));
+        assert!(err(0, u32::MAX - 1).contains("past the end of line 1"));
+        assert_eq!(
+            check_pos(text, &lines, at(2, 0)),
+            Ok(()),
+            "after the final break"
+        );
+        assert!(err(2, 1).contains("past the end of line 3"));
+        assert!(
+            err(3, 0)
+                .contains("position 4:1 is past the last line of the source, which has 3 line(s)")
+        );
+        assert_eq!(
+            check_span(text, &lines, span((0, 1), (1, 2))),
+            Ok(()),
+            "a span inside the text"
+        );
+        assert!(
+            check_span(text, &lines, span((0, 1), (1, 3)))
+                .unwrap_err()
+                .contains("line 2")
+        );
+    }
+
+    fn file(path: &str) -> Source {
+        Source::File(PathBuf::from(path))
     }
 
     #[test]
     fn parse_locations_reads_every_location_of_both_shapes() {
         let plain = serde_json::json!([
             { "uri": "file:///w/a.rs", "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 3 } } },
-            { "uri": "file:///w/c.rs", "range": { "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 3 } } }
+            { "uri": "file:///w/c%20d.rs", "range": { "start": { "line": 1, "character": 2 }, "end": { "line": 1, "character": 3 } } }
         ]);
         assert_eq!(
             parse_locations(&plain).unwrap(),
             vec![
                 Target {
-                    uri: "file:///w/a.rs".into(),
-                    pos: at(4, 0)
+                    source: file("/w/a.rs"),
+                    range: span((4, 0), (4, 3))
                 },
                 Target {
-                    uri: "file:///w/c.rs".into(),
-                    pos: at(1, 2)
+                    source: file("/w/c d.rs"),
+                    range: span((1, 2), (1, 3))
                 }
             ]
         );
@@ -1057,12 +1330,55 @@ mod tests {
         assert_eq!(
             parse_locations(&link).unwrap(),
             vec![Target {
-                uri: "file:///w/b.rs".into(),
-                pos: at(0, 2)
+                source: file("/w/b.rs"),
+                range: span((0, 2), (0, 5))
             }]
         );
         assert_eq!(parse_locations(&serde_json::json!([])).unwrap(), vec![]);
         assert_eq!(parse_locations(&serde_json::Value::Null).unwrap(), vec![]);
+    }
+
+    #[test]
+    fn parse_source_takes_local_file_uris_and_names_other_schemes() {
+        for (uri, path) in [
+            ("file:///w/a.rs", "/w/a.rs"),
+            ("file:/w/a.rs", "/w/a.rs"),
+            ("FILE:///w/a.rs", "/w/a.rs"),
+            ("file://localhost/w/a.rs", "/w/a.rs"),
+        ] {
+            assert_eq!(parse_source(uri), Ok(file(path)), "{uri}");
+        }
+        for (uri, scheme) in [
+            ("jdt://contents/rt.jar/java.lang/String.class", "jdt"),
+            ("untitled:Untitled-1", "untitled"),
+        ] {
+            assert_eq!(
+                parse_source(uri),
+                Ok(Source::Other {
+                    scheme: scheme.into()
+                }),
+                "{uri}"
+            );
+        }
+        for (uri, why) in [
+            ("", "not an absolute URI"),
+            ("src/a.rs", "not an absolute URI"),
+            ("/w/a.rs", "not an absolute URI"),
+            ("file:a.rs", "not an absolute file URI"),
+            (" file:///w/a.rs", "not an absolute file URI"),
+            ("file:///w/a.rs?x=1", "query or fragment"),
+            ("file:///w/a.rs#L3", "query or fragment"),
+            ("file:///w/", "names a directory"),
+            ("file://", "names a directory"),
+            (
+                "file://buildhost/w/a.rs",
+                "does not name a path on this machine",
+            ),
+            ("mailto:", "names nothing after its scheme"),
+        ] {
+            let err = parse_source(uri).expect_err(uri);
+            assert!(err.contains(why), "{uri}: {err}");
+        }
     }
 
     #[test]
@@ -1187,13 +1503,27 @@ mod tests {
             truncated: 2,
             depth_limit: 2,
             unexpanded: 1,
+            unsupported: vec!["String (jdt:)".into()],
             ..Default::default()
         };
-        assert!(report.is_complete());
+        // Every lookup was answered, but the budget and the depth limit cut the walk.
+        assert!(report.has_complete_evidence());
+        assert!(report.is_bounded());
+        assert!(!report.is_complete());
         assert_eq!(report.slice_bytes(), 100);
         assert!((report.reduction_percent() - 90.0).abs() < 0.001);
         let text = report.render();
-        assert!(text.contains("90% smaller"), "{text}");
+        assert!(
+            text.starts_with("BOUNDED slice of `run`: 1 item(s), 100 bytes from 1000 bytes of source (90% smaller); every dependency lookup was answered"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "outside the workspace in a source of an unsupported URI scheme, not followed: \
+                 String (jdt:)\n"
+            ),
+            "{text}"
+        );
         assert!(
             text.contains("byte budget of 120 bytes reached: 2 queued item(s) left out"),
             "{text}"
@@ -1205,6 +1535,19 @@ mod tests {
         assert!(text.contains("not followed: HashMap\n"), "{text}");
         assert!(text.contains("(the seed)"), "{text}");
         assert!(SliceReport::default().reduction_percent().abs() < f64::EPSILON);
+
+        // Without the bounds, and with only names outside the workspace, it is complete.
+        let whole = SliceReport {
+            truncated: 0,
+            unexpanded: 0,
+            ..report
+        };
+        assert!(whole.is_complete());
+        assert!(
+            whole.render().starts_with("slice of `run`"),
+            "{}",
+            whole.render()
+        );
     }
 
     #[test]

@@ -6,14 +6,15 @@
 //! per-item name limit, the depth limit and the byte budget are all named in the answer, and a
 //! walk in which the analyzer answered no definition query at all is an error. A null or empty
 //! answer — a local, a keyword the scanner let through, a name that resolves nowhere — is the
-//! analyzer's ordinary answer and leaves the slice complete.
+//! analyzer's ordinary answer and leaves the slice complete. A location URI that names no local
+//! file and a position or range the source cannot hold are malformed evidence, and a seed
+//! column past its line is refused.
 //!
-//! The last test runs a small crate through the public `code_slice` tool against a real gateway
-//! and its rust-analyzer; it needs `PROD_CODE_LIVE_GATEWAY` and fails without it.
+//! The same tool against a real gateway and the real Rust engine is
+//! `crates/prod-code-gateway/tests/slice_live.rs`.
 
 use prod_code_mcp::slice;
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
-use std::net::SocketAddr;
 use std::path::Path;
 
 /// The `(line, character)` of a definition question, 0-based as the protocol sends it.
@@ -286,7 +287,9 @@ async fn a_body_over_the_name_limit_is_reported() {
 }
 
 /// A walk cut by the depth limit says where, and a byte budget that runs out names the budget
-/// and what was left queued, without calling the slice incomplete: both are the caller's bounds.
+/// and what was left queued. Both are the caller's bounds, not missing evidence, so the slice
+/// keeps its items and reduction figure; but it is not the whole dependency closure, so it is
+/// marked bounded rather than complete.
 #[tokio::test]
 async fn the_depth_limit_and_the_byte_budget_say_where_they_cut_the_walk() {
     let seed = "fn seed() {\n    middle();\n}";
@@ -315,7 +318,13 @@ async fn the_depth_limit_and_the_byte_budget_say_where_they_cut_the_walk() {
         .expect("the slice runs");
     let text = report.render();
     assert_eq!(report.items.len(), 2, "{text}");
-    assert!(text.starts_with("slice of `seed`"), "{text}");
+    assert!(report.gaps.is_empty(), "{text}");
+    assert!(!report.is_complete(), "{text}");
+    assert!(
+        text.starts_with("BOUNDED slice of `seed`: 2 item(s)"),
+        "{text}"
+    );
+    assert!(text.contains("% smaller"), "{text}");
     assert!(
         text.contains(
             "depth limit 1 reached: the dependencies of 1 item(s) at depth 1 were not looked up"
@@ -328,6 +337,8 @@ async fn the_depth_limit_and_the_byte_budget_say_where_they_cut_the_walk() {
         .expect("the slice runs");
     let text = report.render();
     assert_eq!(report.items.len(), 1, "{text}");
+    assert!(!report.is_complete(), "{text}");
+    assert!(text.starts_with("BOUNDED slice of `seed`"), "{text}");
     assert!(
         text.contains(&format!(
             "byte budget of {} bytes reached: 1 queued item(s) left out, and their own dependencies were not looked up",
@@ -478,78 +489,255 @@ async fn a_zero_seed_position_is_refused_as_not_one_based() {
     assert!(format!("{err:#}").contains("1-based"), "{err:#}");
 }
 
-// ===== a real analyzer, through the public tool =====
+/// A location's URI must name a local file: an empty or relative one, a file URI with a query,
+/// another host or no leading slash is malformed evidence, not a dependency outside the
+/// workspace. A URI of another scheme (a class inside a jar) is a real external source the
+/// slicer cannot read; it is named as such, not turned into a path.
+#[tokio::test]
+async fn a_definition_uri_that_is_not_a_local_file_is_malformed_not_external() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "fn seed() {\n    empty();\n    relative();\n    queried();\n    remote();\n    loose();\n    java();\n    good();\n}\nfn good() {}\nfn other() {}\n",
+    )]);
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let target = file.clone();
+    let gateway = ScriptedGateway::start(move |method, params| {
+        let with_uri = |uri: String| {
+            serde_json::json!([{
+                "uri": uri,
+                "range": { "start": { "line": 10, "character": 3 }, "end": { "line": 10, "character": 8 } }
+            }])
+        };
+        match method {
+            "textDocument/documentSymbol" => serde_json::json!([
+                answers::document_symbol("seed", 12, 1, 9, 4),
+                answers::document_symbol("good", 12, 10, 10, 4),
+                answers::document_symbol("other", 12, 11, 11, 4),
+            ]),
+            "textDocument/definition" => match asked_at(params) {
+                (1, 4) => with_uri(String::new()),
+                (2, 4) => with_uri("src/lib.rs".into()),
+                (3, 4) => with_uri(format!("{}?version=2", answers::uri(&target))),
+                (4, 4) => with_uri("file://buildhost/w/src/lib.rs".into()),
+                (5, 4) => with_uri("file:src/lib.rs".into()),
+                (6, 4) => with_uri("jdt://contents/rt.jar/java.lang/String.class".into()),
+                (7, 4) => serde_json::json!([location(&target, 9, 3)]),
+                _ => serde_json::Value::Null,
+            },
+            _ => serde_json::Value::Null,
+        }
+    })
+    .await;
 
-const LIVE_MANIFEST: &str =
-    "[package]\nname = \"slice_live\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
-const LIVE_LIB: &str = "pub mod config;\n\nuse config::Config;\n\npub fn seed(cfg: &Config) -> u32 {\n    let local = cfg.count;\n    dependency(local)\n}\n\npub fn dependency(value: u32) -> u32 {\n    value + 1\n}\n\npub fn unrelated() -> u32 {\n    7\n}\n";
-const LIVE_CONFIG: &str = "pub struct Config {\n    pub count: u32,\n}\n";
-
-/// The text of a tool's answer.
-fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
-    result
-        .content
-        .iter()
-        .map(|item| match item {
-            prod_code_mcp::protocol::McpContentItem::Text { text } => text.clone(),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let report = slice::slice(gateway.addr(), &root, &file, 1, 4, 1, 4096)
+        .await
+        .expect("a partial walk still gives a slice");
+    let text = report.render();
+    let mut names: Vec<&str> = report.items.iter().map(|i| i.name.as_str()).collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec!["good", "seed"],
+        "a query string does not make a URI name a file: {text}"
+    );
+    for (name, line) in [
+        ("empty", 2),
+        ("relative", 3),
+        ("queried", 4),
+        ("remote", 5),
+        ("loose", 6),
+    ] {
+        assert!(
+            !report.external.iter().any(|e| e == name),
+            "`{name}` reported as outside the workspace: {text}"
+        );
+        assert!(
+            report.gaps.iter().any(|g| g
+                .detail
+                .starts_with(&format!("`{name}` at src/lib.rs:{line}:5"))),
+            "`{name}` is not a named gap: {text}"
+        );
+    }
+    assert!(
+        !report.external.iter().any(|e| e == "java"),
+        "a jar URI is not a path outside the workspace: {text}"
+    );
+    assert!(text.starts_with("INCOMPLETE"), "{text}");
+    assert!(text.contains("not an absolute URI"), "{text}");
+    assert!(text.contains("query"), "{text}");
+    assert!(text.contains("unsupported"), "{text}");
+    assert!(text.contains("java (jdt:)"), "{text}");
 }
 
-/// `code_slice` on a small crate against a real gateway: the seed, the function it calls and
-/// the struct in another file it names come back, the parameter and the local resolve inside the
-/// seed and cost nothing, and the slice is complete. It runs when `PROD_CODE_LIVE_GATEWAY` holds
-/// the address of a running gateway; invoke this ignored test explicitly with that prerequisite.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to a running gateway"]
-async fn a_real_rust_analyzer_slices_a_small_crate_through_the_public_tool() {
-    let addr = std::env::var("PROD_CODE_LIVE_GATEWAY")
-        .expect("set PROD_CODE_LIVE_GATEWAY to run this integration test")
-        .parse::<SocketAddr>()
-        .expect("PROD_CODE_LIVE_GATEWAY must be a socket address");
+/// A definition position the source cannot hold — past the last line, past the end of a line,
+/// between the two halves of a surrogate pair, or between the `\r` and `\n` of a CRLF line — is
+/// malformed evidence, not a pointer to whatever declaration spans that line. A declaration whose
+/// range runs past its file cannot be sliced either, rather than being cut to the lines there are.
+#[tokio::test]
+async fn a_definition_position_outside_its_source_is_malformed_not_a_nearby_declaration() {
     let ws = Workspace::new(&[
-        ("Cargo.toml", LIVE_MANIFEST),
-        ("src/lib.rs", LIVE_LIB),
-        ("src/config.rs", LIVE_CONFIG),
+        (
+            "src/lib.rs",
+            "fn seed() {\n    past_line();\n    past_column();\n    split_pair();\n    past_crlf();\n    ghost();\n    crlf_target();\n}\nfn fine() { let _s = \"😀\"; }\n",
+        ),
+        ("src/crlf.rs", "pub fn crlf_target() {}\r\n"),
+        ("src/ghost.rs", "pub fn ghost() {}\n"),
     ]);
     let root = ws.root();
-    let ask = || {
-        prod_code_mcp::tools::execute_tool(
-            addr,
-            &root,
-            "code_slice",
-            serde_json::json!({ "path": "src/lib.rs", "line": 5, "character": 8, "depth": 3 }),
-        )
-    };
-
-    // Until the analyzer has loaded the crate its answers are empty or time out, and the slice
-    // says so; ask again until it is complete. Each attempt's first line is kept in the log.
-    let mut last = String::new();
-    for attempt in 1..=30 {
-        last = match ask().await {
-            Ok(result) => text_of(&result),
-            Err(e) => format!("error: {e:#}"),
-        };
-        eprintln!(
-            "attempt {attempt}: {}",
-            last.lines().next().unwrap_or_default()
-        );
-        if last.starts_with("slice of `seed`")
-            && last.contains("[function] dependency")
-            && last.contains("[struct] Config")
-        {
-            break;
+    let file = root.join("src/lib.rs");
+    let (lib, crlf, ghost) = (
+        file.clone(),
+        root.join("src/crlf.rs"),
+        root.join("src/ghost.rs"),
+    );
+    let gateway = ScriptedGateway::start(move |method, params| {
+        let uri = params
+            .pointer("/textDocument/uri")
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        match method {
+            "textDocument/documentSymbol" if uri.ends_with("crlf.rs") => {
+                serde_json::json!([answers::document_symbol("crlf_target", 12, 1, 1, 8)])
+            }
+            // Thirty lines of a one-line file.
+            "textDocument/documentSymbol" if uri.ends_with("ghost.rs") => {
+                serde_json::json!([answers::document_symbol("ghost", 12, 1, 30, 8)])
+            }
+            "textDocument/documentSymbol" => serde_json::json!([
+                answers::document_symbol("seed", 12, 1, 8, 4),
+                answers::document_symbol("fine", 12, 9, 9, 4),
+            ]),
+            "textDocument/definition" => match asked_at(params) {
+                (1, 4) => serde_json::json!([location(&lib, 40, 0)]),
+                (2, 4) => serde_json::json!([location(&lib, 8, 200)]),
+                // `fn fine() { let _s = "` is 22 units; the emoji is units 22 and 23.
+                (3, 4) => serde_json::json!([location(&lib, 8, 23)]),
+                // `pub fn crlf_target() {}` is 23 units; 24 is between `\r` and `\n`.
+                (4, 4) => serde_json::json!([{
+                    "uri": answers::uri(&crlf),
+                    "range": { "start": { "line": 0, "character": 24 }, "end": { "line": 0, "character": 24 } }
+                }]),
+                (5, 4) => serde_json::json!([location(&ghost, 0, 7)]),
+                (6, 4) => serde_json::json!([location(&crlf, 0, 7)]),
+                _ => serde_json::Value::Null,
+            },
+            _ => serde_json::Value::Null,
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    })
+    .await;
+
+    let report = slice::slice(gateway.addr(), &root, &file, 1, 4, 1, 4096)
+        .await
+        .expect("a partial walk still gives a slice");
+    let text = report.render();
+    let mut names: Vec<&str> = report.items.iter().map(|i| i.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, vec!["crlf_target", "seed"], "{text}");
+    for (name, line, why) in [
+        ("past_line", 2, "past the last line"),
+        ("past_column", 3, "past the end of line 9"),
+        ("split_pair", 4, "splits a surrogate pair"),
+        ("past_crlf", 5, "past the end of line 1"),
+    ] {
+        assert!(
+            report.gaps.iter().any(|g| {
+                g.detail
+                    .starts_with(&format!("`{name}` at src/lib.rs:{line}:5"))
+                    && g.detail.contains(why)
+            }),
+            "`{name}` is not a gap saying {why:?}: {text}"
+        );
     }
-    eprintln!("{last}");
-    assert!(last.starts_with("slice of `seed`: 3 item(s)"), "{last}");
-    assert!(last.contains("[function] seed"), "{last}");
-    assert!(last.contains("[function] dependency"), "{last}");
-    assert!(last.contains("=== src/config.rs"), "{last}");
-    assert!(last.contains("[struct] Config"), "{last}");
-    assert!(!last.contains("unrelated"), "{last}");
-    assert!(!last.contains("INCOMPLETE"), "{last}");
-    assert!(last.contains("% smaller"), "{last}");
+    assert!(
+        report
+            .gaps
+            .iter()
+            .any(|g| g.detail.contains("src/ghost.rs") && g.detail.contains("past the last line")),
+        "{text}"
+    );
+    assert!(report.unsliced.is_empty(), "{text}");
+    assert!(text.starts_with("INCOMPLETE"), "{text}");
+}
+
+/// A seed column the line cannot hold is refused, whether it is far past the end, between the
+/// `\r` and `\n` of a CRLF line, or inside a surrogate pair; a column that only names the line
+/// (the first, or the end of the line) still finds the declaration spanning it.
+#[tokio::test]
+async fn a_seed_column_past_its_line_is_refused_while_line_only_navigation_still_works() {
+    let ws = Workspace::new(&[("src/lib.rs", "fn seed() {\r\n    let _s = \"😀\";\r\n}\r\n")]);
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let gateway = ScriptedGateway::start(|method, _params| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("seed", 12, 1, 3, 4)])
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    // `fn seed() {` is 11 units: column 12 is its end, 13 is between `\r` and `\n`.
+    // `    let _s = "` is 14 units: the emoji is columns 15 and 16.
+    for (line, col, why) in [
+        (1, 500, "past the end of line 1"),
+        (1, 13, "past the end of line 1"),
+        (2, 16, "splits a surrogate pair"),
+        (40, 1, "past the last line"),
+    ] {
+        let err = slice::slice(gateway.addr(), &root, &file, line, col, 0, 4096)
+            .await
+            .map(|r| r.render())
+            .expect_err(&format!("{line}:{col} is not a position in the file"));
+        let err = format!("{err:#}");
+        assert!(err.contains(why), "{line}:{col}: {err}");
+    }
+    let err = slice::slice(gateway.addr(), &root, &file, 40, 1, 0, 4096)
+        .await
+        .expect_err("line 40 is not in the file");
+    assert!(format!("{err:#}").contains("no declaration at"), "{err:#}");
+
+    for (line, col) in [(2, 1), (1, 12), (2, 15), (3, 2)] {
+        let report = slice::slice(gateway.addr(), &root, &file, line, col, 0, 4096)
+            .await
+            .unwrap_or_else(|e| panic!("{line}:{col}: {e:#}"));
+        assert_eq!(report.seed, "seed", "{line}:{col}");
+        assert_eq!(report.items[0].text, "fn seed() {\n    let _s = \"😀\";\n}");
+    }
+}
+
+/// A name that resolves into the workspace outside any declaration the slicer includes (a
+/// module) is a dependency the slice does not hold: every lookup was answered, but the slice is
+/// not the whole dependency closure, and it says so.
+#[tokio::test]
+async fn an_unsliced_target_leaves_the_slice_bounded_not_complete() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "mod inner;\nfn seed() {\n    inner::run();\n}\n",
+    )]);
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let target = file.clone();
+    let gateway = ScriptedGateway::start(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("seed", 12, 2, 4, 4)])
+        }
+        "textDocument/definition" => match asked_at(params) {
+            (2, 4) => serde_json::json!([location(&target, 0, 4)]),
+            _ => serde_json::Value::Null,
+        },
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let report = slice::slice(gateway.addr(), &root, &file, 2, 4, 3, 4096)
+        .await
+        .expect("the slice runs");
+    let text = report.render();
+    assert!(report.gaps.is_empty(), "{text}");
+    assert!(!report.is_complete(), "{text}");
+    assert!(
+        text.starts_with("BOUNDED slice of `seed`: 1 item(s)"),
+        "{text}"
+    );
+    assert!(text.contains("inner (src/lib.rs:1)"), "{text}");
 }
