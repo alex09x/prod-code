@@ -966,29 +966,38 @@ enum Commands {
         force: bool,
     },
     /// Change what a function takes, with its call sites: Rust reorders, adds and removes
-    /// parameters; Go only reorders named ones.
+    /// parameters; Go reorders named ones and removes provably unused ones.
     ///
     /// Rust: refuses changes to argument evaluation or destruction order (including possible
     /// Deref coercions).
     ///
-    /// Go (a `.go` file, through gopls v0.23.0): exactly one change, a permutation of the named
-    /// parameters of a declared function or method, with every declared parameter given once by
-    /// `--param name` in the new order. Grouped parameters (`a, b int`) move one by one, a method
-    /// keeps its receiver, results stay as declared, and a variadic parameter stays last. gopls's
-    /// edit is refused unless every call and the declaration are exactly that permutation, and it
-    /// is type-checked before it is written. Refused for Go without writing, whatever `--force`
-    /// says: adding or removing a parameter, `--returns`, `--visibility`, `--async`, `--verify`,
-    /// unnamed or `_` parameters, a generic function that has calls, a function used as a value,
-    /// a call gopls leaves in the old order (through an interface), and a reorder of arguments
-    /// whose evaluation order could matter (`true`, `false` and `nil` count as variables).
+    /// Go (a `.go` file, through gopls v0.23.0): a permutation of the named parameters of a
+    /// declared function or method, optionally omitting unused parameters. Grouped parameters
+    /// (`a, b int`) move one by one; receivers and results stay as declared. A retained
+    /// variadic parameter stays last; removing it removes its entire argument tail.
+    /// Both body inspection and gopls references must prove every removed parameter unused.
+    /// Dropped arguments must be literals or simple variables; calls, selectors, indexing,
+    /// receives, conversions and operators are refused because their evaluation can matter.
+    /// Every call and the declaration must match exactly, and the result is type-checked.
+    /// Refused for Go without writing, whatever `--force` says: adding a parameter, `--returns`,
+    /// `--visibility`, `--async`, `--verify`, unnamed or `_` parameters, any generic removal,
+    /// a generic function that has calls, a function used as a value, an unreconciled call,
+    /// and uncertain argument reordering (`true`, `false` and `nil` count as variables).
     ChangeSignature {
         /// The function, by name (`validate_texts`, `Session::open_text`, `Price`, `Cart.Add`).
         symbol: String,
         /// One entry of the new parameter list, in order: `name` keeps it, `name: Type = expr`
-        /// adds it (Rust); a declared parameter that is not listed is removed (Rust). Go: every
-        /// declared parameter's name, reordered. Repeat the flag.
-        #[arg(long = "param", required = true)]
+        /// adds it (Rust); a declared parameter that is not listed is removed. Go requires proof
+        /// that a removed parameter is unused and dropping its arguments is safe. Repeat the flag.
+        #[arg(
+            long = "param",
+            required_unless_present = "remove_all",
+            conflicts_with = "remove_all"
+        )]
         params: Vec<String>,
+        /// Explicitly request an empty parameter list. The same removal safety checks apply.
+        #[arg(long, conflicts_with = "params")]
+        remove_all: bool,
         /// Rust only: the return type it should have; `()` removes it.
         #[arg(long)]
         returns: Option<String>,
@@ -2143,6 +2152,7 @@ async fn main() -> Result<()> {
         Commands::ChangeSignature {
             symbol,
             params,
+            remove_all: _,
             returns,
             visibility,
             asyncness,

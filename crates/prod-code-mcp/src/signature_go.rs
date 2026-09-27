@@ -93,10 +93,11 @@ enum ArgKind {
     Effectful,
 }
 
-/// Changes the parameter order of the Go function or method at `file:line:col` (1-based; the
+/// Reorders or removes named parameters of the Go function or method at `file:line:col` (1-based; the
 /// position may be anywhere from its `func` keyword to the `)` closing its parameters).
 ///
-/// `request` must name every declared parameter exactly once; `modifiers` must be empty.
+/// `request` names each retained parameter once; omitted parameters must be provably unused.
+/// `modifiers` must be empty.
 /// `force` is accepted for the common dispatch and overrides no refusal.
 #[allow(clippy::too_many_arguments)]
 pub async fn change_with(
@@ -1472,20 +1473,30 @@ fn parameter_evidence(
     let mut declared = false;
     let mut uses = Vec::new();
     for entry in entries {
-        let number = |key: &str| {
+        let number = |end: &str, key: &str| {
             entry
-                .pointer(&format!("/range/start/{key}"))
+                .pointer(&format!("/range/{end}/{key}"))
                 .and_then(|v| v.as_u64())
                 .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v < u32::MAX)
         };
-        let (Some(uri), Some(l), Some(c)) = (
+        let (Some(uri), Some(l), Some(c), Some(el), Some(ec)) = (
             entry.get("uri").and_then(|u| u.as_str()),
-            number("line"),
-            number("character"),
+            number("start", "line"),
+            number("start", "character"),
+            number("end", "line"),
+            number("end", "character"),
         ) else {
             anyhow::bail!("a location is malformed: {entry}");
         };
-        let path = PathBuf::from(crate::remote_fs::uri_to_path(uri));
+        let uri = url::Url::parse(uri).context("a parameter location has an invalid URI")?;
+        anyhow::ensure!(
+            uri.scheme() == "file" && uri.query().is_none() && uri.fragment().is_none(),
+            "a parameter location is not a plain file URI: {uri}"
+        );
+        let path = uri
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("a parameter location is not a local file URI: {uri}"))?;
         anyhow::ensure!(
             same_file(&path, file),
             "a use in {} is outside the function; the answer is not about this parameter",
@@ -1501,6 +1512,12 @@ fn parameter_evidence(
                     c + 1
                 )
             })?;
+        anyhow::ensure!(
+            offset_at(text, el, ec) == offset.checked_add(name.len()),
+            "the location {}:{} does not span exactly `{name}`; its range is stale or malformed",
+            l + 1,
+            c + 1
+        );
         if offset == at {
             declared = true;
         } else {
@@ -2146,5 +2163,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty[&file], Vec::<TextEdit>::new());
+    }
+}
+
+#[cfg(test)]
+mod removal_evidence_validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_parameter_locations_cannot_prove_a_removal_safe() {
+        let file = Path::new("/tmp/parameter-proof.go");
+        let text = "func F(discard int) {}";
+        let at = text.find("discard").unwrap();
+        let body = (text.find('{').unwrap(), text.find('}').unwrap());
+        let good = json!({"uri":url::Url::from_file_path(file).unwrap().to_string(),
+            "range":{"start":{"line":0,"character":at},"end":{"line":0,"character":at+7}}});
+        assert!(
+            parameter_evidence(&json!([good.clone()]), file, text, "discard", at, body)
+                .unwrap()
+                .is_empty()
+        );
+        let mut no_end = good.clone();
+        no_end["range"].as_object_mut().unwrap().remove("end");
+        let mut wrong_end = good.clone();
+        wrong_end["range"]["end"]["character"] = json!(at);
+        let mut raw_path = good.clone();
+        raw_path["uri"] = json!(file.to_str().unwrap());
+        let mut overflow = good;
+        overflow["range"]["start"]["line"] = json!(u32::MAX);
+        overflow["range"]["end"]["line"] = json!(u32::MAX);
+        let mut failures = Vec::new();
+        for entry in [no_end, wrong_end, raw_path, overflow] {
+            let result = std::panic::catch_unwind(|| {
+                parameter_evidence(&json!([entry.clone()]), file, text, "discard", at, body)
+            });
+            if !matches!(result, Ok(Err(_))) {
+                failures.push(format!("accepted or panicked: {entry}: {result:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

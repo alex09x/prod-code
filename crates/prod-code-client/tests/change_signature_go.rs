@@ -64,7 +64,7 @@ fn said(out: &Output) -> String {
     )
 }
 
-/// Help names the Go scope; a preview writes nothing; `--verify`, a removal, a result change
+/// Help names the Go scope; a preview writes nothing; `--verify`, removal of a used parameter, a result change
 /// and an effect-order hazard are refused with every file kept; `--apply` writes a program
 /// that prints what it printed before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -106,7 +106,9 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         "Go (a `.go` file, through gopls v0.23.0)",
         "permutation of the named",
         "variadic parameter stays last",
-        "adding or removing a parameter",
+        "adding a parameter",
+        "removes provably unused ones",
+        "--remove-all",
         "generic function that has calls",
         "function used as a value",
         "`true`, `false` and `nil` count as variables",
@@ -154,7 +156,7 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         "verify asked gopls for an edit"
     );
 
-    // Refusals that `--force` does not lift: a removal, a result change, and a reorder that
+    // Refusals that `--force` does not lift: removal of a used parameter, a result change, and a reorder that
     // would run `mark("b", 2)` before `mark("a", 5)`.
     let refusals: [(&[&str], &str); 3] = [
         (
@@ -236,4 +238,61 @@ async fn change_signature_reorders_go_parameters_from_the_command_line() {
         before,
         "the reordered program prints something else"
     );
+}
+
+/// Real gopls edits for both partial removal and an explicitly empty list through the CLI.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn change_signature_removes_unused_go_parameters_including_all_of_them() {
+    require_go_toolchain();
+    let module = GoModule::new(&[
+        ("go.mod", "module example.com/removecli\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\nfunc Keep(keep int, discard string) int { return keep }\nfunc Empty(first int, second string) int { return 41 }\n",
+        ),
+        (
+            "main.go",
+            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(Keep(9, \"unused\"), Empty(8, \"noop\")) }\n",
+        ),
+    ]);
+    let home = tempfile::tempdir().unwrap();
+    let before = module.run();
+    let untouched = module.snapshot();
+    let bridge = GoplsBridge::start(&module).await;
+    let remote = bridge.addr();
+    for args in [
+        vec!["change-signature", "Empty"],
+        vec![
+            "change-signature",
+            "Empty",
+            "--remove-all",
+            "--param",
+            "first",
+        ],
+    ] {
+        let out = cli(module.root(), home.path(), remote, &args).await;
+        assert_eq!(out.status.code(), Some(2), "{}", said(&out));
+    }
+    assert!(bridge.renames().is_empty(), "invalid flags reached gopls");
+    for args in [
+        vec!["change-signature", "Keep", "--param", "keep"],
+        vec!["change-signature", "Empty", "--remove-all"],
+    ] {
+        let out = cli(module.root(), home.path(), remote, &args).await;
+        assert!(out.status.success(), "{}", said(&out));
+        assert!(said(&out).contains("nothing was written"), "{}", said(&out));
+        assert_eq!(module.snapshot(), untouched);
+    }
+    for args in [
+        vec!["change-signature", "Keep", "--param", "keep", "--apply"],
+        vec!["change-signature", "Empty", "--remove-all", "--apply"],
+    ] {
+        let out = cli(module.root(), home.path(), remote, &args).await;
+        assert!(out.status.success(), "{}", said(&out));
+    }
+    assert!(module.read("lib.go").contains("func Keep(keep int) int"));
+    assert!(module.read("lib.go").contains("func Empty() int"));
+    assert!(module.read("main.go").contains("Keep(9)"));
+    assert!(module.read("main.go").contains("Empty()"));
+    assert_eq!(module.run(), before);
 }
