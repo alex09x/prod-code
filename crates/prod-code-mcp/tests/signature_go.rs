@@ -525,6 +525,96 @@ async fn typed_literal_parameters_are_added_without_reordering_old_argument_effe
     assert_eq!(go_tests(&fixture), tests_before, "tests ran differently");
 }
 
+/// A primitive result replacement is declaration-only, but its caller proof and remote compiler
+/// verdict are still required for preview and apply. This is deliberately a real gopls scenario:
+/// a scripted result edit would not establish that the declaration/reference coordinates agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unnamed_primitive_free_result_is_replaced_without_touching_calls() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/result\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\n\nvar trace []string\nfunc mark(n int) int { trace = append(trace, \"mark\"); return n }\n// Count keeps its body.\nfunc Count(n int) int { return 7 }\n",
+        ),
+        (
+            "main.go",
+            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(Count(mark(1)), trace) }\n",
+        ),
+        (
+            "main_test.go",
+            "package main\nimport \"testing\"\nfunc TestCount(t *testing.T) { if Count(1) != 7 { t.Fatal(\"count\") } }\n",
+        ),
+    ]);
+    let before = fixture.run();
+    let untouched = fixture.snapshot();
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+    let modifiers = Modifiers {
+        returns: Some("int64".into()),
+        ..Default::default()
+    };
+    let preview = change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Count(n",
+        &[Param::Keep("n".into())],
+        &modifiers,
+        false,
+    )
+    .await
+    .expect("preview result replacement");
+    assert!(!preview.applied);
+    assert_eq!(preview.returns, Some(("int".into(), "int64".into())));
+    assert_eq!(fixture.snapshot(), untouched, "preview wrote");
+    assert!(rewritten(&preview, "lib.go").contains("func Count(n int) int64 { return 7 }"));
+    assert_eq!(preview.rewritten.len(), 1, "only the result token changes");
+
+    // A no-op still needs complete references and a non-empty, complete compiler proposal.
+    let no_op = change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Count(n",
+        &[Param::Keep("n".into())],
+        &Modifiers {
+            returns: Some("int".into()),
+            ..Default::default()
+        },
+        false,
+    )
+    .await
+    .expect("no-op result verification");
+    assert!(!no_op.applied);
+    assert!(no_op.rewritten.is_empty(), "{:?}", no_op.rewritten);
+    assert_eq!(no_op.returns, Some(("int".into(), "int".into())));
+    assert_eq!(fixture.snapshot(), untouched, "no-op verification wrote");
+
+    let applied = change_with(
+        remote,
+        &fixture,
+        "lib.go",
+        "Count(n",
+        &[Param::Keep("n".into())],
+        &modifiers,
+        true,
+    )
+    .await
+    .expect("apply result replacement");
+    assert!(applied.applied);
+    assert!(
+        fixture
+            .read("lib.go")
+            .contains("func Count(n int) int64 { return 7 }")
+    );
+    assert_eq!(
+        fixture.read("main.go").as_bytes(),
+        untouched["main.go"].as_slice()
+    );
+    assert_eq!(fixture.run(), before, "caller effects changed");
+}
+
 /// Malformed, stale and outside-checkout function locations are unknown evidence, not an empty
 /// or partial success, and `force` cannot turn any of them into a write.
 #[tokio::test]
@@ -874,7 +964,7 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
     )
     .await);
     assert!(
-        results.contains("results") && results.contains(open),
+        results.contains("parameter list exactly unchanged") && results.contains(open),
         "{results}"
     );
     let nowhere = err(change(
@@ -995,6 +1085,166 @@ async fn public_go_refusal(
     assert!(error.contains(said), "{args}: {error}");
     assert!(error.contains("nothing was written"), "{args}: {error}");
     assert_eq!(fixture.snapshot(), untouched, "{args}: refusal wrote");
+}
+
+async fn public_result_refusal(
+    remote: SocketAddr,
+    fixture: &GoModule,
+    needle: &str,
+    params: serde_json::Value,
+    returns: &str,
+    extra: &[(&str, serde_json::Value)],
+    said: &str,
+) {
+    let (line, character) = at(fixture, "lib.go", needle);
+    let mut args = json!({
+        "path": "lib.go", "line": line, "character": character,
+        "params": params, "returns": returns, "apply": true, "force": true
+    });
+    for (key, value) in extra {
+        args[*key] = value.clone();
+    }
+    public_go_refusal(remote, fixture, args, said).await;
+}
+
+/// Result replacement accepts only a single unshadowed primitive result on an ordinary,
+/// non-generic, non-variadic free function. These refusals exercise the public MCP boundary with
+/// a real gopls where it can answer, and preserve every fixture byte even under force.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn public_mcp_refuses_unsafe_result_replacements_and_preserves_every_byte() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/resultrefusal\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            r#"package main
+
+type (
+	// The comment and grouping are deliberate: spelling alone must not pass this alias off as a primitive.
+	int64 /* requested shadow */ = interface{}
+	byte = interface{}
+)
+
+func RequestedShadow(n int) int { return n }
+func OldShadow(n int) byte { return n }
+func Variadic(xs ...int) int { return len(xs) }
+func Named(n int) (out int) { return n }
+func Multiple(n int) (int, error) { return n, nil }
+func Void(n int) {}
+func Composite(n int) []int { return []int{n} }
+func Generic[T any](n int) int { return n }
+type Meter struct{}
+func (Meter) Method(n int) int { return n }
+func Value(n int) int { return n }
+var saved = Value
+"#,
+        ),
+        ("main.go", "package main\nfunc main() {}\n"),
+    ]);
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+
+    // On the base candidate both shadow requests compiled: compilation proves compatibility, not
+    // that either spelling denotes its predeclared type.
+    public_result_refusal(
+        remote,
+        &fixture,
+        "RequestedShadow(n",
+        json!(["n"]),
+        "int64",
+        &[],
+        "primitive type identity cannot be proven",
+    )
+    .await;
+    public_result_refusal(
+        remote,
+        &fixture,
+        "OldShadow(n",
+        json!(["n"]),
+        "string",
+        &[],
+        "primitive type identity cannot be proven",
+    )
+    .await;
+    for (needle, returns, said) in [
+        ("Variadic(xs", "int64", "variadic function"),
+        ("Named(n", "int64", "one unnamed primitive"),
+        ("Multiple(n", "int64", "one unnamed primitive"),
+        ("Void(n", "int64", "no result"),
+        ("Composite(n", "int64", "one unnamed primitive"),
+        ("Generic[T", "int64", "generic function"),
+        ("Method(n", "int64", "receiver method"),
+        ("Value(n", "string", "used as a value"),
+    ] {
+        public_result_refusal(remote, &fixture, needle, json!(["n"]), returns, &[], said).await;
+    }
+    public_result_refusal(
+        remote,
+        &fixture,
+        "RequestedShadow(n",
+        json!([]),
+        "string",
+        &[],
+        "parameter list exactly unchanged",
+    )
+    .await;
+    for (extra, said) in [
+        (("visibility", json!("pub")), "exported by its first letter"),
+        (("async", json!(true)), "neither async nor not"),
+        (("verify", json!("compile")), "not supported for Go"),
+    ] {
+        public_result_refusal(
+            remote,
+            &fixture,
+            "RequestedShadow(n",
+            json!(["n"]),
+            "string",
+            &[extra],
+            said,
+        )
+        .await;
+    }
+
+    // Missing and malformed reference evidence remains a refusal for results, not an empty caller
+    // list. Each request asks to write with force and compares a byte-complete snapshot.
+    let evidence = GoModule::new(&[
+        ("go.mod", "module example.com/resultevidence\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\nfunc Evidence(n int) int { return n }\n",
+        ),
+    ]);
+    let (line, character) = at(&evidence, "lib.go", "Evidence(n");
+    for answer in [
+        json!([]),
+        json!([{ "uri": uri(&evidence.path("lib.go")) }]),
+        json!([{
+            "uri": uri(&evidence.path("lib.go")),
+            "range": {
+                "start": { "line": line - 1, "character": character - 1 },
+                "end": { "line": line - 1, "character": character + 6 }
+            }
+        }]),
+    ] {
+        let gateway = ScriptedGateway::start(move |method, _| {
+            if method == "textDocument/references" {
+                answer.clone()
+            } else {
+                serde_json::Value::Null
+            }
+        })
+        .await;
+        public_go_refusal(
+            gateway.addr(),
+            &evidence,
+            json!({
+                "path": "lib.go", "line": line, "character": character,
+                "params": ["n"], "returns": "int64", "apply": true, "force": true
+            }),
+            "cannot prove every reference",
+        )
+        .await;
+    }
 }
 
 const PUBLIC_REFUSAL_LIB: &str = r#"package main

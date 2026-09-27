@@ -116,6 +116,24 @@ func Ship(qty int, note string, priority int, dest string) string {
 
 // Drop never reads b; its caller passes an effect for it.
 func Drop(a, b int) int { return a }
+
+// Count has one unnamed primitive result: only this token may change.
+func Count(n int) int { return 7 }
+
+type (
+	// Grouped aliases prove that compilation cannot establish primitive identity.
+	uint64 = /* requested shadow */ interface{}
+	byte   = interface{}
+)
+
+func RequestedShadow(n int) int    { return n }
+func OldShadow(n int) byte         { return n }
+func VariadicResult(xs ...int) int { return len(xs) }
+func BodyMismatch(n int) int       { return n }
+func TestCaller(n int) int         { return n }
+func ValueResult(n int) int        { return n }
+
+var savedResult = ValueResult
 "#;
 
 const MAIN: &str = r#"package main
@@ -125,6 +143,7 @@ import "fmt"
 func main() {
 	note, prio := "fragile", 2
 	fmt.Println(Ship(3, "glass", 1, "LA"), Ship(mark("m", 2), note, prio, "NY")) // Ship(1, "x", 2, "y")
+	fmt.Println(Count(mark("count", 1)))
 	fmt.Println(Drop(1, mark("call", 2)), note, prio, trace)
 }
 "#;
@@ -138,6 +157,19 @@ func TestShip(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	t.Log(trace)
+}
+
+func TestCount(t *testing.T) {
+	if Count(1) != 7 {
+		t.Fatal("count")
+	}
+}
+
+func TestResultCallerType(t *testing.T) {
+	var got int = TestCaller(1)
+	if got != 1 {
+		t.Fatal("typed caller")
+	}
 }
 "#;
 
@@ -487,6 +519,107 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         "gopls loaded the module: {hover}"
     );
 
+    // Public MCP result replacement: preview is transactional, apply changes only `int` to
+    // `int64`, and the real gateway compiles the package plus its test caller before either.
+    let count_preview = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Count", "params": ["n"], "returns": "int64" }),
+    )
+    .await;
+    assert!(
+        !count_preview.starts_with("error: ")
+            && count_preview.contains("returns: `int` → `int64`")
+            && count_preview.contains("nothing was written"),
+        "{count_preview}"
+    );
+    assert_eq!(snapshot(&root), untouched, "result preview wrote");
+    let count_applied = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "Count", "params": ["n"], "returns": "int64", "apply": true }),
+    )
+    .await;
+    assert!(!count_applied.starts_with("error: "), "{count_applied}");
+    let count_lib = std::fs::read_to_string(project.join("lib.go")).expect("lib.go");
+    assert!(
+        count_lib.contains("func Count(n int) int64 { return 7 }"),
+        "{count_lib}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("main.go")).expect("main.go"),
+        MAIN,
+        "result replacement touched a caller"
+    );
+    let after_result = behaviour(&project);
+    assert_eq!(after_result, before, "result replacement changed execution");
+    assert!(
+        after_result
+            .0
+            .contains("[Ship(3,LA) m Ship(2,NY) count call]"),
+        "free-function argument trace was not observed: {after_result:?}"
+    );
+    let untouched = snapshot(&root);
+
+    // A no-op still lists complete references and compiles packages plus test callers remotely.
+    let no_op = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Count", "params": ["n"], "returns": "int64",
+            "apply": true, "force": true
+        }),
+    )
+    .await;
+    assert!(
+        !no_op.starts_with("error: ") && no_op.contains("nothing was written"),
+        "{no_op}"
+    );
+    assert_eq!(snapshot(&root), untouched, "result no-op wrote");
+
+    // Compiler and semantic refusals include an incompatible body, a typed test-only caller,
+    // requested and existing shadowed primitive names, a variadic declaration with no calls, and
+    // an indirect function value. Force cannot turn any of them into a write.
+    for (symbol, returns, reason) in [
+        ("BodyMismatch", "string", "does not compile"),
+        ("TestCaller", "int64", "does not compile"),
+        (
+            "RequestedShadow",
+            "uint64",
+            "primitive type identity cannot be proven",
+        ),
+        (
+            "OldShadow",
+            "string",
+            "primitive type identity cannot be proven",
+        ),
+        ("VariadicResult", "int64", "variadic function"),
+        ("ValueResult", "int64", "used as a value"),
+    ] {
+        let refused = tool(
+            addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "symbol": symbol, "params": if symbol == "VariadicResult" {
+                    serde_json::json!(["xs"])
+                } else {
+                    serde_json::json!(["n"])
+                },
+                "returns": returns, "apply": true, "force": true
+            }),
+        )
+        .await;
+        assert!(
+            refused.starts_with("error: ") && refused.contains(reason),
+            "{symbol}: {refused}"
+        );
+        assert_eq!(snapshot(&root), untouched, "result refusal wrote: {symbol}");
+    }
+
     // A preview of removing `note` and `priority` and swapping the rest writes nothing.
     let order = serde_json::json!(["dest", "qty"]);
     let preview = tool(
@@ -560,8 +693,12 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         LIB.replace(
             "func Ship(qty int, note string, priority int, dest string) string {",
             ""
+        )
+        .replace(
+            "func Count(n int) int { return 7 }",
+            "func Count(n int) int64 { return 7 }"
         ),
-        "only the parameter list of the declaration changed"
+        "only the requested signature tokens changed"
     );
 
     // The gateway inherited the real toolchain. Replace only the client's `go` with a failing
