@@ -14,6 +14,14 @@ use tokio_util::codec::Framed;
 
 const WAIT: Duration = Duration::from_secs(3);
 
+struct AbortOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 fn fake_editor(dir: &Path, frame: &str, close_stdout: bool) -> (ServerCommand, std::path::PathBuf) {
     let program = dir.join("malformed-editor.sh");
     let pid = dir.join("editor.pid");
@@ -133,13 +141,15 @@ async fn malformed_stdout_closes_session(frame: &str, close_stdout: bool) {
         )
         .await
     });
+    let _session_abort = AbortOnDrop(session.abort_handle());
     let mut editor = None;
     let mut pid = None;
     let mut received = None;
     let outcome = async {
         editor = Some(Framed::new(
-            TcpStream::connect(addr)
+            tokio::time::timeout(WAIT, TcpStream::connect(addr))
                 .await
+                .map_err(|_| "connecting the editor timed out".to_string())?
                 .map_err(|error| format!("connect editor: {error}"))?,
             ProdCodeCodec::new(),
         ));
@@ -154,11 +164,13 @@ async fn malformed_stdout_closes_session(frame: &str, close_stdout: bool) {
         if received.as_ref().is_some_and(|read| read.is_some())
             && let Some(editor) = editor.as_mut()
         {
-            let _ = editor
-                .send(WireMessage::Disconnect {
+            let _ = tokio::time::timeout(
+                WAIT,
+                editor.send(WireMessage::Disconnect {
                     reason: "test cleanup".to_string(),
-                })
-                .await;
+                }),
+            )
+            .await;
         }
         Ok(())
     }
@@ -211,6 +223,7 @@ async fn cleanup_reports_a_child_that_needed_forced_retirement() {
         .expect("start an owned, deliberately surviving child");
     let pid = i32::try_from(child.id().expect("owned child pid")).expect("PID fits i32");
     let mut reap = tokio::spawn(async move { child.wait().await });
+    let _reap_abort = AbortOnDrop(reap.abort_handle());
     let outcome = retire_owned_child(pid).await;
     let reaped = tokio::time::timeout(WAIT, &mut reap).await;
     if reaped.is_err() {
