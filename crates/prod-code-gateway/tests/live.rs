@@ -2203,6 +2203,21 @@ impl EditorSession {
         root: &Path,
         init: serde_json::Value,
     ) -> (Self, serde_json::Value) {
+        Self::open_for(
+            addr,
+            root,
+            init,
+            Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        )
+        .await
+    }
+
+    async fn open_for(
+        addr: SocketAddr,
+        root: &Path,
+        init: serde_json::Value,
+        purpose: Option<String>,
+    ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
         let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
         let mut framed =
@@ -2224,7 +2239,7 @@ impl EditorSession {
                     engine_subpath: None,
                     client_agent: None,
                     client_host: None,
-                    purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+                    purpose,
                 },
             ))
             .await
@@ -3832,6 +3847,26 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
     let file = checkout.path("src/lib.rs");
     let original = std::fs::read(&file).unwrap();
     let uri = prod_code_protocol::path::file_uri(&file);
+    // No editor purpose: this must exercise the embedded Rust engine, not the separate
+    // rust-analyzer subprocess used by editors. Use the wire helper's bounded response wait;
+    // the MCP cold-hover budget is tracked separately in #408.
+    let (mut session, initialized) = EditorSession::open_for(
+        gateway.addr,
+        &root,
+        json!({"rootUri": prod_code_protocol::path::file_uri(&root), "capabilities": {}}),
+        None,
+    )
+    .await;
+    assert!(initialized.get("error").is_none(), "{initialized}");
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": uri, "languageId": "rust", "version": 1,
+                "text": String::from_utf8(original.clone()).unwrap(),
+            }}),
+        )
+        .await;
     for position in [
         json!({"line": 4294967296_u64, "character": 0}),
         json!({"line": u32::MAX, "character": 0}),
@@ -3850,36 +3885,36 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
             "textDocument/rename",
             "prodCode/safeDelete",
         ] {
-            let error = prod_code_mcp::tools::execute_lsp_query(
-                gateway.addr,
-                &root,
-                &file,
-                method,
-                json!({"textDocument": {"uri": uri}, "position": position, "newName": "Other"}),
-            )
-            .await
-            .expect_err("malformed wire coordinates cannot produce a result or edits");
+            let response = session
+                .request(
+                    method,
+                    json!({"textDocument": {"uri": uri}, "position": position, "newName": "Other"}),
+                )
+                .await;
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "{method} {position}: {response}"
+            );
+            assert!(response.get("result").is_none(), "{response}");
             assert!(
-                format!("{error:#}")
-                    .to_ascii_lowercase()
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
                     .contains("position"),
-                "{method} {position}: {error:#}"
+                "{response}"
             );
         }
     }
-    let missing = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr,
-        &root,
-        &file,
-        "textDocument/hover",
-        json!({"textDocument": {"uri": uri}}),
-    )
-    .await
-    .expect_err("a required position cannot be defaulted");
+    let missing = session
+        .request("textDocument/hover", json!({"textDocument": {"uri": uri}}))
+        .await;
+    assert_eq!(missing["error"]["code"], -32602, "{missing}");
     assert!(
-        format!("{missing:#}")
-            .to_ascii_lowercase()
-            .contains("position")
+        missing["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("position"),
+        "{missing}"
     );
     for method in ["prodCode/assists", "prodCode/applyAssist"] {
         for end in [
@@ -3887,53 +3922,77 @@ async fn oversized_and_malformed_wire_positions_never_select_another_token() {
             json!({"line": 0}),
             json!(null),
         ] {
-            let error = prod_code_mcp::tools::execute_lsp_query(
-                gateway.addr, &root, &file, method,
+            let response = session.request(method,
                 json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": end}, "id": "extract_variable"}),
-            ).await.expect_err("malformed explicit range ends cannot become cursor selections");
+            ).await;
+            assert_eq!(response["error"]["code"], -32602, "{response}");
             assert!(
-                format!("{error:#}").to_ascii_lowercase().contains("range"),
-                "{error:#}"
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("range.end"),
+                "{response}"
             );
         }
     }
     for method in ["callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"] {
-        let error = prod_code_mcp::tools::execute_lsp_query(
-            gateway.addr, &root, &file, method,
+        let response = session.request(method,
             json!({"item": {"uri": uri, "selectionRange": {"start": {"line": 4294967296_u64, "character": 0}}}}),
-        ).await.expect_err("hierarchy item coordinates are checked too");
-        assert!(format!("{error:#}").contains("selectionRange"), "{error:#}");
+        ).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("selectionRange"),
+            "{response}"
+        );
     }
-    let valid_hover = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr,
-        &root,
-        &file,
-        "textDocument/hover",
-        json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 10}}),
-    )
-    .await
-    .expect("the same session accepts a valid position after rejections");
-    assert!(valid_hover.to_string().contains("VALUE"), "{valid_hover}");
-    let assists = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr,
-        &root,
-        &file,
-        "prodCode/assists",
-        json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}}}),
-    )
-    .await
-    .expect("an omitted optional assist end stays valid");
-    assert!(assists.is_array(), "{assists}");
-    let diagnostics = prod_code_mcp::tools::execute_lsp_query(
-        gateway.addr,
-        &root,
-        &file,
-        "textDocument/diagnostic",
-        json!({"textDocument": {"uri": uri}}),
-    )
-    .await
-    .expect("positionless native diagnostics stay valid");
-    assert!(diagnostics.is_object(), "{diagnostics}");
+    session
+        .notify(
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": {"line": -1, "character": 0}}),
+        )
+        .await;
+    let valid_hover = session
+        .request(
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 10}}),
+        )
+        .await;
+    assert!(valid_hover.get("error").is_none(), "{valid_hover}");
+    assert!(
+        valid_hover["result"].to_string().contains("VALUE"),
+        "{valid_hover}"
+    );
+    assert!(
+        session
+            .notes
+            .iter()
+            .all(|note| note.get("id").is_none() || note.get("error").is_none()),
+        "an invalid notification receives no synthetic error response: {:?}",
+        session.notes
+    );
+    let assists = session
+        .request(
+            "prodCode/assists",
+            json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}}}),
+        )
+        .await;
+    assert!(
+        assists["result"].is_array(),
+        "omitting the optional end stays valid: {assists}"
+    );
+    let diagnostics = session
+        .request(
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    assert!(
+        diagnostics["result"].is_object(),
+        "positionless diagnostics stay valid: {diagnostics}"
+    );
     assert_eq!(
         std::fs::read(&file).unwrap(),
         original,
