@@ -4,28 +4,189 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
+use std::time::Duration;
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, Notify, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard, RwLock, broadcast};
+use tokio::time::Instant;
+
+const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone)]
+struct FrameWriter {
+    stdin: Arc<Mutex<ChildStdin>>,
+    child: Weak<StdMutex<Child>>,
+    is_alive: Arc<AtomicBool>,
+    closed: Arc<Notify>,
+    engine: Arc<str>,
+    timeout: Duration,
+}
+
+impl FrameWriter {
+    fn retire(&self) {
+        self.is_alive.store(false, Ordering::Release);
+        self.closed.notify_waiters();
+        self.closed.notify_one();
+        if let Some(child) = self.child.upgrade() {
+            match child.lock() {
+                Ok(mut child) => {
+                    let _ = child.start_kill();
+                }
+                Err(error) => {
+                    let mut child = error.into_inner();
+                    let _ = child.start_kill();
+                }
+            }
+        }
+    }
+
+    async fn send(&self, json_payload: &str) -> Result<()> {
+        self.send_with_timeout(json_payload, self.timeout).await
+    }
+
+    async fn send_with_timeout(&self, json_payload: &str, timeout: Duration) -> Result<()> {
+        anyhow::ensure!(
+            self.is_alive.load(Ordering::Acquire),
+            "{} backend process has exited",
+            self.engine
+        );
+
+        let deadline = Instant::now() + timeout;
+        let stdin = tokio::time::timeout_at(deadline, Arc::clone(&self.stdin).lock_owned())
+            .await
+            .with_context(|| {
+                format!(
+                    "timed out after {timeout:?} waiting for {} backend writer",
+                    self.engine
+                )
+            })?;
+        anyhow::ensure!(
+            self.is_alive.load(Ordering::Acquire),
+            "{} backend process has exited",
+            self.engine
+        );
+
+        let mut frame = FrameWrite::new(stdin, self.clone(), timeout);
+        let header = format!("Content-Length: {}\r\n\r\n", json_payload.len());
+        frame
+            .write_all_until(deadline, header.as_bytes(), "header")
+            .await?;
+        frame
+            .write_all_until(deadline, json_payload.as_bytes(), "payload")
+            .await?;
+        frame.flush_until(deadline).await?;
+        frame.complete = true;
+        Ok(())
+    }
+}
+
+struct FrameWrite {
+    stdin: OwnedMutexGuard<ChildStdin>,
+    writer: FrameWriter,
+    timeout: Duration,
+    bytes_written: usize,
+    faulted: bool,
+    complete: bool,
+}
+
+impl FrameWrite {
+    fn new(stdin: OwnedMutexGuard<ChildStdin>, writer: FrameWriter, timeout: Duration) -> Self {
+        Self {
+            stdin,
+            writer,
+            timeout,
+            bytes_written: 0,
+            faulted: false,
+            complete: false,
+        }
+    }
+
+    async fn write_all_until(
+        &mut self,
+        deadline: Instant,
+        mut bytes: &[u8],
+        part: &str,
+    ) -> Result<()> {
+        while !bytes.is_empty() {
+            let written = match tokio::time::timeout_at(deadline, self.stdin.write(bytes)).await {
+                Ok(Ok(0)) => {
+                    self.faulted = true;
+                    anyhow::bail!("{} backend writer returned zero bytes", self.writer.engine);
+                }
+                Ok(Ok(written)) => written,
+                Ok(Err(error)) => {
+                    self.faulted = true;
+                    return Err(error).with_context(|| {
+                        format!("failed writing {} backend LSP {part}", self.writer.engine)
+                    });
+                }
+                Err(_) => anyhow::bail!(
+                    "timed out after {:?} writing {} backend LSP {part}",
+                    self.timeout,
+                    self.writer.engine
+                ),
+            };
+            self.bytes_written += written;
+            bytes = &bytes[written..];
+        }
+        Ok(())
+    }
+
+    async fn flush_until(&mut self, deadline: Instant) -> Result<()> {
+        match tokio::time::timeout_at(deadline, self.stdin.flush()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => {
+                self.faulted = true;
+                Err(error).with_context(|| {
+                    format!("failed flushing {} backend LSP frame", self.writer.engine)
+                })
+            }
+            Err(_) => anyhow::bail!(
+                "timed out after {:?} flushing {} backend LSP frame",
+                self.timeout,
+                self.writer.engine
+            ),
+        }
+    }
+}
+
+impl Drop for FrameWrite {
+    fn drop(&mut self) {
+        if !self.complete && (self.bytes_written != 0 || self.faulted) {
+            // Poison the connection before the owned mutex guard releases it: queued writers
+            // must never append a new frame after an incomplete one.
+            self.writer.retire();
+        }
+    }
+}
 
 /// Managed backend worker running a language server process on the host.
 pub struct BackendWorker {
     pub engine: String,
     pub workspace_root: String,
-    stdin: Arc<Mutex<ChildStdin>>,
+    writer: FrameWriter,
     broadcast_tx: broadcast::Sender<String>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     pub open_files: Arc<RwLock<HashSet<String>>>,
     is_alive: Arc<AtomicBool>,
     closed: Arc<Notify>,
-    _child: Arc<Mutex<Child>>,
+    _child: Arc<StdMutex<Child>>,
 }
 
 impl BackendWorker {
     /// Spawn a language server worker for the specified workspace and initialize it.
     pub async fn spawn(workspace_root: &Path, engine: &str) -> Result<Self> {
+        Self::spawn_with_write_timeout(workspace_root, engine, DEFAULT_WRITE_TIMEOUT).await
+    }
+
+    #[doc(hidden)]
+    pub async fn spawn_with_write_timeout(
+        workspace_root: &Path,
+        engine: &str,
+        write_timeout: Duration,
+    ) -> Result<Self> {
         let binary = match engine {
             "rust" => "rust-analyzer",
             "go" => "gopls",
@@ -62,13 +223,21 @@ impl BackendWorker {
         let (tx, _rx) = broadcast::channel::<String>(2048);
         let tx_clone = tx.clone();
         let stdin_arc = Arc::new(Mutex::new(stdin));
-        let stdin_writer = stdin_arc.clone();
         let is_alive = Arc::new(AtomicBool::new(true));
         let reader_alive = Arc::clone(&is_alive);
         let closed = Arc::new(Notify::new());
         let reader_closed = Arc::clone(&closed);
-        let child = Arc::new(Mutex::new(child));
+        let child = Arc::new(StdMutex::new(child));
         let reader_child = Arc::downgrade(&child);
+        let writer = FrameWriter {
+            stdin: Arc::clone(&stdin_arc),
+            child: Arc::downgrade(&child),
+            is_alive: Arc::clone(&is_alive),
+            closed: Arc::clone(&closed),
+            engine: Arc::from(engine),
+            timeout: write_timeout,
+        };
+        let reader_writer = writer.clone();
 
         // Background reader loop: reads Content-Length frames from language server stdout
         tokio::spawn(async move {
@@ -97,24 +266,50 @@ impl BackendWorker {
                                 "result": null
                             })
                             .to_string();
-                            let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
-                            let mut sin = stdin_writer.lock().await;
-                            let _ = sin.write_all(header.as_bytes()).await;
-                            let _ = sin.write_all(auto_resp.as_bytes()).await;
-                            let _ = sin.flush().await;
+                            if let Err(error) = reader_writer.send(&auto_resp).await {
+                                tracing::warn!(%error, "Failed to write automatic backend LSP response");
+                                // No caller can retry this mandatory response. Keeping a server
+                                // waiting forever would leave a falsely reusable backend.
+                                reader_writer.retire();
+                                break;
+                            }
                         }
                         (Some(id), Some("workspace/configuration")) => {
-                            let auto_resp = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": [{}]
-                            })
+                            let items = val
+                                .get("params")
+                                .and_then(|params| params.get("items"))
+                                .and_then(serde_json::Value::as_array)
+                                .filter(|items| {
+                                    items.iter().all(|item| {
+                                        item.is_object()
+                                            && ["section", "scopeUri"].iter().all(|key| {
+                                                item.get(key).is_none_or(|value| value.is_string())
+                                            })
+                                    })
+                                });
+                            let auto_resp = match items {
+                                Some(items) => serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "result": vec![serde_json::json!({}); items.len()]
+                                }),
+                                None => serde_json::json!({
+                                    "jsonrpc": "2.0",
+                                    "id": id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "workspace/configuration requires an items array of configuration objects with optional string section and scopeUri"
+                                    }
+                                }),
+                            }
                             .to_string();
-                            let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
-                            let mut sin = stdin_writer.lock().await;
-                            let _ = sin.write_all(header.as_bytes()).await;
-                            let _ = sin.write_all(auto_resp.as_bytes()).await;
-                            let _ = sin.flush().await;
+                            if let Err(error) = reader_writer.send(&auto_resp).await {
+                                tracing::warn!(%error, "Failed to write automatic backend LSP response");
+                                // No caller can retry this mandatory response. Keeping a server
+                                // waiting forever would leave a falsely reusable backend.
+                                reader_writer.retire();
+                                break;
+                            }
                         }
                         _ => {}
                     }
@@ -124,9 +319,18 @@ impl BackendWorker {
                 let _ = tx_clone.send(json);
             }
             reader_alive.store(false, Ordering::Release);
+            reader_closed.notify_waiters();
             reader_closed.notify_one();
             if let Some(child) = reader_child.upgrade() {
-                let _ = child.lock().await.start_kill();
+                match child.lock() {
+                    Ok(mut child) => {
+                        let _ = child.start_kill();
+                    }
+                    Err(error) => {
+                        let mut child = error.into_inner();
+                        let _ = child.start_kill();
+                    }
+                }
             }
             tracing::info!("Backend worker reader loop terminated");
         });
@@ -134,7 +338,7 @@ impl BackendWorker {
         let worker = Self {
             engine: engine.to_string(),
             workspace_root: workspace_root.to_string_lossy().to_string(),
-            stdin: stdin_arc,
+            writer,
             broadcast_tx: tx,
             capabilities: Arc::new(RwLock::new(None)),
             open_files: Arc::new(RwLock::new(HashSet::new())),
@@ -251,21 +455,17 @@ impl BackendWorker {
 
     /// Send an LSP JSON-RPC message into the backend language server's stdin.
     pub async fn send_lsp(&self, json_payload: &str) -> Result<()> {
-        anyhow::ensure!(
-            self.is_alive(),
-            "{} backend process has exited",
-            self.engine
-        );
-        let mut stdin = self.stdin.lock().await;
-        anyhow::ensure!(
-            self.is_alive(),
-            "{} backend process has exited",
-            self.engine
-        );
-        let header = format!("Content-Length: {}\r\n\r\n", json_payload.len());
-        stdin.write_all(header.as_bytes()).await?;
-        stdin.write_all(json_payload.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+        self.writer.send(json_payload).await
+    }
+
+    #[doc(hidden)]
+    pub async fn send_lsp_with_write_timeout(
+        &self,
+        json_payload: &str,
+        write_timeout: Duration,
+    ) -> Result<()> {
+        self.writer
+            .send_with_timeout(json_payload, write_timeout)
+            .await
     }
 }

@@ -61,6 +61,13 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Fallback LSP writes have one deadline covering writer contention, frame bytes and flush
+  (#548). Interrupted partial frames retire the owned child before queued writers resume;
+  caller-side timeouts before writing leave a healthy worker usable. A failed automatic reply
+  retires the backend so a server waiting for that response is not reused.
+- Go and fallback configuration replies return one default setting per requested item, including
+  empty lists (#553). Invalid parameters produce a contextual JSON-RPC error and preserve the
+  request ID; subsequent valid requests remain usable.
 - Go, generic and fallback language servers accept complete LSP header blocks, including
   Content-Type after Content-Length (#544). Header and body sizes are bounded; duplicate,
   oversized or truncated frames terminate the stream and release pending requests.

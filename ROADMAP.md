@@ -159,6 +159,13 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
   - Status (audited 2026-09-26): there is no periodic ping. Liveness is read from the server's output instead: when it ends, the server has exited, and the next load of the workspace starts it afresh (#355). Every request has a timeout, which catches a server that hangs without exiting. Idle engines are unloaded after `--idle-evict-secs` (30 minutes by default; 5 minutes while memory is short, #396), and the process is killed with its engine.
+  - Fallback writes now include lock wait, bytes and flush in one deadline (#548). Partial-frame
+    cancellation retires the owned child before queued writers resume; caller-side zero-byte
+    queue errors preserve a healthy connection. Undeliverable automatic replies retire the
+    backend instead of leaving a server waiting forever. Go and fallback configuration replies
+    match the requested item count and reject invalid parameters (#553). These fixes do not
+    implement periodic health pings.
+
 - [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on two Linux nodes; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. A compiler cache shared across worktrees followed on 2026-09-24 (#243): ccache with `CCACHE_BASEDIR` set to each workspace; a second worktree of the fmt library built in 1.0 s against 24.0 s. Shared PCH / clangd index across worktrees still open.
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.
   - Shared precompiled header (PCH) and symbol index cache on server NVMe/RAM-disk across multiple worktrees.
