@@ -135,6 +135,10 @@ impl std::str::FromStr for EngineKind {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HandshakeRequest {
     pub protocol_version: u32,
+    /// Versions this client can actually speak. Absent means the legacy singleton offer in
+    /// `protocol_version`; present-but-empty is invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supported_versions: Option<Vec<u32>>,
     pub client_name: String,
     pub client_pid: u32,
     pub auth_token: Option<String>,

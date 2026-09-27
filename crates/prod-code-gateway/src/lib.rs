@@ -24,9 +24,9 @@ use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
     ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
-    HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PROTOCOL_VERSION, PathTranslator, PeerInfo,
-    PlaceRequest, PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest,
-    SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, content_hash,
+    HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PathTranslator, PeerInfo, PlaceRequest,
+    PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest, SyncProbeResponse, SyncRequest,
+    SyncResponse, WireMessage, content_hash, negotiate_protocol_version,
     path::{file_uri, uri_or_path},
 };
 use std::net::SocketAddr;
@@ -2723,6 +2723,15 @@ pub async fn handle_client(
                 framed.send(WireMessage::Pong).await?;
             }
             WireMessage::HandshakeRequest(req) => {
+                let protocol_version = match negotiate_protocol_version(&req) {
+                    Ok(version) => version,
+                    Err(err) => {
+                        let reason = format!("gateway refused protocol negotiation: {err}");
+                        tracing::warn!(reason, "refusing incompatible handshake");
+                        framed.send(WireMessage::Disconnect { reason }).await?;
+                        return Ok(());
+                    }
+                };
                 let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
                 state.active_sessions.fetch_add(1, Ordering::Relaxed);
 
@@ -2781,7 +2790,7 @@ pub async fn handle_client(
                 {
                     framed
                         .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                            protocol_version: PROTOCOL_VERSION,
+                            protocol_version,
                             server_pid: state.server_pid,
                             session_id,
                             server_workspace_root: server_workspace_str.clone(),
@@ -2894,7 +2903,7 @@ pub async fn handle_client(
 
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                        protocol_version: PROTOCOL_VERSION,
+                        protocol_version,
                         server_pid: state.server_pid,
                         session_id,
                         server_workspace_root: server_workspace_str,
@@ -5624,7 +5633,65 @@ mod tests {
     }
 
     use super::*;
-    use prod_code_protocol::HostResources;
+    use prod_code_protocol::{HostResources, PROTOCOL_VERSION};
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn incompatible_protocol_offers_are_refused_before_session_or_workspace_side_effects() {
+        for (name, protocol_version, supported_versions) in [
+            ("empty", PROTOCOL_VERSION, Some(Vec::new())),
+            ("disjoint", PROTOCOL_VERSION, Some(vec![2, 3])),
+            ("legacy-unsupported", 999, None),
+        ] {
+            let storage = tempfile::tempdir().unwrap();
+            let storage_root = storage.path().join("workspaces");
+            let state = Arc::new(ServerState::new(storage_root.clone()));
+            let client_root = format!("/home/dev/{name}");
+            let server_root = workspace::server_workspace_path(&storage_root, &client_root, None);
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let serving = Arc::clone(&state);
+            let serve = tokio::spawn(async move {
+                let (socket, peer) = listener.accept().await.unwrap();
+                handle_client(socket, peer, serving).await
+            });
+
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            let mut payload = serde_json::json!({
+                "protocol_version": protocol_version,
+                "client_name": format!("{name}-offer-test"),
+                "client_pid": 1,
+                "auth_token": null,
+                "client_workspace_root": client_root
+            });
+            if let Some(versions) = supported_versions {
+                payload["supported_versions"] = serde_json::json!(versions);
+            }
+            let request = serde_json::json!({
+                "type": "HandshakeRequest",
+                "payload": payload
+            });
+            let bytes = serde_json::to_vec(&request).unwrap();
+            stream
+                .write_all(&(bytes.len() as u32).to_be_bytes())
+                .await
+                .unwrap();
+            stream.write_all(&bytes).await.unwrap();
+            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+            let Some(Ok(WireMessage::Disconnect { reason })) = framed.next().await else {
+                panic!("the {name} protocol offer was not refused");
+            };
+            assert!(reason.contains("protocol"), "{reason}");
+            drop(framed);
+            serve.await.unwrap().unwrap();
+            assert_eq!(state.next_session_id.load(Ordering::Relaxed), 1, "{name}");
+            assert_eq!(state.active_sessions.load(Ordering::Relaxed), 0, "{name}");
+            assert_eq!(state.workspace_manager.loaded_count().await, 0, "{name}");
+            assert!(!server_root.exists(), "{name}");
+        }
+    }
 
     #[test]
     fn native_position_coordinates_are_checked_before_one_based_conversion() {
@@ -5902,6 +5969,7 @@ mod tests {
             .send(WireMessage::HandshakeRequest(
                 prod_code_protocol::HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
+                    supported_versions: Some(vec![PROTOCOL_VERSION]),
                     client_name: "test".to_string(),
                     client_pid: 1,
                     auth_token: None,

@@ -2,6 +2,7 @@
 
 pub mod codec;
 pub mod messages;
+pub mod negotiation;
 pub mod path;
 pub mod readiness;
 pub mod transport;
@@ -17,6 +18,10 @@ pub use messages::{
     ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse, SyncProbeRequest,
     SyncProbeResponse, SyncRequest, SyncResponse, WireMessage, client_host, content_hash,
     detect_client_agent, platform,
+};
+pub use negotiation::{
+    ProtocolNegotiationError, SUPPORTED_PROTOCOL_VERSIONS, negotiate_protocol_version,
+    supported_protocol_versions, validate_selected_protocol_version,
 };
 pub use path::PathTranslator;
 

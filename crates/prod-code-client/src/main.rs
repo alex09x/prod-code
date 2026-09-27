@@ -6,7 +6,10 @@ use futures_util::{SinkExt, StreamExt};
 use prod_code_client::divergent_bench::{self, DivergentBenchConfig, WorkspaceMode};
 use prod_code_mcp::report::ReportRequest;
 use prod_code_mcp::verify::VerifyKind;
-use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    validate_selected_protocol_version,
+};
 use std::env;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -2410,9 +2413,11 @@ async fn execute_lsp_query(
 
             let (engine_subpath, expected_engine) =
                 prod_code_mcp::sync::engine_project(&ws_root, &abs_path);
+            let supported_versions = supported_protocol_versions();
             framed
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
+                    supported_versions: Some(supported_versions.clone()),
                     client_name: "prod-code-cli".to_string(),
                     client_pid: std::process::id(),
                     auth_token: None,
@@ -2433,6 +2438,8 @@ async fn execute_lsp_query(
                 Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
                 other => anyhow::bail!("Unexpected handshake response: {:?}", other),
             };
+            validate_selected_protocol_version(handshake.protocol_version, &supported_versions)
+                .context("gateway returned an incompatible handshake response")?;
 
             // Self-heal: the gateway keyed this workspace on an empty or reset directory (its
             // detected engine does not match our manifest) while our watermark still claims
@@ -3686,9 +3693,11 @@ async fn open_editor_session(
         .await
         .context("workspace sync before the language server session failed")?;
     prod_code_mcp::watch::mark_synced(cwd, generation);
+    let supported_versions = supported_protocol_versions();
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(supported_versions.clone()),
             client_name: "prod-code-client".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
@@ -3710,6 +3719,8 @@ async fn open_editor_session(
         Some(Err(err)) => return Err(err.into()),
         None => anyhow::bail!("Server closed connection during handshake"),
     };
+    validate_selected_protocol_version(handshake_resp.protocol_version, &supported_versions)
+        .context("gateway returned an incompatible editor handshake response")?;
     Ok((framed, handshake_resp))
 }
 
@@ -4773,8 +4784,10 @@ async fn run_benchmark(
             let mut framed = Framed::new(stream, ProdCodeCodec::new());
 
             // 1. Handshake
+            let supported_versions = supported_protocol_versions();
             let handshake = HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(supported_versions.clone()),
                 client_name: format!("bench-worker-{worker_id}"),
                 client_pid: std::process::id(),
                 auth_token: None,
@@ -4796,7 +4809,12 @@ async fn run_benchmark(
             }
 
             match framed.next().await {
-                Some(Ok(WireMessage::HandshakeResponse(_))) => {}
+                Some(Ok(WireMessage::HandshakeResponse(response)))
+                    if validate_selected_protocol_version(
+                        response.protocol_version,
+                        &supported_versions,
+                    )
+                    .is_ok() => {}
                 _ => return (completed, errors + 1, latencies_us),
             }
 
