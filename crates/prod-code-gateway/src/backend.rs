@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 
@@ -67,89 +67,67 @@ impl BackendWorker {
         let reader_alive = Arc::clone(&is_alive);
         let closed = Arc::new(Notify::new());
         let reader_closed = Arc::clone(&closed);
+        let child = Arc::new(Mutex::new(child));
+        let reader_child = Arc::downgrade(&child);
 
         // Background reader loop: reads Content-Length frames from language server stdout
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-
             loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break, // EOF
-                    Ok(_) => {
-                        if line.starts_with("Content-Length:") {
-                            let len_str = line.trim_start_matches("Content-Length:").trim();
-                            if let Ok(len) = len_str.parse::<usize>() {
-                                // Read empty separator line \r\n
-                                line.clear();
-                                let _ = reader.read_line(&mut line).await;
-
-                                let mut buf = vec![0u8; len];
-                                if reader.read_exact(&mut buf).await.is_err() {
-                                    continue;
-                                }
-                                let Ok(json) = String::from_utf8(buf) else {
-                                    continue;
-                                };
-
-                                // Auto-respond to server-initiated requests
-                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
-                                    let id = val.get("id");
-                                    let method = val.get("method").and_then(|m| m.as_str());
-                                    match (id, method) {
-                                        (
-                                            Some(id),
-                                            Some(
-                                                "window/workDoneProgress/create"
-                                                | "client/registerCapability",
-                                            ),
-                                        ) => {
-                                            let auto_resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": id,
-                                                "result": null
-                                            })
-                                            .to_string();
-                                            let header = format!(
-                                                "Content-Length: {}\r\n\r\n",
-                                                auto_resp.len()
-                                            );
-                                            let mut sin = stdin_writer.lock().await;
-                                            let _ = sin.write_all(header.as_bytes()).await;
-                                            let _ = sin.write_all(auto_resp.as_bytes()).await;
-                                            let _ = sin.flush().await;
-                                        }
-                                        (Some(id), Some("workspace/configuration")) => {
-                                            let auto_resp = serde_json::json!({
-                                                "jsonrpc": "2.0",
-                                                "id": id,
-                                                "result": [{}]
-                                            })
-                                            .to_string();
-                                            let header = format!(
-                                                "Content-Length: {}\r\n\r\n",
-                                                auto_resp.len()
-                                            );
-                                            let mut sin = stdin_writer.lock().await;
-                                            let _ = sin.write_all(header.as_bytes()).await;
-                                            let _ = sin.write_all(auto_resp.as_bytes()).await;
-                                            let _ = sin.flush().await;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-
-                                // Broadcast frame to all connected sessions
-                                let _ = tx_clone.send(json);
-                            }
-                        }
+                let json = match prod_code_protocol::transport::read_lsp_frame(&mut reader).await {
+                    Ok(Some(json)) => json,
+                    Ok(None) => break,
+                    Err(error) => {
+                        tracing::warn!(%error, "Invalid backend LSP frame");
+                        break;
                     }
-                    Err(_) => break,
+                };
+                // Auto-respond to server-initiated requests
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json) {
+                    let id = val.get("id");
+                    let method = val.get("method").and_then(|m| m.as_str());
+                    match (id, method) {
+                        (
+                            Some(id),
+                            Some("window/workDoneProgress/create" | "client/registerCapability"),
+                        ) => {
+                            let auto_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": null
+                            })
+                            .to_string();
+                            let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
+                            let mut sin = stdin_writer.lock().await;
+                            let _ = sin.write_all(header.as_bytes()).await;
+                            let _ = sin.write_all(auto_resp.as_bytes()).await;
+                            let _ = sin.flush().await;
+                        }
+                        (Some(id), Some("workspace/configuration")) => {
+                            let auto_resp = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": [{}]
+                            })
+                            .to_string();
+                            let header = format!("Content-Length: {}\r\n\r\n", auto_resp.len());
+                            let mut sin = stdin_writer.lock().await;
+                            let _ = sin.write_all(header.as_bytes()).await;
+                            let _ = sin.write_all(auto_resp.as_bytes()).await;
+                            let _ = sin.flush().await;
+                        }
+                        _ => {}
+                    }
                 }
+
+                // Broadcast frame to all connected sessions
+                let _ = tx_clone.send(json);
             }
             reader_alive.store(false, Ordering::Release);
             reader_closed.notify_one();
+            if let Some(child) = reader_child.upgrade() {
+                let _ = child.lock().await.start_kill();
+            }
             tracing::info!("Backend worker reader loop terminated");
         });
 
@@ -162,7 +140,7 @@ impl BackendWorker {
             open_files: Arc::new(RwLock::new(HashSet::new())),
             is_alive,
             closed,
-            _child: Arc::new(Mutex::new(child)),
+            _child: child,
         };
 
         // Perform backend initialization handshake so the backend is warm and ready

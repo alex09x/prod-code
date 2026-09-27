@@ -25,7 +25,10 @@ LOCK = threading.Lock()
 def send(message):
     body = json.dumps(message).encode()
     with LOCK:
-        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n" % len(body))
+        if os.environ.get("FAKE_CONTENT_TYPE"):
+            sys.stdout.buffer.write(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+        sys.stdout.buffer.write(b"\r\n")
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
 
@@ -2206,5 +2209,26 @@ async fn primary_review_invalid_incremental_ranges_preserve_the_whole_owner_stat
             .await
             .unwrap()[0]["message"],
         "done\n"
+    );
+}
+
+#[tokio::test]
+async fn a_content_type_header_after_length_keeps_frames_aligned() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.request_timeout = Duration::from_millis(200);
+    settings.env.insert("FAKE_CONTENT_TYPE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the optional Content-Type header must not break initialization");
+    let answer = engine
+        .send_request("textDocument/hover", serde_json::json!({}))
+        .await
+        .expect("successive messages must stay aligned");
+    assert_eq!(
+        answer
+            .pointer("/result/contents/value")
+            .and_then(|v| v.as_str()),
+        Some("the fake server answered")
     );
 }

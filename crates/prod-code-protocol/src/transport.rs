@@ -84,6 +84,122 @@ pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Res
     Ok(stream)
 }
 
+/// Maximum aggregate size of the textual headers of one language-server message.
+const MAX_LSP_HEADER_BYTES: usize = 64 * 1024;
+
+/// Reads one complete UTF-8 LSP frame, including all headers before the blank line.
+///
+/// Clean EOF between frames returns `None`. Malformed or truncated input is an error:
+/// callers must retire the stream rather than try to find a new frame inside its body.
+/// Headers are limited to 64 KiB and the body to the wire codec's 256 MiB limit.
+pub async fn read_lsp_frame<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> std::io::Result<Option<String>> {
+    read_lsp_frame_with_limits(reader, MAX_LSP_HEADER_BYTES, crate::codec::MAX_FRAME_SIZE).await
+}
+
+async fn read_lsp_frame_with_limits<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    max_headers: usize,
+    max_body: usize,
+) -> std::io::Result<Option<String>> {
+    use std::io::{Error, ErrorKind};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
+
+    let invalid = |message| Error::new(ErrorKind::InvalidData, message);
+    let truncated = |message| Error::new(ErrorKind::UnexpectedEof, message);
+    let mut header_bytes = 0;
+    let mut length = None;
+    let mut has_content_type = false;
+    loop {
+        let remaining = max_headers - header_bytes;
+        if remaining == 0 {
+            return Err(invalid("LSP headers exceed the size limit"));
+        }
+        let mut line = Vec::new();
+        // Limit the read itself: a child can emit an endless line with no newline.
+        let count = (&mut *reader)
+            .take(remaining as u64)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if count == 0 {
+            return if header_bytes == 0 {
+                Ok(None)
+            } else {
+                Err(truncated("EOF inside LSP headers"))
+            };
+        }
+        if line.last() != Some(&b'\n') {
+            return Err(if count == remaining {
+                invalid("LSP headers exceed the size limit")
+            } else {
+                truncated("EOF inside an LSP header line")
+            });
+        }
+        header_bytes += count;
+        line.pop();
+        if line.last() == Some(&b'\r') {
+            line.pop();
+        }
+        if line.is_empty() {
+            break;
+        }
+        if !line.is_ascii() {
+            return Err(invalid("LSP headers must be ASCII"));
+        }
+        let line = std::str::from_utf8(&line).expect("ASCII was checked");
+        let (name, value) = line
+            .split_once(':')
+            .ok_or_else(|| invalid("Malformed LSP header"))?;
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("Content-Length") {
+            if length.is_some() {
+                return Err(invalid("Duplicate LSP Content-Length"));
+            }
+            if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(invalid("Invalid LSP Content-Length"));
+            }
+            let parsed = value
+                .parse::<usize>()
+                .map_err(|_| invalid("Invalid LSP Content-Length"))?;
+            if parsed == 0 || parsed > max_body {
+                return Err(invalid("LSP body length exceeds the allowed range"));
+            }
+            length = Some(parsed);
+        } else if name.eq_ignore_ascii_case("Content-Type") {
+            if has_content_type {
+                return Err(invalid("Duplicate LSP Content-Type"));
+            }
+            has_content_type = true;
+            for parameter in value.split(';').skip(1) {
+                if let Some((key, encoding)) = parameter.trim().split_once('=')
+                    && key.trim().eq_ignore_ascii_case("charset")
+                {
+                    let encoding = encoding.trim().trim_matches('"');
+                    if !encoding.eq_ignore_ascii_case("utf-8")
+                        && !encoding.eq_ignore_ascii_case("utf8")
+                    {
+                        return Err(invalid("LSP bodies must use UTF-8"));
+                    }
+                }
+            }
+        }
+    }
+    let length = length.ok_or_else(|| invalid("Missing LSP Content-Length"))?;
+    // Grow only as bytes arrive, rather than preallocating a child's declared length.
+    let mut body = Vec::new();
+    (&mut *reader)
+        .take(length as u64)
+        .read_to_end(&mut body)
+        .await?;
+    if body.len() != length {
+        return Err(truncated("EOF inside LSP body"));
+    }
+    String::from_utf8(body)
+        .map(Some)
+        .map_err(|_| invalid("LSP body is not valid UTF-8"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +289,135 @@ mod tests {
         assert!(token.matches("s3cret"));
         assert!(!token.matches("s3creT"));
         assert!(!token.matches("s3cret2"));
+    }
+}
+
+#[cfg(test)]
+mod lsp_frame_tests {
+    use super::*;
+    use std::io::ErrorKind;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    #[tokio::test]
+    async fn optional_headers_in_either_order_preserve_successive_utf8_frames() {
+        for headers in [
+            "Content-Length: 4\r\nContent-Type: application/vscode-jsonrpc; charset=utf-8\r\n",
+            "Content-Type: application/vscode-jsonrpc; Charset=UTF8\r\ncontent-length: 4\r\n",
+            "X-Extension: ignored\r\nCONTENT-LENGTH: 4\r\nContent-Type: application/vscode-jsonrpc; charset=\"UTF-8\"; ignored=yes\r\n",
+            "Content-Length: 4\r\nContent-Type: application/vscode-jsonrpc\r\n",
+        ] {
+            let frames = format!("{headers}\r\n\"é\"Content-Length: 2\r\n\r\n{{}}");
+            let mut reader = frames.as_bytes();
+            assert_eq!(
+                read_lsp_frame(&mut reader).await.unwrap().as_deref(),
+                Some("\"é\"")
+            );
+            assert_eq!(
+                read_lsp_frame(&mut reader).await.unwrap().as_deref(),
+                Some("{}")
+            );
+            assert!(read_lsp_frame(&mut reader).await.unwrap().is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_pipe_reads_and_lf_headers_are_supported() {
+        let (mut writer, reader) = tokio::io::duplex(2);
+        let sender = tokio::spawn(async move {
+            for byte in b"Content-Length: 2\n\n{}" {
+                writer.write_all(&[*byte]).await.unwrap();
+                tokio::task::yield_now().await;
+            }
+        });
+        let mut reader = BufReader::new(reader);
+        assert_eq!(
+            read_lsp_frame(&mut reader).await.unwrap().as_deref(),
+            Some("{}")
+        );
+        sender.await.unwrap();
+        assert!(read_lsp_frame(&mut reader).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_headers_and_bodies_refuse_instead_of_resynchronizing() {
+        for bytes in [
+            b"\r\n".as_slice(),
+            b"X: y\r\n\r\n",
+            b"bad header\r\n\r\n",
+            b"Content-Length: \r\n\r\n",
+            b"Content-Length: +2\r\n\r\n{}",
+            b"Content-Length: -1\r\n\r\n",
+            b"Content-Length: 0\r\n\r\n",
+            b"Content-Length: 9999999999999999999999999999999\r\n\r\n",
+            b"Content-Length: 268435457\r\n\r\n",
+            b"Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}",
+            b"Content-Length: 2\r\nContent-Type: a\r\nContent-Type: b\r\n\r\n{}",
+            b"Content-Length: 2\r\nContent-Type: application/json; charset=utf-16\r\n\r\n{}",
+            b"X: \xff\r\nContent-Length: 2\r\n\r\n{}",
+            b"Content-Length: 1\r\n\r\n\xff",
+        ] {
+            let mut reader = bytes;
+            assert_eq!(
+                read_lsp_frame(&mut reader).await.unwrap_err().kind(),
+                ErrorKind::InvalidData,
+                "{bytes:?}"
+            );
+        }
+        for bytes in [
+            b"Content-Len".as_slice(),
+            b"Content-Length: 2\r\n",
+            b"Content-Length: 2\r\n\r\n{",
+        ] {
+            let mut reader = bytes;
+            assert_eq!(
+                read_lsp_frame(&mut reader).await.unwrap_err().kind(),
+                ErrorKind::UnexpectedEof,
+                "{bytes:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn size_limits_apply_while_reading_and_include_the_complete_header_block() {
+        let (mut writer, reader) = tokio::io::duplex(128);
+        writer.write_all(&[b'A'; 65]).await.unwrap();
+        // Keep the pipe open: rejection cannot depend on a newline or EOF.
+        let mut reader = BufReader::new(reader);
+        let error = tokio::time::timeout(
+            Duration::from_secs(1),
+            read_lsp_frame_with_limits(&mut reader, 64, 16),
+        )
+        .await
+        .expect("bounded headers must fail without waiting for newline")
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
+        let mut tail = [0];
+        reader.read_exact(&mut tail).await.unwrap();
+        assert_eq!(tail, [b'A']);
+        let frame = b"Content-Length: 2\r\n\r\n{}";
+        let mut exact = frame.as_slice();
+        assert_eq!(
+            read_lsp_frame_with_limits(&mut exact, frame.len() - 2, 2)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("{}")
+        );
+        let mut too_short = frame.as_slice();
+        assert_eq!(
+            read_lsp_frame_with_limits(&mut too_short, frame.len() - 4, 2)
+                .await
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidData
+        );
+        let mut too_long = frame.as_slice();
+        assert_eq!(
+            read_lsp_frame_with_limits(&mut too_long, 64, 1)
+                .await
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidData
+        );
     }
 }
