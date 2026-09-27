@@ -5530,7 +5530,7 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         .clone()
         .unwrap_or_else(|| shadow::default_root(&cli.storage));
     // Ownership precedes cleanup: no startup may sweep another live gateway's hypotheses.
-    // The guard remains in this async frame until every return path drops it.
+    // Transfer the guard into shared state so accepted sessions retain it after this frame returns.
     let shadow_owner = shadow::ShadowRootOwner::acquire(&shadow_root)?;
     let swept = shadow_owner.sweep();
     if swept > 0 {
