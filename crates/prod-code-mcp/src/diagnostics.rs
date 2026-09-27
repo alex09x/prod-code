@@ -162,9 +162,11 @@ fn set_aside_preexisting(
     }
     let items = std::mem::take(&mut report.items);
     for d in items {
-        // A file the analyzer panicked on was not checked; that it was not checked before the
-        // edit either does not make it checked now (#94).
-        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE) {
+        // A file the analyzer panicked on, or that no crate includes, was not checked; that it
+        // was not checked before the edit either does not make it checked now (#94, #467).
+        if d.code.as_deref() == Some(prod_code_protocol::ANALYZER_PANIC_CODE)
+            || d.code.as_deref() == Some(UNLINKED_FILE)
+        {
             report.items.push(d);
             continue;
         }
@@ -230,6 +232,48 @@ fn is_auto_trait_bound(message: &str) -> bool {
         .any(|bound| first.contains(bound))
         || first.contains("cannot be sent between threads safely")
         || first.contains("cannot be shared between threads safely")
+}
+
+/// rust-analyzer's code for a file that no crate includes: it offers no semantic service there,
+/// so it reports no type error, no unresolved name, nothing but this hint (#467).
+pub const UNLINKED_FILE: &str = "unlinked-file";
+
+/// What a validation says of an `unlinked-file`: why it counts, that it is not a type error, and
+/// what would check the file.
+const UNLINKED_NOTE: &str = "rust-analyzer includes this file in no crate, so it was not \
+     type-checked and no name in it was resolved; it is counted as an error because an unchecked file is not a clean \
+     one, not because an error was found in it. A new module is checked together with the file \
+     that declares it (`code_validate_edits`, `prod-code validate --with`). A new Cargo target \
+     (tests/, examples/, benches/, src/bin/) reaches the analyzer only once it exists on disk and \
+     the workspace reloads; `compile: true` (`--compile`) runs `cargo check --workspace \
+     --all-targets`, which compiles the file only when a target includes it (Cargo finds tests/*.rs \
+     itself), and this item still counts";
+
+/// A proposal the analyzer did not check is not one it found clean (#467): rust-analyzer answers
+/// a file no crate includes with one `unlinked-file` hint, and 0 errors would validate whatever
+/// the file says. In a validation that hint is an error with a note; the message stays the
+/// analyzer's. Read-only diagnostics of a file on disk leave it a hint.
+fn refuse_unchecked(report: &mut DiagnosticsReport) {
+    let mut refused = false;
+    for d in report.items.iter_mut() {
+        if d.code.as_deref() == Some(UNLINKED_FILE) {
+            d.severity = "error".to_string();
+            d.note = Some(UNLINKED_NOTE.to_string());
+            refused = true;
+        }
+    }
+    if refused {
+        report.errors = report
+            .items
+            .iter()
+            .filter(|d| d.severity == "error")
+            .count();
+        report.warnings = report
+            .items
+            .iter()
+            .filter(|d| d.severity == "warning")
+            .count();
+    }
 }
 
 /// LSP `SymbolKind::Variable`: rust-analyzer lists a function's `let` bindings under it.
@@ -486,6 +530,7 @@ pub async fn validate_text(
         set_aside_preexisting(&mut report, new_text, &before, &before_text);
     }
     set_aside_derive_expansions(&mut report, new_text);
+    refuse_unchecked(&mut report);
     Ok(report)
 }
 
@@ -627,6 +672,7 @@ pub async fn validate_texts(
         if let Some(text) = sources.get(&shown) {
             set_aside_derive_expansions(&mut report, text);
         }
+        refuse_unchecked(&mut report);
         reports.push(report);
     }
     for (file, text) in also_check.iter().zip(also_texts) {
@@ -644,6 +690,7 @@ pub async fn validate_texts(
             set_aside_preexisting(&mut report, &text, before, before_text);
         }
         set_aside_derive_expansions(&mut report, &text);
+        refuse_unchecked(&mut report);
         sources.insert(shown.clone(), text);
         reports.push(report);
     }
@@ -908,6 +955,88 @@ mod tests {
             report.errors, 1,
             "still an error: nothing in the file was checked"
         );
+    }
+
+    fn unlinked(severity: &str) -> DocDiagnostic {
+        DocDiagnostic {
+            code: Some(UNLINKED_FILE.to_string()),
+            ..diagnostic(
+                severity,
+                "This file is not included in any crates, so rust-analyzer can't offer IDE services.",
+                1,
+            )
+        }
+    }
+
+    /// The analyzer's `unlinked-file` hint in a proposal is an error with a note, and the message
+    /// stays the analyzer's: nothing claims the file has a type error (#467).
+    #[test]
+    fn an_unlinked_proposal_is_counted_and_explained() {
+        let other = DocDiagnostic {
+            code: Some("unused_variables".into()),
+            ..diagnostic("hint", "unused variable", 3)
+        };
+        let mut report = report_of(vec![unlinked("hint"), other]);
+        report.file = "tests/new.rs".into();
+        assert!(report.ok(), "the analyzer's answer alone counts nothing");
+        refuse_unchecked(&mut report);
+        assert!(!report.ok());
+        assert_eq!((report.errors, report.warnings), (1, 0));
+        let item = &report.items[0];
+        assert_eq!(item.severity, "error");
+        assert!(
+            item.message
+                .starts_with("This file is not included in any crates")
+        );
+        let note = item.note.as_deref().unwrap();
+        assert!(
+            note.contains("not type-checked")
+                && note.contains("not because an error was found")
+                && note.contains("--all-targets"),
+            "{note}"
+        );
+        assert_eq!(
+            report.items[1].severity, "hint",
+            "other hints are left alone"
+        );
+        assert!(report.items[1].note.is_none());
+        let rendered = report.render();
+        assert!(
+            rendered.contains("tests/new.rs: 1 error(s), 0 warning(s)")
+                && rendered.contains("error: This file is not included in any crates")
+                && rendered.contains("[unlinked-file] (tests/new.rs:1:3)")
+                && rendered.contains("note: rust-analyzer includes this file in no crate"),
+            "{rendered}"
+        );
+    }
+
+    /// Control: a report without `unlinked-file` keeps its items and counts.
+    #[test]
+    fn a_linked_report_is_left_as_it_is() {
+        let mut report = report_of(vec![
+            diagnostic("warning", "type annotations needed", 2),
+            DocDiagnostic {
+                code: Some("unused_variables".into()),
+                ..diagnostic("hint", "unused variable", 3)
+            },
+        ]);
+        refuse_unchecked(&mut report);
+        assert!(report.ok());
+        assert_eq!((report.errors, report.warnings), (0, 1));
+        assert!(report.items.iter().all(|d| d.note.is_none()));
+    }
+
+    /// A file already unlinked on disk was unchecked before the edit too; that does not set the
+    /// proposal's `unlinked-file` aside.
+    #[test]
+    fn an_unlinked_file_is_never_set_aside() {
+        let text = "pub fn helper() -> u32 {\n    1\n}\n";
+        let before = report_of(vec![unlinked("hint")]);
+        let mut report = report_of(vec![unlinked("hint")]);
+        set_aside_preexisting(&mut report, text, &before, text);
+        assert!(report.preexisting.is_empty(), "{:?}", report.preexisting);
+        refuse_unchecked(&mut report);
+        assert_eq!(report.errors, 1);
     }
 
     #[test]
