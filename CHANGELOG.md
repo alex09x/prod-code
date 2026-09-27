@@ -32,6 +32,10 @@
 - The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
   to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
   missing/malformed items, error responses and uncached unchanged reports stay refused.
+- Rust signature reconciliation accounts for ordinary block comments that the analyzer moves
+  immediately after a rewritten call (#472), including nested and repeated comments. Lost,
+  changed or invented comments, moved line/doc comments, unchanged calls and unrelated edits
+  still prevent the write. Whitespace inside literals remains significant.
 - Edit validation treats Rust `unlinked-file` reports as missing semantic evidence (#467),
   including when the same hint existed before the edit. Read-only diagnostics retain the hint.
   Missing, malformed or uncached `unchanged` diagnostic reports fail validation (#470), and
