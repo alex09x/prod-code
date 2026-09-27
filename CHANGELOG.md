@@ -66,6 +66,34 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go and generic language-server adapters reject unsuccessful or malformed initialization
+  replies (#572). Failure, timeout or cancellation retires the owned server generation,
+  clears pending requests and capabilities, and ends generic document acceptance; ordinary
+  request timeouts keep their existing behavior.
+- MCP multi-file validation accepts each advertised input form in its schema (#585):
+  whole-file `edits`, `diff` or `workspace_edit`. At least one remains required, and
+  the existing input precedence and field types are preserved.
+- Diff-validation help names the current on-disk files as the patch base (#578).
+  Submit a proposed patch before applying it; validate already-written edits using
+  their complete current contents.
+- Editor pre-save synchronization reads the decoded top-level JSON-RPC method (#579).
+  Reordered fields and escaped method keys/values still push the checkout before save or
+  watched-file notifications; nested `method` fields do not trigger an unrelated sync.
+- Editor stdin frames use the shared bounded LSP reader (#577). Duplicate or malformed
+  lengths, oversized headers/bodies, truncated frames and invalid UTF-8 fail with context
+  instead of reaching the node as altered text or ending the session successfully.
+- Rust impact analysis follows callers through ordinary helpers in test files instead of
+  treating every function there as a runnable test (#560). Attributes belong to their exact
+  enclosing declaration; nested helpers do not inherit an outer test marker. Ambiguous
+  same-name declarations on one line force the full suite. Multiple selected Rust tests run
+  with one Cargo filter per test, preserving each failure status.
+- The editor's remote-file mirror preserves source, edits and documentation while translating
+  LSP locations (#568). Encoded cache paths round-trip correctly, sibling directory prefixes
+  stay unchanged, and workspace-edit URI keys use the same mapping as location values.
+- Symbol resolution refuses missing, malformed and overflowing LSP response coordinates (#564)
+  instead of defaulting or wrapping them to another source position. Matching workspace hits,
+  qualified members and fallback declarations propagate the error before any refactoring write,
+  including forced application.
 - Delayed search embeddings carry a file-entry generation, so a same-size edit or an index
   recreation cannot attach an older vector to a current declaration (#556). Search indexing
   skips descendant file and directory symlinks, removes invalidated linked sources, and ignores

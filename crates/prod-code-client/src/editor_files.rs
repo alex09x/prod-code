@@ -10,44 +10,25 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-/// One LSP frame from `reader`: its body, or `None` at the end of the stream. Header names are
-/// matched without regard to case, and headers other than the length are skipped.
+/// One bounded, UTF-8 LSP frame, or `None` only at a clean frame boundary.
 pub async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<String>> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
-    let mut length = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        let header = line.trim_end();
-        if header.is_empty() {
-            if length.is_some() {
-                break;
-            }
-            continue;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let mut body = vec![0; length.unwrap_or(0)];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+    prod_code_protocol::transport::read_lsp_frame(reader).await
 }
 
-/// The method of an LSP message, read without parsing the whole of it: the first
-/// `"method":"…"` in the text.
-pub fn method_of(raw: &str) -> Option<&str> {
-    let at = raw.find("\"method\"")?;
-    let rest = raw[at + 8..].trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    rest.find('"').map(|end| &rest[..end])
+/// The decoded top-level method of a JSON-RPC message. Ordinary methods borrow the input;
+/// escaped strings are decoded without building a whole JSON value tree.
+pub fn method_of(raw: &str) -> Option<std::borrow::Cow<'_, str>> {
+    #[derive(serde::Deserialize)]
+    struct Message<'a> {
+        #[serde(borrow)]
+        method: std::borrow::Cow<'a, str>,
+    }
+    if !raw.trim_start().starts_with('{') {
+        return None;
+    }
+    Some(serde_json::from_str::<Message<'_>>(raw).ok()?.method)
 }
 
 /// The language `prod-code lsp --language` names, as the engine that serves it.
@@ -154,7 +135,7 @@ pub struct RemoteFiles {
     remote: SocketAddr,
     /// The node's absolute paths live under this directory.
     mirror: PathBuf,
-    mirror_uri: String,
+    mirror_paths: prod_code_protocol::path::PathTranslator,
     client_root: PathBuf,
     server_root: PathBuf,
 }
@@ -181,7 +162,10 @@ impl RemoteFiles {
         let mirror = cache.join(remote.to_string().replace(':', "_"));
         Self {
             remote,
-            mirror_uri: format!("file://{}", mirror.display()),
+            mirror_paths: prod_code_protocol::path::PathTranslator::new(
+                &mirror.to_string_lossy(),
+                "/",
+            ),
             mirror,
             client_root: client_root.to_path_buf(),
             server_root: server_root.to_path_buf(),
@@ -190,12 +174,7 @@ impl RemoteFiles {
 
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
-        let mirror = self.mirror.to_string_lossy();
-        if !raw.contains(mirror.as_ref()) {
-            return raw.to_string();
-        }
-        raw.replace(&self.mirror_uri, "file://")
-            .replace(mirror.as_ref(), "")
+        self.mirror_paths.translate_lsp_to_server(raw)
     }
 
     /// The node path a `file://` URI of a server's message names, when the editor cannot open
@@ -245,7 +224,12 @@ impl RemoteFiles {
             return raw;
         };
         let mut uris = Vec::new();
-        collect_uris(&value, &mut uris);
+        prod_code_protocol::path::map_lsp_locations(&mut value, &mut |text| {
+            if text.starts_with("file://") {
+                uris.push(text.to_string());
+            }
+            None
+        });
         let mut copies = HashMap::new();
         for uri in uris {
             if copies.contains_key(&uri) {
@@ -258,31 +242,10 @@ impl RemoteFiles {
         if copies.is_empty() {
             return raw;
         }
-        replace_uris(&mut value, &copies);
+        prod_code_protocol::path::map_lsp_locations(&mut value, &mut |text| {
+            copies.get(text).cloned()
+        });
         value.to_string()
-    }
-}
-
-/// Every string in `value` that is a `file://` URI.
-fn collect_uris(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(s) if s.starts_with("file://") => out.push(s.clone()),
-        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_uris(v, out)),
-        serde_json::Value::Object(map) => map.values().for_each(|v| collect_uris(v, out)),
-        _ => {}
-    }
-}
-
-fn replace_uris(value: &mut serde_json::Value, copies: &HashMap<String, String>) {
-    match value {
-        serde_json::Value::String(s) => {
-            if let Some(local) = copies.get(s.as_str()) {
-                *s = local.clone();
-            }
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| replace_uris(v, copies)),
-        serde_json::Value::Object(map) => map.values_mut().for_each(|v| replace_uris(v, copies)),
-        _ => {}
     }
 }
 
@@ -453,7 +416,8 @@ mod tests {
     #[test]
     fn a_method_is_read_from_the_text_and_a_language_names_its_engine() {
         assert_eq!(
-            method_of(r#"{"jsonrpc":"2.0","method" : "textDocument/didSave","params":{}}"#),
+            method_of(r#"{"jsonrpc":"2.0","method" : "textDocument/didSave","params":{}}"#)
+                .as_deref(),
             Some("textDocument/didSave")
         );
         assert_eq!(method_of(r#"{"jsonrpc":"2.0","id":3,"result":null}"#), None);
@@ -509,5 +473,86 @@ mod tests {
     #[test]
     fn the_cache_is_the_users() {
         assert!(default_cache().ends_with("prod-code/remote"));
+    }
+    #[tokio::test]
+    async fn malformed_editor_frames_are_errors_instead_of_lossy_or_clean_eof() {
+        for input in [
+            b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+            b"Content-Length: 2\r\n".as_slice(),
+            b"Content-Length: 1\r\n\r\n\xff".as_slice(),
+            b"Content-Length: nope\r\n\r\n".as_slice(),
+            b"X-Header: value\r\n\r\n".as_slice(),
+        ] {
+            let mut reader = tokio::io::BufReader::new(input);
+            assert!(read_frame(&mut reader).await.is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_editor_headers_and_bodies_are_rejected_before_allocation() {
+        let cases = [
+            format!("X-Header: {}", "x".repeat(64 * 1024)).into_bytes(),
+            format!(
+                "Content-Length: {}\r\n\r\n",
+                prod_code_protocol::codec::MAX_FRAME_SIZE + 1
+            )
+            .into_bytes(),
+        ];
+        for input in cases {
+            let mut reader = tokio::io::BufReader::new(input.as_slice());
+            let error = read_frame(&mut reader).await.expect_err("bounded frame");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
+    }
+}
+
+#[cfg(test)]
+mod method_boundary_tests {
+    use super::method_of;
+
+    #[test]
+    fn plain_methods_borrow_and_escaped_methods_decode() {
+        assert!(matches!(
+            method_of(r#"{"method":"textDocument/didSave"}"#),
+            Some(std::borrow::Cow::Borrowed("textDocument/didSave"))
+        ));
+        assert!(
+            matches!(method_of(r#"{"method":"textDocument/did\u0053ave"}"#), Some(std::borrow::Cow::Owned(value)) if value == "textDocument/didSave")
+        );
+    }
+
+    #[test]
+    fn top_level_method_decodes_json_without_taking_nested_fields() {
+        for (raw, expected) in [
+            (
+                r#"{"params":{"method":"nested"},"method":"textDocument/didSave"}"#,
+                Some("textDocument/didSave"),
+            ),
+            (
+                r#"{"params":{"method":"textDocument/didSave"},"method":"custom/notify"}"#,
+                Some("custom/notify"),
+            ),
+            (r#"{"params":{"method":"textDocument/didSave"}}"#, None),
+            (
+                r#"{"meth\u006fd":"textDocument/didSave"}"#,
+                Some("textDocument/didSave"),
+            ),
+            (
+                r#"{"method":"textDocument/did\u0053ave"}"#,
+                Some("textDocument/didSave"),
+            ),
+            (r#"{"method":null}"#, None),
+            (r#"{"method":42}"#, None),
+            (r#"{"method":"first","method":"second"}"#, None),
+            (r#"{"method":"unterminated"#, None),
+            (r#"[ {"method":"textDocument/didSave"} ]"#, None),
+            (r#"["textDocument/didSave"]"#, None),
+            (
+                r#"{"method":"custom/\"quoted\""}"#,
+                Some("custom/\"quoted\""),
+            ),
+        ] {
+            assert_eq!(method_of(raw).as_deref(), expected, "{raw}");
+        }
     }
 }

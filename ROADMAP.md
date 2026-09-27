@@ -48,11 +48,18 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 - [x] **1.2. Bi-directional Path Translation**
   - Canonical URI/path rewriting between client workspace roots (`file:///Users/me/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
+  - The editor's remote-file mirror shares the structured location traversal (#568): source,
+    edit and documentation text remain unchanged, encoded paths round-trip, and URI keys in
+    workspace edits are translated alongside location values.
 - [~] **1.3. Ultra-Thin Client CLI (`crates/prod-code-client`)**
   - Drop-in executable replacing language servers in IDEs (`prod-code lsp`).
   - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
   - Non-blocking watchdog and auto-reconnect logic on transient network disconnects.
   - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death).
+  - Client stdin uses the shared bounded LSP reader (#577): malformed/truncated frames and
+    invalid UTF-8 fail; headers and bodies follow the protocol size limits.
+  - Pre-save sync identifies the decoded top-level JSON-RPC method (#579), including
+    reordered fields and escaped keys/values; nested fields do not trigger sync.
   - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
@@ -450,7 +457,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     and removes backups from their final paths. Rust outcomes send rewrites before moves. The
     #456 coordinate repair makes source positions UTF-16: planners refuse invalid line or
     character boundaries, while the editor clamps them. CRLF is one logical break and a final
-    bare carriage return remains source text. Resource operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
+    bare carriage return remains source text. Symbol resolution also rejects missing, malformed
+    and overflowing coordinates in matching LSP response evidence before refactoring (#564),
+    including workspace results, qualified members and fallback declarations.
+    Resource operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
     a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
@@ -501,13 +511,17 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 ### Engineering Milestones
 
-- [x] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)** — shipped 2026-09-20 as `prod-code impact [--base REF] [--depth N] [--run] [--json]` and MCP `code_impact`: the diff's line ranges are mapped onto document symbols to find the changed functions, the call hierarchy is walked upwards (default 4 levels) and callers that follow the language's test conventions become the affected tests, with the command that runs only them (`cargo test -- names`, `go test -run '^(A|B)$'`, `pytest -k`, `vitest|jest -t`, `swift test --filter`). Changes outside functions (module-level code, manifests) are reported as needing the full suite. Verified on Go and Rust fixtures. Beyond naming conventions since 2026-09-23 (#201): a caller is a test by its attribute (`#[test]`, `#[tokio::test]`, `#[rstest]`, `@Test`), by the registration it sits in (gtest `TEST`/`TEST_F`/`TEST_P`, Catch2 `TEST_CASE`, selected by `ctest -R` under its registered name), or as a `test*` method of a `unittest.TestCase` (its file is passed to pytest, which would not collect it by name). `prod-code impact --ci` runs the selection, or the whole suite when the selection cannot be trusted (lines changed outside functions, no index), says which and why, writes a Markdown summary to `$GITHUB_STEP_SUMMARY`, and exits with the tests' status.
+- [x] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)** — shipped 2026-09-20 as `prod-code impact [--base REF] [--depth N] [--run] [--json]` and MCP `code_impact`: the diff's line ranges are mapped onto document symbols to find the changed functions, the call hierarchy is walked upwards (default 4 levels) and callers that follow the language's test conventions become the affected tests, with the command that runs only them (one Cargo filter per selected Rust test, `go test -run '^(A|B)$'`, `pytest -k`, `vitest|jest -t`, `swift test --filter`). Changes outside functions (module-level code, manifests) are reported as needing the full suite. Verified on Go and Rust fixtures. Beyond naming conventions since 2026-09-23 (#201): a caller is a test by its attribute (`#[test]`, `#[tokio::test]`, `#[rstest]`, `@Test`), by the registration it sits in (gtest `TEST`/`TEST_F`/`TEST_P`, Catch2 `TEST_CASE`, selected by `ctest -R` under its registered name), or as a `test*` method of a `unittest.TestCase` (its file is passed to pytest, which would not collect it by name). `prod-code impact --ci` runs the selection, or the whole suite when the selection cannot be trusted (lines changed outside functions, no index), says which and why, writes a Markdown summary to `$GITHUB_STEP_SUMMARY`, and exits with the tests' status.
   - Compare working tree uncommitted edits against base commit via call graph and AST dependency trees.
   - Calculate a bounded call-graph impact estimate, with conservative full-suite fallback for incomplete analysis. Exact blast-radius claims require more evidence; missing cases are tracked in #434.
   - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).
   - Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
 
   - Impact selection fails closed on deleted/binary files, unreadable diff or analyzer replies, unattributed hunks and truncated call walks (#434). Directly edited tests are selected, all call-hierarchy items are traversed, and quoted Git paths are decoded.
+  - Rust helpers in test files remain traversal nodes, not runnable tests (#560). Attribute
+    scope follows the declaration, including nested helpers; same-name declarations on one
+    line are reported as incomplete evidence and require the full suite. Multiple selections
+    run with separate Cargo filters and stop at the first failing filter.
 
 - [~] **8.2. Automated Root-Cause Failure Dossier (`code_diagnose_failure`)** — shipped 2026-09-20: `prod-code diagnose [FILTER]` and MCP `code_diagnose_failure` run the tests and, per failure, return the failure output, the source around every location it mentions (Rust panics/`-->` notes, Go `file:line`, Python tracebacks, JS/TS stacks, Swift/C), the enclosing function with its callers, the working-tree diff of that file and the list of changed files; bare Go file names are resolved through the failing test's package. Suspect ranking shipped 2026-09-23 (#168). For each failure the dossier lists the changed functions whose callers graph reaches the failing test, nearest first, with the number of calls, plus the diff of their file when no failure site shows it. `impact` walks the graph from each changed function on its own, over a cache so no function is asked twice, and records which test each walk reached and at what depth. Suggested fixes followed on 2026-09-23 (#206): when the tests do not build (Rust), the dossier lists the compiler's machine-applicable fixes for the errors and names `prod-code check --fix`, which applies them. A failing assertion has no fix a tool can know, and the dossier stops at its evidence there.
   - When test suites fail (assertions, panics, unhandled exceptions), the server parses stack traces and maps frame pointers back to AST source spans.
