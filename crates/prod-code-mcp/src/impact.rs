@@ -779,127 +779,167 @@ fn collect_functions(
     Ok(())
 }
 
-/// Marks every byte in a Rust comment or literal as non-code. Test classification only needs to
-/// recognize an outer attribute, but attributes in comments, docs, or strings must never invent
-/// a runnable test. An unterminated opaque region leaves the declaration unclassifiable.
-fn rust_code(text: &str) -> std::result::Result<Vec<bool>, String> {
+/// Rust source bytes that are code, and bytes that are whitespace or comments between tokens.
+/// The signature refactoring lexer already has the repository's handling for nested comments,
+/// raw strings, characters, and lifetimes; build the two masks from that rather than teaching
+/// test selection a second comment grammar.
+struct RustLex {
+    code: Vec<bool>,
+    trivia: Vec<bool>,
+}
+
+fn rust_literal_end(text: &str, i: usize) -> Option<usize> {
     let bytes = text.as_bytes();
-    let mut code = vec![true; bytes.len()];
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let mut end = None;
-        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
-            end = Some(text[i..].find('\n').map_or(bytes.len(), |n| i + n));
-        } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-            let mut depth = 1usize;
-            let mut j = i + 2;
-            while j < bytes.len() && depth > 0 {
-                match (bytes[j], bytes.get(j + 1)) {
-                    (b'/', Some(b'*')) => {
-                        depth += 1;
-                        j += 2;
-                    }
-                    (b'*', Some(b'/')) => {
-                        depth -= 1;
-                        j += 2;
-                    }
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let raw = match bytes[i] {
+        b'r' if i == 0 || !ident(bytes[i - 1]) => Some(i),
+        b'b' | b'c' if bytes.get(i + 1) == Some(&b'r') && (i == 0 || !ident(bytes[i - 1])) => {
+            Some(i + 1)
+        }
+        _ => None,
+    };
+    if let Some(raw) = raw {
+        let mut quote = raw + 1;
+        while bytes.get(quote) == Some(&b'#') {
+            quote += 1;
+        }
+        if bytes.get(quote) == Some(&b'"') {
+            let hashes = quote - raw - 1;
+            let mut j = quote + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'"'
+                    && bytes
+                        .get(j + 1..j + 1 + hashes)
+                        .is_some_and(|tail| tail.iter().all(|b| *b == b'#'))
+                {
+                    return Some(j + 1 + hashes);
+                }
+                j += 1;
+            }
+            return None;
+        }
+    }
+    match bytes[i] {
+        b'"' => {
+            let mut j = i + 1;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'\\' => j += 2,
+                    b'"' => return Some(j + 1),
                     _ => j += 1,
                 }
             }
-            if depth != 0 {
-                return Err("the Rust source has an unterminated block comment".into());
-            }
-            end = Some(j);
-        } else {
-            let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-            let raw =
-                matches!(bytes[i], b'r' | b'b' | b'c') && (i == 0 || !ident(bytes[i - 1])) && {
-                    let r = if bytes[i] == b'r' { i } else { i + 1 };
-                    bytes.get(r) == Some(&b'r')
-                };
-            if raw {
-                let r = if bytes[i] == b'r' { i } else { i + 1 };
-                let mut quote = r + 1;
-                while bytes.get(quote) == Some(&b'#') {
-                    quote += 1;
-                }
-                if bytes.get(quote) == Some(&b'"') {
-                    let hashes = quote - r - 1;
-                    let mut j = quote + 1;
-                    while j < bytes.len() {
-                        if bytes[j] == b'"'
-                            && bytes
-                                .get(j + 1..j + 1 + hashes)
-                                .is_some_and(|tail| tail.iter().all(|b| *b == b'#'))
-                        {
-                            end = Some(j + 1 + hashes);
-                            break;
-                        }
-                        j += 1;
-                    }
-                    if end.is_none() {
-                        return Err("the Rust source has an unterminated raw string".into());
-                    }
-                }
-            }
-            if end.is_none() && matches!(bytes[i], b'"' | b'\'') {
-                let quote = bytes[i];
-                let mut j = i + 1;
-                while j < bytes.len() {
-                    if bytes[j] == b'\\' {
-                        j += 2;
-                    } else if bytes[j] == quote {
-                        end = Some(j + 1);
-                        break;
-                    } else if bytes[j] == b'\n' && quote == b'\'' {
-                        break;
-                    } else {
-                        j += 1;
-                    }
-                }
-                if quote == b'"' && end.is_none() {
-                    return Err("the Rust source has an unterminated string".into());
-                }
-            }
+            None
         }
-        if let Some(end) = end {
+        // One scalar or one escape followed immediately by a quote is a character literal.
+        // Otherwise this is a lifetime or label, and its apostrophe remains code.
+        b'\'' => {
+            if bytes.get(i + 1) == Some(&b'\\') {
+                return text.get(i + 2..)?.find('\'').map(|n| i + 3 + n);
+            }
+            let len = text.get(i + 1..)?.chars().next()?.len_utf8();
+            (bytes.get(i + 1 + len) == Some(&b'\'')).then_some(i + 2 + len)
+        }
+        _ => None,
+    }
+}
+
+fn rust_code(text: &str) -> std::result::Result<RustLex, String> {
+    let without_comments = crate::signature::blank_comments(text).ok_or_else(|| {
+        "the Rust source has an unterminated string, character, or comment".to_string()
+    })?;
+    let bytes = text.as_bytes();
+    let blanked = without_comments.as_bytes();
+    let mut code: Vec<bool> = bytes
+        .iter()
+        .zip(blanked)
+        .map(|(original, blank)| original == blank)
+        .collect();
+    let trivia: Vec<bool> = bytes
+        .iter()
+        .zip(blanked)
+        .map(|(original, blank)| original.is_ascii_whitespace() || original != blank)
+        .collect();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if code[i]
+            && let Some(end) = rust_literal_end(&without_comments, i)
+        {
             code[i..end].fill(false);
             i = end;
         } else {
             i += 1;
         }
     }
-    Ok(code)
+    Ok(RustLex { code, trivia })
 }
 
-fn rust_test_attribute(text: &str, code: &[bool], start: usize, end: usize) -> bool {
-    let mut path = String::new();
-    let mut i = start + 2;
-    while i < end && text.as_bytes()[i].is_ascii_whitespace() {
+fn rust_skip_trivia(lex: &RustLex, mut i: usize, end: usize) -> usize {
+    while i < end && lex.trivia[i] {
         i += 1;
     }
-    while i < end && code[i] {
-        let b = text.as_bytes()[i];
-        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b':') {
-            path.push(b as char);
-            i += 1;
-        } else {
+    i
+}
+
+/// The identifier starting at `at`, without an optional raw `r#` prefix, its end, and
+/// whether it had that prefix.
+fn rust_identifier(text: &str, at: usize, end: usize) -> Option<(&str, usize, bool)> {
+    let mut start = at;
+    let raw = text.get(at..end)?.starts_with("r#");
+    if raw {
+        start += 2;
+    }
+    let first = text.get(start..end)?.chars().next()?;
+    if first != '_' && !unicode_ident::is_xid_start(first) {
+        return None;
+    }
+    let mut finish = start + first.len_utf8();
+    for ch in text[finish..end].chars() {
+        if ch != '_' && !unicode_ident::is_xid_continue(ch) {
             break;
         }
+        finish += ch.len_utf8();
     }
-    matches!(
-        path.rsplit("::").next(),
-        Some("test" | "rstest" | "test_case")
-    )
+    Some((&text[start..finish], finish, raw))
+}
+
+fn rust_test_attribute(text: &str, lex: &RustLex, open: usize, close: usize) -> bool {
+    let mut i = rust_skip_trivia(lex, open + 1, close);
+    let Some((mut last, end, _)) = rust_identifier(text, i, close) else {
+        return false;
+    };
+    i = end;
+    loop {
+        i = rust_skip_trivia(lex, i, close);
+        if text.as_bytes().get(i..i + 2) != Some(b"::") {
+            break;
+        }
+        i = rust_skip_trivia(lex, i + 2, close);
+        let Some((segment, end, _)) = rust_identifier(text, i, close) else {
+            return false;
+        };
+        last = segment;
+        i = end;
+    }
+    matches!(last, "test" | "rstest" | "test_case")
 }
 
 fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Option<()>, String> {
-    let code = rust_code(text)?;
-    let line_start = text
-        .split_inclusive('\n')
-        .take(line.saturating_sub(1) as usize)
-        .map(str::len)
-        .sum::<usize>();
+    let lex = rust_code(text)?;
+    if line == 0 {
+        return Err(format!(
+            "the Rust declaration for {name} has no source line"
+        ));
+    }
+    let mut line_start = 0usize;
+    for _ in 1..line {
+        let Some(newline) = text[line_start..].find('\n') else {
+            return Err(format!(
+                "the Rust declaration for {name} at line {line} is outside the source"
+            ));
+        };
+        line_start += newline + 1;
+    }
     let line_end = text[line_start..]
         .find('\n')
         .map_or(text.len(), |n| line_start + n);
@@ -911,46 +951,93 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
         .next()
         .unwrap_or(name)
         .trim_start_matches("r#");
-    let declaration = text[line_start..line_end]
-        .char_indices()
-        .find_map(|(offset, _)| {
-            let at = line_start + offset;
-            (text[at..].starts_with("fn")
-                && code[at..at + 2].iter().all(|is_code| *is_code)
-                && text
-                    .as_bytes()
-                    .get(at + 2)
-                    .is_some_and(u8::is_ascii_whitespace)
-                && text[at + 2..].trim_start().starts_with(bare))
-            .then_some(at)
-        });
+    let mut cursor = line_start;
+    let mut declaration = None;
+    while cursor < line_end {
+        if !lex.code[cursor] {
+            cursor += 1;
+            continue;
+        }
+        if let Some((token, end, raw)) = rust_identifier(text, cursor, line_end) {
+            if token == "fn" && !raw {
+                let name_at = rust_skip_trivia(&lex, end, line_end);
+                if let Some((declared, _, _)) = rust_identifier(text, name_at, line_end)
+                    && declared == bare
+                {
+                    declaration = Some(cursor);
+                    break;
+                }
+            }
+            cursor = end;
+        } else {
+            cursor += text[cursor..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
     let Some(declaration) = declaration else {
         return Err(format!(
             "the Rust declaration for {name} at line {line} cannot be classified as a runnable test"
         ));
     };
-    let mut item_start = 0;
+    let mut starts = vec![0usize];
+    let mut braces = 0usize;
     let (mut squares, mut parens) = (0usize, 0usize);
-    for (i, is_code) in code[..declaration].iter().enumerate() {
-        if !is_code {
+    for i in 0..declaration {
+        if !lex.code[i] {
             continue;
         }
         match text.as_bytes()[i] {
             b'[' => squares += 1,
-            b']' => squares = squares.saturating_sub(1),
+            b']' if squares > 0 => squares -= 1,
+            b']' => {
+                return Err(format!(
+                    "the Rust delimiters before {name} at line {line} do not balance"
+                ));
+            }
             b'(' => parens += 1,
-            b')' => parens = parens.saturating_sub(1),
-            b'}' | b';' if squares == 0 && parens == 0 => item_start = i + 1,
+            b')' if parens > 0 => parens -= 1,
+            b')' => {
+                return Err(format!(
+                    "the Rust delimiters before {name} at line {line} do not balance"
+                ));
+            }
+            b'{' if squares == 0 && parens == 0 => {
+                braces += 1;
+                if starts.len() <= braces {
+                    starts.push(i + 1);
+                } else {
+                    starts[braces] = i + 1;
+                }
+            }
+            b'}' if squares == 0 && parens == 0 && braces > 0 => {
+                braces -= 1;
+                starts[braces] = i + 1;
+            }
+            b'}' if squares == 0 && parens == 0 => {
+                return Err(format!(
+                    "the Rust braces before {name} at line {line} do not balance"
+                ));
+            }
+            b';' if squares == 0 && parens == 0 => starts[braces] = i + 1,
             _ => {}
         }
     }
-    let mut i = item_start;
+    if squares != 0 || parens != 0 {
+        return Err(format!(
+            "the Rust delimiters before {name} at line {line} do not balance"
+        ));
+    }
+    let mut i = starts[braces];
     while i + 1 < declaration {
-        if code[i] && text.as_bytes()[i] == b'#' && code[i + 1] && text.as_bytes()[i + 1] == b'[' {
+        if lex.code[i] && text.as_bytes()[i] == b'#' {
+            let open = rust_skip_trivia(&lex, i + 1, declaration);
+            if text.as_bytes().get(open) != Some(&b'[') || !lex.code[open] {
+                i += 1;
+                continue;
+            }
             let mut depth = 1usize;
-            let mut j = i + 2;
+            let mut j = open + 1;
             while j < declaration && depth > 0 {
-                if code[j] {
+                if lex.code[j] {
                     match text.as_bytes()[j] {
                         b'[' => depth += 1,
                         b']' => depth -= 1,
@@ -964,7 +1051,7 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
                     "the Rust attributes before {name} at line {line} do not close"
                 ));
             }
-            if rust_test_attribute(text, &code, i, j) {
+            if rust_test_attribute(text, &lex, open, j - 1) {
                 return Ok(Some(()));
             }
             i = j;
@@ -1101,20 +1188,33 @@ pub fn test_command(
     let go_name = |n: &str| n.split('.').next_back().unwrap_or(n).to_string();
     Some(match language {
         "rust" => {
-            let mut c = vec![
-                "cargo".to_string(),
-                "test".to_string(),
-                "--workspace".to_string(),
-                "--".to_string(),
-            ];
             // rust-analyzer may qualify an integration test; libtest's filter sees the runnable
             // leaf name, not that analyzer container.
-            c.extend(
-                names
-                    .iter()
-                    .map(|n| n.rsplit("::").next().unwrap_or(n).to_string()),
-            );
-            c
+            let mut leaf_names: Vec<String> = names
+                .iter()
+                .map(|n| n.rsplit("::").next().unwrap_or(n).to_string())
+                .collect();
+            leaf_names.sort();
+            leaf_names.dedup();
+            if leaf_names.len() == 1 {
+                vec![
+                    "cargo".to_string(),
+                    "test".to_string(),
+                    "--workspace".to_string(),
+                    "--".to_string(),
+                    leaf_names.remove(0),
+                ]
+            } else {
+                let mut command = vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    "for test_name in \"$@\"; do cargo test --workspace -- \"$test_name\" || exit; done"
+                        .to_string(),
+                    "prod-code-impact".to_string(),
+                ];
+                command.extend(leaf_names);
+                command
+            }
         }
         "go" => {
             // The packages that hold the tests, not `./...`: that builds every package's test
@@ -1797,7 +1897,7 @@ mod tests {
             test_command("rust", &tools, &[t("a"), t("b")])
                 .unwrap()
                 .join(" "),
-            "cargo test --workspace -- a b"
+            "sh -c for test_name in \"$@\"; do cargo test --workspace -- \"$test_name\" || exit; done prod-code-impact a b"
         );
         let py = test_command("python", &tools, &[t("test_a")]).unwrap();
         assert!(py.ends_with(&["-k".to_string(), "test_a".to_string()]));
