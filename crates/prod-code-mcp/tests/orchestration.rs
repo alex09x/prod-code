@@ -14,10 +14,17 @@
 //! two phases are separate now, and `a_whole_file_rename_is_not_merged_with_text_edits` is
 //! what holds them apart.
 
+use futures_util::{SinkExt, StreamExt};
+use prod_code_protocol::{
+    HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec, SyncProbeResponse, SyncResponse,
+    WireMessage,
+};
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::net::TcpListener;
+use tokio_util::codec::Framed;
 
 /// The checkout a test drives a tool against.
 fn workspace() -> Workspace {
@@ -36,6 +43,85 @@ async fn scripted_gateway(answer: Answer) -> SocketAddr {
     ScriptedGateway::start_arc(answer).await.addr()
 }
 
+/// A minimal framed peer that returns an invalid implementation response: it carries the
+/// matching JSON-RPC id but omits both `result` and `error`.
+async fn missing_implementation_result_gateway() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let mut framed = Framed::new(socket, ProdCodeCodec::new());
+        while let Some(message) = framed.next().await {
+            match message.unwrap() {
+                WireMessage::SyncProbeRequest(request) => {
+                    framed
+                        .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                            server_workspace_root: request.client_workspace_root,
+                            seeded: false,
+                            files_deleted: 0,
+                            missing: Vec::new(),
+                        }))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::SyncRequest(request) => {
+                    framed
+                        .send(WireMessage::SyncResponse(SyncResponse {
+                            server_workspace_root: request.client_workspace_root,
+                            files_updated: 0,
+                            files_deleted: 0,
+                            bytes_transferred: 0,
+                            duration_ms: 0,
+                            workspace_was_fresh: false,
+                            stale_paths: Vec::new(),
+                        }))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::HandshakeRequest(request) => {
+                    framed
+                        .send(WireMessage::HandshakeResponse(HandshakeResponse {
+                            protocol_version: PROTOCOL_VERSION,
+                            server_pid: std::process::id(),
+                            session_id: 1,
+                            server_workspace_root: request.client_workspace_root,
+                            detected_engine: "rust".to_string(),
+                            stale_paths: Vec::new(),
+                            engine_age_ms: None,
+                            index_gated: false,
+                        }))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::LspPayload(json) => {
+                    let request: serde_json::Value = serde_json::from_str(&json).unwrap();
+                    let Some(id) = request.get("id") else {
+                        continue;
+                    };
+                    let response = match request.get("method").and_then(|m| m.as_str()) {
+                        Some("initialize") => serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": { "capabilities": {} }
+                        }),
+                        Some("textDocument/implementation") => {
+                            serde_json::json!({ "jsonrpc": "2.0", "id": id })
+                        }
+                        _ => serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+                    };
+                    framed
+                        .send(WireMessage::LspPayload(response.to_string()))
+                        .await
+                        .unwrap();
+                }
+                WireMessage::Disconnect { .. } => break,
+                _ => {}
+            }
+        }
+    });
+    addr
+}
+
 /// The file a request is about.
 fn uri_of(params: &serde_json::Value) -> String {
     params
@@ -49,6 +135,39 @@ const GO: &str =
     "package backend\n\ntype Order struct {\n\tOrderID string `json:\"order_id\"`\n}\n";
 const RUST: &str = "pub struct Order {\n    pub order_id: String,\n}\n\npub const Q: &str = \"SELECT order_id FROM orders\";\n";
 const PROTO: &str = "message Order {\n  string order_id = 1;\n}\n";
+
+#[tokio::test]
+async fn malformed_implementation_evidence_is_an_mcp_error_not_an_empty_answer() {
+    let ws = workspace();
+    write(&ws, "src/lib.rs", "pub trait Shape {}\n");
+    commit(&ws);
+    let response = prod_code_mcp::handle_mcp_request(
+        missing_implementation_result_gateway().await,
+        &ws.root(),
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "code_implementations",
+                "arguments": { "path": "src/lib.rs", "line": 1, "character": 11 }
+            }
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        response.pointer("/result/isError"),
+        Some(&serde_json::json!(true))
+    );
+    let text = response
+        .pointer("/result/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    assert!(text.contains("textDocument/implementation response has no result"));
+    assert_ne!(text, "No implementations found.");
+}
 
 /// The regression: a rename answered with a whole new file must not be merged with the text
 /// edits of the second phase, and the string literals in that file must be found again in the
