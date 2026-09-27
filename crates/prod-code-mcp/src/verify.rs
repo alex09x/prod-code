@@ -1489,10 +1489,10 @@ pub fn parse_jest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
             }
             continue;
         }
-        if let Some((_, lines)) = current.as_mut() {
-            if lines.len() < 40 {
-                lines.push(line.to_string());
-            }
+        if let Some((_, lines)) = current.as_mut()
+            && lines.len() < 40
+        {
+            lines.push(line.to_string());
         }
     }
     if let Some((n, lines)) = current.take() {
@@ -1545,10 +1545,11 @@ pub fn parse_vitest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
             }
             continue;
         }
-        if let Some((_, lines)) = current.as_mut() {
-            if lines.len() < 40 && !trimmed.is_empty() {
-                lines.push(line.to_string());
-            }
+        if let Some((_, lines)) = current.as_mut()
+            && lines.len() < 40
+            && !trimmed.is_empty()
+        {
+            lines.push(line.to_string());
         }
     }
     if let Some((n, lines)) = current.take() {
@@ -1606,10 +1607,11 @@ pub fn parse_bun_test_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
             }
             continue;
         }
-        if let Some((_, lines)) = current.as_mut() {
-            if lines.len() < 40 && !trimmed.is_empty() {
-                lines.push(raw.trim_end().to_string());
-            }
+        if let Some((_, lines)) = current.as_mut()
+            && lines.len() < 40
+            && !trimmed.is_empty()
+        {
+            lines.push(raw.trim_end().to_string());
         }
     }
     if let Some((n, lines)) = current.take() {
@@ -1663,10 +1665,11 @@ pub fn parse_unittest_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
         if trimmed.starts_with("------") {
             continue;
         }
-        if let Some((_, lines)) = current.as_mut() {
-            if lines.len() < 40 && !trimmed.trim().is_empty() {
-                lines.push(trimmed.to_string());
-            }
+        if let Some((_, lines)) = current.as_mut()
+            && lines.len() < 40
+            && !trimmed.trim().is_empty()
+        {
+            lines.push(trimmed.to_string());
         }
     }
     if let Some((n, lines)) = current.take() {

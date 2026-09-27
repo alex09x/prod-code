@@ -782,10 +782,10 @@ pub async fn extract_function(
             with_arguments(c, literals)
         }
     };
-    if let (Some(c), false) = (call.as_deref(), parameters.is_empty()) {
-        if let Some(own) = call_for(&own_literals) {
-            base_edits.push((start, start + c.len(), own));
-        }
+    if let (Some(c), false) = (call.as_deref(), parameters.is_empty())
+        && let Some(own) = call_for(&own_literals)
+    {
+        base_edits.push((start, start + c.len(), own));
     }
 
     // How another file names the new function: through its module, and it has to be at least

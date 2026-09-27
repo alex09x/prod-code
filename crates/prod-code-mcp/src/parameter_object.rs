@@ -3533,13 +3533,13 @@ async fn introduce_in(
         } else {
             None
         };
-        if language == Language::JavaScript {
-            if let Some(spread) = args.iter().find(|a| a.starts_with("...")) {
-                anyhow::bail!(
-                    "`{callee}` is called with `{spread}` at {place}; which parameters a spread \
-                     reaches is known only when the call runs, so it is not bundled"
-                );
-            }
+        if language == Language::JavaScript
+            && let Some(spread) = args.iter().find(|a| a.starts_with("..."))
+        {
+            anyhow::bail!(
+                "`{callee}` is called with `{spread}` at {place}; which parameters a spread \
+                 reaches is known only when the call runs, so it is not bundled"
+            );
         }
         if matches!(language, Language::JavaScript | Language::TypeScript) {
             // The object carries a default where the call left the parameter out or passed
