@@ -1306,6 +1306,11 @@ fn hover_naming_its_file(params: &serde_json::Value) -> serde_json::Value {
 #[tokio::test]
 async fn a_module_path_qualifier_picks_the_function_in_that_modules_file() {
     let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
     let a = write(&ws, "src/a.rs", "pub fn record() {}\n");
     let b = write(&ws, "src/b.rs", "pub fn record() {}\n");
     commit(&ws);
@@ -1319,7 +1324,12 @@ async fn a_module_path_qualifier_picks_the_function_in_that_modules_file() {
         _ => serde_json::Value::Null,
     }))
     .await;
-    for symbol in ["a::record", "demo::a::record", "b::record"] {
+    for symbol in [
+        "a::record",
+        "demo::a::record",
+        "crate::a::record",
+        "b::record",
+    ] {
         let text = text_of(
             &execute_tool(
                 remote,
@@ -1337,6 +1347,13 @@ async fn a_module_path_qualifier_picks_the_function_in_that_modules_file() {
         };
         assert!(text.contains(file), "{symbol}: {text}");
     }
+    let error = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "bogus::a::record", None)
+        .await
+        .expect_err("an arbitrary leading segment is not a crate name");
+    assert!(
+        format!("{error:#}").contains("no symbol named `bogus::a::record`"),
+        "{error:#}"
+    );
 }
 
 /// A bare name is the type's, not the variant of an enum that carries it (#325):
@@ -4655,6 +4672,89 @@ async fn qualified_members_require_an_exact_container_before_hints_break_ties() 
     );
 }
 
+/// Dotted containers from servers that spell owners as package/class paths carry the whole
+/// owner. A matching terminal type does not erase a contradictory package segment.
+#[tokio::test]
+async fn dotted_member_containers_require_the_full_owner_path() {
+    let ws = workspace();
+    let alpha = write(&ws, "src/alpha.rs", "pub fn run() {}\n");
+    let beta = write(&ws, "src/beta.rs", "pub fn run() {}\n");
+    commit(&ws);
+    let (alpha_hit, beta_hit) = (alpha.clone(), beta.clone());
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "workspace/symbol" => {
+            let mut alpha = answers::symbol("alpha.Widget.run", 6, &alpha_hit, 1, 8);
+            alpha["containerName"] = serde_json::json!("alpha.Widget");
+            let mut beta = answers::symbol("beta.Widget.run", 6, &beta_hit, 1, 8);
+            beta["containerName"] = serde_json::json!("beta.Widget");
+            serde_json::json!([alpha, beta])
+        }
+        "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let hit =
+        prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "beta.Widget.run", Some(&alpha))
+            .await
+            .expect("the complete dotted owner resolves despite a contrary hint");
+    assert_eq!(hit.path, beta);
+    let error = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "gamma.Widget.run", None)
+        .await
+        .expect_err("an absent dotted owner stays unresolved");
+    assert!(
+        format!("{error:#}").contains("no symbol named `gamma.Widget.run`"),
+        "{error:#}"
+    );
+}
+
+/// The outline fallback applies the same complete-owner rule as indexed members, including
+/// when same-named types live below two modules in one file and the member has no index entry.
+#[tokio::test]
+async fn no_index_members_require_the_full_owner_path_in_the_outline() {
+    let ws = workspace();
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "pub mod alpha { pub struct Widget; impl Widget { pub fn run(&self) {} } }\n\
+         pub mod beta { pub struct Widget; impl Widget { pub fn run(&self) {} } }\n",
+    );
+    commit(&ws);
+    let indexed = lib.clone();
+    let mut alpha_method = answers::document_symbol("run", 6, 1, 1, 61);
+    alpha_method["containerName"] = serde_json::json!("alpha > impl Widget");
+    let mut beta_method = answers::document_symbol("run", 6, 2, 2, 60);
+    beta_method["containerName"] = serde_json::json!("beta > impl Widget");
+    let outline = serde_json::json!([alpha_method, beta_method]);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "Widget" => {
+            let mut alpha = answers::symbol("Widget", 23, &indexed, 1, 24);
+            alpha["containerName"] = serde_json::json!("alpha");
+            let mut beta = answers::symbol("Widget", 23, &indexed, 2, 23);
+            beta["containerName"] = serde_json::json!("beta");
+            serde_json::json!([alpha, beta])
+        }
+        "workspace/symbol" if params["query"] == "run" => {
+            serde_json::json!([answers::symbol("runner", 12, &indexed, 1, 1)])
+        }
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" => outline.clone(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    for (symbol, line) in [("alpha::Widget::run", 1), ("beta::Widget::run", 2)] {
+        let hit = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), symbol, None)
+            .await
+            .unwrap_or_else(|error| panic!("{symbol}: {error:#}"));
+        assert_eq!(hit.line, line, "{symbol}");
+    }
+    for symbol in ["gamma::Widget::run", "alpha::Widget::missing"] {
+        let result = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), symbol, None).await;
+        assert!(result.is_err(), "{symbol} must stay unresolved: {result:?}");
+    }
+}
+
 /// A real rust-analyzer indexes generic methods by their owning type. The absent member must
 /// stay unresolved even when two other generic types have that member, while the real member
 /// of the third type still resolves. Run against an isolated gateway built from this checkout.
@@ -4677,7 +4777,14 @@ async fn a_real_rust_analyzer_keeps_absent_qualified_generic_methods_unresolved(
         ),
         (
             "src/lib.rs",
-            "pub struct AsyncConsumer<T>(pub T);\nimpl<T> AsyncConsumer<T> { pub fn try_recv(&self) {} }\npub struct RingConsumer<T>(pub T);\nimpl<T> RingConsumer<T> { pub fn try_recv(&self) {} }\npub struct Missing;\nimpl Missing { pub fn recv(&self) {} }\n",
+            "pub struct AsyncConsumer<T>(pub T);\n\
+             impl<T> AsyncConsumer<T> { pub fn try_recv(&self) {} }\n\
+             pub struct RingConsumer<T>(pub T);\n\
+             impl<T> RingConsumer<T> { pub fn try_recv(&self) {} }\n\
+             pub struct Missing;\n\
+             impl Missing { pub fn recv(&self) {} }\n\
+             pub mod alpha { pub struct Widget; impl Widget { pub fn run(&self) {} } }\n\
+             pub mod beta { pub struct Widget; impl Widget { pub fn run(&self) {} } }\n",
         ),
     ] {
         let path = root.join(rel);
@@ -4734,6 +4841,18 @@ async fn a_real_rust_analyzer_keeps_absent_qualified_generic_methods_unresolved(
         .expect("the resolver was queried")
         .expect("the existing method resolves");
     assert_eq!(present.name, "recv");
+
+    let alpha = prod_code_mcp::tools::resolve_symbol(remote, &root, "alpha::Widget::run", None)
+        .await
+        .expect("alpha's Widget method resolves");
+    let beta = prod_code_mcp::tools::resolve_symbol(remote, &root, "beta::Widget::run", None)
+        .await
+        .expect("beta's Widget method resolves");
+    assert_ne!(alpha.line, beta.line, "each module resolves its own method");
+    for symbol in ["gamma::Widget::run", "alpha::Widget::missing"] {
+        let result = prod_code_mcp::tools::resolve_symbol(remote, &root, symbol, None).await;
+        assert!(result.is_err(), "{symbol} must stay unresolved: {result:?}");
+    }
 }
 
 #[tokio::test]
@@ -4747,7 +4866,7 @@ async fn primary_review_qualified_member_requires_the_full_owner_path() {
     commit(&ws);
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "workspace/symbol" if params["query"] == "run" => {
-            let mut hit = answers::symbol("run", 6, &file, 1, 39);
+            let mut hit = answers::symbol("run", 6, &file, 1, 41);
             hit["containerName"] = serde_json::json!("Widget");
             serde_json::json!([hit])
         }
@@ -4777,7 +4896,7 @@ async fn primary_review_module_path_does_not_override_a_different_member_owner()
     commit(&ws);
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "workspace/symbol" if params["query"] == "run" => {
-            let mut hit = answers::symbol("run", 6, &file, 1, 39);
+            let mut hit = answers::symbol("run", 12, &file, 1, 41);
             hit["containerName"] = serde_json::json!("Widget");
             serde_json::json!([hit])
         }
