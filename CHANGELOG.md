@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- Go and generic adapters periodically probe initialized idle language servers (#590).
+  Valid late replies reset the failure streak; private probe state stays bounded. Three
+  consecutive idle response timeouts retire the generation, while ordinary work defers
+  probing. Native Go/Python/C++/TypeScript checks observe matching replies.
 - Go safe-delete also supports named value/pointer receiver methods (#567). Interface
   obligations, promoted methods and embeddings through nested structures or aliases refuse
   without writing, including with force. Constant-array receiver types remain supported;
@@ -73,6 +77,9 @@
 - Gateway handshake and shared-session resources retire on errors and cancellation (#583).
   Workspace and worktree ownership remains held until the canceled session's overlays are
   restored, preserving independent sessions and subsequent single-owner behavior.
+- Dedicated editor servers share the bounded LSP frame reader (#573). Duplicate or
+  malformed headers, oversized or truncated frames and invalid UTF-8 end the owned
+  session without forwarding corrupted text.
 - Go and generic language-server adapters reject unsuccessful or malformed initialization
   replies (#572). Failure, timeout or cancellation retires the owned server generation,
   clears pending requests and capabilities, and ends generic document acceptance; ordinary

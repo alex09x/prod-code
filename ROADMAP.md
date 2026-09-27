@@ -60,6 +60,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     invalid UTF-8 fail; headers and bodies follow the protocol size limits.
   - Pre-save sync identifies the decoded top-level JSON-RPC method (#579), including
     reordered fields and escaped keys/values; nested fields do not trigger sync.
+  - Dedicated editor-server output also uses the shared bounded frame reader (#573).
   - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
@@ -167,13 +168,13 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 - [~] **3.3. Generic LSP Engine (`crates/prod-code-engine-generic`)**
   - Pluggable adapter for external language servers (e.g. Pyright, Ruff, vtsls).
   - Lifecycle management: automatic process spawning, health pings, graceful shutdown on idle timeout.
-  - Status (audited 2026-09-26): there is no periodic ping. Liveness is read from the server's output instead: when it ends, the server has exited, and the next load of the workspace starts it afresh (#355). Every request has a timeout, which catches a server that hangs without exiting. Idle engines are unloaded after `--idle-evict-secs` (30 minutes by default; 5 minutes while memory is short, #396), and the process is killed with its engine.
+  - Status (2026-09-27): Go and generic adapters now probe initialized idle servers periodically (#590), with a 60-second default interval. Valid matching replies, including unknown-method errors and late responses, prove dispatch liveness. Three consecutive idle response timeouts retire the owned generation; writer contention, indexing and ordinary activity defer probes. Complete frame writes share one budget, and a failed partial stream retires immediately. Fallback workers still use exit detection rather than periodic probes. Liveness is also read from the server's output: when it ends, the server has exited, and the next load of the workspace starts it afresh (#355). Every request has a timeout, which catches a server that hangs without exiting. Idle engines are unloaded after `--idle-evict-secs` (30 minutes by default; 5 minutes while memory is short, #396), and the process is killed with its engine.
   - Fallback writes now include lock wait, bytes and flush in one deadline (#548). Partial-frame
     cancellation retires the owned child before queued writers resume; caller-side zero-byte
     queue errors preserve a healthy connection. Undeliverable automatic replies retire the
     backend instead of leaving a server waiting forever. Go and fallback configuration replies
     match the requested item count and reject invalid parameters (#553). These fixes do not
-    implement periodic health pings.
+    implement fallback periodic health pings.
   - Fallback requests answered locally are withheld from editor sessions (#554); unknown
     server requests still reach the editor. Framed integration coverage checks colliding
     request IDs, notifications and exactly one automatic reply per handled request.
