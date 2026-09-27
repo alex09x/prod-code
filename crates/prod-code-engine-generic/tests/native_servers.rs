@@ -1,6 +1,19 @@
 use prod_code_engine_generic::{GenericLspConfig, GenericLspEngine};
 use std::time::Duration;
 
+fn engine_is_available(test: &str, engine: &str, available: bool) -> bool {
+    if std::env::var_os("CI").is_some() || std::env::var_os("PROD_CODE_REQUIRE_ENGINES").is_some() {
+        assert!(
+            available,
+            "{engine} must be installed where native engine tests are required"
+        );
+    }
+    if !available {
+        eprintln!("SKIPPED {test}: {engine} is not installed");
+    }
+    available
+}
+
 async fn document_symbols(
     root: &std::path::Path,
     config: GenericLspConfig,
@@ -11,7 +24,9 @@ async fn document_symbols(
     let engine = GenericLspEngine::spawn(root, config)
         .await
         .expect("the required native language server initializes");
-    let uri = url::Url::from_file_path(path).expect("file URI").to_string();
+    let uri = url::Url::from_file_path(path)
+        .expect("file URI")
+        .to_string();
     engine
         .send_notification(
             "textDocument/didOpen",
@@ -37,10 +52,13 @@ async fn document_symbols(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installed_basedpyright_initializes_and_answers_a_simple_query() {
     let config = GenericLspConfig::for_python();
-    assert_eq!(
-        config.command, "basedpyright-langserver",
-        "basedpyright is required for this native compatibility test"
-    );
+    if !engine_is_available(
+        "installed_basedpyright_initializes_and_answers_a_simple_query",
+        "basedpyright-langserver",
+        config.command == "basedpyright-langserver",
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().expect("isolated workspace");
     let path = dir.path().join("answer.py");
     let text = "def answer() -> int:\n    return 42\n";
@@ -51,7 +69,13 @@ async fn installed_basedpyright_initializes_and_answers_a_simple_query() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn installed_clangd_initializes_and_answers_a_simple_query() {
     let config = GenericLspConfig::for_cpp_validation();
-    assert_eq!(config.command, "clangd", "clangd is required for this native compatibility test");
+    if !engine_is_available(
+        "installed_clangd_initializes_and_answers_a_simple_query",
+        "clangd",
+        prod_code_engine_generic::which_bin("clangd").is_ok(),
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().expect("isolated workspace");
     let build = dir.path().join("build");
     std::fs::create_dir(&build).expect("build directory");

@@ -96,9 +96,15 @@ while True:
         LINES[message["params"]["textDocument"]["uri"]] = len(message["params"]["textDocument"]["text"].splitlines())
     if method == "initialize":
         INITIALIZE_COUNT += 1
-        later = os.environ.get("FAKE_INITIALIZE_AFTER_FIRST")
-        if INITIALIZE_COUNT > 1 and later:
-            response = json.loads(later)
+        configured = os.environ.get("FAKE_INITIALIZE_RESPONSE")
+        if INITIALIZE_COUNT > 1:
+            configured = os.environ.get("FAKE_INITIALIZE_AFTER_FIRST", configured)
+            if os.environ.get("FAKE_INITIALIZE_DELAY_AFTER_FIRST"):
+                time.sleep(float(os.environ["FAKE_INITIALIZE_DELAY_AFTER_FIRST"]))
+        if configured == "silence":
+            continue
+        if configured:
+            response = json.loads(configured)
             response.update({"jsonrpc": "2.0", "id": message["id"]})
             send(response)
         else:
@@ -430,6 +436,13 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         "the adapter returns what the server said it can do: {answer}"
     );
     assert!(engine.is_alive(), "the child is running");
+    assert_eq!(
+        *engine.capabilities.read().await,
+        Some(serde_json::json!({
+            "hoverProvider": true,
+            "diagnosticProvider": {"interFileDependencies": false}
+        }))
+    );
 
     let uri = format!("file://{}/a.txt", dir.path().display());
     let hover = engine
@@ -449,6 +462,107 @@ async fn the_adapter_initializes_a_server_and_matches_answers_to_requests() {
         Some("the fake server answered"),
         "the answer was matched to the request: {hover}"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_initialize_during_first_load_retires_its_owned_server() {
+    let (dir, script) = workspace();
+    let pid_file = dir.path().join("pid");
+    let mut settings = config(&script);
+    settings.env.insert(
+        "FAKE_INITIALIZE_RESPONSE".into(),
+        serde_json::json!({"result": {}}).to_string(),
+    );
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let error = match GenericLspEngine::spawn(dir.path(), settings).await {
+        Ok(_) => panic!("a malformed first handshake must be refused"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("capabilities"), "{error:#}");
+    assert_process_exits(&pid_file).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initialize_timeout_retires_the_retained_owned_server() {
+    let (dir, script) = workspace();
+    let pid_file = dir.path().join("pid");
+    let mut settings = config(&script);
+    settings.request_timeout = Duration::from_millis(150);
+    settings
+        .env
+        .insert("FAKE_INITIALIZE_AFTER_FIRST".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings)
+        .await
+        .expect("the first handshake succeeds");
+    let error = engine
+        .initialize()
+        .await
+        .expect_err("the retained handshake times out");
+    assert!(format!("{error:#}").contains("initialize"), "{error:#}");
+    assert!(!engine.is_alive(), "the timed out generation is retired");
+    assert!(!engine.accepts_documents());
+    assert!(engine.capabilities.read().await.is_none());
+    assert_process_exits(&pid_file).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_initialize_retires_the_retained_owned_server() {
+    let (dir, script) = workspace();
+    let pid_file = dir.path().join("pid");
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.request_timeout = Duration::from_secs(10);
+    settings
+        .env
+        .insert("FAKE_INITIALIZE_AFTER_FIRST".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_PID_FILE".into(),
+        pid_file.to_string_lossy().into_owned(),
+    );
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = std::sync::Arc::new(
+        GenericLspEngine::spawn(dir.path(), settings)
+            .await
+            .expect("the first handshake succeeds"),
+    );
+    let initializing = {
+        let engine = std::sync::Arc::clone(&engine);
+        tokio::spawn(async move { engine.initialize().await })
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let count = std::fs::read_to_string(&seen_file)
+                .unwrap_or_default()
+                .lines()
+                .filter(|method| *method == "initialize")
+                .count();
+            if count == 2 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the retained initialize request is owned by the server");
+    initializing.abort();
+    assert!(initializing.await.expect_err("cancelled").is_cancelled());
+    assert!(!engine.is_alive(), "the cancelled generation is retired");
+    assert!(!engine.accepts_documents());
+    assert!(engine.capabilities.read().await.is_none());
+    assert_process_exits(&pid_file).await;
 }
 
 #[cfg(unix)]
