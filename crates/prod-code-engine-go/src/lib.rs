@@ -286,11 +286,34 @@ impl GoEngine {
                                     })
                                 }
                                 "workspace/configuration" => {
-                                    serde_json::json!({
-                                        "jsonrpc": "2.0",
-                                        "id": id_val,
-                                        "result": [{}]
-                                    })
+                                    let items = val
+                                        .get("params")
+                                        .and_then(|params| params.get("items"))
+                                        .and_then(serde_json::Value::as_array)
+                                        .filter(|items| {
+                                            items.iter().all(|item| {
+                                                item.is_object()
+                                                    && ["section", "scopeUri"].iter().all(|key| {
+                                                        item.get(key)
+                                                            .is_none_or(|value| value.is_string())
+                                                    })
+                                            })
+                                        });
+                                    match items {
+                                        Some(items) => serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": id_val,
+                                            "result": vec![serde_json::json!({}); items.len()]
+                                        }),
+                                        None => serde_json::json!({
+                                            "jsonrpc": "2.0",
+                                            "id": id_val,
+                                            "error": {
+                                                "code": -32602,
+                                                "message": "workspace/configuration requires an items array of configuration objects with optional string section and scopeUri"
+                                            }
+                                        }),
+                                    }
                                 }
                                 _ => serde_json::json!({
                                     "jsonrpc": "2.0",
@@ -773,6 +796,11 @@ while True:
         threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
         threading.Event().wait()
+    elif method == "prodCode/configurationReply":
+        configuration_query = message["id"]
+        send({"jsonrpc": "2.0", "id": "server-config-é", "method": "workspace/configuration", "params": message["params"]["configuration"]})
+    elif message.get("id") == "server-config-é" and not method:
+        send({"jsonrpc": "2.0", "id": configuration_query, "result": message})
     elif method == "prodCode/brokenFrame":
         kind = message["params"]["kind"]
         data = {
@@ -1260,6 +1288,70 @@ func main() {
             assert_eq!(response["result"]["contents"], "healthy", "{order}");
             assert!(engine.is_alive());
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn configuration_replies_match_items_and_refuse_invalid_params() {
+        let (_dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
+        for items in [
+            serde_json::json!([]),
+            serde_json::json!([{}]),
+            serde_json::json!([
+                {"section": "gopls"},
+                {"section": "unknown", "scopeUri": "file:///workspace/main.go"},
+                {"scopeUri": "file:///workspace/second.go"}
+            ]),
+        ] {
+            let response = engine
+                .send_request(
+                    "prodCode/configurationReply",
+                    serde_json::json!({"configuration": {"items": items}}),
+                )
+                .await
+                .unwrap();
+            let reply = &response["result"];
+            assert_eq!(reply["id"], "server-config-é");
+            assert!(reply.get("error").is_none(), "{reply}");
+            assert_eq!(
+                reply["result"],
+                serde_json::json!(vec![serde_json::json!({}); items.as_array().unwrap().len()]),
+                "one default setting is required per requested item"
+            );
+        }
+        for configuration in [
+            serde_json::json!(null),
+            serde_json::json!({}),
+            serde_json::json!({"items": null}),
+            serde_json::json!({"items": {}}),
+            serde_json::json!({"items": [null]}),
+            serde_json::json!({"items": [{"section": 7}]}),
+            serde_json::json!({"items": [{"scopeUri": false}]}),
+        ] {
+            let response = engine
+                .send_request(
+                    "prodCode/configurationReply",
+                    serde_json::json!({"configuration": configuration}),
+                )
+                .await
+                .unwrap();
+            let reply = &response["result"];
+            assert_eq!(reply["id"], "server-config-é");
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+            assert!(
+                reply["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("workspace/configuration")
+            );
+            assert!(reply.get("result").is_none(), "{reply}");
+        }
+        let hover = engine
+            .send_request("textDocument/hover", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(hover["result"]["contents"], "healthy");
+        assert!(engine.is_alive());
     }
 
     #[cfg(unix)]
