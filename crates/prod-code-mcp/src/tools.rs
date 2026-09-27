@@ -6013,10 +6013,10 @@ pub async fn resolve_symbol(
             eligible
         } else {
             let members = type_members(remote, root, qualifiers, name, hint).await?;
-            if !members.is_empty() {
-                return single_candidate(root, symbol, &members.iter().collect::<Vec<_>>());
+            if members.is_empty() {
+                anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
             }
-            anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+            members
         }
     } else {
         if exact.is_empty() {
@@ -6026,6 +6026,30 @@ pub async fn resolve_symbol(
         exact
     };
     let remote_texts = remote_sources(remote, &exact).await;
+    // An explicit owner is not enough when the index or outline is stale. Qualified lookup
+    // must point at the requested name in readable source, not merely rank that hit lower.
+    let exact = if qualifier.is_some() {
+        let verified: Vec<SymbolHit> = exact
+            .into_iter()
+            .filter(|hit| {
+                identifier_at(&hit.path, &remote_texts, hit.line, hit.col, &hit.name)
+                    || identifier_at(
+                        &hit.path,
+                        &remote_texts,
+                        hit.line,
+                        hit.col,
+                        bare_symbol_name(&hit.name),
+                    )
+            })
+            .collect();
+        anyhow::ensure!(
+            !verified.is_empty(),
+            "no verified symbol named `{symbol}`: the index or outline positions do not match readable current source; refresh the project index or supply a current source position"
+        );
+        verified
+    } else {
+        exact
+    };
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
     let mut scored: Vec<(i32, SymbolHit)> = exact
         .into_iter()

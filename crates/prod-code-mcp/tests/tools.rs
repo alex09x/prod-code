@@ -5158,3 +5158,65 @@ async fn primary_review_crate_name_is_read_as_toml_including_comments() {
             .expect("valid TOML comments cannot hide the real crate name");
     assert_eq!(hit.path, file);
 }
+
+#[tokio::test]
+async fn primary_review_qualified_stale_hit_must_name_the_current_source() {
+    let ws = workspace();
+    let file = write(
+        &ws,
+        "src/lib.rs",
+        "pub struct Missing; impl Missing { pub fn recv() {} }\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "try_recv" => {
+            let mut hit = answers::symbol("try_recv", 12, &file, 1, 42);
+            hit["containerName"] = serde_json::json!("Missing");
+            serde_json::json!([hit])
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result =
+        prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "Missing::try_recv", None).await;
+    assert!(
+        result.is_err(),
+        "a stale index entry must not name an absent method: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn primary_review_qualified_outline_must_name_the_current_source() {
+    let ws = workspace();
+    let source = "pub struct Missing; impl Missing { pub fn recv() {} }\n";
+    let file = write(&ws, "src/lib.rs", source);
+    let col = source.find("recv").unwrap() as u32 + 1;
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "Missing" => {
+            serde_json::json!([answers::symbol("Missing", 23, &file, 1, 12)])
+        }
+        "workspace/symbol" => serde_json::json!([]),
+        "textDocument/documentSymbol" => {
+            let mut owner = answers::document_symbol("Missing", 23, 1, 1, 12);
+            owner["children"] = serde_json::json!([
+                answers::document_symbol("try_recv", 6, 1, 1, col),
+                answers::document_symbol("recv", 6, 1, 1, col)
+            ]);
+            serde_json::json!([owner])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let stale =
+        prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "Missing::try_recv", None).await;
+    assert!(
+        stale.is_err(),
+        "an outline is also required to match current source: {stale:?}"
+    );
+    let current = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "Missing::recv", None)
+        .await
+        .unwrap();
+    assert_eq!((current.name.as_str(), current.col), ("recv", col));
+}
