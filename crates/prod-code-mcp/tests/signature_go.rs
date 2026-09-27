@@ -546,12 +546,13 @@ async fn the_mcp_tool_previews_applies_and_refuses_go_reorders() {
         .expect("the tool is listed");
     for promised in [
         "Go (a `.go` file, through gopls v0.23.0)",
-        "permutation of the named parameters",
+        "reorders named parameters and removes provably unused ones",
         "Grouped parameters",
-        "variadic parameter must stay last",
-        "adding (`name: Type = expression`) or removing a parameter",
-        "a generic function that has calls",
-        "used as a value",
+        "variadic parameter stays last",
+        "Go additions, parameter/result type changes",
+        "empty array to remove all",
+        "generic functions with calls",
+        "function values and unreconciled calls",
         "`true`, `false` and `nil` count as variables",
     ] {
         assert!(

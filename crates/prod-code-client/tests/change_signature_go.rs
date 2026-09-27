@@ -248,11 +248,11 @@ async fn change_signature_removes_unused_go_parameters_including_all_of_them() {
         ("go.mod", "module example.com/removecli\n\ngo 1.22\n"),
         (
             "lib.go",
-            "package main\nfunc Keep(keep int, discard string) int { return keep }\nfunc Empty(first int, second string) int { return 41 }\n",
+            "package main\n\nfunc Keep(keep int, discard string) int {\n\treturn keep\n}\n\nfunc Empty(first int, second string) int {\n\treturn 41\n}\n",
         ),
         (
             "main.go",
-            "package main\nimport \"fmt\"\nfunc main() { fmt.Println(Keep(9, \"unused\"), Empty(8, \"noop\")) }\n",
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(Keep(9, \"unused\"), Empty(8, \"noop\"))\n}\n",
         ),
     ]);
     let home = tempfile::tempdir().unwrap();
