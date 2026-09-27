@@ -38,7 +38,8 @@
   clients, interrupted sessions are restored, and genuine diagnostics remain errors. Retained
   documents follow later disk notifications while active overlays remain owned by their client;
   bounded generations are replaced whole, and a private-server admission or startup failure is
-  reported instead of falling back to the ordinary engine.
+  reported instead of falling back to the ordinary engine. Incremental UTF-16 edits are composed
+  against their owner's full text before a session is restored; invalid ranges leave it unchanged.
 - All MCP tools with source positions reject zero, overflowing or malformed coordinates
   before dispatch (#500). Selection endpoints must be supplied together and cannot precede
   the start; CLI assist application shares the same guard. Discovery schemas advertise bounds.

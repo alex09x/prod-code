@@ -1762,3 +1762,140 @@ async fn primary_review_closed_python_document_follows_later_disk_changes() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_incremental_owner_is_restored_as_its_complete_text() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("incremental.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"abc\n"}})).await.unwrap();
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[{"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":2}},"text":"x"}]})).await.unwrap();
+    engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"other proposal\n"}})).await.unwrap();
+    engine.close_session(8).await.unwrap();
+    let current = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        current[0]["message"], "axc\n",
+        "restored an incremental fragment instead of the remaining owner's full text"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_retained_bound_survives_a_long_lived_active_owner() {
+    let (dir, script) = workspace();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.max_retained_documents = 2;
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let anchor = dir.path().join("anchor.py");
+    std::fs::write(&anchor, "anchor\n").unwrap();
+    let anchor_uri = url::Url::from_file_path(&anchor).unwrap().to_string();
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":anchor_uri,"languageId":"python","version":1,"text":"active editor\n"}})).await.unwrap();
+    for i in 0..2 {
+        let file = dir.path().join(format!("closed{i}.py"));
+        std::fs::write(&file, "disk\n").unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal\n"}})).await.unwrap();
+        engine.close_session(8).await.unwrap();
+    }
+    assert!(
+        !engine.accepts_documents(),
+        "an active owner must not disable the retained-document limit indefinitely"
+    );
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":anchor_uri,"version":2},"contentChanges":[{"text":"still active\n"}]})).await.expect("existing owners may keep editing the retired generation");
+    engine.close_session(7).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_ordered_utf16_changes_use_their_owners_text() {
+    for retain in [false, true] {
+        let (dir, script) = workspace();
+        let file = dir.path().join("unicode.py");
+        std::fs::write(&file, "disk\n").unwrap();
+        let mut settings = config(&script);
+        settings.retain_open_documents = retain;
+        settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+        let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+        let uri = url::Url::from_file_path(&file).unwrap().to_string();
+        engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"a😀b\r\nsecond\n"}})).await.unwrap();
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"another owner\n"}})).await.unwrap();
+        engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[
+            {"range":{"start":{"line":0,"character":1},"end":{"line":0,"character":3}},"text":"x"},
+            {"range":{"start":{"line":1,"character":0},"end":{"line":1,"character":6}},"text":"tail"}
+        ]})).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            "axb\r\ntail\n"
+        );
+        engine.close_session(7).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            "another owner\n"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn primary_review_invalid_incremental_ranges_preserve_the_whole_owner_state() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("invalid-range.py");
+    std::fs::write(&file, "disk\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    let original = "a😀b\r\nlast\r";
+    engine.send_session_notification(7,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":original}})).await.unwrap();
+    for bad_range in [
+        serde_json::json!({"start":{"line":0,"character":2},"end":{"line":0,"character":3}}),
+        serde_json::json!({"start":{"line":0,"character":3},"end":{"line":0,"character":1}}),
+        serde_json::json!({"start":{"line":8,"character":0},"end":{"line":8,"character":0}}),
+        serde_json::json!({"start":{"line":0,"character":5},"end":{"line":0,"character":5}}),
+        serde_json::json!({"start":{"line":-1,"character":0},"end":{"line":0,"character":0}}),
+        serde_json::json!({"start":{"line":0,"character":0.5},"end":{"line":0,"character":1}}),
+        serde_json::Value::Null,
+    ] {
+        let error = engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":2},"contentChanges":[
+            {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":1}},"text":"z"},
+            {"range":bad_range,"text":"wrong"}
+        ]})).await.expect_err("invalid second edit is refused before any owner state change");
+        assert!(
+            format!("{error:#}").contains("incremental change"),
+            "{error:#}"
+        );
+        engine.send_session_notification(8,"textDocument/didOpen",serde_json::json!({"textDocument":{"uri":uri,"version":1,"languageId":"python","text":"temporary\n"}})).await.unwrap();
+        engine.close_session(8).await.unwrap();
+        assert_eq!(
+            engine
+                .current_diagnostics_for(&uri, Duration::from_secs(5))
+                .await
+                .unwrap()[0]["message"],
+            original
+        );
+    }
+    // A complete reset followed by a range edit uses the newly reset text, in order.
+    engine.send_session_notification(7,"textDocument/didChange",serde_json::json!({"textDocument":{"uri":uri,"version":3},"contentChanges":[
+        {"text":"fresh\n"}, {"range":{"start":{"line":0,"character":0},"end":{"line":0,"character":5}},"text":"done"}
+    ]})).await.unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "done\n"
+    );
+}

@@ -46,8 +46,8 @@ pub struct GenericLspConfig {
     /// them. Pyright can retain distinct identities for `builtins.str` and `str` after a
     /// close/reopen cycle; changing the existing document avoids that corrupt state (#466).
     pub retain_open_documents: bool,
-    /// Maximum logically closed documents retained in one server. Once all owners have
-    /// closed and this many identities are retained, the engine stops accepting new opens;
+    /// Maximum logically closed documents retained in one server. At the limit the engine
+    /// stops accepting new opens while existing owners may still change and close documents;
     /// its owner must replace the whole server rather than close/reopen one document.
     pub max_retained_documents: usize,
 }
@@ -1166,17 +1166,26 @@ impl GenericLspEngine {
                 record_session_owner(&mut documents, owner, &uri);
             }
             "textDocument/didChange" => {
-                let text = params
-                    .pointer("/contentChanges/0/text")
-                    .and_then(|text| text.as_str())
-                    .context("textDocument/didChange has no whole-document text")?
-                    .to_string();
+                let base = documents
+                    .documents
+                    .get(&uri)
+                    .and_then(|document| document.owners.get(&owner))
+                    .map(|owned| owned.text.as_str());
+                // Ranges belong to this owner's text, even while another owner's overlay is
+                // visible. Compose every change before committing state or sending a frame.
+                let text = apply_content_changes(base, &params)?;
                 let order = next_order(&mut documents)?;
                 if let Some(document) = documents.documents.get_mut(&uri) {
                     let version = next_version(document.version, &uri)?;
                     document.version = version;
-                    document.owners.insert(owner, OwnedText { text, order });
-                    params["textDocument"]["version"] = serde_json::json!(version);
+                    document.owners.insert(
+                        owner,
+                        OwnedText {
+                            text: text.clone(),
+                            order,
+                        },
+                    );
+                    params = changed(&uri, version, text);
                 } else {
                     let version = params
                         .pointer("/textDocument/version")
@@ -1186,9 +1195,16 @@ impl GenericLspEngine {
                         uri.clone(),
                         DocumentState {
                             version,
-                            owners: HashMap::from([(owner, OwnedText { text, order })]),
+                            owners: HashMap::from([(
+                                owner,
+                                OwnedText {
+                                    text: text.clone(),
+                                    order,
+                                },
+                            )]),
                         },
                     );
+                    params = changed(&uri, version, text);
                 }
                 record_session_owner(&mut documents, owner, &uri);
             }
@@ -1387,6 +1403,74 @@ impl GenericLspEngine {
     pub fn subscribe(&self) -> broadcast::Receiver<String> {
         self.broadcast_tx.subscribe()
     }
+}
+
+/// LSP changes are ordered and use UTF-16 columns (the adapter's negotiated encoding).
+/// A malformed later change must not leave the owner's earlier changes half applied.
+fn apply_content_changes(base: Option<&str>, params: &serde_json::Value) -> Result<String> {
+    let changes = params
+        .get("contentChanges")
+        .and_then(|v| v.as_array())
+        .context("textDocument/didChange has no contentChanges array")?;
+    let mut text = base.map(str::to_string);
+    for change in changes {
+        let replacement = change
+            .get("text")
+            .and_then(|v| v.as_str())
+            .context("textDocument/didChange change has no text")?;
+        if let Some(range) = change.get("range") {
+            let current = text
+                .as_mut()
+                .context("incremental change requires this owner's open document")?;
+            let start = change_offset(current, &range["start"])?;
+            let end = change_offset(current, &range["end"])?;
+            anyhow::ensure!(start <= end, "incremental change end precedes its start");
+            current.replace_range(start..end, replacement);
+        } else {
+            text = Some(replacement.to_string());
+        }
+    }
+    text.context("empty contentChanges requires this owner's open document")
+}
+
+fn change_offset(text: &str, position: &serde_json::Value) -> Result<usize> {
+    let coordinate = |name: &str| -> Result<u32> {
+        position
+            .get(name)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .with_context(|| format!("incremental change has invalid '{name}' coordinate"))
+    };
+    let line = coordinate("line")?;
+    let character = coordinate("character")? as usize;
+    let mut start = 0;
+    for _ in 0..line {
+        start += text[start..]
+            .find('\n')
+            .context("incremental change line is outside the document")?
+            + 1;
+    }
+    let tail = &text[start..];
+    let content = match tail.find('\n') {
+        Some(end) => tail[..end].strip_suffix('\r').unwrap_or(&tail[..end]),
+        None => tail,
+    };
+    let mut units = 0;
+    for (byte, ch) in content.char_indices() {
+        if units == character {
+            return Ok(start + byte);
+        }
+        units += ch.len_utf16();
+        anyhow::ensure!(
+            units <= character,
+            "incremental change splits a UTF-16 surrogate pair"
+        );
+    }
+    anyhow::ensure!(
+        units == character,
+        "incremental change column is outside the line"
+    );
+    Ok(start + content.len())
 }
 
 fn next_order(documents: &mut DocumentLifecycle) -> Result<u64> {
