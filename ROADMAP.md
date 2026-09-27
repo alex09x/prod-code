@@ -165,6 +165,9 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     backend instead of leaving a server waiting forever. Go and fallback configuration replies
     match the requested item count and reject invalid parameters (#553). These fixes do not
     implement periodic health pings.
+  - Fallback requests answered locally are withheld from editor sessions (#554); unknown
+    server requests still reach the editor. Framed integration coverage checks colliding
+    request IDs, notifications and exactly one automatic reply per handled request.
 
 - [~] **3.4. C / C++ Engine (`crates/prod-code-engine-cpp` / `clangd`)** — shipped 2026-09-19 through the generic engine: `clangd --background-index --compile-commands-dir=build`, `CMakeLists.txt` / `compile_commands.json` / `.clangd` synced, hover / definition / references / symbols verified on two Linux nodes; `prod-code check` configures the CMake build dir (with `compile_commands.json`) and parses gcc/clang diagnostics. A compiler cache shared across worktrees followed on 2026-09-24 (#243): ccache with `CCACHE_BASEDIR` set to each workspace; a second worktree of the fmt library built in 1.0 s against 24.0 s. Shared PCH / clangd index across worktrees still open.
   - Supervised `clangd` daemon with background indexing over `compile_commands.json`.

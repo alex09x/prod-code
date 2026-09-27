@@ -61,6 +61,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Fallback LSP requests already answered by the gateway stay out of editor sessions (#554).
+  Unknown server requests still reach the editor, while notifications and client responses
+  preserve their routing even when server and client request IDs collide.
 - Fallback LSP writes have one deadline covering writer contention, frame bytes and flush
   (#548). Interrupted partial frames retire the owned child before queued writers resume;
   caller-side timeouts before writing leave a healthy worker usable. A failed automatic reply

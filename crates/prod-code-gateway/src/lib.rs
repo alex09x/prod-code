@@ -871,6 +871,20 @@ fn is_server_request(json: &str) -> bool {
             .is_ok_and(|v| v.get("id").is_some() && v.get("method").is_some())
 }
 
+fn fallback_answers_request(json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json).is_ok_and(|value| {
+        value.get("id").is_some_and(|id| !id.is_null())
+            && matches!(
+                value.get("method").and_then(serde_json::Value::as_str),
+                Some(
+                    "window/workDoneProgress/create"
+                        | "workspace/configuration"
+                        | "client/registerCapability"
+                )
+            )
+    })
+}
+
 /// Sends the client the note an engine attached to an answer given while its server was still
 /// loading or indexing, just before the answer, and takes it off the answer (#391).
 async fn send_busy_note(
@@ -3067,7 +3081,9 @@ async fn run_session_loop(
             } => {
                 match backend_msg {
                     Ok(server_lsp) => {
-                        if engine_answers_requests && is_server_request(&server_lsp) {
+                        if (engine_answers_requests && is_server_request(&server_lsp))
+                            || (!engine_answers_requests && fallback_answers_request(&server_lsp))
+                        {
                             continue;
                         }
                         let client_lsp = translator.translate_lsp_to_client(&server_lsp);
