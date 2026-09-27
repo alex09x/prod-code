@@ -1439,6 +1439,7 @@ dependencies = [
  "prod-code-mcp",
  "prod-code-protocol",
  "prod-code-testkit",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
