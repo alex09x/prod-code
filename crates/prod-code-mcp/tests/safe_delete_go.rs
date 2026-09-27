@@ -412,6 +412,53 @@ async fn constant_array_receiver_deletes_and_parenthesized_alias_refuses() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn instantiated_alias_embedding_refuses_without_writing() {
+    require_go_toolchain();
+    let source = "package main\n\ntype item struct{}\ntype alias[T any] = item\ntype outer struct { alias[int] }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    for force in [false, true] {
+        let fixture = GoModule::new(&[
+            (
+                "go.mod",
+                "module example.com/instantiatedalias\n\ngo 1.24\n",
+            ),
+            ("main.go", source),
+        ]);
+        let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+        assert!(compiled, "generic alias fixture: {compile_output}");
+        let bridge = GoplsBridge::start(&fixture).await;
+        let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+        let output = refused(proxy.addr(), &fixture, "main.go", "hidden", force).await;
+        assert!(output.contains("embedded or promoted"), "{output}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn named_alias_array_field_is_not_embedding() {
+    require_go_toolchain();
+    let source = "package main\n\ntype item struct{}\ntype alias[T any] = item\ntype outer struct { alias [2]int }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/namedaliasarray\n\ngo 1.24\n"),
+        ("main.go", source),
+    ]);
+    let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+    assert!(compiled, "named alias array fixture: {compile_output}");
+    let bridge = GoplsBridge::start(&fixture).await;
+    let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+    let result = call(proxy.addr(), &fixture, "main.go", "hidden", false).await;
+    let output = text_of(&result);
+    assert!(
+        !result.is_error && output.contains("compiler-verified"),
+        "{output}"
+    );
+    assert_eq!(
+        fixture.read("main.go"),
+        source.replace("func (value item) hidden() {}", "")
+    );
+    let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+    assert!(compiled, "deleted named alias fixture: {compile_output}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unsupported_shapes_and_non_name_positions_are_refused_without_writes() {
     require_go_toolchain();
     let fixture = GoModule::new(&[

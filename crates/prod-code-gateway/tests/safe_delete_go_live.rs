@@ -700,6 +700,46 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         );
     }
 
+    let instantiated_source = "package main\n\ntype item struct{}\ntype alias[T any] = item\ntype outer struct { alias[int] }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let (_instantiated_dir, instantiated_root) = checkout(instantiated_source, EMPTY_TEST);
+    std::fs::write(
+        instantiated_root.join("go.work"),
+        "go 1.24\n\nuse ./project\n",
+    )
+    .unwrap();
+    std::fs::write(
+        instantiated_root.join("project/go.mod"),
+        "module example.com/gosafedelete\n\ngo 1.24\n",
+    )
+    .unwrap();
+    let _ = behaviour(&instantiated_root.join("project"));
+    wait_for_gopls(
+        gateway.addr,
+        &instantiated_root,
+        "hidden",
+        "func (value item) hidden",
+    )
+    .await;
+    let (line, character) = tool_position(instantiated_source, "hidden");
+    for force in [false, true] {
+        let untouched = snapshot(&instantiated_root);
+        let (ok, output) = tool(
+            gateway.addr,
+            &instantiated_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "project/main.go", "line": line, "character": character, "force": force
+            }),
+        )
+        .await;
+        assert!(!ok && output.contains("embedded or promoted"), "{output}");
+        assert_eq!(
+            snapshot(&instantiated_root),
+            untouched,
+            "instantiated alias refusal wrote"
+        );
+    }
+
     let (_uses_dir, uses_root) = checkout(METHOD_USES_SOURCE, EMPTY_TEST);
     wait_for_gopls(
         gateway.addr,

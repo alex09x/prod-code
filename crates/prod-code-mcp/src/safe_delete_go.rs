@@ -960,6 +960,9 @@ fn field_embeds(field: &str, receiver_names: &BTreeSet<String>) -> Result<bool> 
         return Ok(false);
     }
     cursor = skip_trivia(field, end)?;
+    if field.as_bytes().get(cursor) == Some(&b'[') {
+        cursor = skip_trivia(field, matching(field, cursor)? + 1)?;
+    }
     if cursor == field.len() {
         return Ok(true);
     }
