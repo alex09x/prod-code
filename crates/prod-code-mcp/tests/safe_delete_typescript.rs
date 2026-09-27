@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
@@ -29,7 +29,7 @@ enum ShadowReply {
 struct CompilerProxy {
     addr: SocketAddr,
     cancel: CancellationToken,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl CompilerProxy {
@@ -39,16 +39,22 @@ impl CompilerProxy {
         let cancel = CancellationToken::new();
         let accepting = cancel.clone();
         let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
             loop {
                 let accepted = tokio::select! {
-                    () = accepting.cancelled() => return,
+                    () = accepting.cancelled() => break,
+                    Some(_) = connections.join_next(), if !connections.is_empty() => continue,
                     accepted = listener.accept() => accepted,
                 };
-                let Ok((client, _)) = accepted else { return };
+                let Ok((client, _)) = accepted else { break };
                 let cancellation = accepting.clone();
                 let reply = reply.clone();
-                tokio::spawn(async move {
-                    let Ok(server) = tokio::net::TcpStream::connect(upstream).await else {
+                connections.spawn(async move {
+                    let server = tokio::select! {
+                        () = cancellation.cancelled() => return,
+                        server = tokio::net::TcpStream::connect(upstream) => server,
+                    };
+                    let Ok(server) = server else {
                         return;
                     };
                     let mut client = Framed::new(client, ProdCodeCodec::new());
@@ -58,18 +64,31 @@ impl CompilerProxy {
                             () = cancellation.cancelled() => return,
                             incoming = client.next() => match incoming {
                                 Some(Ok(WireMessage::ShadowRunRequest(request))) => {
-                                    if client.send(WireMessage::ShadowRunResponse(shadow_response(request, &reply))).await.is_err() {
+                                    let response = WireMessage::ShadowRunResponse(shadow_response(request, &reply));
+                                    let sent = tokio::select! {
+                                        () = cancellation.cancelled() => return,
+                                        sent = client.send(response) => sent,
+                                    };
+                                    if sent.is_err() {
                                         return;
                                     }
                                 }
                                 Some(Ok(message)) => {
-                                    if server.send(message).await.is_err() { return; }
+                                    let sent = tokio::select! {
+                                        () = cancellation.cancelled() => return,
+                                        sent = server.send(message) => sent,
+                                    };
+                                    if sent.is_err() { return; }
                                 }
                                 _ => return,
                             },
                             outgoing = server.next() => match outgoing {
                                 Some(Ok(message)) => {
-                                    if client.send(message).await.is_err() { return; }
+                                    let sent = tokio::select! {
+                                        () = cancellation.cancelled() => return,
+                                        sent = client.send(message) => sent,
+                                    };
+                                    if sent.is_err() { return; }
                                 }
                                 _ => return,
                             },
@@ -77,15 +96,32 @@ impl CompilerProxy {
                     }
                 });
             }
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
         });
-        Self { addr, cancel, task }
+        Self {
+            addr,
+            cancel,
+            task: Some(task),
+        }
+    }
+
+    async fn shutdown(mut self) {
+        self.cancel.cancel();
+        let task = self.task.take().expect("proxy task");
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("proxy shutdown timed out")
+            .expect("proxy task panicked");
     }
 }
 
 impl Drop for CompilerProxy {
     fn drop(&mut self) {
         self.cancel.cancel();
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -277,6 +313,7 @@ async fn unused_private_function_is_deleted_with_utf16_and_crlf_evidence() {
     let gateway = gateway(SOURCE, references).await;
     let proxy = CompilerProxy::start(gateway.addr(), ShadowReply::Pass).await;
     let result = call(proxy.addr, &fixture, SOURCE, "hidden", true).await;
+    proxy.shutdown().await;
     let output = text(&result);
     assert!(
         !result.is_error && output.contains("compiler-verified"),
@@ -365,6 +402,7 @@ async fn malformed_evidence_and_compiler_failures_are_transactional_refusals() {
         let proxy = CompilerProxy::start(gateway.addr(), reply).await;
         let before = snapshot(&fixture.root());
         let result = call(proxy.addr, &fixture, SOURCE, "hidden", true).await;
+        proxy.shutdown().await;
         assert!(
             result.is_error && text(&result).contains(expected),
             "{}",
@@ -444,6 +482,48 @@ async fn exports_unsupported_syntax_dynamic_sources_and_configs_refuse_unchanged
         );
         assert_eq!(snapshot(&fixture.root()), before);
     }
+}
+
+#[tokio::test]
+async fn hidden_direct_eval_spellings_refuse_with_force_and_preserve_every_byte() {
+    for (source, expected) in [
+        (
+            "export {};\nconst escaped = \"\\\\🙂\";\nfunction hidden(): number { return 7; }\nvoid escaped;\nvoid (eval)(\"hidden()\");\n",
+            "dynamic",
+        ),
+        (
+            "export {};\nfunction hidden(): number { return 7; }\nvoid eval!(\"hidden()\");\n",
+            "dynamic",
+        ),
+        (
+            "export {};\nfunction hidden(): number { return 7; }\nvoid \\u0065val(\"hidden()\");\n",
+            "escaped identifiers",
+        ),
+    ] {
+        let fixture = fixture(source);
+        let references = declaration_reference(&fixture.path("src/main.ts"), source, "hidden");
+        let gateway = gateway(source, references).await;
+        let proxy = CompilerProxy::start(gateway.addr(), ShadowReply::Pass).await;
+        let before = snapshot(&fixture.root());
+        let result = call(proxy.addr, &fixture, source, "hidden", true).await;
+        proxy.shutdown().await;
+        let output = text(&result);
+        assert!(
+            result.is_error && output.contains(expected),
+            "unsafe deletion was not refused: {output}"
+        );
+        assert_eq!(snapshot(&fixture.root()), before);
+    }
+}
+
+#[tokio::test]
+async fn compiler_proxy_cancellation_reaps_owned_connections() {
+    let gateway = ScriptedGateway::start(|_, _| Value::Null).await;
+    let proxy = CompilerProxy::start(gateway.addr(), ShadowReply::Pass).await;
+    let _connection = tokio::net::TcpStream::connect(proxy.addr)
+        .await
+        .expect("proxy connection");
+    proxy.shutdown().await;
 }
 
 #[tokio::test]

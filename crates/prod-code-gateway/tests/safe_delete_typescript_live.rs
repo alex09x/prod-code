@@ -4,7 +4,7 @@
 
 use prod_code_mcp::protocol::McpContentItem;
 use std::collections::BTreeMap;
-use std::io::BufRead;
+use std::io::{Read, Seek};
 use std::net::SocketAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -23,19 +23,70 @@ const USED: &str =
     "export {};\nfunction hidden(): number { return 7; }\nconst kept = hidden();\nvoid kept;\n";
 
 struct Gateway {
-    child: Child,
+    process: OwnedProcess,
     addr: SocketAddr,
-    reader: Option<std::thread::JoinHandle<()>>,
+    stdout: std::fs::File,
     _storage: tempfile::TempDir,
 }
 
+struct OwnedProcess {
+    child: Child,
+    group: i32,
+    deadline: Instant,
+    retired: bool,
+}
+
+impl OwnedProcess {
+    fn new(child: Child, deadline: Instant) -> Self {
+        let group = -(child.id() as i32);
+        Self {
+            child,
+            group,
+            deadline,
+            retired: false,
+        }
+    }
+
+    fn wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        wait_for_exit(&mut self.child, self.deadline)
+    }
+
+    fn retire(&mut self) {
+        if self.retired {
+            return;
+        }
+        self.retired = true;
+        unsafe {
+            libc::kill(self.group, libc::SIGTERM);
+        }
+        let term_deadline = self.deadline.min(Instant::now() + Duration::from_secs(2));
+        let reaped = wait_for_exit(&mut self.child, term_deadline)
+            .ok()
+            .flatten()
+            .is_some();
+        unsafe {
+            libc::kill(self.group, libc::SIGKILL);
+        }
+        if !reaped {
+            let _ = wait_for_exit(&mut self.child, self.deadline);
+        }
+    }
+}
+
+impl Drop for OwnedProcess {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
 impl Gateway {
-    fn start() -> Self {
+    fn start(deadline: Instant) -> Self {
         let storage = tempfile::Builder::new()
             .prefix("typescript-safe-delete-gateway")
             .tempdir()
             .expect("storage");
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
+        let stdout = tempfile::tempfile().expect("gateway stdout file");
         command
             .env("PROD_CODE_STORAGE", storage.path())
             .env(
@@ -45,14 +96,16 @@ impl Gateway {
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env_remove("RUST_LOG")
-            .stdout(Stdio::piped())
+            .stdout(Stdio::from(
+                stdout.try_clone().expect("clone gateway stdout file"),
+            ))
             .stderr(Stdio::null())
             .process_group(0);
         let child = command.spawn().expect("gateway starts");
         let mut gateway = Self {
-            child,
+            process: OwnedProcess::new(child, deadline),
             addr: SocketAddr::from(([127, 0, 0, 1], 0)),
-            reader: None,
+            stdout,
             _storage: storage,
         };
         gateway.addr = bound_address(&mut gateway);
@@ -62,7 +115,7 @@ impl Gateway {
 
 impl Drop for Gateway {
     fn drop(&mut self) {
-        retire_group(&mut self.child, self.reader.take(), Duration::from_secs(20));
+        self.process.retire();
     }
 }
 
@@ -81,59 +134,67 @@ fn wait_for_exit(
     }
 }
 
-fn retire_group(child: &mut Child, reader: Option<std::thread::JoinHandle<()>>, grace: Duration) {
-    let group = -(child.id() as i32);
-    unsafe {
-        libc::kill(group, libc::SIGTERM);
-    }
-    let reaped = wait_for_exit(child, Instant::now() + grace)
-        .ok()
-        .flatten()
-        .is_some();
-    unsafe {
-        libc::kill(group, libc::SIGKILL);
-    }
-    if !reaped {
-        let _ = child.wait();
-    }
-    if let Some(reader) = reader {
-        let _ = reader.join();
-    }
-}
-
 fn bound_address(gateway: &mut Gateway) -> SocketAddr {
-    let stdout = gateway.child.stdout.take().expect("gateway stdout");
-    let (send, receive) = std::sync::mpsc::channel();
-    gateway.reader = Some(std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(stdout);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
-            }
-            if let Some(value) = line.split("listening on ").nth(1)
-                && let Ok(addr) = value.trim().parse()
-            {
-                let _ = send.send(addr);
-            }
+    let mut output = String::new();
+    loop {
+        gateway.stdout.rewind().expect("rewind gateway stdout");
+        output.clear();
+        gateway
+            .stdout
+            .read_to_string(&mut output)
+            .expect("read gateway stdout");
+        if let Some(addr) = output.lines().find_map(|line| {
+            line.split("listening on ")
+                .nth(1)
+                .and_then(|value| value.trim().parse().ok())
+        }) {
+            return addr;
         }
-    }));
-    match receive.recv_timeout(Duration::from_secs(60)) {
-        Ok(addr) => addr,
-        Err(error) => {
-            retire_group(
-                &mut gateway.child,
-                gateway.reader.take(),
-                Duration::from_secs(2),
-            );
-            panic!("gateway did not report readiness: {error}");
+        if gateway
+            .process
+            .child
+            .try_wait()
+            .expect("inspect gateway readiness")
+            .is_some()
+        {
+            panic!("gateway exited before readiness: {output}");
         }
+        if Instant::now() >= gateway.process.deadline {
+            gateway.process.retire();
+            panic!("gateway did not report readiness before deadline: {output}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn checkout(source: &str) -> (tempfile::TempDir, PathBuf) {
+fn run_command(command: &mut Command, deadline: Instant, label: &str) -> (bool, String) {
+    let mut stdout = tempfile::tempfile().expect("command stdout file");
+    let mut stderr = tempfile::tempfile().expect("command stderr file");
+    command
+        .stdout(Stdio::from(stdout.try_clone().expect("clone stdout file")))
+        .stderr(Stdio::from(stderr.try_clone().expect("clone stderr file")))
+        .process_group(0);
+    let child = command
+        .spawn()
+        .unwrap_or_else(|error| panic!("{label} spawn failed: {error}"));
+    let mut process = OwnedProcess::new(child, deadline);
+    let status = process
+        .wait()
+        .unwrap_or_else(|error| panic!("{label} wait failed: {error}"));
+    if status.is_none() {
+        process.retire();
+        panic!("{label} timed out");
+    }
+    drop(process);
+    let mut output = String::new();
+    stdout.rewind().expect("rewind stdout");
+    stderr.rewind().expect("rewind stderr");
+    stdout.read_to_string(&mut output).expect("read stdout");
+    stderr.read_to_string(&mut output).expect("read stderr");
+    (status.expect("status").success(), output)
+}
+
+fn checkout(source: &str, deadline: Instant) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::Builder::new()
         .prefix("typescript-safe-delete-fixture")
         .tempdir()
@@ -144,14 +205,12 @@ fn checkout(source: &str) -> (tempfile::TempDir, PathBuf) {
         std::fs::write(path, text).expect("fixture write");
     }
     let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(dir.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .expect("git runs");
-        assert!(status.success(), "git {args:?}");
+        let (ok, output) = run_command(
+            Command::new("git").args(args).current_dir(dir.path()),
+            deadline,
+            "git fixture command",
+        );
+        assert!(ok, "git {args:?}: {output}");
     };
     git(&["init", "-q"]);
     git(&["add", "-A"]);
@@ -194,7 +253,7 @@ fn snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     files
 }
 
-fn source_cli() -> PathBuf {
+fn source_cli(deadline: Instant) -> PathBuf {
     static CLI: OnceLock<PathBuf> = OnceLock::new();
     CLI.get_or_init(|| {
         let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -202,12 +261,14 @@ fn source_cli() -> PathBuf {
             .and_then(Path::parent)
             .expect("workspace")
             .to_path_buf();
-        let status = Command::new("cargo")
-            .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
-            .current_dir(&workspace)
-            .status()
-            .expect("source client build");
-        assert!(status.success(), "source client build: {status}");
+        let (ok, output) = run_command(
+            Command::new("cargo")
+                .args(["build", "-p", "prod-code-client", "--bin", "prod-code"])
+                .current_dir(&workspace),
+            deadline,
+            "source client build",
+        );
+        assert!(ok, "source client build: {output}");
         let target = std::env::var_os("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join("target"));
@@ -223,20 +284,14 @@ fn source_cli() -> PathBuf {
     .clone()
 }
 
-fn cli(root: &Path, addr: SocketAddr, args: &[&str]) -> (bool, String) {
-    let output = Command::new(source_cli())
-        .args(["--remote", &addr.to_string()])
-        .args(args)
-        .current_dir(root)
-        .output()
-        .expect("source client");
-    (
-        output.status.success(),
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
+fn cli(root: &Path, addr: SocketAddr, args: &[&str], deadline: Instant) -> (bool, String) {
+    run_command(
+        Command::new(source_cli(deadline))
+            .args(["--remote", &addr.to_string()])
+            .args(args)
+            .current_dir(root),
+        deadline,
+        "source client",
     )
 }
 
@@ -245,8 +300,15 @@ async fn tool(
     root: &Path,
     name: &str,
     args: serde_json::Value,
+    deadline: Instant,
 ) -> (bool, String) {
-    match prod_code_mcp::tools::execute_tool(addr, root, name, args).await {
+    let request = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        prod_code_mcp::tools::execute_tool(addr, root, name, args),
+    )
+    .await
+    .expect("tool request timed out");
+    match request {
         Ok(result) => {
             let text = result
                 .content
@@ -263,27 +325,21 @@ async fn tool(
     }
 }
 
-fn compile(root: &Path) -> (bool, String) {
-    let output = Command::new("tsc")
-        .args([
-            "--noEmit",
-            "--pretty",
-            "false",
-            "--incremental",
-            "false",
-            "--project",
-            "tsconfig.json",
-        ])
-        .current_dir(root)
-        .output()
-        .expect("installed TypeScript compiler");
-    (
-        output.status.success(),
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ),
+fn compile(root: &Path, deadline: Instant) -> (bool, String) {
+    run_command(
+        Command::new("tsc")
+            .args([
+                "--noEmit",
+                "--pretty",
+                "false",
+                "--incremental",
+                "false",
+                "--project",
+                "tsconfig.json",
+            ])
+            .current_dir(root),
+        deadline,
+        "installed TypeScript compiler",
     )
 }
 
@@ -302,10 +358,10 @@ fn position(source: &str, needle: &str) -> (u32, u32) {
     )
 }
 
-async fn wait_for_typescript(addr: SocketAddr, root: &Path, source: &str) {
+async fn wait_for_typescript(addr: SocketAddr, root: &Path, source: &str, deadline: Instant) {
     let (line, character) = position(source, "hidden");
     let mut answer = String::new();
-    for _ in 0..60 {
+    while Instant::now() < deadline {
         let (_, text) = tool(
             addr,
             root,
@@ -315,6 +371,7 @@ async fn wait_for_typescript(addr: SocketAddr, root: &Path, source: &str) {
                 "line": line,
                 "character": character
             }),
+            deadline,
         )
         .await;
         answer = text;
@@ -326,7 +383,58 @@ async fn wait_for_typescript(addr: SocketAddr, root: &Path, source: &str) {
     panic!("TypeScript language server did not load fixture: {answer}");
 }
 
+async fn assert_declaration_only_reference(
+    addr: SocketAddr,
+    root: &Path,
+    source: &str,
+    deadline: Instant,
+) {
+    let file = std::fs::canonicalize(root.join("src/main.ts")).expect("source path");
+    let (line, character) = position(source, "hidden");
+    let uri = format!("file://{}", file.display());
+    let answer = tokio::time::timeout_at(
+        tokio::time::Instant::from_std(deadline),
+        prod_code_mcp::tools::execute_lsp_query(
+            addr,
+            root,
+            &file,
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line - 1, "character": character - 1 },
+                "context": { "includeDeclaration": true }
+            }),
+        ),
+    )
+    .await
+    .expect("native reference request timed out")
+    .expect("native reference request");
+    let locations = answer.as_array().expect("native reference list");
+    assert_eq!(
+        locations.len(),
+        1,
+        "references were not declaration-only: {answer}"
+    );
+    assert_eq!(
+        locations[0].get("uri").and_then(serde_json::Value::as_str),
+        Some(uri.as_str())
+    );
+    assert_eq!(
+        locations[0]
+            .pointer("/range/start/line")
+            .and_then(serde_json::Value::as_u64),
+        Some(u64::from(line - 1))
+    );
+    assert_eq!(
+        locations[0]
+            .pointer("/range/start/character")
+            .and_then(serde_json::Value::as_u64),
+        Some(u64::from(character - 1))
+    );
+}
+
 async fn child_run() {
+    let deadline = Instant::now() + Duration::from_secs(180);
     let root = PathBuf::from(std::env::var_os(CHILD_ROOT).expect("child root"));
     let addr = std::env::var(CHILD_ADDR)
         .expect("child addr")
@@ -342,8 +450,14 @@ async fn child_run() {
             &line.to_string(),
             &character.to_string(),
         ],
+        deadline,
     );
-    assert!(ok && output.contains("compiler-verified"), "{output}");
+    let unchanged =
+        std::fs::read_to_string(root.join("src/main.ts")).expect("child source") == UNUSED;
+    assert!(
+        ok && output.contains("compiler-verified") && !unchanged,
+        "private TypeScript deletion was unsupported: ok={ok}, unchanged={unchanged}, output={output:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -352,17 +466,19 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
         child_run().await;
         return;
     }
-    let version = Command::new("tsc")
-        .arg("--version")
-        .output()
-        .expect("tsc must be installed on the build node");
-    assert!(version.status.success(), "tsc --version");
-    let gateway = Gateway::start();
+    let deadline = Instant::now() + Duration::from_secs(900);
+    let (version_ok, version_output) = run_command(
+        Command::new("tsc").arg("--version"),
+        deadline,
+        "tsc --version",
+    );
+    assert!(version_ok, "tsc --version: {version_output}");
+    let gateway = Gateway::start(deadline);
 
-    let (_cli_dir, cli_root) = checkout(UNUSED);
-    let (baseline, baseline_output) = compile(&cli_root);
+    let (_cli_dir, cli_root) = checkout(UNUSED, deadline);
+    let (baseline, baseline_output) = compile(&cli_root, deadline);
     assert!(baseline, "baseline compile: {baseline_output}");
-    wait_for_typescript(gateway.addr, &cli_root, UNUSED).await;
+    wait_for_typescript(gateway.addr, &cli_root, UNUSED, deadline).await;
     let before = snapshot(&cli_root);
     let mut expected = before.clone();
     expected.insert(
@@ -394,23 +510,23 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
         .env(CHILD_ADDR, gateway.addr.to_string())
         .env("PATH", path)
         .process_group(0);
-    let mut child = child.spawn().expect("isolated CLI child");
-    let status = wait_for_exit(&mut child, Instant::now() + Duration::from_secs(180))
-        .expect("inspect CLI child");
+    let child = child.spawn().expect("isolated CLI child");
+    let mut child = OwnedProcess::new(child, deadline);
+    let status = child.wait().expect("inspect CLI child");
     if status.is_none() {
-        retire_group(&mut child, None, Duration::from_secs(2));
+        child.retire();
         panic!("CLI child timed out");
     }
-    retire_group(&mut child, None, Duration::ZERO);
+    child.retire();
     assert!(status.unwrap().success(), "CLI child failed");
     assert_eq!(snapshot(&cli_root), expected, "CLI exact fixture snapshot");
-    let (compiled, output) = compile(&cli_root);
+    let (compiled, output) = compile(&cli_root, deadline);
     assert!(compiled, "post-deletion compile: {output}");
 
-    let (_used_dir, used_root) = checkout(USED);
-    let (compiled, output) = compile(&used_root);
+    let (_used_dir, used_root) = checkout(USED, deadline);
+    let (compiled, output) = compile(&used_root, deadline);
     assert!(compiled, "used baseline compile: {output}");
-    wait_for_typescript(gateway.addr, &used_root, USED).await;
+    wait_for_typescript(gateway.addr, &used_root, USED, deadline).await;
     let untouched = snapshot(&used_root);
     let (line, character) = position(USED, "hidden");
     let (ok, output) = tool(
@@ -423,6 +539,7 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
             "character": character,
             "force": true
         }),
+        deadline,
     )
     .await;
     assert!(!ok && output.contains("still referenced"), "{output}");
@@ -433,8 +550,8 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
     );
 
     let exported = "export function hidden(): number { return 7; }\n";
-    let (_export_dir, export_root) = checkout(exported);
-    wait_for_typescript(gateway.addr, &export_root, exported).await;
+    let (_export_dir, export_root) = checkout(exported, deadline);
+    wait_for_typescript(gateway.addr, &export_root, exported, deadline).await;
     let untouched = snapshot(&export_root);
     let (line, character) = position(exported, "hidden");
     let (ok, output) = tool(
@@ -447,6 +564,7 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
             "character": character,
             "force": true
         }),
+        deadline,
     )
     .await;
     assert!(
@@ -458,4 +576,40 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
         untouched,
         "export refusal changed bytes"
     );
+
+    for source in [
+        "export {};\nfunction hidden(): number { return 7; }\nexport const value = (eval)(\"hidden()\");\n",
+        "export {};\nfunction hidden(): number { return 7; }\nexport const value = eval!(\"hidden()\");\n",
+        "export {};\nfunction hidden(): number { return 7; }\nexport const value = \\u0065val(\"hidden()\");\n",
+    ] {
+        let (_dynamic_dir, dynamic_root) = checkout(source, deadline);
+        let (compiled, output) = compile(&dynamic_root, deadline);
+        assert!(compiled, "dynamic baseline compile: {output}");
+        wait_for_typescript(gateway.addr, &dynamic_root, source, deadline).await;
+        assert_declaration_only_reference(gateway.addr, &dynamic_root, source, deadline).await;
+        let untouched = snapshot(&dynamic_root);
+        let (line, character) = position(source, "hidden");
+        let (ok, output) = tool(
+            gateway.addr,
+            &dynamic_root,
+            "code_safe_delete",
+            serde_json::json!({
+                "path": "src/main.ts",
+                "line": line,
+                "character": character,
+                "force": true
+            }),
+            deadline,
+        )
+        .await;
+        assert!(
+            !ok && (output.contains("dynamic") || output.contains("escaped identifiers")),
+            "unsafe dynamic deletion was not refused: {output}"
+        );
+        assert_eq!(
+            snapshot(&dynamic_root),
+            untouched,
+            "dynamic refusal changed bytes"
+        );
+    }
 }

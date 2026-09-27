@@ -757,13 +757,18 @@ fn inspect_source(text: &str) -> Result<()> {
         if let Some(end) = ascii_identifier_end(text, cursor) {
             let word = &text[cursor..end];
             let next = skip_trivia(text, end)?;
-            if matches!(word, "eval" | "Function" | "require" | "import")
-                && text.as_bytes().get(next) == Some(&b'(')
+            if word == "eval"
+                || (matches!(word, "Function" | "require" | "import")
+                    && text.as_bytes().get(next) == Some(&b'('))
             {
                 anyhow::bail!("dynamic evaluation or name resolution is not supported");
             }
             cursor = end;
         } else {
+            anyhow::ensure!(
+                text.as_bytes()[cursor] != b'\\',
+                "escaped identifiers are outside the safe-delete subset"
+            );
             cursor = advance(text, cursor);
         }
     }
@@ -897,9 +902,11 @@ fn opaque_end(text: &str, start: usize) -> Result<Option<usize>> {
                     .context("a quoted literal is not terminated")?;
                 match byte {
                     b'\\' => {
-                        cursor = cursor
-                            .checked_add(2)
-                            .context("a quoted escape is truncated")?
+                        let escaped = cursor
+                            .checked_add(1)
+                            .filter(|escaped| *escaped < text.len())
+                            .context("a quoted escape is truncated")?;
+                        cursor = advance(text, escaped);
                     }
                     b'\n' | b'\r' => {
                         anyhow::bail!("a quoted literal crosses a line without closing")
@@ -917,9 +924,11 @@ fn opaque_end(text: &str, start: usize) -> Result<Option<usize>> {
                     .context("a template literal is not terminated")?;
                 match byte {
                     b'\\' => {
-                        cursor = cursor
-                            .checked_add(2)
-                            .context("a template escape is truncated")?
+                        let escaped = cursor
+                            .checked_add(1)
+                            .filter(|escaped| *escaped < text.len())
+                            .context("a template escape is truncated")?;
+                        cursor = advance(text, escaped);
                     }
                     b'$' if bytes.get(cursor + 1) == Some(&b'{') => {
                         anyhow::bail!("template expressions are outside the safe-delete subset")
