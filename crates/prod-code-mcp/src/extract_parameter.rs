@@ -735,18 +735,18 @@ async fn hover_type(
 
 /// Where the function named at `file:line:col` is declared, as (file, line, column), 1-based.
 /// clangd answers with the definition itself when there is no separate declaration, and with a
-/// `LocationLink` or a single `Location` as readily as with a list; a failed request means no
-/// declaration is known, which leaves the definition's own edit standing.
+/// `LocationLink` or a single `Location` as readily as with a list. A failed request or an entry
+/// without a position is an error: a declaration left without the parameter no longer matches
+/// its definition (#446).
 async fn declarations(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
     line: u32,
     col: u32,
-) -> Vec<(PathBuf, u32, u32)> {
-    let Ok(uri) = url::Url::from_file_path(file) else {
-        return Vec::new();
-    };
+) -> Result<Vec<(PathBuf, u32, u32)>> {
+    let uri = url::Url::from_file_path(file)
+        .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?;
     let answer = crate::tools::execute_lsp_query(
         remote,
         root,
@@ -757,28 +757,8 @@ async fn declarations(
             "position": { "line": line - 1, "character": col - 1 },
         }),
     )
-    .await
-    .unwrap_or_default();
-    let locations = match answer {
-        serde_json::Value::Array(all) => all,
-        serde_json::Value::Null => Vec::new(),
-        one => vec![one],
-    };
-    locations
-        .iter()
-        .filter_map(|loc| {
-            let uri = loc.get("uri").or_else(|| loc.get("targetUri"))?.as_str()?;
-            let range = loc
-                .get("range")
-                .or_else(|| loc.get("targetSelectionRange"))?;
-            let at = |pointer: &str| range.pointer(pointer)?.as_u64().map(|v| v as u32 + 1);
-            Some((
-                PathBuf::from(crate::remote_fs::uri_to_path(uri)),
-                at("/start/line")?,
-                at("/start/character")?,
-            ))
-        })
-        .collect()
+    .await?;
+    crate::refactor::lsp_locations(&answer, "declarations")
 }
 
 /// The report's note on files that call the function by name but were not reported by the
@@ -998,18 +978,24 @@ pub async fn extract(
     // or the definition no longer matches it, and clangd leaves declarations out of
     // `references`, so it is asked for them.
     let declarations = if syntax.is_c_family() {
-        declarations(remote, root, file, fn_line, fn_col).await
+        declarations(remote, root, file, fn_line, fn_col)
+            .await
+            .with_context(|| {
+                format!("cannot find the declarations of `{callee}`; nothing was planned")
+            })?
     } else {
         Vec::new()
     };
     let mut declared: Vec<(PathBuf, usize)> = Vec::new();
+    let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    texts.insert(file.to_path_buf(), text.clone());
     for (path, dl, dc) in declarations {
-        let body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let Some(at) = crate::signature::offset_of(&body, dl, dc) else {
+            unmatched.push(format!(
+                "{}:{dl}:{dc} (a declaration of `{callee}` whose position is not in the file)",
+                display(root, &path)
+            ));
             continue;
         };
         // An inline definition is its own declaration, and it already has the parameter.
@@ -1037,16 +1023,16 @@ pub async fn extract(
 
     // Every call site passes what the body used to say.
     let mut call_sites = 0usize;
-    for (path, rl, rc) in crate::signature::references(remote, root, file, fn_line, fn_col)
+    let refs = crate::signature::references(remote, root, file, fn_line, fn_col)
         .await
-        .unwrap_or_default()
-    {
-        let body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        .with_context(|| format!("cannot find the calls to `{callee}`; nothing was planned"))?;
+    for (path, rl, rc) in refs {
+        let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let Some(at) = crate::signature::offset_of(&body, rl, rc) else {
+            unmatched.push(format!(
+                "{}:{rl}:{rc} (the position is not in the file)",
+                display(root, &path)
+            ));
             continue;
         };
         // The declaration's own name is not a call, whatever the answer includes, and an import
@@ -1085,11 +1071,7 @@ pub async fn extract(
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     for (path, mut file_edits) in edits {
-        let mut body = if path == *file {
-            text.clone()
-        } else {
-            std::fs::read_to_string(&path).unwrap_or_default()
-        };
+        let mut body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         file_edits.sort_by_key(|(at, _, _)| *at);
         for (at, len, replacement) in file_edits.into_iter().rev() {
             body.replace_range(at..at + len, &replacement);
@@ -1130,6 +1112,14 @@ pub async fn extract(
 
     let mut applied = false;
     if apply {
+        // A call left without the argument may be in a file nothing here checks; `force`
+        // overrides the analyzer, not a call this did not rewrite (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{callee}` were not given the argument; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the change does not compile ({} error(s)); nothing was written. Extract something \

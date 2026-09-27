@@ -32,6 +32,9 @@ pub struct ModuleMove {
     pub removed: Vec<String>,
     /// One line per path or import that was spelled anew.
     pub notes: Vec<String>,
+    /// Paths the analyzer reported where the file does not name the module: not rewritten, they
+    /// would still name it where it was. Nothing is written while any remains, forced or not.
+    pub unmatched: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
 }
@@ -85,6 +88,12 @@ impl ModuleMove {
                 out.push_str(&format!("  {note}\n"));
             }
         }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nnot rewritten; nothing is written while any remains, forced or not:\n");
+            for u in &self.unmatched {
+                out.push_str(&format!("  {u}\n"));
+            }
+        }
         if self.diagnostics.is_empty() {
             out.push_str("\nthe analyzer accepts the result: 0 errors\n");
         } else {
@@ -102,8 +111,16 @@ impl ModuleMove {
     }
 
     /// Writes the move: the new files, the rewritten ones, and the old files removed. Refused
-    /// while the analyzer rejects the result, unless `force`.
+    /// while the analyzer rejects the result, unless `force`, and while a path was not rewritten,
+    /// forced or not (#446).
     pub fn write(&mut self, force: bool) -> Result<()> {
+        anyhow::ensure!(
+            self.unmatched.is_empty(),
+            "{} path(s) to `{}` were not rewritten; nothing was written:\n  {}",
+            self.unmatched.len(),
+            self.module,
+            self.unmatched.join("\n  ")
+        );
         anyhow::ensure!(
             self.diagnostics.is_empty() || force,
             "the move does not compile ({} error(s)); nothing was written:\n  {}",
@@ -403,8 +420,9 @@ pub async fn move_module(
         .map_or(0, |i| i + 1);
     let decl_line_no = parent_text[..line_start].matches('\n').count() as u32 + 1;
     let name_col = decl_line.rfind(&format!("mod {name};")).unwrap_or(0) as u32 + 5;
-    let refs =
-        crate::signature::references(remote, root, &old_parent, decl_line_no, name_col).await?;
+    let refs = crate::signature::references(remote, root, &old_parent, decl_line_no, name_col)
+        .await
+        .with_context(|| format!("cannot find the paths to `{name}`; nothing was planned"))?;
 
     // The files that move: the module's own, and everything in its directory.
     let mut moves: Vec<(PathBuf, PathBuf)> = vec![(file.to_path_buf(), new_file.clone())];
@@ -428,14 +446,20 @@ pub async fn move_module(
     // Each file's text as it is now, then rewritten at the positions the analyzer gave.
     let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
     let mut notes = Vec::new();
+    let mut unmatched = Vec::new();
     let mut by_file: BTreeMap<PathBuf, Vec<(u32, u32)>> = BTreeMap::new();
     for (path, l, c) in refs {
         by_file.entry(canon(&path)).or_default().push((l, c));
     }
     for (path, mut positions) in by_file {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        // Skipped, its paths would still name the old module (#446).
+        let text = std::fs::read_to_string(&path).with_context(|| {
+            format!(
+                "cannot read {}, where the analyzer reports a path to `{name}`; nothing was \
+                 planned",
+                path.display()
+            )
+        })?;
         let Ok((_, module)) = module_of(&path) else {
             notes.push(format!(
                 "{} — outside the ordinary crate layout, not rewritten",
@@ -449,10 +473,18 @@ pub async fn move_module(
         let (mut bare, mut grouped, mut qualified) = (0, 0, 0);
         positions.sort_unstable();
         for (l, c) in positions.into_iter().rev() {
+            // A stale position passed over would leave a path to where the module was (#446).
+            let site = format!("{}:{l}:{c}", display(root, &path));
             let Some(offset) = crate::signature::offset_of(&out, l, c) else {
+                unmatched.push(format!("{site} (the position is not in the file)"));
                 continue;
             };
-            if !out[offset..].starts_with(name.as_str()) {
+            if !out[offset..].starts_with(name.as_str())
+                || out[offset + name.len()..].starts_with(is_ident)
+            {
+                unmatched.push(format!(
+                    "{site} (the analyzer places `{name}` here, but the file says otherwise)"
+                ));
                 continue;
             }
             match spelling(&out, offset) {
@@ -580,6 +612,7 @@ pub async fn move_module(
             .collect(),
         removed,
         notes,
+        unmatched,
         diagnostics,
         applied: false,
     })

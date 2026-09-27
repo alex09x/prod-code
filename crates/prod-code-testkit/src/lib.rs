@@ -228,6 +228,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                 }
                 let response = match result
                     .get(answers::FAILURE)
+                    .or_else(|| result.get(answers::RPC_ERROR))
                     .or_else(|| result.get(LSP_ERROR))
                 {
                     Some(error) => {
@@ -324,6 +325,14 @@ impl Workspace {
 /// The answer shapes the engines really return, so a script does not have to spell them out.
 pub mod answers {
     use super::*;
+
+    /// The key under which `rpc_error` carries its error.
+    pub const RPC_ERROR: &str = "prod-code/rpc-error";
+
+    /// A scripted JSON-RPC error with the language server's code and message.
+    pub fn rpc_error(code: i64, message: &str) -> serde_json::Value {
+        serde_json::json!({ RPC_ERROR: { "code": code, "message": message } })
+    }
 
     /// The key of an answer that the gateway sends as a JSON-RPC error.
     pub const FAILURE: &str = "prod-code/failure";

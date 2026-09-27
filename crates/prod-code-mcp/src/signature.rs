@@ -102,6 +102,43 @@ pub struct Modifiers {
 }
 
 impl SignatureChange {
+    /// Refuses to write a change that is not complete: a reference the rewrite did not reach
+    /// or a change no reference explains, whatever `force` says, since `force` overrides the
+    /// analyzer's verdict on a complete change and a reorder can compile and still run
+    /// differently; and, unless `force`, a call that would `.await` outside an `async fn`. The
+    /// direct write and the compile gate both stop here before anything is written (#446).
+    pub fn ensure_writable(&self, force: bool) -> Result<()> {
+        if !self.unmatched.is_empty() || !self.unexpected.is_empty() {
+            let listed: Vec<String> = self
+                .unmatched
+                .iter()
+                .map(|u| format!("not rewritten: {u}"))
+                .chain(
+                    self.unexpected
+                        .iter()
+                        .map(|u| format!("changed without being a reference: {u}")),
+                )
+                .collect();
+            anyhow::bail!(
+                "the change to `{}` is not complete: {} reference(s) were not rewritten and {} \
+                 change(s) are not a reference; nothing was written, and `force` does not \
+                 override this:\n  {}",
+                self.symbol,
+                self.unmatched.len(),
+                self.unexpected.len(),
+                listed.join("\n  ")
+            );
+        }
+        anyhow::ensure!(
+            self.not_async.is_empty() || force,
+            "{} call(s) would `.await` from a function that is not `async`; nothing was \
+             written. Make those callers `async` first, or pass `force: true`:\n  {}",
+            self.not_async.len(),
+            self.not_async.join("\n  ")
+        );
+        Ok(())
+    }
+
     pub fn render(&self, diff_budget: usize) -> String {
         let mut out = format!(
             "`{}` ({})\n\n- was: ({})\n- now: ({})\n",
@@ -193,6 +230,11 @@ impl SignatureChange {
                 "\n[applied to {} file(s)]\n",
                 self.rewritten.len()
             ));
+        } else if !self.unmatched.is_empty() || !self.unexpected.is_empty() {
+            out.push_str(
+                "\nnothing was written, and `apply` writes nothing while a reference is not \
+                 rewritten or a change is not a reference, `force` or not\n",
+            );
         } else {
             out.push_str("\nnothing was written; pass `apply: true` to make these edits\n");
         }
@@ -603,37 +645,286 @@ fn call_site_rule(
     }
 }
 
-/// The lines a call occupies, from the callee's name at `line`:`col` to the closing
-/// parenthesis of its argument list.
-fn call_span_lines(text: &str, line: u32, col: u32) -> Option<(u32, u32)> {
-    let offset = offset_of(text, line, col)?;
-    let (_, _, close) = param_span(text, offset)?;
-    let (end, _) = line_col_at(text, close);
-    Some((line, end.max(line)))
+const AWAIT: &str = ".await";
+
+/// Whether `name` is at byte `at` of `text` as a whole identifier.
+fn names_at(text: &str, at: usize, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    text.is_char_boundary(at)
+        && text[at..].starts_with(name)
+        && !text[at + name.len()..].starts_with(ident)
+        && !text[..at].ends_with(ident)
 }
 
-/// Groups changed line numbers into hunks, so that a call written over several lines counts as
-/// one place rather than as three surprises.
-fn hunks(mut lines: Vec<u32>) -> Vec<(u32, u32)> {
-    lines.sort_unstable();
-    lines.dedup();
-    let mut out: Vec<(u32, u32)> = Vec::new();
-    for l in lines {
-        match out.last_mut() {
-            Some((_, end)) if l <= *end + 2 => *end = l,
-            _ => out.push((l, l)),
+/// Whether the name at `at` is in a `use` item or a comment: it names the function after the
+/// change as it did before, and there is nothing to rewrite. `code` is `text` through
+/// [`blank_comments`].
+pub(crate) fn in_use_or_comment(text: &str, code: Option<&str>, at: usize) -> bool {
+    if code.is_some_and(|code| code.as_bytes().get(at) == Some(&b' ')) {
+        return true;
+    }
+    // Walk the possible use-tree prefix, including raw identifiers. A keyword is a whole
+    // token: the `use` in `r#use` is an identifier, even in `take(r#use, callback)`.
+    let source = code.unwrap_or(text);
+    let tree = source[..at].trim_end_matches(|c: char| {
+        c.is_alphanumeric()
+            || c.is_whitespace()
+            || matches!(c, '_' | '#' | ':' | '{' | '}' | ',' | '*')
+    });
+    source[tree.len()..at].match_indices("use").any(|(i, _)| {
+        let i = tree.len() + i;
+        names_at(source, i, "use") && !source[..i].ends_with('#')
+    })
+}
+
+/// Where the call whose callee's name is at `at` starts, as far as a rewrite may respell it: the
+/// `.` of a method call with the whitespace before it, or the path in front of the name.
+fn call_start(text: &str, at: usize) -> usize {
+    let before = text[..at].trim_end();
+    if let Some(dot) = before.strip_suffix('.')
+        && !dot.ends_with('.')
+    {
+        return dot.trim_end().len();
+    }
+    let mut start = at;
+    while let Some(qualifier) = text[..start].trim_end().strip_suffix("::") {
+        let qualifier = qualifier.trim_end();
+        let segment = qualifier.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+        if segment.len() == qualifier.len() {
+            break;
+        }
+        start = segment.len();
+    }
+    start
+}
+
+/// Just past the `)` that closes the argument list opening at `open`, and `None` when it does
+/// not close. Brackets inside literals and comments do not count.
+fn argument_list_end(text: &str, open: usize) -> Option<usize> {
+    let s = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < s.len() {
+        if let Some((end, _)) = opaque_at(text, i, open).ok()? {
+            i = end;
+            continue;
+        }
+        match s[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (s[i] == b')').then_some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The byte length of what `a` and `b` start with alike, at a character boundary of both.
+fn common_prefix(a: &str, b: &str) -> usize {
+    a.char_indices()
+        .zip(b.chars())
+        .find(|((_, x), y)| x != y)
+        .map_or_else(|| a.len().min(b.len()), |((i, _), _)| i)
+}
+
+/// Whether a call passing `call` comes back from the reorder `plan` exactly as it was: every
+/// argument moves to a place that held the same one. Such a call needs no rewrite.
+fn reorders_to_itself(call: &[String], plan: &[Option<usize>]) -> bool {
+    call.len() == plan.len()
+        && plan.iter().enumerate().all(|(j, from)| {
+            from.and_then(|i| call.get(i))
+                .is_some_and(|arg| arg.trim() == call[j].trim())
+        })
+}
+
+/// A call of the function, in the text before the rewrite.
+#[derive(Debug)]
+struct OldCall {
+    place: String,
+    /// See [`call_start`].
+    start: usize,
+    /// Where the argument list opens.
+    open: usize,
+    /// Just past its `)`, or past the `.await` on it.
+    end: usize,
+    /// Whether the rewrite has to change it.
+    needs: bool,
+}
+
+/// The call a rewrite made where the call at `from` was: the callee may be respelled (`m::f` as
+/// `f`, `T::f(x, …)` as `x.f(…)`), so its name is the first one at the call's own depth before
+/// the expression around it ends. `(where its argument list opens, just past it or its
+/// `.await`)`.
+fn rewritten_call(text: &str, from: usize, name: &str) -> Option<(usize, usize)> {
+    let s = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < s.len() {
+        if let Some((end, _)) = opaque_at(text, i, from).ok()? {
+            i = end;
+            continue;
+        }
+        match s[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            b';' | b'{' | b'}' => return None,
+            b',' if depth == 0 => return None,
+            _ if depth == 0 && names_at(text, i, name) => {
+                if let Ok(Some(open)) = call_open(text, i) {
+                    let close = argument_list_end(text, open)?;
+                    let end = close
+                        + if text[close..].starts_with(AWAIT) {
+                            AWAIT.len()
+                        } else {
+                            0
+                        };
+                    return Some((open, end));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// What the rewrite of one file (`old` into `new`) did with the references `refs` in it:
+/// `(unmatched, unexpected)`.
+///
+/// Occurrence by occurrence, not line by line: a function used as a value on the line of a call
+/// that was rewritten was taken for rewritten, and its callers would get the old order through
+/// a pointer of the same type (#446). Every reference is a call the rewrite changed (or one that
+/// needs no change: equal arguments reordered, an `.await` already there), an import, or a
+/// comment; anything else is unmatched. Outside the calls, `new` has to be `old` byte for byte;
+/// the first place it is not is unexpected, and no call after it is taken as rewritten.
+/// `needs` says, from a call's arguments and whether it is awaited, whether it must change.
+fn attribute(
+    place: &str,
+    old: &str,
+    new: &str,
+    name: &str,
+    refs: &[(u32, u32)],
+    needs: &dyn Fn(&[String], bool) -> bool,
+) -> (Vec<String>, Vec<String>) {
+    let mut unmatched = Vec::new();
+    let mut calls: Vec<OldCall> = Vec::new();
+    let code = blank_comments(old);
+    for &(l, c) in refs {
+        let at = format!("{place}:{l}:{c}");
+        let Some(o) = offset_of(old, l, c) else {
+            unmatched.push(format!("{at} (no such position in the file)"));
+            continue;
+        };
+        if !names_at(old, o, name) {
+            unmatched.push(format!(
+                "{at} (the analyzer places `{name}` here, but the file says otherwise)"
+            ));
+            continue;
+        }
+        if in_use_or_comment(old, code.as_deref(), o) {
+            continue;
+        }
+        let open = match call_open(old, o) {
+            Ok(Some(open)) => open,
+            Ok(None) => {
+                unmatched.push(format!(
+                    "{at} (not a call: the function used as a value, which the rewrite of its \
+                     calls does not reach)"
+                ));
+                continue;
+            }
+            Err(_) => {
+                unmatched.push(format!("{at} (a call whose generics do not close)"));
+                continue;
+            }
+        };
+        let Some(close) = argument_list_end(old, open) else {
+            unmatched.push(format!("{at} (a call whose argument list does not close)"));
+            continue;
+        };
+        let awaited = old[close..].starts_with(AWAIT);
+        let args = split_arguments(old, open).unwrap_or_default();
+        calls.push(OldCall {
+            place: at,
+            start: call_start(old, o),
+            open,
+            end: close + if awaited { AWAIT.len() } else { 0 },
+            needs: needs(&args, awaited),
+        });
+    }
+    calls.sort_by_key(|c| c.start);
+    // A call in another's arguments goes with it: the outer one's text holds both.
+    let mut outer: Vec<(usize, Vec<usize>)> = Vec::new();
+    for i in 0..calls.len() {
+        match outer.last_mut() {
+            Some((p, nested)) if calls[i].start < calls[*p].end => nested.push(i),
+            _ => outer.push((i, Vec::new())),
         }
     }
-    out
-}
 
-/// The lines of `old` that `new` does not keep.
-fn changed_lines(old: &str, new: &str) -> Vec<u32> {
-    let diff = similar::TextDiff::from_lines(old, new);
-    diff.iter_all_changes()
-        .filter(|c| c.tag() == similar::ChangeTag::Delete)
-        .filter_map(|c| c.old_index().map(|i| i as u32 + 1))
-        .collect()
+    let (mut po, mut pn) = (0usize, 0usize);
+    let mut stop = None;
+    let mut verified = outer.len();
+    for (k, (i, nested)) in outer.iter().enumerate() {
+        let call = &calls[*i];
+        let gap = &old[po..call.start];
+        if !new[pn..].starts_with(gap) {
+            stop = Some(po + common_prefix(gap, &new[pn..]));
+            verified = k;
+            break;
+        }
+        pn += gap.len();
+        let Some((open, end)) = rewritten_call(new, pn, name) else {
+            stop = Some(call.start);
+            verified = k;
+            break;
+        };
+        if call.needs && old[call.open..call.end] == new[open..end] {
+            unmatched.push(format!(
+                "{} (a call the rewrite left as it was)",
+                call.place
+            ));
+        }
+        let now = &new[pn..end];
+        for j in nested {
+            let inner = &calls[*j];
+            if inner.needs && now.contains(&old[inner.start..inner.end]) {
+                unmatched.push(format!(
+                    "{} (a call inside another call, left as it was)",
+                    inner.place
+                ));
+            }
+        }
+        (po, pn) = (call.end, end);
+    }
+    if stop.is_none() && old[po..] != new[pn..] {
+        stop = Some(po + common_prefix(&old[po..], &new[pn..]));
+    }
+    let mut unexpected = Vec::new();
+    if let Some(at) = stop {
+        unexpected.push(format!("{place}:{}", line_col_at(old, at).0));
+        for (i, nested) in &outer[verified..] {
+            for j in std::iter::once(i).chain(nested) {
+                if calls[*j].needs {
+                    unmatched.push(format!(
+                        "{} (after a change that is not a reference; not verified)",
+                        calls[*j].place
+                    ));
+                }
+            }
+        }
+    }
+    (unmatched, unexpected)
 }
 
 /// Changes the parameter list of the function at `file:line:col`.
@@ -933,6 +1224,39 @@ pub async fn change_with(
         }
     }
 
+    // Reconcile what the analyzer knows is a reference against what the rewrite of the calls
+    // did, before the declaration's own edit joins it. Only a change that rewrites calls has
+    // anything to reconcile: a new return type or visibility leaves every reference as it is,
+    // and its callers are type-checked below instead.
+    let mut unmatched = Vec::new();
+    let mut unexpected = Vec::new();
+    if order_changed || async_wanted.is_some() {
+        let mut by_file: BTreeMap<PathBuf, Vec<(u32, u32)>> = BTreeMap::new();
+        for (path, l, c) in &refs {
+            by_file.entry(path.clone()).or_default().push((*l, *c));
+        }
+        for path in rewritten.keys() {
+            by_file.entry(path.clone()).or_default();
+        }
+        let needs = |call: &[String], awaited: bool| match async_wanted {
+            Some(want) => awaited != want,
+            None => !reorders_to_itself(call, &args),
+        };
+        for (path, spots) in &mut by_file {
+            spots.sort_unstable();
+            spots.dedup();
+            let old = if path == file {
+                text.clone()
+            } else {
+                read_caller(path)?
+            };
+            let new = rewritten.get(path).unwrap_or(&old);
+            let (u, x) = attribute(&display(root, path), &old, new, &name, spots, &needs);
+            unmatched.extend(u);
+            unexpected.extend(x);
+        }
+    }
+
     // Then the declaration, on top of whatever the rewrite did to its file (a recursive
     // function calls itself, and the call site is inside the body being edited).
     let base = rewritten.get(file).cloned().unwrap_or_else(|| text.clone());
@@ -989,61 +1313,6 @@ pub async fn change_with(
     }
     rewritten.insert(file.to_path_buf(), decl_text);
 
-    // Reconcile: what the analyzer knows is a reference against what the rewrite touched.
-    // Line proximity is not good enough — a reference on the line above a rewritten one looks
-    // rewritten and is not — so each reference is matched against the lines of its own call,
-    // from the callee's name to the closing parenthesis.
-    let mut unmatched = Vec::new();
-    let mut unexpected = Vec::new();
-    let mut originals: BTreeMap<PathBuf, String> = BTreeMap::new();
-    let mut touched: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
-    for (path, new_text) in &rewritten {
-        let old = read_caller(path)?;
-        touched.insert(path.clone(), changed_lines(&old, new_text));
-        originals.insert(path.clone(), old);
-    }
-    // Lines a reference explains, so that what is left over can be reported as a surprise.
-    let mut explained: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
-    for (path, rl, rc) in &refs {
-        let span = originals
-            .get(path)
-            .and_then(|text| call_span_lines(text, *rl, *rc))
-            .unwrap_or((*rl, *rl));
-        let hit = touched
-            .get(path)
-            .is_some_and(|lines| lines.iter().any(|l| *l >= span.0 && *l <= span.1));
-        if hit {
-            explained
-                .entry(path.clone())
-                .or_default()
-                .extend(span.0..=span.1);
-        } else {
-            unmatched.push(format!("{}:{rl}:{rc}", display(root, path)));
-        }
-    }
-    // The declaration's own signature explains the lines the new parameter list replaces.
-    let (decl_start, _) = line_col_at(&text, open);
-    let (decl_end, _) = line_col_at(&text, close);
-    explained
-        .entry(file.to_path_buf())
-        .or_default()
-        .extend(decl_start..=decl_end);
-    for (path, lines) in &touched {
-        let known = explained.get(path).cloned().unwrap_or_default();
-        let left: Vec<u32> = lines
-            .iter()
-            .copied()
-            .filter(|l| !known.contains(l))
-            .collect();
-        for (start, end) in hunks(left) {
-            unexpected.push(if start == end {
-                format!("{}:{start}", display(root, path))
-            } else {
-                format!("{}:{start}-{end}", display(root, path))
-            });
-        }
-    }
-
     // The whole change judged together: the declaration and the call sites in one overlay.
     let edits: Vec<(PathBuf, String)> = rewritten
         .iter()
@@ -1079,28 +1348,8 @@ pub async fn change_with(
         })
         .collect();
 
-    let mut applied = false;
-    if apply {
-        anyhow::ensure!(
-            diagnostics.is_empty() || force,
-            "the change does not compile ({} error(s)); nothing was written. Fix the request, \
-             or pass `force: true` to write it anyway:\n  {}",
-            diagnostics.len(),
-            diagnostics.join("\n  ")
-        );
-        anyhow::ensure!(
-            not_async.is_empty() || force,
-            "{} call(s) would `.await` from a function that is not `async`; nothing was \
-             written. Make those callers `async` first, or pass `force: true`:\n  {}",
-            not_async.len(),
-            not_async.join("\n  ")
-        );
-        let edit = whole_file_edit(&rewritten);
-        crate::refactor::apply_workspace_edit(root, &edit)?;
-        applied = true;
-    }
-
-    Ok(SignatureChange {
+    let edit = apply.then(|| whole_file_edit(&rewritten));
+    let mut change = SignatureChange {
         symbol: name,
         root: root.to_path_buf(),
         file: display(root, file),
@@ -1114,12 +1363,25 @@ pub async fn change_with(
         unmatched,
         unexpected,
         diagnostics,
-        applied,
+        applied: false,
         returns: returns_change,
         visibility: visibility_change,
         asyncness: asyncness_change,
         not_async,
-    })
+    };
+    if let Some(edit) = edit {
+        change.ensure_writable(force)?;
+        anyhow::ensure!(
+            change.diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. Fix the request, \
+             or pass `force: true` to write it anyway:\n  {}",
+            change.diagnostics.len(),
+            change.diagnostics.join("\n  ")
+        );
+        crate::refactor::apply_workspace_edit(root, &edit)?;
+        change.applied = true;
+    }
+    Ok(change)
 }
 
 /// The parameter list of `fn name(old_inner)` in `text`, found by the declaration's own text
@@ -1369,6 +1631,18 @@ fn call_sites(root: &Path, refs: &[Reference]) -> Result<Vec<CallSite>> {
 /// `Type::f::<T>(…)`), split at their top-level commas. `Ok(None)` when the name is not called
 /// there; an error when the argument list does not close.
 fn call_arguments(text: &str, at: usize) -> Result<Option<Vec<String>>> {
+    let Some(open) = call_open(text, at)? else {
+        return Ok(None);
+    };
+    split_arguments(text, open)
+        .map(Some)
+        .context("the argument list does not close")
+}
+
+/// Where the argument list of the call whose callee's name starts at `at` opens, past a
+/// turbofish. `Ok(None)` when the name is not called there; an error when the turbofish does
+/// not close.
+fn call_open(text: &str, at: usize) -> Result<Option<usize>> {
     let bytes = text.as_bytes();
     let skip_ws = |i: usize| i + (text[i..].len() - text[i..].trim_start().len());
     let mut i = at;
@@ -1400,12 +1674,7 @@ fn call_arguments(text: &str, at: usize) -> Result<Option<Vec<String>>> {
         }
         i = skip_ws(close.context("the turbofish does not close")?);
     }
-    if !text[i..].starts_with('(') {
-        return Ok(None);
-    }
-    split_arguments(text, i)
-        .map(Some)
-        .context("the argument list does not close")
+    Ok(text[i..].starts_with('(').then_some(i))
 }
 
 /// What starts at byte `i` of `text` and hides commas, brackets and comment markers inside it: a
@@ -1481,7 +1750,7 @@ fn opaque_at(text: &str, i: usize, from: usize) -> Result<Option<(usize, bool)>,
 
 /// `expr` with each comment replaced by as many spaces as it has bytes, so that what is left is
 /// code and offsets stay where they were; `None` when a literal or a comment does not close.
-fn blank_comments(expr: &str) -> Option<String> {
+pub(crate) fn blank_comments(expr: &str) -> Option<String> {
     let mut out = expr.as_bytes().to_vec();
     let mut i = 0;
     while i < expr.len() {
@@ -2919,28 +3188,116 @@ mod tests {
         assert_eq!(out, "\n    b: u32,\n    a: u32,\n");
     }
 
-    #[test]
-    fn a_call_spans_from_its_name_to_its_closing_parenthesis() {
-        let text = "fn main() {\n    join(\n        \"a\",\n        \"b\",\n    );\n}\n";
-        assert_eq!(call_span_lines(text, 2, 5), Some((2, 5)));
+    /// A swap of two arguments, as the reconciliation asks of every call.
+    fn swap(call: &[String], _awaited: bool) -> bool {
+        !reorders_to_itself(call, &[Some(1), Some(0)])
+    }
+
+    /// The (line, column) of the `n`th `join` in `text`.
+    fn join_at(text: &str, n: usize) -> (u32, u32) {
+        line_col_at(text, text.match_indices("join").nth(n).expect("there").0)
     }
 
     #[test]
-    fn a_reference_is_matched_against_its_own_call_not_its_neighbours() {
-        // The line above a rewritten one is not rewritten, however close it is: this is the
-        // case a proximity check called done, hiding a reference the rule never matched.
-        let old = "let f = join;\nlet s = join(a, b);\n";
-        let new = "let f = join;\nlet s = join(b, a);\n";
-        let changed = changed_lines(old, new);
-        assert_eq!(changed, [2]);
-        // The function used as a value has no argument list at all, so there is no call span
-        // and the reference stands for its own line — which nothing rewrote.
-        assert_eq!(call_span_lines(old, 1, 9), None);
-        let span = call_span_lines(old, 1, 9).unwrap_or((1, 1));
+    fn a_reference_is_matched_by_its_own_occurrence_not_its_line() {
+        // The value use shares its line with a call that was rewritten; a line-based check
+        // took it for rewritten (#446).
+        let old = "fn m() {\n    let (f, s) = (join, join(a, b));\n}\n";
+        let new = "fn m() {\n    let (f, s) = (join, join(b, a));\n}\n";
+        let refs = [join_at(old, 0), join_at(old, 1)];
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs, &swap);
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
         assert!(
-            !changed.iter().any(|l| *l >= span.0 && *l <= span.1),
-            "the value use was not rewritten"
+            unmatched[0].starts_with("m.rs:2:19 (not a call"),
+            "{unmatched:?}"
         );
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+
+        // On lines of their own, the same.
+        let old = "let f = join;\nlet s = join(\n    a,\n    b,\n);\n";
+        let new = "let f = join;\nlet s = join(b, a);\n";
+        let refs = [join_at(old, 0), join_at(old, 1)];
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs, &swap);
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].starts_with("m.rs:1:9 "), "{unmatched:?}");
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+    }
+
+    #[test]
+    fn a_change_no_reference_explains_is_unexpected() {
+        // `other(1, 2)` on the line of a listed call was rewritten too.
+        let old = "let s = join(a, b) + other(1, 2);\nlet t = join(c, d);\n";
+        let new = "let s = join(b, a) + other(2, 1);\nlet t = join(d, c);\n";
+        let refs = [join_at(old, 0), join_at(old, 1)];
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs, &swap);
+        assert_eq!(unexpected, ["m.rs:1"]);
+        // What comes after it is not taken as rewritten.
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].starts_with("m.rs:2:9 (after a change"));
+
+        // A call the analyzer did not list is a change no reference explains.
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs[..1], &swap);
+        assert!(unmatched.is_empty(), "{unmatched:?}");
+        assert_eq!(unexpected, ["m.rs:1"]);
+    }
+
+    #[test]
+    fn calls_left_as_they_were_stale_positions_imports_and_comments_are_told_apart() {
+        let old =
+            "use crate::join;\n// see join\nlet s = join(a, b);\nlet t = join(c, c);\nlet u = x;\n";
+        let new =
+            "use crate::join;\n// see join\nlet s = join(a, b);\nlet t = join(c, c);\nlet u = x;\n";
+        let refs = [
+            join_at(old, 0),
+            join_at(old, 1),
+            join_at(old, 2),
+            join_at(old, 3),
+            (5, 9),
+            (9, 1),
+        ];
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs, &swap);
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+        // The import and the comment name it and still do; `join(c, c)` reorders to itself.
+        assert_eq!(
+            unmatched,
+            [
+                "m.rs:5:9 (the analyzer places `join` here, but the file says otherwise)",
+                "m.rs:9:1 (no such position in the file)",
+                "m.rs:3:9 (a call the rewrite left as it was)",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_respelled_callee_a_method_chain_and_a_nested_call_are_attributed() {
+        // A rewrite may respell the path to the function and drop the whitespace before a
+        // method's `.`; a call in another's arguments is rewritten inside it.
+        let old = "let s = m::join(a, b);\nlet t = v\n    .join(c, d)\n    .join(e, f);\nlet u = join(join(1, 2), 3);\n";
+        let new =
+            "let s = join(b, a);\nlet t = v.join(d, c).join(f, e);\nlet u = join(3, join(2, 1));\n";
+        let refs: Vec<(u32, u32)> = (0..5).map(|n| join_at(old, n)).collect();
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "join", &refs, &swap);
+        assert!(unmatched.is_empty(), "{unmatched:?}");
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+
+        // The inner call left in the old order is named.
+        let lazy =
+            "let s = join(b, a);\nlet t = v.join(d, c).join(f, e);\nlet u = join(3, join(1, 2));\n";
+        let (unmatched, _) = attribute("m.rs", old, lazy, "join", &refs, &swap);
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].starts_with("m.rs:5:14 (a call inside another"));
+    }
+
+    #[test]
+    fn an_await_is_part_of_the_call_it_follows() {
+        let old = "async fn m() {\n    let f = load;\n    load(1);\n}\n";
+        let new = "async fn m() {\n    let f = load;\n    load(1).await;\n}\n";
+        let at = |n: usize| line_col_at(old, old.match_indices("load").nth(n).unwrap().0);
+        let awaits = |_: &[String], awaited: bool| !awaited;
+        let (unmatched, unexpected) = attribute("m.rs", old, new, "load", &[at(0), at(1)], &awaits);
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].starts_with("m.rs:2:13 (not a call"));
     }
 
     #[test]
@@ -2985,11 +3342,6 @@ mod tests {
     }
 
     #[test]
-    fn consecutive_changed_lines_are_one_hunk() {
-        assert_eq!(hunks(vec![10, 11, 12, 40]), [(10, 12), (40, 40)]);
-    }
-
-    #[test]
     fn a_declaration_is_found_by_its_text_once_and_only_once() {
         let text =
             "fn caller() { join(1, 2); }\n\nfn join(a: u8, b: u8) {}\nfn joined(a: u8, b: u8) {}\n";
@@ -3003,5 +3355,52 @@ mod tests {
         assert_eq!(locate_declaration(text, "join", "a: u16, b: u8"), None);
         let twice = "fn join(a: u8) {}\nmod m { fn join(a: u8) {} }\n";
         assert_eq!(locate_declaration(twice, "join", "a: u8"), None);
+    }
+}
+
+#[cfg(test)]
+mod raw_identifier_import_tests {
+    use super::*;
+    #[test]
+    fn raw_use_is_a_value_and_raw_module_imports_are_imports() {
+        for (text, import) in [
+            ("fn caller() { take(r#use, callee); }", false),
+            ("fn caller() { let x = Holder { r#use: callee }; }", false),
+            ("use r#type::{first, callee};", true),
+            ("use /* note */ crate::{first, callee};", true),
+            ("use other::first; fn caller() { take(callee); }", false),
+        ] {
+            let at = text.find("callee").unwrap();
+            let code = blank_comments(text);
+            assert_eq!(
+                in_use_or_comment(text, code.as_deref(), at),
+                import,
+                "{text}"
+            );
+        }
+    }
+    #[test]
+    fn raw_use_does_not_hide_an_unmatched_function_value() {
+        let old = "fn caller() { take(r#use, callee); callee(1, 2); }";
+        let new = old.replace("callee(1, 2)", "callee(2, 1)");
+        let refs = old
+            .match_indices("callee")
+            .map(|(i, _)| (1, i as u32 + 1))
+            .collect::<Vec<_>>();
+        let (unmatched, unexpected) =
+            attribute("src/lib.rs", old, &new, "callee", &refs, &|_, _| true);
+        assert_eq!(unmatched.len(), 1, "{unmatched:?}");
+        assert!(unmatched[0].contains("not a call"), "{unmatched:?}");
+        assert!(unexpected.is_empty(), "{unexpected:?}");
+    }
+}
+
+#[cfg(test)]
+mod argument_spelling_tests {
+    use super::*;
+    #[test]
+    fn spaces_inside_string_literals_are_values() {
+        let args = vec![r#""a  b""#.to_string(), r#""a b""#.to_string()];
+        assert!(!reorders_to_itself(&args, &[Some(1), Some(0)]));
     }
 }

@@ -514,17 +514,15 @@ pub async fn encapsulate(
     let (mut reads, mut writes, mut chained_reads, mut left_in_file) = (0, 0, 0, 0);
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
-    for (path, rl, rc) in crate::signature::references(remote, root, file, name_line, name_col)
+    let refs = crate::signature::references(remote, root, file, name_line, name_col)
         .await
-        .unwrap_or_default()
-    {
+        .with_context(|| format!("cannot find the uses of `{field}`; nothing was planned"))?;
+    for (path, rl, rc) in refs {
         if path == *file {
             left_in_file += 1;
             continue;
         }
-        let body = texts
-            .entry(path.clone())
-            .or_insert_with(|| std::fs::read_to_string(&path).unwrap_or_default());
+        let body = crate::refactor::referenced_text(&mut texts, &path)?;
         let at_site = format!("{}:{rl}:{rc}", display(root, &path));
         let Some(at) = crate::signature::offset_of(body, rl, rc) else {
             unmatched.push(format!("{at_site} (the position is not in the file)"));
@@ -666,6 +664,14 @@ pub async fn encapsulate(
             blocked.len(),
             display(root, file),
             blocked.join("\n  ")
+        );
+        // A use left as it was reaches a private field in a file nothing here checks; `force`
+        // overrides the analyzer, not a use this did not rewrite (#446).
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{field}` were not rewritten; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
         );
         anyhow::ensure!(
             diagnostics.is_empty() || force,

@@ -9,8 +9,8 @@
 //! exactly that syntax error (`',' expected.`), which is what the check before writing catches.
 //! And it hovers a JavaScript parameter as `any`, which is why no hover is asked for.
 //!
-//! The last test runs the same fixture against a real gateway when `PROD_CODE_LIVE_GATEWAY`
-//! names one, and says it was skipped when it does not.
+//! The last test runs the same fixture against a real gateway that `PROD_CODE_LIVE_GATEWAY`
+//! names; it is ignored unless run explicitly with it.
 
 use prod_code_mcp::protocol::McpContentItem;
 use prod_code_testkit::{Answer, ScriptedGateway, Workspace, answers};
@@ -174,6 +174,9 @@ struct Fixture {
     remote: SocketAddr,
     /// Whether the server reports an error in the rewritten `home.js`.
     broken: Arc<AtomicBool>,
+    /// Whether the server lists the alias used as a value, `asValue = make`, among the
+    /// references to `build`; a test that removes it from `other.js` clears this.
+    values: Arc<AtomicBool>,
 }
 
 async fn fixture() -> Fixture {
@@ -184,19 +187,27 @@ async fn fixture() -> Fixture {
         ws.path("src/view.jsx"),
     );
     let broken = Arc::new(AtomicBool::new(false));
-    let (h, o, v, b) = (home.clone(), other, view, broken.clone());
+    let values = Arc::new(AtomicBool::new(true));
+    let (h, o, v, b, a) = (home.clone(), other, view, broken.clone(), values.clone());
     let remote = scripted_gateway(Arc::new(move |method, params| {
         let (uri, line, ch) = position(params);
         match method {
             "textDocument/references" if uri.ends_with("home.js") => match (line, ch) {
                 // `build`: the renamed import, two calls here, the aliased call and the alias
                 // as a value in other.js, and the call in the JSX. Not the plain import.
-                (4, 16) => spread(&[
+                (4, 16) if a.load(Ordering::SeqCst) => spread(&[
                     (&o, 1, 10),
                     (&h, 21, 10),
                     (&h, 21, 27),
                     (&o, 5, 10),
                     (&o, 8, 24),
+                    (&v, 4, 28),
+                ]),
+                (4, 16) => spread(&[
+                    (&o, 1, 10),
+                    (&h, 21, 10),
+                    (&h, 21, 27),
+                    (&o, 5, 10),
                     (&v, 4, 28),
                 ]),
                 (4, 28) => answers::locations(&h, &[(6, 16), (7, 33)]),
@@ -221,6 +232,7 @@ async fn fixture() -> Fixture {
         home,
         remote,
         broken,
+        values,
     }
 }
 
@@ -322,13 +334,48 @@ async fn a_javascript_method_keeps_its_receiver_and_gets_no_declaration() {
     );
 }
 
-/// Nothing is written until the server has seen every rewritten file together: an error in one
-/// of them refuses the whole change and leaves the checkout as it was, and a clean one is
-/// written to every file at once.
+/// Nothing is written until the server has seen every rewritten file together, and nothing
+/// while a reference is left behind: an error in one of the files refuses the whole change, and
+/// so does the alias used as a value (#446), forced or not — called through it, `build` would
+/// get positional arguments where it now takes an object, which JavaScript does not check. Each
+/// leaves the checkout as it was; a clean and complete change is written to every file at once.
 #[tokio::test]
 async fn a_javascript_change_is_written_only_when_the_server_accepts_all_of_it() {
     let f = fixture().await;
     let root = f.ws.root();
+    let untouched = |why: &str| {
+        for (rel, text) in FILES {
+            assert_eq!(f.ws.read(rel), text, "{rel} was left alone: {why}");
+        }
+    };
+    for force in [false, true] {
+        let err = prod_code_mcp::parameter_object::introduce(
+            f.remote,
+            &root,
+            &f.home,
+            5,
+            17,
+            &["width".to_string(), "height".to_string()],
+            "Size",
+            "size",
+            true,
+            force,
+        )
+        .await
+        .expect_err("apply refuses a change that leaves the alias used as a value");
+        let err = format!("{err:#}");
+        assert!(
+            err.contains("nothing was written") && err.contains("src/other.js:8:24"),
+            "{err}"
+        );
+        untouched(&format!("the alias used as a value, force {force}"));
+    }
+
+    // Without the alias, in the checkout and in the server's answer.
+    let other = OTHER.replace("\nexport const asValue = make;\n", "");
+    assert_ne!(other, OTHER);
+    f.ws.write("src/other.js", &other);
+    f.values.store(false, Ordering::SeqCst);
     f.broken.store(true, Ordering::SeqCst);
     let err = introduce(
         f.remote,
@@ -346,6 +393,11 @@ async fn a_javascript_change_is_written_only_when_the_server_accepts_all_of_it()
     assert!(err.contains("nothing was written"), "{err}");
     assert!(err.contains("',' expected."), "{err}");
     for (rel, text) in FILES {
+        let text = if rel == "src/other.js" {
+            other.as_str()
+        } else {
+            text
+        };
         assert_eq!(f.ws.read(rel), text, "{rel} was left alone");
     }
 
@@ -945,18 +997,17 @@ async fn plain_javascript_names_that_are_getters_are_not_reordered() {
     );
 }
 
-/// The same fixture against a real gateway and its TypeScript server, applied to disk. It runs
-/// when `PROD_CODE_LIVE_GATEWAY` holds the gateway's address — a build node, with the server
-/// built from this checkout — and is skipped, saying so, everywhere else.
+/// The same fixture against a real gateway and its TypeScript server: the alias used as a value
+/// stops the write (#446), and without it the change is applied to disk. It runs when
+/// `PROD_CODE_LIVE_GATEWAY` holds the gateway's address — a build node, with the server built
+/// from this checkout; invoke this ignored integration test explicitly with that prerequisite.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to a running gateway"]
 async fn a_real_typescript_server_bundles_the_javascript_fixture() {
-    let Some(addr) = std::env::var("PROD_CODE_LIVE_GATEWAY")
-        .ok()
-        .and_then(|a| a.parse::<SocketAddr>().ok())
-    else {
-        eprintln!("skipping: PROD_CODE_LIVE_GATEWAY names no gateway to run against");
-        return;
-    };
+    let addr = std::env::var("PROD_CODE_LIVE_GATEWAY")
+        .expect("set PROD_CODE_LIVE_GATEWAY to run this integration test")
+        .parse::<SocketAddr>()
+        .expect("PROD_CODE_LIVE_GATEWAY must be a socket address");
     // Not a dot-directory: some tools pass over hidden ones.
     let dir = tempfile::Builder::new()
         .prefix("po-js-live-")
@@ -1024,6 +1075,48 @@ async fn a_real_typescript_server_bundles_the_javascript_fixture() {
     );
     assert!(preview.contains("src/other.js:8:24"), "{preview}");
     assert!(preview.contains("0 errors"), "{preview}");
+    let read = |rel: &str| std::fs::read_to_string(root.join(rel)).expect("read");
+
+    // The alias used as a value would call `build` with the old arguments.
+    let refused = match prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_introduce_parameter_object",
+        args(true),
+    )
+    .await
+    {
+        Ok(result) => {
+            assert!(result.is_error, "written past it: {}", text_of(&result));
+            text_of(&result)
+        }
+        Err(err) => format!("{err:#}"),
+    };
+    eprintln!("{refused}");
+    assert!(refused.contains("src/other.js:8:24"), "{refused}");
+    for (rel, text) in FILES {
+        assert_eq!(read(rel), text, "{rel} was written");
+    }
+
+    // Without it, the answer settles on the calls alone and the change is written.
+    let other = OTHER.replace("\nexport const asValue = make;\n", "");
+    std::fs::write(root.join("src/other.js"), &other).expect("write");
+    for _ in 0..20 {
+        let result = prod_code_mcp::tools::execute_tool(
+            addr,
+            &root,
+            "code_introduce_parameter_object",
+            args(false),
+        )
+        .await
+        .expect("the preview runs");
+        preview = text_of(&result);
+        if preview.contains("4 call site(s)") && !preview.contains("src/other.js:8:24") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(!preview.contains("not rewritten"), "{preview}");
 
     let applied = text_of(
         &prod_code_mcp::tools::execute_tool(
@@ -1036,11 +1129,10 @@ async fn a_real_typescript_server_bundles_the_javascript_fixture() {
         .expect("the change applies"),
     );
     assert!(applied.contains("[applied to 3 file(s)]"), "{applied}");
-    let read = |rel: &str| std::fs::read_to_string(root.join(rel)).expect("read");
     assert_eq!(read("src/home.js"), HOME_BUNDLED);
     assert_eq!(
         read("src/other.js"),
-        OTHER.replace("make(\"a\", 3, 4)", "make(\"a\", { width: 3, height: 4 })")
+        other.replace("make(\"a\", 3, 4)", "make(\"a\", { width: 3, height: 4 })")
     );
     assert_eq!(
         read("src/view.jsx"),

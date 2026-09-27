@@ -30,6 +30,10 @@ pub struct Move {
     pub imports: Vec<String>,
     /// References the rewrite did not understand, named rather than guessed at.
     pub left_alone: Vec<String>,
+    /// Positions the analyzer reported where the file does not name the item: not rewritten,
+    /// they would still reach it where it was. Nothing is written while any remains, forced or
+    /// not (#446).
+    pub unmatched: Vec<String>,
     pub diagnostics: Vec<String>,
     pub applied: bool,
     /// The target module did not exist: the file created, and the parent that declares it now.
@@ -153,6 +157,12 @@ impl Move {
             out.push_str("\nleft alone, check these by hand:\n");
             for note in &self.left_alone {
                 out.push_str(&format!("  {note}\n"));
+            }
+        }
+        if !self.unmatched.is_empty() {
+            out.push_str("\nnot rewritten; nothing is written while any remains, forced or not:\n");
+            for u in &self.unmatched {
+                out.push_str(&format!("  {u}\n"));
             }
         }
         if self.diagnostics.is_empty() {
@@ -729,7 +739,9 @@ pub async fn move_item(
     };
 
     // Ask before the text moves: afterwards the declaration is not where the analyzer left it.
-    let refs = crate::signature::references(remote, root, file, line, col).await?;
+    let refs = crate::signature::references(remote, root, file, line, col)
+        .await
+        .with_context(|| format!("cannot find the uses of `{name}`; nothing was planned"))?;
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), source_new);
@@ -757,6 +769,7 @@ pub async fn move_item(
         .map(|note| format!("{}: {note}", display(root, target)))
         .collect();
     let mut left_alone = Vec::new();
+    let mut unmatched = Vec::new();
     for (path, positions) in &by_file {
         if path == target {
             continue; // home already
@@ -769,10 +782,36 @@ pub async fn move_item(
             continue;
         };
         let prefix = to_module.spelled_from(&module.krate);
-        let current = rewritten
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| std::fs::read_to_string(path).unwrap_or_default());
+        // Taken as empty, the file would be written back as only its new imports (#446).
+        let current = match rewritten.get(path) {
+            Some(text) => text.clone(),
+            None => std::fs::read_to_string(path).with_context(|| {
+                format!(
+                    "cannot read {}, where the analyzer reports a use of `{name}`; nothing was \
+                     planned",
+                    path.display()
+                )
+            })?,
+        };
+        // `requalify` passes over a position that does not name the item; such a use would
+        // still reach it where it was (#446). Its edits end at each position, so the text it
+        // sees there is this one.
+        for (l, c) in positions {
+            let site = format!("{}:{l}:{c}", display(root, path));
+            match offset_of(&current, *l, *c) {
+                None => unmatched.push(format!("{site} (the position is not in the file)")),
+                Some(at)
+                    if !current[at..].starts_with(name.as_str())
+                        || current[at + name.len()..]
+                            .starts_with(|c: char| c.is_alphanumeric() || c == '_') =>
+                {
+                    unmatched.push(format!(
+                        "{site} (the analyzer places `{name}` here, but the file says otherwise)"
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
         let (requalified, bare) = requalify(&current, positions, &name, &prefix);
         let (mut text, dropped) = drop_import(&requalified, &name);
         for note in dropped {
@@ -835,6 +874,12 @@ pub async fn move_item(
     let mut applied = false;
     if apply {
         anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{name}` were not rewritten; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
             diagnostics.is_empty() || force,
             "the move does not compile ({} error(s)); nothing was written. Fix the request, or \
              pass `force: true` to write it anyway:\n  {}",
@@ -861,6 +906,7 @@ pub async fn move_item(
             .collect(),
         imports,
         left_alone,
+        unmatched,
         diagnostics,
         applied,
         created,
