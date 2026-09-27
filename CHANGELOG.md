@@ -46,6 +46,8 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- MCP queries reject JSON-RPC responses that omit `result` instead of treating missing evidence
+  as an empty answer (#525). Explicit `null` remains valid, and failures name the queried method.
 - Divergent-worktree benchmarks cap each initial workspace sync and complete session setup at
   300 seconds (#519). Silent peers produce contextual errors and their connections close; the
   separate 30-second hover budget and query error accounting are unchanged.
