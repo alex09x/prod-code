@@ -47,6 +47,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust trait extraction resolves method-body cursors to the innermost enclosing impl item
+  (#514), skipping opaque `impl Trait` type syntax, raw identifiers and closed nested impls.
+  Local impls inside parenthesized and array block expressions remain supported; macro and
+  existing-trait implementations and positions outside every impl still refuse before writes.
 - Qualified symbol lookup requires the requested owner path before using path hints (#489).
   Missing members cannot select another type or module, including methods reported as functions.
   Outline fallback preserves unindexed members; crate aliases come from parsed Cargo metadata.
