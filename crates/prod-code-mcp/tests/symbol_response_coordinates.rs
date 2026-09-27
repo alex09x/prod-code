@@ -33,6 +33,36 @@ fn methods() -> (Arc<Mutex<Vec<String>>>, Arc<Mutex<Vec<String>>>) {
     (Arc::clone(&methods), methods)
 }
 
+fn tree(root: &std::path::Path) -> std::collections::BTreeMap<String, Option<Vec<u8>>> {
+    fn visit(
+        root: &std::path::Path,
+        path: &std::path::Path,
+        files: &mut std::collections::BTreeMap<String, Option<Vec<u8>>>,
+    ) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name() == ".git" {
+                continue;
+            }
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if entry.file_type().unwrap().is_dir() {
+                files.insert(rel, None);
+                visit(root, &path, files);
+            } else {
+                files.insert(rel, Some(std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut files = std::collections::BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
 /// Every malformed required coordinate is refused before `code_migrate_type` can send a
 /// refactoring request, including with both write knobs enabled. This was a success on the base
 /// for values whose `as u32 + 1` wrapped in release builds.
@@ -75,7 +105,7 @@ async fn malformed_workspace_coordinates_refuse_before_forced_apply() {
             }
         })
         .await;
-        let before = ws.read("src/lib.rs");
+        let before = tree(&ws.root());
         let error = execute_tool(
             gateway.addr(),
             &ws.root(),
@@ -88,7 +118,7 @@ async fn malformed_workspace_coordinates_refuse_before_forced_apply() {
             format!("{error:#}").contains("malformed LSP"),
             "{label}: {error:#}"
         );
-        assert_eq!(ws.read("src/lib.rs"), before, "{label} wrote the source");
+        assert_eq!(tree(&ws.root()), before, "{label} changed the checkout");
         let seen = seen.lock().unwrap();
         assert_eq!(gateway.calls(), 1, "{label}: {seen:?}");
         assert!(
@@ -102,6 +132,48 @@ async fn malformed_workspace_coordinates_refuse_before_forced_apply() {
             }),
             "{label}: a refactoring request followed malformed evidence: {seen:?}"
         );
+    }
+}
+
+#[tokio::test]
+async fn malformed_matching_hit_cannot_make_another_hit_uniquely_actionable() {
+    for malformed_first in [false, true] {
+        let ws = rust_workspace("pub fn target() {}\n");
+        let path = ws.path("src/lib.rs");
+        let outside_candidate = ws.path("src/other.rs");
+        let good = symbol("target", &path, json!({ "line": 0, "character": 7 }));
+        let bad = symbol(
+            "target",
+            &outside_candidate,
+            json!({ "line": 4_294_967_296u64, "character": 7 }),
+        );
+        let hits = if malformed_first {
+            json!([bad, good])
+        } else {
+            json!([good, bad])
+        };
+        let (record, seen) = methods();
+        let gateway = ScriptedGateway::start(move |method, _| {
+            record.lock().unwrap().push(method.to_string());
+            match method {
+                "prod-code/handshake" => json!({ "index_gated": true }),
+                "workspace/symbol" => hits.clone(),
+                _ => Value::Null,
+            }
+        })
+        .await;
+        let before = tree(&ws.root());
+        let error = execute_tool(
+            gateway.addr(),
+            &ws.root(),
+            "code_migrate_type",
+            json!({ "symbol": "target", "to": "u64", "apply": true, "force": true }),
+        )
+        .await
+        .expect_err("malformed competing evidence must refuse before choosing a candidate");
+        assert!(format!("{error:#}").contains("malformed LSP"), "{error:#}");
+        assert_eq!(gateway.calls(), 1, "{:?}", seen.lock().unwrap());
+        assert_eq!(tree(&ws.root()), before);
     }
 }
 

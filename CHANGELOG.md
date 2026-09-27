@@ -66,6 +66,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Symbol resolution refuses missing, malformed and overflowing LSP response coordinates (#564)
+  instead of defaulting or wrapping them to another source position. Matching workspace hits,
+  qualified members and fallback declarations propagate the error before any refactoring write,
+  including forced application.
 - Delayed search embeddings carry a file-entry generation, so a same-size edit or an index
   recreation cannot attach an older vector to a current declaration (#556). Search indexing
   skips descendant file and directory symlinks, removes invalidated linked sources, and ignores
