@@ -60,6 +60,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     invalid UTF-8 fail; headers and bodies follow the protocol size limits.
   - Pre-save sync identifies the decoded top-level JSON-RPC method (#579), including
     reordered fields and escaped keys/values; nested fields do not trigger sync.
+  - Dedicated editor-server output also uses the shared bounded frame reader (#573).
   - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.

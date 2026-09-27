@@ -1636,12 +1636,28 @@ while True:
         assert!(workspace.generic_engine.as_ref().unwrap().is_alive());
     }
 
-    /// A workspace whose language server has exited is not handed to the next session, which
-    /// loads it afresh; one whose server runs is (#355). `cat` answers `initialize` with its
-    /// echo and runs until its input closes; the other does that for a second, then exits.
+    /// A valid initialized server remains reusable until its output actually exits.
     #[tokio::test]
     async fn a_workspace_whose_server_exited_is_loaded_afresh() {
         let dir = tempfile::tempdir().expect("tempdir");
+        let script = dir.path().join("server.py");
+        std::fs::write(&script, r#"import json, sys
+while True:
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line: sys.exit(0)
+        if line == b"\r\n": break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1])
+    message = json.loads(sys.stdin.buffer.read(length))
+    if message.get("method") == "initialize":
+        body = json.dumps({"jsonrpc":"2.0", "id":message["id"], "result":{"capabilities":{}}}).encode()
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        sys.stdout.buffer.flush()
+    elif message.get("method") == "initialized" and len(sys.argv) > 1:
+        sys.exit(0)
+"#).expect("fake server script");
         let workspace = |engine: prod_code_engine_generic::GenericLspEngine| {
             SharedWorkspace::new(
                 dir.path().to_path_buf(),
@@ -1652,33 +1668,31 @@ while True:
                 None,
             )
         };
-        let config = |command: &str, args: &[&str]| prod_code_engine_generic::GenericLspConfig {
-            command: command.to_string(),
-            args: args.iter().map(|a| a.to_string()).collect(),
-            ..Default::default()
+        let config = |exit: bool| {
+            let mut args = vec![script.to_string_lossy().into_owned()];
+            if exit {
+                args.push("exit-after-initialized".to_string());
+            }
+            prod_code_engine_generic::GenericLspConfig {
+                command: "python3".to_string(),
+                args,
+                ..Default::default()
+            }
         };
         let running = workspace(
-            prod_code_engine_generic::GenericLspEngine::spawn(dir.path(), config("cat", &[]))
+            prod_code_engine_generic::GenericLspEngine::spawn(dir.path(), config(false))
                 .await
-                .expect("cat runs"),
+                .expect("valid server initializes"),
         );
         let exited = workspace(
-            prod_code_engine_generic::GenericLspEngine::spawn(
-                dir.path(),
-                // A job in the background reads /dev/null unless stdin is kept aside first.
-                config(
-                    "sh",
-                    &["-c", "exec 3<&0; cat <&3 & sleep 1; kill $! 2>/dev/null"],
-                ),
-            )
-            .await
-            .expect("the short-lived server starts"),
+            prod_code_engine_generic::GenericLspEngine::spawn(dir.path(), config(true))
+                .await
+                .expect("short-lived valid server initializes"),
         );
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !exited.has_dead_server() && std::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-
         assert!(exited.has_dead_server(), "a server that exited is noticed");
         assert!(
             !exited.reusable_for("typescript"),

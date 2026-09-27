@@ -70,6 +70,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Dedicated editor servers share the bounded LSP frame reader (#573). Duplicate or
+  malformed headers, oversized or truncated frames and invalid UTF-8 end the owned
+  session without forwarding corrupted text.
 - Go and generic language-server adapters reject unsuccessful or malformed initialization
   replies (#572). Failure, timeout or cancellation retires the owned server generation,
   clears pending requests and capabilities, and ends generic document acceptance; ordinary
