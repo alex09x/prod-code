@@ -340,7 +340,7 @@ hosted CI).
 
 ## Author
 
-**Alexander Panasenko** ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
+[**Alexander Panasenko**](https://prod.codes/about/) ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
 
 ## License
 
