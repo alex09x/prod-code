@@ -278,8 +278,10 @@ enum Commands {
         /// Path of the proposed content; stdin when omitted
         #[arg(long)]
         from: Option<PathBuf>,
-        /// Check a unified diff (`git diff` output) instead: a path, or `-` for stdin. Each hunk
-        /// is applied in memory and every file it touches is checked together.
+        /// Check a proposed unified diff against CURRENT on-disk files: a path, or `-` for
+        /// stdin. Submit it before applying the edits; Git HEAD is not the patch base. Every
+        /// touched file is checked together. For already-written edits, use FILE --from FILE
+        /// and --with OTHER=OTHER instead.
         #[arg(long, conflicts_with_all = ["from", "with"])]
         diff: Option<PathBuf>,
         /// Another proposed file, checked together with the first in one overlay: FILE=NEW.
@@ -3508,7 +3510,7 @@ fn trace_message(trace: &LspTrace, direction: &str, raw: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or_default();
-    let method = prod_code_client::editor_files::method_of(raw).unwrap_or("");
+    let method = prod_code_client::editor_files::method_of(raw).unwrap_or_default();
     if let Ok(mut file) = file.lock() {
         let line = format!("{millis} {direction} {method} id={id} {}B\n", raw.len());
         let _ = std::io::Write::write_all(&mut *file, line.as_bytes());
@@ -3641,7 +3643,7 @@ async fn run_lsp_bridge(remote: SocketAddr, engine: Option<&'static str>) -> Res
         // What the editor saved, or saw change, reaches the node before the server hears of it:
         // rust-analyzer checks the crate on save, and must check what was saved (#332).
         if matches!(
-            prod_code_client::editor_files::method_of(&json_payload),
+            prod_code_client::editor_files::method_of(&json_payload).as_deref(),
             Some("textDocument/didSave" | "workspace/didChangeWatchedFiles")
         ) {
             let generation = prod_code_mcp::watch::current_generation(&cwd);

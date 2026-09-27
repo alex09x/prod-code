@@ -3300,3 +3300,128 @@ async fn cli_assist_refuses_invalid_positions_and_backwards_selections() {
     }
     assert_eq!(gw.calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn lsp_rejects_malformed_editor_input_without_forwarding_it() {
+    use tokio::io::AsyncWriteExt;
+    for malformed in [
+        b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+        b"Content-Length: 2\r\n".as_slice(),
+        b"Content-Length: 1\r\n\r\n\xff".as_slice(),
+    ] {
+        let ws = make_workspace();
+        let home = tempfile::tempdir().expect("isolated home");
+        let (addr, seen) = recording_gateway(|_| None, HashMap::new()).await;
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+            .args(["lsp", "--language", "go", "--remote", &addr.to_string()])
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .current_dir(ws.root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("owned lsp child");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}
+        })
+        .to_string();
+        stdin
+            .write_all(
+                format!("Content-Length: {}\r\n\r\n{initialize}", initialize.len()).as_bytes(),
+            )
+            .await
+            .expect("initialize");
+        read_lsp_message(&mut stdout).await;
+        stdin.write_all(malformed).await.expect("malformed input");
+        stdin.shutdown().await.expect("input EOF");
+        drop(stdin);
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+                .await
+                .expect("malformed input retires the child")
+                .expect("child output");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "malformed input exited successfully: {malformed:?}"
+        );
+        assert!(stderr.contains("reading the editor's message"), "{stderr}");
+        let log = seen.lock().expect("gateway log");
+        let forwarded: Vec<_> = log
+            .iter()
+            .filter(|(_, event)| event.starts_with("lsp "))
+            .map(|(_, event)| event.as_str())
+            .collect();
+        assert_eq!(
+            forwarded,
+            ["lsp initialize"],
+            "malformed body reached the gateway"
+        );
+    }
+}
+
+#[tokio::test]
+async fn lsp_syncs_only_the_decoded_top_level_save_method_before_forwarding() {
+    use tokio::io::AsyncWriteExt;
+    let ws = make_workspace();
+    let home = tempfile::tempdir().expect("isolated home");
+    let (addr, seen) = recording_gateway(
+        |message| (message["method"] == "test/barrier").then_some(serde_json::json!(true)),
+        HashMap::new(),
+    )
+    .await;
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+        .args(["lsp", "--language", "go", "--remote", &addr.to_string()])
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .current_dir(ws.root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("owned bridge");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+    let frame = |raw: &str| format!("Content-Length: {}\r\n\r\n{raw}", raw.len());
+    stdin
+        .write_all(
+            frame(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#)
+                .as_bytes(),
+        )
+        .await
+        .expect("initialize");
+    assert_eq!(read_lsp_message(&mut stdout).await["id"], 1);
+    for (index, (raw, method, needs_sync)) in [
+        (r#"{"params":{"method":"nested"},"method":"textDocument/didSave","jsonrpc":"2.0"}"#, "textDocument/didSave", true),
+        (r#"{"jsonrpc":"2.0","meth\u006fd":"textDocument/did\u0053ave","params":{}}"#, "textDocument/didSave", true),
+        (r#"{"params":{"method":"nested"},"method":"workspace/didChangeWatchedFiles","jsonrpc":"2.0"}"#, "workspace/didChangeWatchedFiles", true),
+        (r#"{"params":{"method":"textDocument/didSave"},"method":"custom/notify","jsonrpc":"2.0"}"#, "custom/notify", false),
+    ].into_iter().enumerate() {
+        // No checkout files change, so the background file watcher cannot supply this sync.
+        seen.lock().expect("log").clear();
+        stdin.write_all(frame(raw).as_bytes()).await.expect("notification");
+        let barrier = serde_json::json!({"jsonrpc":"2.0","id":index+2,"method":"test/barrier"}).to_string();
+        stdin.write_all(frame(&barrier).as_bytes()).await.expect("barrier");
+        assert_eq!(read_lsp_message(&mut stdout).await["id"], index+2);
+        let log = seen.lock().expect("log").clone();
+        let forwarded = log.iter().position(|(_, event)| event == &format!("lsp {method}")).expect("top-level method forwarded");
+        let syncs: Vec<_> = log.iter().enumerate().filter(|(_, (_, event))| event.starts_with("sync ")).map(|(at, _)| at).collect();
+        if needs_sync {
+            assert_eq!(syncs.len(), 1, "one explicit sync must precede {method}: {log:?}");
+            assert!(syncs[0] < forwarded, "sync landed after {method}: {log:?}");
+        } else {
+            assert!(syncs.is_empty(), "a nested save method triggered sync: {log:?}");
+        }
+    }
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(15), child.wait())
+        .await
+        .expect("bridge exits at EOF")
+        .expect("wait bridge");
+    assert!(status.success(), "{status}");
+}
