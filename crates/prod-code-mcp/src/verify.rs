@@ -33,7 +33,9 @@ pub(crate) async fn compile_go_shadow(
         .map_err(|e| anyhow!("cannot resolve the checkout {}: {e}", root.display()))?;
     let source = canonical_inside(&canonical_root, source)?;
     let module = go_module_root(&canonical_root, &source)?;
-    let module_relative = module.strip_prefix(&canonical_root).expect("module is inside root");
+    let module_relative = module
+        .strip_prefix(&canonical_root)
+        .expect("module is inside root");
     let subdir = if module_relative.as_os_str().is_empty() {
         None
     } else {
@@ -73,14 +75,12 @@ pub(crate) async fn compile_go_shadow(
             "go".to_string(),
             "test".to_string(),
             "-c".to_string(),
+            "-mod=readonly".to_string(),
             "-o".to_string(),
             ".prod-code-testbins/".to_string(),
             "./...".to_string(),
         ],
-        vec![
-            ("GOTOOLCHAIN".to_string(), "local".to_string()),
-            ("GOFLAGS".to_string(), "-mod=readonly".to_string()),
-        ],
+        vec![("GOTOOLCHAIN".to_string(), "local".to_string())],
         120,
         1,
         16 * 1024,

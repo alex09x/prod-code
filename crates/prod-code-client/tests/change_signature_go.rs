@@ -56,22 +56,25 @@ async fn with_compiler_shadow(upstream: SocketAddr) -> SocketAddr {
 }
 
 fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
-    let expected = ["go", "test", "-c", "-o", ".prod-code-testbins/", "./..."];
+    let expected = [
+        "go",
+        "test",
+        "-c",
+        "-mod=readonly",
+        "-o",
+        ".prod-code-testbins/",
+        "./...",
+    ];
     let malformed = req.command.iter().map(String::as_str).ne(expected)
         || req.timeout_secs != 120
         || req.parallel != 1
         || req.tail_bytes != 16 * 1024
-        || req.env
-            != [
-                ("GOTOOLCHAIN".into(), "local".into()),
-                ("GOFLAGS".into(), "-mod=readonly".into()),
-            ]
+        || req.env != [("GOTOOLCHAIN".into(), "local".into())]
         || req.hypotheses.len() != 1
         || req.hypotheses[0].name != "go-compiler-verification"
         || req.hypotheses[0].files.is_empty()
         || req.hypotheses[0].files.iter().any(|file| {
-            !file.relative_path.ends_with(".go")
-                || file.content.as_ref().is_none_or(Vec::is_empty)
+            !file.relative_path.ends_with(".go") || file.content.as_ref().is_none_or(Vec::is_empty)
         });
     if malformed {
         return ShadowRunResponse {

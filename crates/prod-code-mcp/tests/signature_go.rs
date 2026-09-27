@@ -64,16 +64,20 @@ async fn with_compiler_shadow(upstream: SocketAddr) -> SocketAddr {
 }
 
 fn mock_compile(req: ShadowRunRequest) -> ShadowRunResponse {
-    let expected = ["go", "test", "-c", "-o", ".prod-code-testbins/", "./..."];
+    let expected = [
+        "go",
+        "test",
+        "-c",
+        "-mod=readonly",
+        "-o",
+        ".prod-code-testbins/",
+        "./...",
+    ];
     let malformed = req.command.iter().map(String::as_str).ne(expected)
         || req.timeout_secs != 120
         || req.parallel != 1
         || req.tail_bytes != 16 * 1024
-        || req.env
-            != [
-                ("GOTOOLCHAIN".into(), "local".into()),
-                ("GOFLAGS".into(), "-mod=readonly".into()),
-            ]
+        || req.env != [("GOTOOLCHAIN".into(), "local".into())]
         || req.hypotheses.len() != 1
         || req.hypotheses[0].name != "go-compiler-verification"
         || req.hypotheses[0].files.is_empty()
@@ -762,6 +766,16 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
         "{added}"
     );
     for (rel, needle, request, said) in [
+        (
+            "lib.go",
+            "Keep(a",
+            vec![
+                Param::Keep("a".into()),
+                Param::Keep("b".into()),
+                add("c", "int", "0x1e+2"),
+            ],
+            "must be one numeric, string or rune literal",
+        ),
         (
             "lib.go",
             "Keep(a",

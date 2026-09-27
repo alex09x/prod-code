@@ -32,6 +32,7 @@ impl Gateway {
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env("RUST_LOG", "info")
+            .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -152,6 +153,14 @@ fn checkout() -> (tempfile::TempDir, PathBuf) {
             "project/go.mod",
             "module example.com/gosiglive\n\ngo 1.22\n",
         ),
+        (
+            "project/tag_enabled.go",
+            "//go:build prodcode_signature\n\npackage main\nconst requiredBuildTag = 1\n",
+        ),
+        (
+            "project/tag_required.go",
+            "package main\nvar _ = requiredBuildTag\n",
+        ),
         ("project/lib.go", LIB),
         ("project/main.go", MAIN),
         ("project/main_test.go", TEST),
@@ -217,7 +226,7 @@ fn run(root: &Path, program: &str, args: &[&str]) -> (bool, String) {
         .args(args)
         .current_dir(root)
         .env("GOTOOLCHAIN", "local")
-        .env("GOFLAGS", "-mod=readonly")
+        .env("GOFLAGS", "-tags=prodcode_signature -mod=readonly")
         .output()
         .unwrap_or_else(|e| {
             panic!("{program} is a prerequisite of this real-server test and does not run: {e}")

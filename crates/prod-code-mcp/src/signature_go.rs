@@ -1468,7 +1468,11 @@ fn is_literal(e: &str) -> bool {
                 || b == b'.'
                 || (matches!(b, b'+' | b'-')
                     && i > 0
-                    && matches!(nb[i - 1], b'e' | b'E' | b'p' | b'P'))
+                    && if n.starts_with("0x") || n.starts_with("0X") {
+                        matches!(nb[i - 1], b'p' | b'P')
+                    } else {
+                        matches!(nb[i - 1], b'e' | b'E')
+                    })
         });
     }
     is_func_literal(e)
@@ -2997,5 +3001,21 @@ mod removal_evidence_validation_tests {
             }
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+}
+
+#[cfg(test)]
+mod literal_expression_regression {
+    #[test]
+    fn hexadecimal_digits_do_not_introduce_decimal_exponent_signs() {
+        for literal in [
+            "0x1e", "-0X1E", "0x1p+2", "0X1P-2", "1e+2", "-1E-2", "0x1p+2i",
+        ] {
+            assert!(super::is_literal(literal), "{literal}");
+        }
+        for expression in ["0x1e+2", "0x1E-2", "0x1e+counter", "0X1E-value"] {
+            assert!(!super::is_literal(expression), "{expression}");
+            assert!(!super::scalar_literal(expression), "{expression}");
+        }
     }
 }
