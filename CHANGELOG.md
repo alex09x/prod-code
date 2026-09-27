@@ -66,6 +66,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go and generic language-server adapters reject unsuccessful or malformed initialization
+  replies (#572). Failure, timeout or cancellation retires the owned server generation,
+  clears pending requests and capabilities, and ends generic document acceptance; ordinary
+  request timeouts keep their existing behavior.
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.
