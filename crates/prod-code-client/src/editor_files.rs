@@ -10,35 +10,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-/// One LSP frame from `reader`: its body, or `None` at the end of the stream. Header names are
-/// matched without regard to case, and headers other than the length are skipped.
+/// One bounded, UTF-8 LSP frame, or `None` only at a clean frame boundary.
 pub async fn read_frame<R: tokio::io::AsyncBufRead + Unpin>(
     reader: &mut R,
 ) -> std::io::Result<Option<String>> {
-    use tokio::io::{AsyncBufReadExt, AsyncReadExt};
-    let mut length = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        let header = line.trim_end();
-        if header.is_empty() {
-            if length.is_some() {
-                break;
-            }
-            continue;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let mut body = vec![0; length.unwrap_or(0)];
-    reader.read_exact(&mut body).await?;
-    Ok(Some(String::from_utf8_lossy(&body).into_owned()))
+    prod_code_protocol::transport::read_lsp_frame(reader).await
 }
 
 /// The method of an LSP message, read without parsing the whole of it: the first
@@ -491,5 +467,35 @@ mod tests {
     #[test]
     fn the_cache_is_the_users() {
         assert!(default_cache().ends_with("prod-code/remote"));
+    }
+    #[tokio::test]
+    async fn malformed_editor_frames_are_errors_instead_of_lossy_or_clean_eof() {
+        for input in [
+            b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+            b"Content-Length: 2\r\n".as_slice(),
+            b"Content-Length: 1\r\n\r\n\xff".as_slice(),
+            b"Content-Length: nope\r\n\r\n".as_slice(),
+            b"X-Header: value\r\n\r\n".as_slice(),
+        ] {
+            let mut reader = tokio::io::BufReader::new(input);
+            assert!(read_frame(&mut reader).await.is_err(), "accepted {input:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_editor_headers_and_bodies_are_rejected_before_allocation() {
+        let cases = [
+            format!("X-Header: {}", "x".repeat(64 * 1024)).into_bytes(),
+            format!(
+                "Content-Length: {}\r\n\r\n",
+                prod_code_protocol::codec::MAX_FRAME_SIZE + 1
+            )
+            .into_bytes(),
+        ];
+        for input in cases {
+            let mut reader = tokio::io::BufReader::new(input.as_slice());
+            let error = read_frame(&mut reader).await.expect_err("bounded frame");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        }
     }
 }
