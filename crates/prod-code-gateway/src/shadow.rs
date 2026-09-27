@@ -140,24 +140,26 @@ fn storage_identity(storage_root: &Path) -> PathBuf {
             Component::RootDir => identity.push(component.as_os_str()),
             Component::CurDir => {}
             Component::Normal(name) => {
-                if unresolved {
-                    identity.push(name);
-                    continue;
-                }
                 let candidate = identity.join(name);
                 match candidate.canonicalize() {
-                    Ok(canonical) => identity = canonical,
+                    Ok(canonical) => {
+                        identity = canonical;
+                        unresolved = false;
+                    }
                     Err(_) => {
                         identity = candidate;
                         unresolved = true;
                     }
                 }
             }
-            Component::ParentDir => {
-                if unresolved {
-                    identity.pop();
-                    continue;
+            Component::ParentDir if unresolved => {
+                identity.pop();
+                if let Ok(canonical) = identity.canonicalize() {
+                    identity = canonical;
+                    unresolved = false;
                 }
+            }
+            Component::ParentDir => {
                 let candidate = identity.join("..");
                 match candidate.canonicalize() {
                     Ok(canonical) => identity = canonical,

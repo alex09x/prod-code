@@ -68,6 +68,59 @@ fn symlink_prefix_and_unresolved_parent_traversal_remain_stable() {
 }
 
 #[test]
+fn unresolved_prefixes_resume_at_existing_symlinked_directories() {
+    let fixture = TempDir::new().expect("create fixture");
+    let target = fixture.path().join("target");
+    fs::create_dir(&target).expect("create symlink target");
+    let link = fixture.path().join("storage-link");
+    symlink(&target, &link).expect("create prefix symlink");
+    let storage = target.join("storage");
+    let alias = fixture
+        .path()
+        .join("missing")
+        .join("nested")
+        .join("..")
+        .join("..")
+        .join("storage-link")
+        .join("absent")
+        .join("nested")
+        .join("..")
+        .join("..")
+        .join("storage");
+    let sentinel = fixture.path().join("live-sentinel");
+    fs::write(&sentinel, "unchanged").expect("write sentinel");
+
+    let before = default_root(&alias);
+    assert!(!storage.exists(), "default_root must not create storage");
+    let first = ShadowRootOwner::acquire(&before).expect("acquire before storage exists");
+
+    fs::create_dir_all(&storage).expect("create storage");
+    let after = default_root(&storage);
+    assert_eq!(
+        canonical(&before),
+        after,
+        "aliases must choose one namespace"
+    );
+    assert_eq!(
+        fs::metadata(canonical(&before).join(OWNERSHIP_LOCK_FILE))
+            .expect("read first ownership lock")
+            .ino(),
+        fs::metadata(after.join(OWNERSHIP_LOCK_FILE))
+            .expect("read second ownership lock")
+            .ino(),
+        "aliases must use the same ownership-lock inode"
+    );
+    assert!(
+        ShadowRootOwner::acquire(&after).is_err(),
+        "the second alias must contend on the existing ownership lock"
+    );
+    assert_eq!(fs::read(&sentinel).expect("read sentinel"), b"unchanged");
+
+    drop(first);
+    ShadowRootOwner::acquire(&after).expect("release must allow another owner");
+}
+
+#[test]
 fn relative_and_absolute_spellings_converge_without_chdir() {
     let cwd = std::env::current_dir().expect("read current directory");
     let fixture = tempfile::Builder::new()
