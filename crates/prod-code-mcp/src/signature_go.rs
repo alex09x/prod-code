@@ -1299,24 +1299,35 @@ async fn function_reference_evidence(
 /// too. The reference response does not distinguish the interface-typed selector from a concrete
 /// one, so a current interface declaration of the same method makes the whole plan uncertain.
 fn declares_interface_method(text: &str, name: &str) -> bool {
-    let text = strip_comments(text);
-    let mut from = 0usize;
-    while let Some(at) = text[from..].find("interface") {
-        let at = from + at;
-        let before = at.checked_sub(1).and_then(|at| text.as_bytes().get(at));
-        let after = text.as_bytes().get(at + "interface".len());
-        if before.is_none_or(|byte| !is_ident_byte(*byte))
-            && after.is_none_or(|byte| !is_ident_byte(*byte))
-            && let Some(open) = text[at + "interface".len()..].find('{')
-        {
-            let open = at + "interface".len() + open;
-            if let Some(close) = closing(&text, open)
-                && text[open + 1..close].contains(&format!("{name}("))
-            {
-                return true;
+    let bytes = text.as_bytes();
+    for at in identifier_uses(text, 0, text.len(), "interface") {
+        let open = skip_space(text, at + "interface".len());
+        if bytes.get(open) != Some(&b'{') {
+            continue;
+        }
+        let Some(close) = closing(text, open) else {
+            continue;
+        };
+        let mut cursor = open + 1;
+        while cursor < close {
+            cursor = skip_space(text, cursor);
+            if cursor >= close {
+                break;
+            }
+            if let Some(end) = skip_opaque(bytes, cursor) {
+                cursor = end;
+            } else if matches!(bytes[cursor], b'(' | b'[' | b'{') {
+                cursor = closing(text, cursor).map_or(close, |end| end + 1);
+            } else if let Some(word) = ident_at(text, cursor) {
+                let after = skip_space(text, cursor + word.len());
+                if word == name && bytes.get(after) == Some(&b'(') {
+                    return true;
+                }
+                cursor += word.len();
+            } else {
+                cursor += 1;
             }
         }
-        from = at + "interface".len();
     }
     false
 }
@@ -3239,5 +3250,32 @@ mod literal_expression_regression {
             assert!(!super::is_literal(expression), "{expression}");
             assert!(!super::scalar_literal(expression), "{expression}");
         }
+    }
+}
+
+#[cfg(test)]
+mod interface_name_boundary_primary_probe {
+    use super::*;
+    #[test]
+    fn an_unrelated_interface_member_does_not_block_receiver_addition() {
+        assert!(
+            !declares_interface_method("type Unrelated interface { NotAdd(x int) string }", "Add"),
+            "NotAdd is not Add"
+        );
+        assert!(!declares_interface_method(
+            "type Unrelated interface { Other(Add (int)) }",
+            "Add"
+        ));
+        assert!(
+            !declares_interface_method("const note = `interface { Add(int) string }`", "Add"),
+            "source text in a string is not an interface obligation"
+        );
+        assert!(
+            declares_interface_method(
+                "type Related interface { Add /* comment */ (int) string }",
+                "Add"
+            ),
+            "whitespace/comments are allowed before the parameter list"
+        );
     }
 }

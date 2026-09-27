@@ -149,6 +149,9 @@ var trace []string
 
 type Meter struct { total int }
 
+type Unrelated interface { NotAdd(int) string }
+const interfaceDocumentation = `interface { Add(int) string }`
+
 func mark(tag string, value int) int {
 	trace = append(trace, tag)
 	return value
@@ -630,10 +633,19 @@ async fn receiver_method_additions_use_only_direct_selector_calls() {
     let (_dir, root) = receiver_checkout();
     let project = root.join("project");
     let before = behaviour(&project);
+    assert_eq!(
+        before.0,
+        "5\n12\n[value receiver value argument Add(5) pointer receiver pointer argument Scale(12)]\n"
+    );
     let untouched = snapshot(&root);
     let addr = gateway.addr;
 
-    let at_add = serde_json::json!({ "path": "project/lib.go", "line": 19, "character": 20 });
+    let add = RECEIVER_LIB.find("Add(qty").expect("Add definition");
+    let row_start = RECEIVER_LIB[..add].rfind('\n').map_or(0, |i| i + 1);
+    let at_add = serde_json::json!({
+        "path": "project/lib.go", "line": RECEIVER_LIB[..add].matches('\n').count() + 1,
+        "character": RECEIVER_LIB[row_start..add].encode_utf16().count() + 1
+    });
     let mut hover = String::new();
     for _ in 1..=60 {
         hover = tool(addr, &root, "code_hover", at_add.clone()).await;
@@ -718,4 +730,154 @@ async fn receiver_method_additions_use_only_direct_selector_calls() {
         before,
         "receiver addition changed behavior"
     );
+}
+
+const PUBLIC_REFUSAL_LIB: &str = r#"package main
+
+import "fmt"
+
+type Meter struct{}
+
+func (meter Meter) Value(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Expression(n int) string { return fmt.Sprint(n) }
+func (meter *Meter) Pointer(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Direct(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Dynamic(n int) string { return fmt.Sprint(n) }
+func (meter Meter) Capture(existing int) string { captured := existing; return fmt.Sprint(captured) }
+
+type Box[T any] struct{ value T }
+func (box Box[T]) Generic(n int) T { return box.value }
+
+func (meter Meter) Compile(n int) string { return fmt.Sprint(n) }
+"#;
+
+const PUBLIC_REFUSAL_INTERFACES: &str = r#"package main
+
+type Directer interface { Direct(int) string }
+type Dynamicer interface { Dynamic(int) string }
+"#;
+
+const PUBLIC_REFUSAL_MAIN: &str = r#"package main
+
+import "fmt"
+
+func main() {
+	meter := Meter{}
+	value := meter.Value
+	expression := Meter.Expression
+	pointer := (*Meter).Pointer
+	var direct Directer = meter
+	_, dynamic := any(meter).(Dynamicer)
+	box := Box[int]{value: 7}
+	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), direct.Direct(4), dynamic, box.Generic(5), meter.Capture(6), meter.Compile(7))
+}
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receiver_refusals_run_through_the_source_built_gateway() {
+    let gateway = Gateway::start();
+    let (_dir, root) = receiver_checkout();
+    let project = root.join("project");
+    std::fs::write(project.join("lib.go"), PUBLIC_REFUSAL_LIB).unwrap();
+    std::fs::write(project.join("interface.go"), PUBLIC_REFUSAL_INTERFACES).unwrap();
+    std::fs::write(project.join("main.go"), PUBLIC_REFUSAL_MAIN).unwrap();
+    std::fs::write(
+        project.join("main_test.go"),
+        "package main\nimport \"testing\"\nfunc TestFixture(t *testing.T) {}\n",
+    )
+    .unwrap();
+    let before = behaviour(&project);
+    assert_eq!(before.0, "1 2 3 4 true 7 6 7\n");
+    let untouched = snapshot(&root);
+    let position = |needle: &str| {
+        let at = PUBLIC_REFUSAL_LIB.find(needle).expect("method definition");
+        let row_start = PUBLIC_REFUSAL_LIB[..at].rfind('\n').map_or(0, |i| i + 1);
+        (
+            PUBLIC_REFUSAL_LIB[..at].matches('\n').count() + 1,
+            PUBLIC_REFUSAL_LIB[row_start..at].encode_utf16().count() + 1,
+        )
+    };
+    let (line, character) = position("Value(n");
+    let mut hover = String::new();
+    for _ in 0..60 {
+        hover = tool(
+            gateway.addr,
+            &root,
+            "code_hover",
+            serde_json::json!({
+                "path": "project/lib.go", "line": line, "character": character
+            }),
+        )
+        .await;
+        if hover.contains("func") && hover.contains("Value") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert!(hover.contains("func") && hover.contains("Value"), "{hover}");
+    for (needle, params, reason) in [
+        (
+            "Value(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "used as a value",
+        ),
+        (
+            "Expression(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "method expression",
+        ),
+        (
+            "Pointer(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "method expression",
+        ),
+        (
+            "Direct(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "interface declaration",
+        ),
+        (
+            "Dynamic(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "interface declaration",
+        ),
+        (
+            "Generic(n",
+            serde_json::json!(["n", "extra: int = 0"]),
+            "not an ordinary named value",
+        ),
+        (
+            "Capture(existing",
+            serde_json::json!(["existing", "meter: int = 0"]),
+            "duplicates the receiver binding",
+        ),
+        (
+            "Capture(existing",
+            serde_json::json!(["existing", "captured: int = 0"]),
+            "shadow existing references",
+        ),
+        (
+            "Compile(n",
+            serde_json::json!(["n", "bad: string = 1"]),
+            "does not compile",
+        ),
+    ] {
+        let (line, character) = position(needle);
+        let refused = tool(
+            gateway.addr,
+            &root,
+            "code_change_signature",
+            serde_json::json!({
+                "path": "project/lib.go", "line": line, "character": character,
+                "params": params, "apply": true, "force": true
+            }),
+        )
+        .await;
+        assert!(
+            refused.starts_with("error: ") && refused.contains(reason),
+            "{needle}: {refused}"
+        );
+        assert_eq!(snapshot(&root), untouched, "refusal wrote: {needle}");
+    }
+    assert_eq!(behaviour(&project), before, "refusals changed execution");
 }
