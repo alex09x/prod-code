@@ -739,6 +739,7 @@ import "fmt"
 type Meter struct{}
 
 func (meter Meter) Value(n int) string { return fmt.Sprint(n) }
+func (meter Meter) String() string { return "meter" }
 func (meter Meter) Expression(n int) string { return fmt.Sprint(n) }
 func (meter *Meter) Pointer(n int) string { return fmt.Sprint(n) }
 func (meter Meter) Direct(n int) string { return fmt.Sprint(n) }
@@ -768,8 +769,9 @@ func main() {
 	pointer := (*Meter).Pointer
 	var direct Directer = meter
 	_, dynamic := any(meter).(Dynamicer)
+	_, stringer := any(meter).(fmt.Stringer)
 	box := Box[int]{value: 7}
-	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), direct.Direct(4), dynamic, box.Generic(5), meter.Capture(6), meter.Compile(7))
+	fmt.Println(value(1), expression(meter, 2), pointer(&meter, 3), direct.Direct(4), dynamic, box.Generic(5), meter.Capture(6), meter.Compile(7), stringer)
 }
 "#;
 
@@ -787,7 +789,7 @@ async fn receiver_refusals_run_through_the_source_built_gateway() {
     )
     .unwrap();
     let before = behaviour(&project);
-    assert_eq!(before.0, "1 2 3 4 true 7 6 7\n");
+    assert_eq!(before.0, "1 2 3 4 true 7 6 7 true\n");
     let untouched = snapshot(&root);
     let position = |needle: &str| {
         let at = PUBLIC_REFUSAL_LIB.find(needle).expect("method definition");
@@ -816,6 +818,11 @@ async fn receiver_refusals_run_through_the_source_built_gateway() {
     }
     assert!(hover.contains("func") && hover.contains("Value"), "{hover}");
     for (needle, params, reason) in [
+        (
+            "String()",
+            serde_json::json!(["extra: int = 0"]),
+            "interface",
+        ),
         (
             "Value(n",
             serde_json::json!(["n", "extra: int = 0"]),
