@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Added
+- Session handshakes negotiate a mutually supported protocol version (#537). Legacy peers
+  remain compatible; empty or incompatible offers refuse before session creation, and clients
+  reject unsupported selections before initializing a language server.
 - Go signature changes can replace one unnamed primitive result on ordinary non-generic,
   non-variadic free functions (#529). The named parameter list must stay unchanged; complete
   direct-call evidence and remote compilation of packages and test callers are mandatory for

@@ -35,7 +35,10 @@
 use crate::LatencyStats;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage};
+use prod_code_protocol::{
+    HandshakeRequest, PROTOCOL_VERSION, ProdCodeCodec, WireMessage, supported_protocol_versions,
+    validate_selected_protocol_version,
+};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -1036,9 +1039,11 @@ async fn open_session_unbounded(
         .await
         .context("pre-flight workspace sync before gateway handshake")?;
 
+    let supported_versions = supported_protocol_versions();
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
+            supported_versions: Some(supported_versions.clone()),
             client_name,
             client_pid: std::process::id(),
             auth_token: None,
@@ -1062,7 +1067,10 @@ async fn open_session_unbounded(
             anyhow!("remote gateway closed connection waiting for handshake response")
         })?;
     match handshake_response {
-        WireMessage::HandshakeResponse(_) => {}
+        WireMessage::HandshakeResponse(response) => {
+            validate_selected_protocol_version(response.protocol_version, &supported_versions)
+                .context("gateway returned an incompatible benchmark handshake response")?;
+        }
         other => bail!("unexpected handshake response: {other:?}"),
     }
 
@@ -1929,6 +1937,48 @@ mod tests {
         .await
         .expect_err("unexpected handshake reply must fail");
         assert!(error.to_string().contains("unexpected handshake response"));
+        peer.await.expect("peer task completes");
+    }
+
+    #[tokio::test]
+    async fn open_session_refuses_a_bad_selected_version_before_initialize() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            let request = receive_sync_then_handshake(&mut framed).await;
+            assert_eq!(
+                request.supported_versions,
+                Some(supported_protocol_versions())
+            );
+            let mut response = handshake_response(request);
+            response.protocol_version = 2;
+            framed
+                .send(WireMessage::HandshakeResponse(response))
+                .await
+                .expect("reply to handshake");
+            assert!(
+                framed.next().await.is_none(),
+                "benchmark session must close before initialize"
+            );
+        });
+
+        let error = open_session_with_timeout(
+            remote,
+            &worktree,
+            "divergent-bench-bad-version".to_string(),
+            Duration::from_secs(3),
+        )
+        .await
+        .expect_err("incompatible selection must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("incompatible benchmark handshake response"),
+            "{error:#}"
+        );
         peer.await.expect("peer task completes");
     }
 

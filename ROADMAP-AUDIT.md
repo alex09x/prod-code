@@ -10,7 +10,7 @@ different kinds of evidence. New fixes are tracked by their issues and pull requ
 
 | Item | Implemented scope and evidence | Remaining requirement or verification limit |
 |---|---|---|
-| 1.1 Transport | Length-framed JSON and optional authentication in the protocol crate; `gateway/tests/e2e_phase1.rs` exercises transport. | Protocol fields have compatibility defaults; there is no negotiated feature set, NUL framing, Unix socket or named-pipe transport. |
+| 1.1 Transport | Length-framed JSON, optional authentication and legacy-compatible version negotiation (#537) in the protocol crate; `gateway/tests/e2e_phase1.rs` exercises transport. Empty or disjoint offers refuse before session creation, and clients validate the selection before initialization. | Version 1 is the only implemented version; there is no negotiated feature set, NUL framing, Unix socket or named-pipe transport. |
 | 1.2 Paths | Structured URI/path translation in the protocol, gateway and MCP sync code preserves source and edit text, with encoded file URIs and path-component boundaries (#438). | The #425 repair covers ordered edits, UTF-16 columns, rollback and containment after directory moves; preview still flags unmodeled resource operations. |
 | 1.3 Editor client | `prod-code lsp` bridges the editor to a remote language server and exits unsuccessfully on disconnect. | Recovery is an editor restart, not in-process replay of LSP state. Zero-allocation hot paths are not established by the recorded evidence. |
 | 1.4 Gateway | Session registry, command execution and JSON status in `gateway/src/lib.rs`. | The #433 repair reserves memory for concurrent new engines; this is admission control, not a hard limit on later analyzer growth. |
@@ -96,7 +96,7 @@ The following 14 checkboxes changed from `[x]` to `[~]` (#480). Their delivered 
 evidence remain above; the original mechanism or required scope remains open.
 
 - **1.1**: length framing, compatibility defaults and loopback TCP do not implement NUL framing,
-  negotiated capabilities/version, or Unix-socket/named-pipe transport.
+  negotiated capabilities or Unix-socket/named-pipe transport. Version negotiation is implemented by #537.
 - **1.3**: editor restart is not in-process reconnect, and the record does not establish
   zero-allocation hot paths.
 - **3.3**: exit detection and request timeouts are not the specified periodic health ping.
