@@ -49,6 +49,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Fallback language servers require a valid initialization response before becoming available
+  (#538). Initialization failures and timeouts remain errors, server requests cannot masquerade
+  as the response, and an exited fallback makes its cached workspace eligible for reload.
 - Build metadata consistently requires Rust 1.95, matching the locked analyzer dependencies;
   the documented minimum is checked with its own compiler and Clippy (#532).
 - Native Rust queries and refactorings reject invalid UTF-16 source positions instead of
