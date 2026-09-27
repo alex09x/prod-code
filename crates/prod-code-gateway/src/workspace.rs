@@ -311,6 +311,7 @@ impl SharedWorkspace {
             .as_ref()
             .is_some_and(|e| !e.is_alive() || !e.accepts_documents())
             || self.go_engine.as_ref().is_some_and(|e| !e.is_alive())
+            || self.backend.as_ref().is_some_and(|e| !e.is_alive())
     }
 
     /// Whether the next session asking for `engine` may be handed this workspace: it was loaded

@@ -49,6 +49,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Fallback language servers require a valid initialization response before becoming available
+  (#538). Initialization failures and timeouts remain errors, server requests cannot masquerade
+  as the response, and an exited fallback makes its cached workspace eligible for reload.
 - Go and generic LSP request deadlines cover waiting for the writer, writing the frame and
   receiving the response (#533). Cancellation removes pending entries; an interrupted partial
   frame retires only its owned server before another writer can use the connection.
