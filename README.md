@@ -54,6 +54,8 @@ rustup, install the supported minimum and the check components with:
 rustup toolchain install 1.95.0 --profile minimal -c rustfmt -c clippy
 ```
 
+Run commands with `cargo +1.95.0` to use that toolchain without changing your default.
+
 ## Install
 
 ```sh
