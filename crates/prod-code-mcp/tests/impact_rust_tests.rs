@@ -20,6 +20,7 @@ const CARGO_TOML: &str =
     "[package]\nname = \"impact-rust-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n";
 const LIB: &str = "pub fn callee() -> u32 {\n    1\n}\n";
 const TEST: &str = "fn test_helper() -> u32 {\n    impact_rust_fixture::callee()\n}\n\n#[test]\nfn actual_test() {\n    assert_eq!(test_helper(), 2);\n}\n\nfn unrelated_helper() {}\n";
+const AMBIGUOUS_TEST: &str = "mod a { #[test] fn same() {} } mod b { fn same() { impact_rust_fixture::callee(); } }\n#[test] fn outer() { fn same() { impact_rust_fixture::callee(); } same(); }\n";
 #[cfg(unix)]
 const NATIVE_TEST: &str = "fn edited_bridge() -> u32 {\n    1\n}\n\n#[test]\nfn direct_case() {\n    assert_eq!(edited_bridge(), 2);\n}\n\n#[test]\nfn nested_case() {\n    fn local_bridge() -> u32 {\n        impact_rust_fixture::callee()\n    }\n    assert_eq!(local_bridge(), 2);\n}\n\n#[test]\nfn unrelated_case() {\n    assert_eq!(1, 1);\n}\n";
 
@@ -451,6 +452,72 @@ async fn rust_impact_selects_the_attributed_test_and_executes_it_not_test_helper
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("actual_test"), "{stdout}");
     assert!(!stdout.contains("test_helper ... ok"), "{stdout}");
+}
+
+#[tokio::test]
+async fn ambiguous_same_line_rust_declarations_force_the_whole_suite() {
+    assert_eq!(impact::test_marker("rust", AMBIGUOUS_TEST, 1, "same"), None);
+    assert_eq!(
+        impact::test_marker("rust", AMBIGUOUS_TEST, 2, "same"),
+        None,
+        "an outer test attribute must not make a nested same-named helper a test"
+    );
+
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", LIB),
+        ("tests/impact.rs", AMBIGUOUS_TEST),
+    ]);
+    let root = ws.root();
+    ws.write("src/lib.rs", &LIB.replace("1", "2"));
+    let lib_uri = prod_code_protocol::path::file_uri(ws.path("src/lib.rs").as_path());
+    let test_uri = prod_code_protocol::path::file_uri(ws.path("tests/impact.rs").as_path());
+    let remote = ScriptedGateway::start(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("callee", 12, 1, 3, 8),])
+        }
+        "textDocument/prepareCallHierarchy" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|uri| uri.as_str())
+                .unwrap_or("");
+            match uri {
+                uri if uri == lib_uri => {
+                    serde_json::json!([{ "name": "callee", "uri": lib_uri, "_id": "callee" }])
+                }
+                _ => serde_json::json!([]),
+            }
+        }
+        "callHierarchy/incomingCalls" => {
+            match params.pointer("/item/_id").and_then(|id| id.as_str()) {
+                Some("callee") => serde_json::json!([{
+                    "from": {
+                        "name": "same",
+                        "uri": test_uri,
+                        "selectionRange": { "start": { "line": 0, "character": 43 } }
+                    }
+                }]),
+                _ => serde_json::json!([]),
+            }
+        }
+        _ => serde_json::Value::Null,
+    })
+    .await
+    .addr();
+
+    let report = impact::analyze(remote, &root, None, 4)
+        .await
+        .expect("analysis runs");
+    assert!(report.tests.is_empty(), "{:?}", report.tests);
+    assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+    assert!(
+        report
+            .incomplete
+            .iter()
+            .any(|gap| gap.describe().contains("ambiguous")),
+        "{:?}",
+        report.incomplete
+    );
 }
 
 #[cfg(unix)]

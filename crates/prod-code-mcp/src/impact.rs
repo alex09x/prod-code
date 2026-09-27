@@ -952,7 +952,7 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
         .unwrap_or(name)
         .trim_start_matches("r#");
     let mut cursor = line_start;
-    let mut declaration = None;
+    let mut declarations = Vec::new();
     while cursor < line_end {
         if !lex.code[cursor] {
             cursor += 1;
@@ -964,8 +964,7 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
                 if let Some((declared, _, _)) = rust_identifier(text, name_at, line_end)
                     && declared == bare
                 {
-                    declaration = Some(cursor);
-                    break;
+                    declarations.push(cursor);
                 }
             }
             cursor = end;
@@ -973,10 +972,19 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
             cursor += text[cursor..].chars().next().map_or(1, char::len_utf8);
         }
     }
-    let Some(declaration) = declaration else {
-        return Err(format!(
-            "the Rust declaration for {name} at line {line} cannot be classified as a runnable test"
-        ));
+    let declaration = match declarations.as_slice() {
+        [declaration] => *declaration,
+        [] => {
+            return Err(format!(
+                "the Rust declaration for {name} at line {line} cannot be classified as a runnable test"
+            ));
+        }
+        declarations => {
+            return Err(format!(
+                "the Rust declaration for {name} at line {line} is ambiguous: {} matching declarations share the line",
+                declarations.len()
+            ));
+        }
     };
     let mut starts = vec![0usize];
     let mut braces = 0usize;
