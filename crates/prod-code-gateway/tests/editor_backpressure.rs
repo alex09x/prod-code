@@ -7,6 +7,7 @@ use prod_code_gateway::editor_proxy::{
 use prod_code_gateway::workspace::WatchedChange;
 use prod_code_protocol::{PathTranslator, ProdCodeCodec, WireMessage};
 use serde_json::{Value, json};
+use std::future::pending;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,29 +26,35 @@ struct Session {
 impl Session {
     async fn finish(mut self) -> Result<(), String> {
         self.editor.take();
-        let mut task = self.task.take().expect("session task is owned");
-        match tokio::time::timeout(WAIT, &mut task).await {
+        let task = self.task.as_mut().expect("session task is owned");
+        let outcome = match tokio::time::timeout(WAIT, &mut *task).await {
             Ok(Ok(Ok(()))) => Ok(()),
             Ok(Ok(Err(error))) => Err(format!("editor session failed: {error:#}")),
             Ok(Err(error)) => Err(format!("editor session task failed: {error}")),
             Err(_) => {
                 task.abort();
-                let cancelled = tokio::time::timeout(WAIT, &mut task).await;
+                let cancelled = (&mut *task).await;
                 Err(format!(
                     "editor session timed out; forced cancellation result: {cancelled:?}"
                 ))
             }
-        }
+        };
+        self.task.take();
+        outcome
     }
 
     async fn cancel(mut self) -> Result<(), String> {
         self.editor.take();
-        let mut task = self.task.take().expect("session task is owned");
+        let task = self.task.as_mut().expect("session task is owned");
         task.abort();
-        match tokio::time::timeout(WAIT, &mut task).await {
+        let outcome = match tokio::time::timeout(WAIT, &mut *task).await {
             Ok(Err(error)) if error.is_cancelled() => Ok(()),
             other => Err(format!("editor session did not cancel cleanly: {other:?}")),
+        };
+        if task.is_finished() {
+            self.task.take();
         }
+        outcome
     }
 }
 
@@ -97,18 +104,24 @@ async fn start_session(
         )
         .await
     });
-    let editor = match TcpStream::connect(address).await {
-        Ok(socket) => Framed::new(socket, ProdCodeCodec::new()),
-        Err(error) => {
-            task.abort();
-            let _ = task.await;
-            panic!("connect editor: {error}");
-        }
-    };
-    Session {
-        editor: Some(editor),
+    let mut session = Session {
+        editor: None,
         task: Some(task),
+    };
+    match tokio::time::timeout(WAIT, TcpStream::connect(address)).await {
+        Ok(Ok(socket)) => {
+            session.editor = Some(Framed::new(socket, ProdCodeCodec::new()));
+        }
+        Ok(Err(error)) => {
+            let cleanup = session.cancel().await;
+            panic!("connect editor: {error}; task cleanup: {cleanup:?}");
+        }
+        Err(_) => {
+            let cleanup = session.cancel().await;
+            panic!("connect editor timed out; task cleanup: {cleanup:?}");
+        }
     }
+    session
 }
 
 async fn wait_for_registration(servers: &EditorServers, count: usize) -> Result<(), String> {
@@ -162,17 +175,92 @@ async fn wait_for_exit(pid: i32) -> Result<(), String> {
     }
 }
 
-async fn receive_payload(editor: &mut Framed<TcpStream, ProdCodeCodec>) -> Result<Value, String> {
+fn process_exists(pid: i32) -> bool {
+    (unsafe { libc::kill(pid, 0) }) == 0
+        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+async fn exits_without_forced_cleanup(pid: i32, budget: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + budget;
     loop {
-        let message = tokio::time::timeout(WAIT, editor.next())
+        if !process_exists(pid) {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+struct ExactProcessGroup {
+    group: i32,
+    active: bool,
+}
+
+impl ExactProcessGroup {
+    fn new(group: i32) -> Self {
+        Self {
+            group,
+            active: true,
+        }
+    }
+
+    fn retire(&mut self) -> Result<(), String> {
+        if !self.active {
+            return Ok(());
+        }
+        let signal = unsafe { libc::kill(-self.group, libc::SIGKILL) };
+        if signal == -1 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            return Err(format!(
+                "could not retire exact test process group {}: {}",
+                self.group,
+                std::io::Error::last_os_error()
+            ));
+        }
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for ExactProcessGroup {
+    fn drop(&mut self) {
+        if self.active {
+            let _ = unsafe { libc::kill(-self.group, libc::SIGKILL) };
+        }
+    }
+}
+
+async fn send_before(
+    editor: &mut Framed<TcpStream, ProdCodeCodec>,
+    message: WireMessage,
+    deadline: tokio::time::Instant,
+    action: &str,
+) -> Result<(), String> {
+    tokio::time::timeout_at(deadline, editor.send(message))
+        .await
+        .map_err(|_| format!("timed out while {action}"))?
+        .map_err(|error| format!("{action}: {error}"))
+}
+
+async fn receive_payload_before(
+    editor: &mut Framed<TcpStream, ProdCodeCodec>,
+    deadline: tokio::time::Instant,
+) -> Result<Value, String> {
+    loop {
+        let message = tokio::time::timeout_at(deadline, editor.next())
             .await
-            .map_err(|_| "timed out reading editor payload".to_string())?
+            .map_err(|_| "editor payload deadline elapsed".to_string())?
             .ok_or_else(|| "editor connection closed before its payload".to_string())?
             .map_err(|error| format!("editor protocol error: {error}"))?;
         if let WireMessage::LspPayload(raw) = message {
             return serde_json::from_str(&raw).map_err(|error| format!("invalid JSON: {error}"));
         }
     }
+}
+
+async fn receive_payload(editor: &mut Framed<TcpStream, ProdCodeCodec>) -> Result<Value, String> {
+    receive_payload_before(editor, tokio::time::Instant::now() + WAIT).await
 }
 
 const INITIALIZE_THEN_STALL: &str = r#"
@@ -304,6 +392,164 @@ open(os.environ['EDITOR_PID_FILE'], 'w').write(str(os.getpid()) + ' ' + str(chil
 while True: time.sleep(1)
 "#;
 
+const EXITING_PARENT_TREE: &str = r#"
+import os, signal, time
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True: time.sleep(1)
+open(os.environ['EDITOR_PID_FILE'], 'w').write(str(os.getpid()) + ' ' + str(child))
+while not os.path.exists(os.environ['EDITOR_RELEASE_FILE']): time.sleep(0.01)
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_normally_exited_parent_still_retires_its_owned_descendants() {
+    let temp = tempfile::tempdir().expect("temporary editor root");
+    let pid_file = temp.path().join("tree.pid");
+    let release_file = temp.path().join("release-parent");
+    let mut command = python_command(
+        temp.path(),
+        "exiting_parent.py",
+        EXITING_PARENT_TREE,
+        &pid_file,
+    );
+    command.env.push((
+        "EDITOR_RELEASE_FILE".to_string(),
+        release_file.to_string_lossy().into_owned(),
+    ));
+    let servers = Arc::new(EditorServers::default());
+    let session = start_session(
+        temp.path(),
+        command,
+        Arc::clone(&servers),
+        SHORT_WRITE,
+        SHORT_TEARDOWN,
+    )
+    .await;
+    let pids = wait_for_pids(&pid_file, 2).await.unwrap();
+    let mut cleanup = ExactProcessGroup::new(pids[0]);
+    std::fs::write(&release_file, b"exit").expect("release fake parent");
+
+    let outcome = session.finish().await;
+    let descendant_retired = exits_without_forced_cleanup(pids[1], SHORT_WRITE).await;
+    cleanup.retire().expect("retire exact test process group");
+    wait_for_exit(pids[1]).await.unwrap();
+
+    outcome.expect("normally exited parent session cleanup");
+    assert!(
+        descendant_retired,
+        "owned descendant {} survived after leader {} was reaped",
+        pids[1], pids[0]
+    );
+    assert_eq!(servers.count(), 0);
+}
+
+const MALFORMED_TREE: &str = r#"
+import os, signal, sys, time
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    while True: time.sleep(1)
+open(os.environ['EDITOR_PID_FILE'], 'w').write(str(os.getpid()) + ' ' + str(child))
+while not os.path.exists(os.environ['EDITOR_RELEASE_FILE']): time.sleep(0.01)
+sys.stdout.buffer.write(b'Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}')
+sys.stdout.buffer.flush()
+while True: time.sleep(1)
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_early_reader_error_retires_the_exact_owned_process_group() {
+    let temp = tempfile::tempdir().expect("temporary editor root");
+    let pid_file = temp.path().join("tree.pid");
+    let release_file = temp.path().join("release-malformed-frame");
+    let mut command = python_command(temp.path(), "malformed_tree.py", MALFORMED_TREE, &pid_file);
+    command.env.push((
+        "EDITOR_RELEASE_FILE".to_string(),
+        release_file.to_string_lossy().into_owned(),
+    ));
+    let servers = Arc::new(EditorServers::default());
+    let session = start_session(
+        temp.path(),
+        command,
+        Arc::clone(&servers),
+        SHORT_WRITE,
+        SHORT_TEARDOWN,
+    )
+    .await;
+    let pids = wait_for_pids(&pid_file, 2).await.unwrap();
+    let mut cleanup = ExactProcessGroup::new(pids[0]);
+    std::fs::write(&release_file, b"malformed").expect("release malformed frame");
+
+    let outcome = session.finish().await;
+    let mut failures = Vec::new();
+    for pid in &pids {
+        if let Err(error) = wait_for_exit(*pid).await {
+            failures.push(error);
+        }
+    }
+    cleanup.retire().expect("retire exact test process group");
+
+    if let Err(error) = outcome {
+        failures.push(error);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
+    assert_eq!(servers.count(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_session_helper_does_not_detach_its_owned_task() {
+    struct Completion(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for Completion {
+        fn drop(&mut self) {
+            if let Some(done) = self.0.take() {
+                let _ = done.send(());
+            }
+        }
+    }
+
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let _completion = Completion(Some(done_tx));
+        let _ = started_tx.send(());
+        pending::<()>().await;
+        Ok(())
+    });
+    let forced_cleanup = task.abort_handle();
+    started_rx.await.expect("owned task started");
+    let helper = tokio::spawn(
+        Session {
+            editor: None,
+            task: Some(task),
+        }
+        .finish(),
+    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    helper.abort();
+    let helper_result = helper.await;
+    let terminated_by_owner = tokio::time::timeout(SHORT_WRITE, &mut done_rx)
+        .await
+        .is_ok();
+    if !terminated_by_owner {
+        forced_cleanup.abort();
+        tokio::time::timeout(WAIT, &mut done_rx)
+            .await
+            .expect("forced cleanup terminates exact owned task")
+            .expect("owned task reports completion");
+    }
+
+    assert!(
+        helper_result
+            .as_ref()
+            .is_err_and(|error| error.is_cancelled()),
+        "helper itself was cancelled: {helper_result:?}"
+    );
+    assert!(
+        terminated_by_owner,
+        "cancelling Session::finish detached its owned task"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cancellation_before_readiness_retires_the_owned_group_and_registration() {
     let temp = tempfile::tempdir().expect("temporary editor root");
@@ -375,14 +621,34 @@ async fn lsp_request(
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    editor
-        .send(WireMessage::LspPayload(
+    lsp_request_before(
+        editor,
+        id,
+        method,
+        params,
+        tokio::time::Instant::now() + WAIT,
+    )
+    .await
+}
+
+async fn lsp_request_before(
+    editor: &mut Framed<TcpStream, ProdCodeCodec>,
+    id: u64,
+    method: &str,
+    params: Value,
+    deadline: tokio::time::Instant,
+) -> Result<Value, String> {
+    send_before(
+        editor,
+        WireMessage::LspPayload(
             json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}).to_string(),
-        ))
-        .await
-        .map_err(|error| format!("send {method}: {error}"))?;
+        ),
+        deadline,
+        &format!("sending {method}"),
+    )
+    .await?;
     loop {
-        let value = receive_payload(editor).await?;
+        let value = receive_payload_before(editor, deadline).await?;
         if let (Some(request_id), Some(request_method)) = (
             value.get("id").cloned(),
             value.get("method").and_then(Value::as_str),
@@ -392,18 +658,90 @@ async fn lsp_request(
             } else {
                 Value::Null
             };
-            editor
-                .send(WireMessage::LspPayload(
+            send_before(
+                editor,
+                WireMessage::LspPayload(
                     json!({"jsonrpc":"2.0","id":request_id,"result":result}).to_string(),
-                ))
-                .await
-                .map_err(|error| format!("answer {request_method}: {error}"))?;
+                ),
+                deadline,
+                &format!("answering {request_method}"),
+            )
+            .await?;
             continue;
         }
         if value.get("id").and_then(Value::as_u64) == Some(id) {
             return Ok(value);
         }
     }
+}
+
+const CONTINUOUS_NOTIFICATIONS: &str = r#"
+import json, os, sys
+open(os.environ['EDITOR_PID_FILE'], 'w').write(str(os.getpid()))
+def read_frame():
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line in (b'\r\n', b'\n'):
+            break
+        if line.lower().startswith(b'content-length:'):
+            length = int(line.split(b':', 1)[1])
+    return sys.stdin.buffer.read(length)
+read_frame()
+number = 0
+while True:
+    body = json.dumps({'jsonrpc':'2.0','method':'window/logMessage','params':{'type':3,'message':str(number)}}).encode()
+    sys.stdout.buffer.write(b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+    sys.stdout.buffer.flush()
+    number += 1
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unrelated_notifications_cannot_extend_an_lsp_request_deadline() {
+    let temp = tempfile::tempdir().expect("temporary editor root");
+    let pid_file = temp.path().join("server.pid");
+    let command = python_command(
+        temp.path(),
+        "continuous_notifications.py",
+        CONTINUOUS_NOTIFICATIONS,
+        &pid_file,
+    );
+    let servers = Arc::new(EditorServers::default());
+    let mut session = start_session(
+        temp.path(),
+        command,
+        Arc::clone(&servers),
+        SHORT_WRITE,
+        SHORT_TEARDOWN,
+    )
+    .await;
+    let pid = wait_for_pids(&pid_file, 1).await.unwrap()[0];
+    let started = tokio::time::Instant::now();
+    let result = lsp_request_before(
+        session.editor.as_mut().unwrap(),
+        44,
+        "test/noReply",
+        json!({}),
+        started + SHORT_WRITE,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    session.finish().await.expect("notification flood cleanup");
+    wait_for_exit(pid).await.unwrap();
+
+    assert!(
+        result
+            .as_ref()
+            .is_err_and(|error| error.contains("deadline")),
+        "request must end at its absolute deadline: {result:?}"
+    );
+    assert!(
+        elapsed < WAIT,
+        "request exceeded its bounded proof: {elapsed:?}"
+    );
+    assert_eq!(servers.count(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -461,23 +799,31 @@ async fn real_gopls_keeps_initialize_open_hover_watch_and_disconnect_intact() {
     .await
     .unwrap();
     assert!(initialized["result"]["capabilities"].is_object());
-    editor
-        .send(WireMessage::LspPayload(
+    send_before(
+        editor,
+        WireMessage::LspPayload(
             json!({"jsonrpc":"2.0","method":"initialized","params":{}}).to_string(),
-        ))
-        .await
-        .unwrap();
-    editor
-        .send(WireMessage::LspPayload(
+        ),
+        tokio::time::Instant::now() + WAIT,
+        "sending initialized",
+    )
+    .await
+    .unwrap();
+    send_before(
+        editor,
+        WireMessage::LspPayload(
             json!({
                 "jsonrpc":"2.0",
                 "method":"textDocument/didOpen",
                 "params":{"textDocument":{"uri":source_uri,"languageId":"go","version":1,"text":text}}
             })
             .to_string(),
-        ))
-        .await
-        .unwrap();
+        ),
+        tokio::time::Instant::now() + WAIT,
+        "sending didOpen",
+    )
+    .await
+    .unwrap();
     let hover = lsp_request(
         editor,
         2,
@@ -491,12 +837,20 @@ async fn real_gopls_keeps_initialize_open_hover_watch_and_disconnect_intact() {
         "gopls returns a nonempty hover: {hover}"
     );
 
+    let watched_text = text.replace("hello", "hello after watched change");
+    std::fs::write(&source, watched_text).expect("write watched Go source bytes");
     servers
         .notify(&[(PathBuf::from(&source), WatchedChange::Changed)])
         .await;
-    editor.send(WireMessage::Ping).await.unwrap();
+    let pong_deadline = tokio::time::Instant::now() + WAIT;
+    send_before(editor, WireMessage::Ping, pong_deadline, "sending ping")
+        .await
+        .unwrap();
     loop {
-        match tokio::time::timeout(WAIT, editor.next()).await.unwrap() {
+        match tokio::time::timeout_at(pong_deadline, editor.next())
+            .await
+            .expect("pong deadline elapsed")
+        {
             Some(Ok(WireMessage::Pong)) => break,
             Some(Ok(WireMessage::LspPayload(raw))) => {
                 let value: Value = serde_json::from_str(&raw).unwrap();
@@ -504,23 +858,31 @@ async fn real_gopls_keeps_initialize_open_hover_watch_and_disconnect_intact() {
                     value.get("id").cloned(),
                     value.get("method").and_then(Value::as_str),
                 ) {
-                    editor
-                        .send(WireMessage::LspPayload(
+                    send_before(
+                        editor,
+                        WireMessage::LspPayload(
                             json!({"jsonrpc":"2.0","id":request_id,"result":null}).to_string(),
-                        ))
-                        .await
-                        .unwrap();
+                        ),
+                        pong_deadline,
+                        "answering gopls before pong",
+                    )
+                    .await
+                    .unwrap();
                 }
             }
             other => panic!("gopls session ended before pong: {other:?}"),
         }
     }
-    editor
-        .send(WireMessage::Disconnect {
+    send_before(
+        editor,
+        WireMessage::Disconnect {
             reason: "real gopls proof complete".to_string(),
-        })
-        .await
-        .unwrap();
+        },
+        tokio::time::Instant::now() + WAIT,
+        "sending disconnect",
+    )
+    .await
+    .unwrap();
     session.finish().await.expect("real gopls cleanup");
     wait_for_exit(pid).await.unwrap();
     assert_eq!(servers.count(), 0);

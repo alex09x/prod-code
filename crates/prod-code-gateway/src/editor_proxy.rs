@@ -268,7 +268,8 @@ impl Drop for TaskAbortGuard {
 struct OwnedChild {
     child: tokio::process::Child,
     process_group: Option<i32>,
-    reaped: bool,
+    leader_reaped: bool,
+    group_retired: bool,
 }
 
 impl OwnedChild {
@@ -280,51 +281,60 @@ impl OwnedChild {
         Self {
             child,
             process_group,
-            reaped: false,
+            leader_reaped: false,
+            group_retired: false,
         }
     }
 
-    fn kill(&mut self) {
+    fn retire_group(&mut self) {
+        if self.group_retired {
+            return;
+        }
+        self.group_retired = true;
         #[cfg(unix)]
         if let Some(group) = self.process_group {
             // The command was put in its own process group before spawn. A negative PID
             // targets only that owned group, including descendants which ignore shutdown.
             let _ = unsafe { libc::kill(-group, libc::SIGKILL) };
         }
-        let _ = self.child.start_kill();
+        if !self.leader_reaped {
+            let _ = self.child.start_kill();
+        }
     }
 
     async fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         let result = self.child.wait().await;
         if result.is_ok() {
-            self.reaped = true;
+            self.leader_reaped = true;
         }
         result
     }
 
     async fn retire(&mut self, deadline: Instant) {
-        if self.reaped {
+        // Reaping the direct child says nothing about descendants which still belong to the
+        // exact process group created at spawn. Retire that group once on every exit path.
+        self.retire_group();
+        if self.leader_reaped {
             return;
         }
-        self.kill();
         if matches!(timeout_at(deadline, self.child.wait()).await, Ok(Ok(_))) {
-            self.reaped = true;
+            self.leader_reaped = true;
         }
     }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if self.reaped {
+        self.retire_group();
+        if self.leader_reaped {
             return;
         }
-        self.kill();
         // Cancellation cannot await. Give the exact child a short synchronous reap window;
         // kill_on_drop remains the final fallback if the platform has not reported it yet.
         for _ in 0..50 {
             match self.child.try_wait() {
                 Ok(Some(_)) => {
-                    self.reaped = true;
+                    self.leader_reaped = true;
                     break;
                 }
                 Ok(None) => std::thread::sleep(Duration::from_millis(2)),
@@ -364,13 +374,53 @@ async fn write_editor_messages(
     Ok(())
 }
 
-async fn finish_task(task: &mut JoinHandle<Result<()>>, already_finished: bool, deadline: Instant) {
+async fn finish_task(
+    task: &mut JoinHandle<Result<()>>,
+    already_finished: bool,
+    deadline: Instant,
+    session_id: u64,
+    task_name: &'static str,
+) {
     if already_finished {
         return;
     }
-    if timeout_at(deadline, &mut *task).await.is_err() {
-        task.abort();
-        let _ = task.await;
+    match timeout_at(deadline, &mut *task).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(error))) => tracing::warn!(
+            session_id,
+            task = task_name,
+            error = %error,
+            "editor task failed during teardown"
+        ),
+        Ok(Err(error)) => tracing::warn!(
+            session_id,
+            task = task_name,
+            %error,
+            "editor task join failed during teardown"
+        ),
+        Err(_) => {
+            tracing::warn!(
+                session_id,
+                task = task_name,
+                "editor task exceeded the teardown deadline; aborting it"
+            );
+            task.abort();
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(
+                    session_id,
+                    task = task_name,
+                    error = %error,
+                    "editor task failed while being aborted during teardown"
+                ),
+                Err(error) => tracing::warn!(
+                    session_id,
+                    task = task_name,
+                    %error,
+                    "editor task join failed after teardown abort"
+                ),
+            }
+        }
     }
 }
 
@@ -576,15 +626,38 @@ pub async fn run_with_budgets(
     // Retire the process tree before draining editor output: a non-reading editor can no
     // longer postpone ownership cleanup, while already queued final messages may still drain.
     child.retire(cleanup_deadline).await;
-    finish_task(&mut writer_task, writer_finished, cleanup_deadline).await;
-    finish_task(&mut reader_task, reader_finished, cleanup_deadline).await;
-    finish_task(&mut stderr_task, stderr_finished, cleanup_deadline).await;
+    finish_task(
+        &mut writer_task,
+        writer_finished,
+        cleanup_deadline,
+        session_id,
+        "server stdin writer",
+    )
+    .await;
+    finish_task(
+        &mut reader_task,
+        reader_finished,
+        cleanup_deadline,
+        session_id,
+        "server stdout reader",
+    )
+    .await;
+    finish_task(
+        &mut stderr_task,
+        stderr_finished,
+        cleanup_deadline,
+        session_id,
+        "server stderr reader",
+    )
+    .await;
     drop(to_editor_tx);
     // What the server said last still reaches a reading editor, within the same teardown budget.
     finish_task(
         &mut socket_writer_task,
         socket_writer_finished,
         cleanup_deadline,
+        session_id,
+        "editor socket writer",
     )
     .await;
     tracing::info!(session_id, "✏️ [EDITOR] language server stopped");
