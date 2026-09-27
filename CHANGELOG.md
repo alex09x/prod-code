@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- Typed Rust builder previews through `prod-code fixture --builder` and
+  `code_generate_fixture` with `builder: true` (#459). Named, nongeneric structs get
+  setters with their actual field types and a fallible `build` requiring every field.
+  Verification checks name collisions and the generated code; unavailable or malformed
+  evidence cannot report success. Previews write no files, and `--no-verify` explicitly
+  returns an unverified draft. Factory-call rewriting, mocks and other languages remain open.
 - Failure dossiers expose printed assertion operands in JSON and text (#445): Rust
   `assert_eq!`/`assert_ne!` retain left/right order, and supported Node assertion formats
   retain actual/expected roles. Each failure uses its own output; multiline values and
@@ -23,6 +29,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- The Go adapter normalizes gopls v0.23.0 complete diagnostic reports with an empty `kind`
+  to `full` (#475). Strict validation can accept valid Go source and retain real type errors;
+  missing/malformed items, error responses and uncached unchanged reports stay refused.
 - Rust signature reconciliation accounts for ordinary block comments that the analyzer moves
   immediately after a rewritten call (#472), including nested and repeated comments. Lost,
   changed or invented comments, moved line/doc comments, unchanged calls and unrelated edits
