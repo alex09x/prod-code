@@ -463,13 +463,21 @@ enum Commands {
         #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
-    /// Build a compile-ready value for a type, checked by the analyzer before it is printed.
+    /// Generate a Rust value or typed builder, checked by the analyzer before it is printed.
+    /// Builders support named-field, non-generic structs and require every field at build time.
+    /// Preview only: no files are written. `--no-verify` prints an explicitly unverified draft.
     Fixture {
         /// The type to build.
         symbol: String,
-        /// How deep to build nested workspace types.
-        #[arg(long, default_value_t = 2)]
+        /// How deep to build nested workspace values (value mode only).
+        #[arg(long, default_value_t = 2, conflicts_with = "builder")]
         depth: u32,
+        /// Generate one typed setter per field and a build method instead of a value.
+        #[arg(long)]
+        builder: bool,
+        /// Override the generated builder name (default: TypeBuilder).
+        #[arg(long, requires = "builder")]
+        builder_name: Option<String>,
         /// Skip the type check.
         #[arg(long, default_value_t = false)]
         no_verify: bool,
@@ -1667,7 +1675,20 @@ async fn main() -> Result<()> {
             depth,
             no_verify,
             path,
-        } => run_fixture_cli(remote, symbol, depth, !no_verify, path).await,
+            builder,
+            builder_name,
+        } => {
+            run_fixture_cli(
+                remote,
+                symbol,
+                depth,
+                !no_verify,
+                path,
+                builder,
+                builder_name,
+            )
+            .await
+        }
         Commands::SchemaRename {
             field,
             to,
@@ -4122,13 +4143,15 @@ async fn run_fix(
     std::process::exit(if fixed.ok() { 0 } else { 1 });
 }
 
-/// Run a command remotely inside this checkout's server workspace copy and mirror its output.
+/// Print a value fixture or builder preview, preserving an unsuccessful verification status.
 async fn run_fixture_cli(
     remote: SocketAddr,
     symbol: String,
     depth: u32,
     verify: bool,
     path: Option<String>,
+    builder: bool,
+    builder_name: Option<String>,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
@@ -4140,6 +4163,25 @@ async fn run_fixture_cli(
             root.join(path)
         }
     });
+    if builder {
+        let preview = prod_code_mcp::fixture::builder::preview(
+            remote,
+            &root,
+            &prod_code_mcp::fixture::builder::BuilderRequest {
+                symbol: &symbol,
+                hint: hint.as_deref(),
+                builder_name: builder_name.as_deref(),
+                verify,
+            },
+        )
+        .await?;
+        println!("{}", preview.render());
+        anyhow::ensure!(
+            !verify || preview.verified(),
+            "builder verification did not succeed; nothing was written"
+        );
+        return Ok(());
+    }
     let fixture =
         prod_code_mcp::fixture::generate(remote, &root, &symbol, depth, verify, hint.as_deref())
             .await?;
