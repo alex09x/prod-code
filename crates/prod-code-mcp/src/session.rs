@@ -303,10 +303,10 @@ impl LspSession {
                             .unwrap_or("unknown error");
                         anyhow::bail!("{method} failed: {message}");
                     }
-                    return Ok(val
+                    return val
                         .get("result")
                         .cloned()
-                        .unwrap_or(serde_json::Value::Null));
+                        .with_context(|| format!("{method} response has no result"));
                 }
                 Ok(Some(Ok(WireMessage::Ping))) => {
                     let _ = self.framed.send(WireMessage::Pong).await;
@@ -660,6 +660,86 @@ async fn pooled_query_with_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Connects a session directly to a framed peer that replies once, without the testkit's
+    /// normal result wrapper. This keeps malformed JSON-RPC envelopes observable at the
+    /// session boundary.
+    async fn raw_session(reply: serde_json::Value) -> LspSession {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut peer = Framed::new(socket, ProdCodeCodec::new());
+            let request = match peer.next().await {
+                Some(Ok(WireMessage::LspPayload(json))) => {
+                    serde_json::from_str::<serde_json::Value>(&json).unwrap()
+                }
+                other => panic!("expected an LSP request, got {other:?}"),
+            };
+            let mut reply = reply;
+            reply["jsonrpc"] = serde_json::json!("2.0");
+            reply["id"] = request["id"].clone();
+            peer.send(WireMessage::LspPayload(reply.to_string()))
+                .await
+                .unwrap();
+        });
+        LspSession {
+            framed: Framed::new(
+                TcpStream::connect(addr).await.unwrap(),
+                ProdCodeCodec::new(),
+            ),
+            root: PathBuf::new(),
+            opened: HashMap::new(),
+            next_id: 1,
+            engine: "test".to_string(),
+            engine_loaded: None,
+            index_gated: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_result_is_an_actionable_method_error() {
+        let mut session = raw_session(serde_json::json!({})).await;
+        let error = session
+            .request("textDocument/implementation", serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "textDocument/implementation response has no result");
+    }
+
+    #[tokio::test]
+    async fn explicit_null_and_ordinary_results_are_preserved() {
+        for expected in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({ "found": true }),
+            serde_json::json!(7),
+        ] {
+            let mut session = raw_session(serde_json::json!({ "result": expected.clone() })).await;
+            assert_eq!(
+                session
+                    .request("textDocument/implementation", serde_json::json!({}))
+                    .await
+                    .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_error_envelope_remains_an_error() {
+        let mut session = raw_session(serde_json::json!({
+            "error": { "code": -32001, "message": "server refused" }
+        }))
+        .await;
+        let error = session
+            .request("textDocument/implementation", serde_json::json!({}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "textDocument/implementation failed: server refused");
+    }
 
     #[test]
     fn a_full_check_gets_more_time_than_an_interactive_query() {
