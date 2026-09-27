@@ -23,6 +23,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Slices report failed, malformed or unreadable dependency evidence as `INCOMPLETE` (#457),
+  without claiming a reduction result is complete. Depth, byte and declaration bounds are
+  labelled `BOUNDED`; invalid file URIs and positions outside the actual UTF-16 source
+  are refused or named as gaps, including CRLF and split-surrogate positions.
 - Custom refactoring planners refuse failed, malformed, unreadable or unmatched required
   references before writing (#446), including with `force` and compiler verification.
   Signature changes reconcile individual occurrences, so a rewritten call cannot hide an
