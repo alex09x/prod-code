@@ -22,6 +22,7 @@ use crate::embed::Embed;
 use prod_code_protocol::{DenseStatus, SearchHit, SearchRequest, SearchResponse};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -103,6 +104,7 @@ impl Indexed {
 /// What a file contributed, with the stamp that tells us whether to redo it.
 struct FileEntry {
     stamp: (u64, u64),
+    generation: u64,
     decls: Vec<Indexed>,
 }
 
@@ -158,6 +160,8 @@ struct Inner {
     passage_model: Mutex<Model>,
     /// Workspaces a background pass is embedding right now.
     embedding: Mutex<HashSet<PathBuf>>,
+    /// Unique file-entry identities, including across workspace eviction and recreation.
+    next_generation: AtomicU64,
 }
 
 impl Default for SearchIndexes {
@@ -200,6 +204,7 @@ impl SearchIndexes {
                 query_model: Mutex::new(query),
                 passage_model: Mutex::new(passages),
                 embedding: Mutex::new(HashSet::new()),
+                next_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -213,12 +218,12 @@ impl SearchIndexes {
             let mut guard = self.inner.lock_indexes();
             let index = guard.entry(root.to_path_buf()).or_default();
             if !index.built {
-                refresh(root, index);
+                refresh(root, index, &self.inner.next_generation);
                 index.built = true;
             } else if !index.pending.is_empty() {
                 let pending = std::mem::take(&mut index.pending);
                 for rel in pending {
-                    reindex_one(root, index, &rel);
+                    reindex_one(root, index, &rel, &self.inner.next_generation);
                 }
             }
             let embedded = index.declarations().filter(|d| d.vector.is_some()).count();
@@ -329,7 +334,7 @@ impl Inner {
 
     fn embed_pending(&self, root: &Path, max: usize) -> usize {
         // What to embed, taken under the index lock and computed without it, so queries go on.
-        let batch: Vec<(String, (u64, u64), usize, String)> = {
+        let batch: Vec<(String, u64, usize, String)> = {
             let guard = self.lock_indexes();
             let Some(index) = guard.get(root) else {
                 return 0;
@@ -343,7 +348,7 @@ impl Inner {
                         .iter()
                         .enumerate()
                         .filter(|(_, d)| d.vector.is_none())
-                        .map(move |(i, d)| (rel.clone(), entry.stamp, i, d.passage()))
+                        .map(move |(i, d)| (rel.clone(), entry.generation, i, d.passage()))
                 })
                 .take(max)
                 .collect()
@@ -367,10 +372,10 @@ impl Inner {
             return 0;
         };
         let mut installed = 0;
-        for ((rel, stamp, i, _), vector) in batch.into_iter().zip(vectors) {
-            // A file reindexed meanwhile has new declarations; they wait for the next batch.
+        for ((rel, generation, i, _), vector) in batch.into_iter().zip(vectors) {
+            // A replacement entry has new declarations; they wait for the next batch.
             if let Some(entry) = index.files.get_mut(&rel)
-                && entry.stamp == stamp
+                && entry.generation == generation
                 && let Some(decl) = entry.decls.get_mut(i)
             {
                 decl.vector = Some(vector);
@@ -404,7 +409,7 @@ fn loaded<'a>(slot: &'a Mutex<Model>, purpose: &str) -> std::sync::MutexGuard<'a
 }
 
 /// Walks the workspace copy and reindexes files whose stamp changed.
-fn refresh(root: &Path, index: &mut WorkspaceIndex) {
+fn refresh(root: &Path, index: &mut WorkspaceIndex, generations: &AtomicU64) {
     let mut present = Vec::new();
     collect_source_files(root, root, &mut present);
     let mut seen: HashMap<String, ()> = HashMap::with_capacity(present.len());
@@ -434,13 +439,20 @@ fn refresh(root: &Path, index: &mut WorkspaceIndex) {
             .into_iter()
             .map(Indexed::new)
             .collect();
-        index.files.insert(rel, FileEntry { stamp, decls });
+        index.files.insert(
+            rel,
+            FileEntry {
+                stamp,
+                generation: generations.fetch_add(1, Ordering::Relaxed),
+                decls,
+            },
+        );
     }
     index.files.retain(|rel, _| seen.contains_key(rel));
 }
 
 /// Reindexes one file after the sync layer wrote or removed it.
-fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str) {
+fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: &AtomicU64) {
     let path = root.join(rel);
     let Ok(meta) = std::fs::metadata(&path) else {
         index.files.remove(rel);
@@ -466,9 +478,14 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str) {
         .into_iter()
         .map(Indexed::new)
         .collect();
-    index
-        .files
-        .insert(rel.to_string(), FileEntry { stamp, decls });
+    index.files.insert(
+        rel.to_string(),
+        FileEntry {
+            stamp,
+            generation: generations.fetch_add(1, Ordering::Relaxed),
+            decls,
+        },
+    );
 }
 
 /// Source files worth indexing, relative path first. Mirrors the sync layer's exclusions.
@@ -1455,6 +1472,7 @@ impl Metrics {
             "src/place.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "src/place.rs",
                     "/// Decides which node runs a workspace: the one already holding it, else the quietest.\npub fn place(name: &str) -> Node { todo!() }\n",
@@ -1465,6 +1483,7 @@ impl Metrics {
             "src/sync.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "src/sync.rs",
                     "/// Uploads changed files to the gateway.\npub fn push_sync(files: Vec<File>) {}\n",
@@ -1496,6 +1515,7 @@ impl Metrics {
             "src/shadow.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: [
                     Declaration {
                         file: "src/shadow.rs".into(),
@@ -1558,6 +1578,7 @@ impl Metrics {
             "a.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "a.rs",
                     "/// Adds two numbers.\npub fn add(a: i32, b: i32) -> i32 { a + b }\n",
@@ -1686,6 +1707,156 @@ impl Metrics {
         }
     }
 
+    /// Releases a blocked batch even if an assertion fails.
+    struct ReleaseOnDrop(Option<std::sync::mpsc::Sender<()>>);
+
+    impl ReleaseOnDrop {
+        fn release(&self) {
+            self.0
+                .as_ref()
+                .expect("the release sender is present")
+                .send(())
+                .expect("the background batch is waiting");
+        }
+    }
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            if let Some(release) = &self.0 {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    fn wait_for_background(indexes: &SearchIndexes, root: &Path) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while indexes
+            .inner
+            .embedding
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(root)
+        {
+            assert!(Instant::now() < deadline, "the background batch finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn restore_modified(path: &Path, modified: std::time::SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    #[test]
+    fn stale_batch_does_not_publish_to_replaced_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("net.rs");
+        let old = "/// Re-establishes the socket after a drop.\npub fn old_socket() {}\n/// Paints the hex colour.\npub fn old_paint() {}\n";
+        let mut current =
+            "/// Adds a note.\npub fn inserted_item() {}\n/// Re-establishes the socket.\npub fn moved_socket() {}\n".to_string();
+        assert!(current.len() <= old.len());
+        current.push_str(&" ".repeat(old.len() - current.len()));
+        assert_eq!(current.len(), old.len());
+        std::fs::write(&path, old).unwrap();
+        std::fs::write(
+            root.join("stable.rs"),
+            "/// Counts the comet.\npub fn stable_item() {}\n",
+        )
+        .unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let (started, batch_started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let indexes = SearchIndexes::with_embedders(
+            Box::new(Concepts),
+            Box::new(Blocking {
+                started,
+                release: released,
+            }),
+        );
+        let release = ReleaseOnDrop(Some(release));
+
+        indexes.search(&root, "restore connection", 5, None);
+        batch_started
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the old batch started");
+
+        // This is a delete/recreate with the old length and exact modification time. The new
+        // declaration also moves the reconnect passage to a different ordinal.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, &current).unwrap();
+        restore_modified(&path, modified);
+        indexes.invalidate(&root, ["net.rs"]);
+        let reindexed = indexes.search(&root, "restore connection", 5, None);
+        assert_eq!(reindexed.declarations, 3);
+        assert_eq!(reindexed.dense.as_ref().unwrap().embedded, 0);
+
+        release.release();
+        batch_started
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the replacement batch started");
+
+        // The untouched file keeps its valid vector, but neither old vector can land on the
+        // replacement declarations.
+        let stale = indexes.search(&root, "restore connection", 5, None);
+        assert_eq!(stale.dense.as_ref().unwrap().embedded, 1);
+        assert!(stale.hits.iter().all(|hit| hit.name != "inserted_item"));
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let current = embedded(&indexes, &root, "restore connection");
+        assert!(current.dense.as_ref().unwrap().used);
+        assert_eq!(current.hits[0].name, "moved_socket", "{:?}", current.hits);
+    }
+
+    #[test]
+    fn stale_batch_does_not_survive_workspace_forget_and_recreation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("net.rs");
+        let old = "/// Re-establishes the socket.\npub fn old_socket() {}\n";
+        let mut current = "/// Paints the hex colour.\npub fn new_paint() {}\n".to_string();
+        assert!(current.len() <= old.len());
+        current.push_str(&" ".repeat(old.len() - current.len()));
+        assert_eq!(current.len(), old.len());
+        std::fs::write(&path, old).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let (started, batch_started) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let indexes = SearchIndexes::with_embedders(
+            Box::new(Concepts),
+            Box::new(Blocking {
+                started,
+                release: released,
+            }),
+        );
+        let release = ReleaseOnDrop(Some(release));
+
+        indexes.search(&root, "restore connection", 5, None);
+        batch_started
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the old batch started");
+        indexes.forget(&root);
+        std::fs::write(&path, &current).unwrap();
+        restore_modified(&path, modified);
+        let recreated = indexes.search(&root, "color", 5, None);
+        assert_eq!(recreated.declarations, 1);
+        assert_eq!(recreated.dense.as_ref().unwrap().embedded, 0);
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let stale = indexes.search(&root, "restore connection", 5, None);
+        assert!(!stale.hits.iter().any(|hit| hit.name == "new_paint"));
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let current = embedded(&indexes, &root, "color");
+        assert!(current.dense.as_ref().unwrap().used);
+        assert_eq!(current.hits[0].name, "new_paint", "{:?}", current.hits);
+    }
+
     #[test]
     fn a_question_does_not_wait_for_the_batch_being_embedded() {
         let dir = tempfile::tempdir().unwrap();
@@ -1755,6 +1926,7 @@ impl Metrics {
             "a.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls,
             },
         );
@@ -1843,7 +2015,7 @@ impl Metrics {
         let mut model = crate::embed::OnnxEmbedder::load(&crate::embed::model_dir(&storage))
             .expect("the model is installed on this node");
         let mut index = WorkspaceIndex::default();
-        refresh(&root, &mut index);
+        refresh(&root, &mut index, &AtomicU64::new(0));
         let started = Instant::now();
         let mut count = 0;
         for entry in index.files.values_mut() {
