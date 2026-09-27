@@ -570,6 +570,7 @@ fn annotate_missing_symbols(
     reports: &mut [DiagnosticsReport],
     sources: &HashMap<String, String>,
     missing: &[(String, String)],
+    resolved: &BTreeSet<(String, u32, u32)>,
 ) {
     if missing.is_empty() {
         return;
@@ -598,6 +599,9 @@ fn annotate_missing_symbols(
             let tokens = rust_code_identifiers(text);
             let mut line_matches: HashMap<u32, Vec<(&str, &str, u32)>> = HashMap::new();
             for tok in &tokens {
+                if resolved.contains(&(report.file.clone(), tok.line, tok.col)) {
+                    continue;
+                }
                 for (name, from) in &relevant {
                     let clean_name = name.strip_prefix("r#").unwrap_or(name);
                     if tok.name == clean_name {
@@ -1075,9 +1079,97 @@ pub async fn validate_texts(
         sources.insert(shown.clone(), text);
         reports.push(report);
     }
+    let resolved = resolved_rust_tokens(&mut session, root, &reports, &sources, &missing).await;
     session.close().await;
-    annotate_missing_symbols(&mut reports, &sources, &missing);
+    annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
     Ok(reports)
+}
+
+/// A declaration removed from one file may still resolve in the complete proposal: a move,
+/// re-export or unrelated same-named binding is not a broken caller. Ask while the whole
+/// overlay is open. Missing or malformed semantic evidence keeps the conservative warning.
+async fn resolved_rust_tokens(
+    session: &mut LspSession,
+    root: &Path,
+    reports: &[DiagnosticsReport],
+    sources: &HashMap<String, String>,
+    missing: &[(String, String)],
+) -> BTreeSet<(String, u32, u32)> {
+    let mut resolved = BTreeSet::new();
+    if missing.is_empty() {
+        return resolved;
+    }
+    for report in reports.iter().filter(|r| r.file.ends_with(".rs")) {
+        let Some(text) = sources.get(&report.file) else {
+            continue;
+        };
+        let names: BTreeSet<&str> = missing
+            .iter()
+            .filter(|(_, from)| from != &report.file)
+            .map(|(name, _)| name.strip_prefix("r#").unwrap_or(name))
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let Ok(uri) = session.uri_for(&root.join(&report.file)) else {
+            continue;
+        };
+        for token in rust_code_identifiers(text) {
+            if !names.contains(token.name.as_str()) {
+                continue;
+            }
+            let answer = session
+                .request(
+                    "textDocument/definition",
+                    serde_json::json!({
+                        "textDocument": {"uri": uri},
+                        "position": {"line": token.line - 1, "character": token.col - 1}
+                    }),
+                )
+                .await;
+            if answer.as_ref().is_ok_and(has_definition) {
+                resolved.insert((report.file.clone(), token.line, token.col));
+            }
+        }
+    }
+    resolved
+}
+
+fn has_definition(value: &serde_json::Value) -> bool {
+    fn location(value: &serde_json::Value) -> bool {
+        if value.get("error").is_some() {
+            return false;
+        }
+        let (uri, range) = if value.get("targetUri").is_some() {
+            (value.get("targetUri"), value.get("targetSelectionRange"))
+        } else {
+            (value.get("uri"), value.get("range"))
+        };
+        let Some(uri) = uri.and_then(|u| u.as_str()) else {
+            return false;
+        };
+        if url::Url::parse(uri)
+            .ok()
+            .and_then(|u| u.to_file_path().ok())
+            .is_none()
+        {
+            return false;
+        }
+        let Some(range) = range else { return false };
+        let position = |key: &str| -> Option<(u32, u32)> {
+            let p = range.get(key)?;
+            Some((
+                u32::try_from(p.get("line")?.as_u64()?).ok()?,
+                u32::try_from(p.get("character")?.as_u64()?).ok()?,
+            ))
+        };
+        matches!((position("start"), position("end")), (Some(start), Some(end)) if start <= end)
+    }
+    match value {
+        serde_json::Value::Array(items) => !items.is_empty() && items.iter().all(location),
+        serde_json::Value::Object(_) => location(value),
+        _ => false,
+    }
 }
 
 fn display(root: &Path, file: &Path) -> String {
@@ -1461,7 +1553,7 @@ mod tests {
             "shared_target_dir".to_string(),
             "crates/gateway/src/workspace.rs".to_string(),
         )];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         let note = reports[0].items[0].note.as_deref().unwrap();
         assert!(
             note.contains("`shared_target_dir`")
@@ -1516,7 +1608,7 @@ mod tests {
             "touch_last_used".to_string(),
             "crates/gateway/src/workspace.rs".to_string(),
         )];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 1);
         assert_eq!(reports[0].items.len(), 1);
         let item = &reports[0].items[0];
@@ -1555,7 +1647,7 @@ pub fn work() {}\n"
                 .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 0, "no false warnings on comments");
         assert!(reports[0].items.is_empty(), "{:?}", reports[0].items);
 
@@ -1577,7 +1669,12 @@ pub fn work() {}\n"
             in_derive: vec![],
             auto_trait: vec![],
         }];
-        annotate_missing_symbols(&mut reports_with_warning, &sources, &missing);
+        annotate_missing_symbols(
+            &mut reports_with_warning,
+            &sources,
+            &missing,
+            &BTreeSet::new(),
+        );
         assert!(reports_with_warning[0].items[0].note.is_none());
     }
 
@@ -1603,7 +1700,7 @@ pub fn work() {}\n"
                 .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 0);
         assert!(reports[0].items.is_empty());
     }
@@ -1639,7 +1736,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
                 .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 0, "{:?}", reports[0].items);
         assert!(reports[0].items.is_empty());
     }
@@ -1670,7 +1767,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 5, "{:?}", reports[0].items);
 
         let d0 = &reports[0].items[0];
@@ -1716,7 +1813,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             .to_string(),
         );
         let missing = vec![("covers".to_string(), "crates/engine/src/lib.rs".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 0);
         assert!(reports[0].items.is_empty());
     }
@@ -1738,7 +1835,7 @@ fn lifetime<'covers>(x: &'covers str) -> &'covers str { x }\n"
             "package main\nfunc run() {\n    // 🚀 covers()\n}\n".to_string(),
         );
         let missing = vec![("covers".to_string(), "engine/lib.go".to_string())];
-        annotate_missing_symbols(&mut reports, &sources, &missing);
+        annotate_missing_symbols(&mut reports, &sources, &missing, &BTreeSet::new());
         assert_eq!(reports[0].warnings, 1);
         assert_eq!(reports[0].items[0].line, 3);
         assert_eq!(reports[0].items[0].col, 11);
@@ -1758,5 +1855,34 @@ mod identifier_boundary_regressions {
             ["fn", "run", "covers\u{0301}", "covers\u{0301}", "covers"]
         );
         assert!(!super::mentions_identifier("covers()", ""));
+    }
+}
+
+#[cfg(test)]
+mod definition_evidence_tests {
+    use super::has_definition;
+    use serde_json::json;
+    #[test]
+    fn only_complete_definition_locations_prove_resolution() {
+        let range = json!({"start":{"line":0,"character":7},"end":{"line":0,"character":13}});
+        let location = json!({"uri":"file:///tmp/decl.rs","range":range});
+        assert!(has_definition(&location));
+        assert!(has_definition(&json!([location])));
+        assert!(has_definition(
+            &json!({"targetUri":"file:///tmp/decl.rs","targetSelectionRange":range})
+        ));
+        for value in [
+            json!(null),
+            json!([]),
+            json!({}),
+            json!([location, null]),
+            json!({"uri":"file:///tmp/decl.rs","range":range,"error":{"code":-1}}),
+            json!({"uri":"relative.rs","range":range}),
+            json!({"uri":"file:///tmp/decl.rs"}),
+            json!({"uri":"file:///tmp/decl.rs","range":{"start":{"line":1,"character":1},"end":{"line":0,"character":1}}}),
+            json!({"uri":"file:///tmp/decl.rs","range":{"start":{"line":0,"character":4294967296u64},"end":{"line":0,"character":4294967296u64}}}),
+        ] {
+            assert!(!has_definition(&value), "{value}");
+        }
     }
 }

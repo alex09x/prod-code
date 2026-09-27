@@ -362,3 +362,134 @@ pub fn work() {}
         reports[2].render()
     );
 }
+
+#[tokio::test]
+async fn relocated_definition_is_not_a_stale_caller_but_broken_use_still_is() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO),
+        ("src/lib.rs", "pub fn covers() {}\n"),
+        ("src/caller.rs", "pub fn run() { crate::covers(); }\n"),
+    ]);
+    let original = Arc::new(AtomicBool::new(true));
+    let state = original.clone();
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| {
+        let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+        match method {
+            "textDocument/didChange" if uri.ends_with("/src/lib.rs") => {
+                state.store(params["contentChanges"][0]["text"].as_str().unwrap_or("").contains("fn covers"), Ordering::SeqCst);
+                Value::Null
+            }
+            "textDocument/documentSymbol" if uri.ends_with("/src/lib.rs") && state.load(Ordering::SeqCst) => json!([{"name":"covers","kind":12}]),
+            "textDocument/documentSymbol" if uri.ends_with("/src/moved.rs") => json!([{"name":"covers","kind":12}]),
+            "textDocument/documentSymbol" => json!([]),
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            "textDocument/definition" if uri.ends_with("/src/moved.rs") => json!({"uri":uri,"range":{"start":{"line":0,"character":7},"end":{"line":0,"character":13}}}),
+            _ => Value::Null,
+        }
+    })).await.addr();
+    let reports = prod_code_mcp::diagnostics::validate_texts(
+        remote,
+        &ws.root(),
+        &[
+            (ws.path("src/lib.rs"), "pub mod moved;\n".to_string()),
+            (ws.path("src/moved.rs"), "pub fn covers() {}\n".to_string()),
+        ],
+        &[ws.path("src/caller.rs")],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        reports[1].warnings,
+        0,
+        "a moved definition is not a broken use: {}",
+        reports[1].render()
+    );
+    assert!(
+        reports[2]
+            .items
+            .iter()
+            .any(|d| d.code.as_deref() == Some(STALE_REFERENCE)),
+        "moving a function does not preserve its old path: {}",
+        reports[2].render()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to a running gateway"]
+async fn native_inline_test_module_relocation_keeps_definitions_and_fields_clean() {
+    let remote = std::env::var("PROD_CODE_LIVE_GATEWAY")
+        .expect("set native gateway")
+        .parse::<SocketAddr>()
+        .unwrap();
+    const BEFORE: &str = "pub fn api() {}\n#[cfg(test)]\nmod tests {\n fn a() -> u8 { 1 }\n #[test] fn b() { assert_eq!(a(), 1); }\n}\n";
+    const AFTER: &str =
+        "pub fn api() {}\n#[cfg(test)]\n#[path = \"../tests/unit/moved.rs\"]\nmod tests;\n";
+    const MOVED: &str = "fn a() -> u8 { 1 }\n#[test] fn b() { struct Pair { a: u8 } let p = Pair { a: a() }; assert_eq!(p.a, 1); }\n";
+    let ws = Workspace::new(&[("Cargo.toml", CARGO), ("src/lib.rs", BEFORE)]);
+    let root = ws.root();
+    let compile = |dir: &std::path::Path| {
+        let result = std::process::Command::new("cargo")
+            .args(["test", "--quiet"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    compile(&root);
+    let mut loaded = false;
+    for _ in 0..120 {
+        if let Ok(report) =
+            prod_code_mcp::diagnostics::validate_text(remote, &root, &ws.path("src/lib.rs"), BEFORE)
+                .await
+        {
+            if report.ok()
+                && report
+                    .items
+                    .iter()
+                    .all(|d| d.code.as_deref() != Some("unlinked-file"))
+            {
+                loaded = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    assert!(loaded, "analyzer loaded baseline");
+    let reports = prod_code_mcp::diagnostics::validate_texts(
+        remote,
+        &root,
+        &[
+            (ws.path("src/lib.rs"), AFTER.to_string()),
+            (ws.path("tests/unit/moved.rs"), MOVED.to_string()),
+        ],
+        &[],
+    )
+    .await
+    .unwrap();
+    for report in reports {
+        assert_eq!(
+            (report.errors, report.warnings),
+            (0, 0),
+            "{}",
+            report.render()
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(ws.path("src/lib.rs")).unwrap(),
+        BEFORE
+    );
+    assert!(
+        !ws.path("tests/unit/moved.rs").exists(),
+        "validation must not write proposal"
+    );
+    let candidate = Workspace::new(&[
+        ("Cargo.toml", CARGO),
+        ("src/lib.rs", AFTER),
+        ("tests/unit/moved.rs", MOVED),
+    ]);
+    compile(&candidate.root());
+}
