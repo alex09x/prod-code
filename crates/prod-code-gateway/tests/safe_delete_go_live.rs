@@ -34,6 +34,7 @@ impl Gateway {
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
             .env("PROD_CODE_STORAGE", storage.path())
+            .env("PROD_CODE_SHADOW_ROOT", storage.path().join("owned-shadow"))
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
             .env_remove("RUST_LOG")
