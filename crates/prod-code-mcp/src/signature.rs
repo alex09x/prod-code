@@ -798,6 +798,66 @@ fn rewritten_call(text: &str, from: usize, name: &str) -> Option<(usize, usize)>
     None
 }
 
+/// Comments and significant source bytes of a call. Literal contents remain byte-for-byte:
+/// whitespace inside a string is code, while whitespace between tokens is trivia.
+fn call_tokens(text: &str) -> Option<(Vec<&str>, Vec<u8>)> {
+    let mut comments = Vec::new();
+    let mut code = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((end, comment)) = opaque_at(text, i, 0).ok()? {
+            if comment {
+                comments.push(&text[i..end]);
+            } else {
+                code.extend_from_slice(&text.as_bytes()[i..end]);
+            }
+            i = end;
+        } else {
+            let byte = text.as_bytes()[i];
+            if !byte.is_ascii_whitespace() {
+                code.push(byte);
+            }
+            i += 1;
+        }
+    }
+    Some((comments, code))
+}
+
+/// rust-analyzer's structural replacement can put an argument's block comment immediately
+/// after the rewritten call. Account for exactly those missing comment tokens, with their
+/// multiplicity, before comparing the surrounding source. Arbitrary trailing comments, changed
+/// or dropped comments, and unrelated edits still fail reconciliation. Relocated line or doc
+/// comments are refused because moving them can change which code they cover or annotate.
+fn attributed_call_end(old: &str, new: &str, full: &str, mut end: usize) -> Option<(usize, bool)> {
+    let (mut missing, old_code) = call_tokens(old)?;
+    let (retained, new_code) = call_tokens(new)?;
+    for comment in retained {
+        let i = missing.iter().position(|old| *old == comment)?;
+        missing.remove(i);
+    }
+    while !missing.is_empty() {
+        let start = end
+            + full[end..]
+                .bytes()
+                .take_while(u8::is_ascii_whitespace)
+                .count();
+        if start == full.len() {
+            return None;
+        }
+        let (after, true) = opaque_at(full, start, start).ok()?? else {
+            return None;
+        };
+        let comment = &full[start..after];
+        if !comment.starts_with("/*") || comment.starts_with("/**") || comment.starts_with("/*!") {
+            return None;
+        }
+        let i = missing.iter().position(|old| *old == comment)?;
+        missing.remove(i);
+        end = after;
+    }
+    Some((end, old_code == new_code))
+}
+
 /// What the rewrite of one file (`old` into `new`) did with the references `refs` in it:
 /// `(unmatched, unexpected)`.
 ///
@@ -805,7 +865,8 @@ fn rewritten_call(text: &str, from: usize, name: &str) -> Option<(usize, usize)>
 /// that was rewritten was taken for rewritten, and its callers would get the old order through
 /// a pointer of the same type (#446). Every reference is a call the rewrite changed (or one that
 /// needs no change: equal arguments reordered, an `.await` already there), an import, or a
-/// comment; anything else is unmatched. Outside the calls, `new` has to be `old` byte for byte;
+/// comment; anything else is unmatched. Aside from unchanged block comments relocated from a
+/// call to immediately after it, `new` has to be `old` byte for byte outside the calls;
 /// the first place it is not is unexpected, and no call after it is taken as rewritten.
 /// `needs` says, from a call's arguments and whether it is awaited, whether it must change.
 fn attribute(
@@ -889,7 +950,14 @@ fn attribute(
             verified = k;
             break;
         };
-        if call.needs && old[call.open..call.end] == new[open..end] {
+        let Some((attributed_end, same_code)) =
+            attributed_call_end(&old[call.open..call.end], &new[open..end], new, end)
+        else {
+            stop = Some(call.start);
+            verified = k;
+            break;
+        };
+        if call.needs && same_code {
             unmatched.push(format!(
                 "{} (a call the rewrite left as it was)",
                 call.place
@@ -905,7 +973,7 @@ fn attribute(
                 ));
             }
         }
-        (po, pn) = (call.end, end);
+        (po, pn) = (call.end, attributed_end);
     }
     if stop.is_none() && old[po..] != new[pn..] {
         stop = Some(po + common_prefix(&old[po..], &new[pn..]));
@@ -3402,5 +3470,78 @@ mod argument_spelling_tests {
     fn spaces_inside_string_literals_are_values() {
         let args = vec![r#""a  b""#.to_string(), r#""a b""#.to_string()];
         assert!(!reorders_to_itself(&args, &[Some(1), Some(0)]));
+    }
+}
+
+#[cfg(test)]
+mod relocated_comment_tests {
+    use super::*;
+
+    fn compare(old: &str, new: &str) -> (Vec<String>, Vec<String>) {
+        let at = old.find("f(").unwrap();
+        attribute("a.rs", old, new, "f", &[(1, at as u32 + 1)], &|_, _| true)
+    }
+
+    #[test]
+    fn unchanged_nested_block_comments_can_follow_a_rewritten_call() {
+        for (old, new) in [
+            (
+                "fn c() { f(3 /* p, /* then */ q, */, 4); }",
+                "fn c() { f(4, 3)/* p, /* then */ q, */; }",
+            ),
+            (
+                "fn c() { f(1 /* x */, 2 /* x */); }",
+                "fn c() { f(2, 1) /* x */ /* x */; }",
+            ),
+            (
+                "fn c() { f(1 /* a */, 2 /* b */); }",
+                "fn c() { f(2 /* b */, 1) /* a */; }",
+            ),
+            (
+                "fn c() { f(1 /* x */, 2).await; }",
+                "fn c() { f(2, 1).await/* x */; }",
+            ),
+        ] {
+            assert_eq!(compare(old, new), (vec![], vec![]), "{old} -> {new}");
+        }
+    }
+
+    #[test]
+    fn lost_changed_or_invented_comments_and_unrelated_changes_still_refuse() {
+        let old = "fn c() { f(1 /* x */, 2); keep(); }";
+        for new in [
+            "fn c() { f(2, 1); keep(); }",
+            "fn c() { f(2, 1)/* y */; keep(); }",
+            "fn c() { f(2, 1)/* x *//* x */; keep(); }",
+            "fn c() { f(2, 1)/* x */; changed(); }",
+            "fn c() { f(2 /* invented */, 1)/* x */; keep(); }",
+        ] {
+            assert!(!compare(old, new).1.is_empty(), "{new}");
+        }
+        for (old, new) in [
+            (
+                "fn c() { f(1 /* x */, 2)/* x */; }",
+                "fn c() { f(2, 1)/* x */; }",
+            ),
+            (
+                "fn c() { f(1 /** doc */, 2); }",
+                "fn c() { f(2, 1)/** doc */; }",
+            ),
+            ("fn c() { f(1 // x\n, 2); }", "fn c() { f(2, 1)// x\n; }"),
+        ] {
+            assert!(!compare(old, new).1.is_empty(), "{old} -> {new}");
+        }
+    }
+
+    #[test]
+    fn moving_only_a_comment_does_not_count_as_rewriting_a_call() {
+        let (unmatched, unexpected) =
+            compare("fn c() { f(1 /* x */, 2); }", "fn c() { f(1, 2)/* x */; }");
+        assert_eq!(unmatched.len(), 1);
+        assert!(unexpected.is_empty());
+        let (comments, code) =
+            call_tokens(r##"(r#"/* text */ a b"#, "x y", 1 /* real */)"##).unwrap();
+        assert_eq!(comments, vec!["/* real */"]);
+        assert_eq!(code, br##"(r#"/* text */ a b"#,"x y",1)"##);
     }
 }
