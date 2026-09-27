@@ -764,6 +764,64 @@ async fn the_gateway_answers_a_real_checkout() {
     );
 }
 
+/// Invalid native coordinates must remain errors through the public MCP path: they cannot
+/// become a hover at byte zero or let a forced refactoring touch the checkout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_gateway_refuses_invalid_native_positions_without_writing() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+    let before: Vec<_> = ["src/lib.rs", "src/store.rs"]
+        .into_iter()
+        .map(|path| {
+            (
+                path,
+                std::fs::read(checkout.path(path)).expect("source before request"),
+            )
+        })
+        .collect();
+
+    let hover = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_hover",
+        serde_json::json!({ "path": "src/lib.rs", "line": 999999, "character": 1 }),
+    )
+    .await
+    .expect_err("an invalid hover position is a gateway error");
+    assert!(
+        format!("{hover:#}").contains("Invalid position 999999:1"),
+        "{hover:#}"
+    );
+
+    let deletion = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "line": 999999,
+            "character": 1,
+            "force": true
+        }),
+    )
+    .await
+    .expect("the gateway reports a refused mutation");
+    let refused = text_of(&deletion);
+    assert!(deletion.is_error, "the mutation is refused: {refused}");
+    assert!(
+        refused.contains("Invalid position 999999:1"),
+        "the refusal names the invalid coordinate: {refused}"
+    );
+    for (path, contents) in before {
+        assert_eq!(
+            std::fs::read(checkout.path(path)).expect("source after request"),
+            contents,
+            "{path} is unchanged even with force"
+        );
+    }
+}
+
 /// The same gateway, a Go checkout: the dispatch that forwards to a child language server
 /// instead of the in-process Rust engine, and the backend that manages it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
