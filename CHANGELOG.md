@@ -66,6 +66,16 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go and generic language-server adapters reject unsuccessful or malformed initialization
+  replies (#572). Failure, timeout or cancellation retires the owned server generation,
+  clears pending requests and capabilities, and ends generic document acceptance; ordinary
+  request timeouts keep their existing behavior.
+- MCP multi-file validation accepts each advertised input form in its schema (#585):
+  whole-file `edits`, `diff` or `workspace_edit`. At least one remains required, and
+  the existing input precedence and field types are preserved.
+- Diff-validation help names the current on-disk files as the patch base (#578).
+  Submit a proposed patch before applying it; validate already-written edits using
+  their complete current contents.
 - Editor pre-save synchronization reads the decoded top-level JSON-RPC method (#579).
   Reordered fields and escaped method keys/values still push the checkout before save or
   watched-file notifications; nested `method` fields do not trigger an unrelated sync.

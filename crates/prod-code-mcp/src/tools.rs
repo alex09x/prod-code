@@ -731,7 +731,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_validate_edits".to_string(),
-            description: "Check several proposed file contents TOGETHER before writing any of them: all edits are placed in one private analyzer overlay, then diagnostics are reported per file, so a change in one file is judged against the proposed state of the others (a changed signature and its updated callers). The change can be given as whole files (`edits`), as a unified diff (`diff`, e.g. `git diff` output: each hunk is applied in memory where it says, or where its old lines moved to, and a hunk that fits nowhere is refused by number), or as an LSP WorkspaceEdit (`workspace_edit`). `also_check` lists unchanged files that might break (callers of the edited symbols). Nothing is written anywhere."
+            description: "Check several proposed file contents TOGETHER before writing any of them: all edits are placed in one private analyzer overlay, then diagnostics are reported per file, so a change in one file is judged against the proposed state of the others (a changed signature and its updated callers). The change can be given as whole files (`edits`), as a proposed unified diff (`diff`: each hunk is applied to CURRENT on-disk contents, not Git HEAD, where it says or where its old lines moved to; submit it before applying the edits, and a hunk that fits nowhere is refused by number), or as an LSP WorkspaceEdit (`workspace_edit`). If edits are already written, provide their complete current contents in `edits` instead. `also_check` lists unchanged files that might break (callers of the edited symbols). Nothing is written anywhere."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -748,7 +748,7 @@ pub fn list_tools() -> Vec<McpTool> {
                             "required": ["path", "new_text"]
                         }
                     },
-                    "diff": { "type": "string", "description": "The change as a unified diff (`git diff` output), instead of `edits`" },
+                    "diff": { "type": "string", "description": "A proposed unified diff against CURRENT on-disk files, not Git HEAD. Submit before applying it; for already-written edits, use complete contents in `edits`" },
                     "workspace_edit": { "type": "object", "description": "The change as an LSP WorkspaceEdit (`changes` or `documentChanges`), instead of `edits`" },
                     "also_check": {
                         "type": "array",
@@ -757,7 +757,11 @@ pub fn list_tools() -> Vec<McpTool> {
                     },
                     "compile": { "type": "boolean", "description": COMPILE_DESCRIPTION }
                 },
-                "required": ["edits"]
+                "anyOf": [
+                    { "required": ["edits"] },
+                    { "required": ["diff"] },
+                    { "required": ["workspace_edit"] }
+                ]
             }),
         },
         McpTool {
@@ -7524,12 +7528,22 @@ mod tests {
     }
 
     #[test]
-    fn validate_edits_schema_takes_a_list_of_edits() {
+    fn validate_edits_schema_accepts_alternative_inputs() {
         let tool = list_tools()
             .into_iter()
             .find(|t| t.name == "code_validate_edits")
             .unwrap();
-        assert_eq!(tool.input_schema["required"], serde_json::json!(["edits"]));
+        // Each public input form stands alone: a diff or WorkspaceEdit must not need
+        // an unrelated, dummy `edits` list to satisfy MCP client validation.
+        assert!(tool.input_schema.get("required").is_none());
+        assert_eq!(
+            tool.input_schema["anyOf"],
+            serde_json::json!([
+                { "required": ["edits"] },
+                { "required": ["diff"] },
+                { "required": ["workspace_edit"] }
+            ])
+        );
         assert_eq!(
             tool.input_schema["properties"]["edits"]["items"]["required"],
             serde_json::json!(["path", "new_text"])
