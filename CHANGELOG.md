@@ -6,7 +6,9 @@
 - Go and generic adapters periodically probe initialized idle language servers (#590).
   Valid late replies reset the failure streak; private probe state stays bounded. Three
   consecutive idle response timeouts retire the generation, while ordinary work defers
-  probing. Native Go/Python/C++/TypeScript checks observe matching replies.
+  probing. Native Go/Python/C++/TypeScript checks observe matching replies. The Swift 5.10
+  SourceKit-LSP proof also checks hover before and after two replies (#599), with bounded
+  private compiler setup and exact process-group retirement.
 - Go safe-delete also supports named value/pointer receiver methods (#567). Interface
   obligations, promoted methods and embeddings through nested structures or aliases refuse
   without writing, including with force. Constant-array receiver types remain supported;
