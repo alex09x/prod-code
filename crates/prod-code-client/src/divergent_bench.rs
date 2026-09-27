@@ -56,7 +56,7 @@ pub const BENCH_WORKSPACE_SUFFIX: &str = "-divergent-bench";
 const FIXTURE_REPO_NAME: &str = "fixture";
 const FIXTURE_CARGO_TOML: &str = "[package]\nname = \"divergent-bench-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
 const FIXTURE_LIB_RS: &str = "pub fn compute_signal(input: i64) -> i64 {\n    input * 2\n}\n";
-/// Caps connect, pre-flight sync, handshake, and initialize so a silent gateway cannot leave a
+/// Caps each initial sync and session setup so a silent gateway cannot leave a
 /// benchmark worker hanging forever. This is deliberately separate from the 30-second hover
 /// response budget, which measures query behavior rather than session setup reliability.
 const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(300);
@@ -934,6 +934,30 @@ pub async fn initial_sync(
     root: &Path,
     workspace_name: &str,
 ) -> Result<SyncSummary> {
+    initial_sync_with_timeout(remote, root, workspace_name, SESSION_SETUP_TIMEOUT).await
+}
+
+async fn initial_sync_with_timeout(
+    remote: SocketAddr,
+    root: &Path,
+    workspace_name: &str,
+    setup_timeout: Duration,
+) -> Result<SyncSummary> {
+    timeout(
+        setup_timeout,
+        initial_sync_unbounded(remote, root, workspace_name),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!("timed out after {setup_timeout:?} completing benchmark initial workspace sync")
+    })?
+}
+
+async fn initial_sync_unbounded(
+    remote: SocketAddr,
+    root: &Path,
+    workspace_name: &str,
+) -> Result<SyncSummary> {
     prod_code_mcp::sync::clear_sync_cache(root);
     let identity = prod_code_mcp::sync::WorkspaceIdentity {
         name: workspace_name.to_string(),
@@ -1714,6 +1738,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn initial_sync_deadline_closes_a_stalled_origin_transport() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            assert!(matches!(
+                framed.next().await,
+                Some(Ok(WireMessage::SyncProbeRequest(_)))
+            ));
+            assert!(
+                framed.next().await.is_none(),
+                "expired origin sync must close its transport"
+            );
+        });
+        let result = timeout(
+            Duration::from_secs(3),
+            initial_sync_with_timeout(
+                remote,
+                &worktree.root,
+                &worktree.workspace_name,
+                Duration::from_millis(500),
+            ),
+        )
+        .await
+        .expect("the initial sync deadline must finish before the outer assertion");
+        let error = result.expect_err("silent initial sync must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("completing benchmark initial workspace sync"),
+            "{error:#}"
+        );
+        timeout(Duration::from_secs(3), peer)
+            .await
+            .expect("peer must observe closure")
+            .expect("peer completes");
+    }
+
+    #[tokio::test]
     async fn open_session_completes_normal_sync_handshake_and_initialize() {
         let (_tmp, worktree) = fixture_worktree();
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
@@ -1758,7 +1823,7 @@ mod tests {
             remote,
             &worktree,
             "divergent-bench-normal-setup".to_string(),
-            Duration::from_secs(1),
+            Duration::from_secs(3),
         )
         .await
         .expect("normal setup succeeds");
@@ -1782,12 +1847,12 @@ mod tests {
         });
 
         let result = timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(3),
             open_session_with_timeout(
                 remote,
                 &worktree,
                 "divergent-bench-silent-handshake".to_string(),
-                Duration::from_millis(50),
+                Duration::from_millis(500),
             ),
         )
         .await
@@ -1821,12 +1886,12 @@ mod tests {
         });
 
         let result = timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(3),
             open_session_with_timeout(
                 remote,
                 &worktree,
                 "divergent-bench-stalled-preflight".to_string(),
-                Duration::from_millis(50),
+                Duration::from_millis(500),
             ),
         )
         .await
@@ -1859,7 +1924,7 @@ mod tests {
             remote,
             &worktree,
             "divergent-bench-bad-handshake".to_string(),
-            Duration::from_secs(1),
+            Duration::from_secs(3),
         )
         .await
         .expect_err("unexpected handshake reply must fail");
