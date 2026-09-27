@@ -3370,7 +3370,7 @@ async fn lsp_syncs_only_the_decoded_top_level_save_method_before_forwarding() {
     let ws = make_workspace();
     let home = tempfile::tempdir().expect("isolated home");
     let (addr, seen) = recording_gateway(
-        |message| (message["method"] == "test/barrier").then(|| serde_json::json!(true)),
+        |message| (message["method"] == "test/barrier").then_some(serde_json::json!(true)),
         HashMap::new(),
     )
     .await;
