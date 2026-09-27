@@ -4721,16 +4721,16 @@ async fn no_index_members_require_the_full_owner_path_in_the_outline() {
     );
     commit(&ws);
     let indexed = lib.clone();
-    let mut alpha_method = answers::document_symbol("run", 6, 1, 1, 61);
+    let mut alpha_method = answers::document_symbol("run", 6, 1, 1, 57);
     alpha_method["containerName"] = serde_json::json!("alpha > impl Widget");
-    let mut beta_method = answers::document_symbol("run", 6, 2, 2, 60);
+    let mut beta_method = answers::document_symbol("run", 6, 2, 2, 56);
     beta_method["containerName"] = serde_json::json!("beta > impl Widget");
     let outline = serde_json::json!([alpha_method, beta_method]);
     let remote = scripted_gateway(Arc::new(move |method, params| match method {
         "workspace/symbol" if params["query"] == "Widget" => {
-            let mut alpha = answers::symbol("Widget", 23, &indexed, 1, 24);
+            let mut alpha = answers::symbol("Widget", 23, &indexed, 1, 28);
             alpha["containerName"] = serde_json::json!("alpha");
-            let mut beta = answers::symbol("Widget", 23, &indexed, 2, 23);
+            let mut beta = answers::symbol("Widget", 23, &indexed, 2, 27);
             beta["containerName"] = serde_json::json!("beta");
             serde_json::json!([alpha, beta])
         }
