@@ -644,7 +644,7 @@ async fn add_parameters(
             .await
             .map_err(|why| {
                 refusal(format!(
-                    "adding parameters to `{}` is refused because its interface implementations \\
+                    "adding parameters to `{}` is refused because its interface implementations \
                      cannot be proven absent: {why:#}",
                     decl.name
                 ))
