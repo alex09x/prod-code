@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- TypeScript safe-delete supports ordinary private ASCII-named top-level functions in
+  contained ES-module projects (#594). Exact native declaration/reference evidence and
+  remote TypeScript compilation precede transactional application. Exports, uncertain or
+  dynamic references (including disguised direct eval), linked/generated sources and broader
+  configuration graphs refuse even with force. The `preserve` module-emission mode is refused
+  because a type-only export cannot prove runtime module privacy (#603). JavaScript, global
+  scripts and broader TypeScript declarations remain unsupported.
 - Go and generic adapters periodically probe initialized idle language servers (#590).
   Valid late replies reset the failure streak; private probe state stays bounded. Three
   consecutive idle response timeouts retire the generation, while ordinary work defers
@@ -79,6 +86,9 @@
 - Shadow hypotheses use a storage-specific namespace with exclusive gateway ownership (#591).
   Startup cleanup cannot sweep another running gateway's hypotheses; canonical aliases
   contend on one stable lock, held until the last accepted session releases its state.
+- Gateway handshake and shared-session resources retire on errors and cancellation (#583).
+  Workspace and worktree ownership remains held until the canceled session's overlays are
+  restored, preserving independent sessions and subsequent single-owner behavior.
 - Dedicated editor sessions bound server-input and editor-output writes and teardown (#574).
   A stalled peer cannot retain its child process group; watched-file fanout retires only
   lagging sessions. Cleanup also retires descendants after their parent exits, and final

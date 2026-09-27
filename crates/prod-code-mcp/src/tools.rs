@@ -190,7 +190,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_safe_delete".to_string(),
-            description: "Delete the item at a 1-based declaration-name position only when the analyzer proves it unreferenced. Rust items retain analyzer safe-delete behavior, and Rust parameters retain the code_change_signature rewrite. For Go, this writes only an ordinary unexported, ASCII-named, non-generic top-level function or named value/pointer receiver method with a body: gopls must report exactly its declaration and no use, the range must match current source, and the complete proposal must compile remotely before it is applied. Receiver methods also require empty interface-implementation evidence and no declaring-package interface or embedding obligation, including transitive, parenthesized and instantiated aliases. Go compiler verification uses the active Go build flags and is not an all-platform reachability proof; force bypasses none of these checks. Imports are not cleaned automatically."
+            description: "Delete the item at a 1-based declaration-name position only when the analyzer proves it unreferenced. Rust items retain analyzer safe-delete behavior, and Rust parameters retain the code_change_signature rewrite. Go retains its narrow compiler-verified function and receiver-method support. TypeScript writes only an ordinary private ASCII-named, non-generic, non-async, non-generator top-level function with a body in a contained ES module and simple tsconfig include graph: native declarations and references must exactly match current source, and the complete proposal must pass tsc --noEmit in an isolated remote shadow. JavaScript, TSX, exports, ambient/overload/decorator forms, dynamic evaluation, linked/generated sources and complex configuration graphs are refused. Force bypasses none of the Go or TypeScript checks. Imports are not cleaned automatically."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -198,7 +198,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line of the item's name" },
                     "character": { "type": "integer", "description": "1-based column of the item's name" },
-                    "force": { "type": "boolean", "description": "Rust parameter compatibility option; it never bypasses Go safe-delete checks" }
+                    "force": { "type": "boolean", "description": "Rust parameter compatibility option; it never bypasses Go or TypeScript safe-delete checks" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -5514,6 +5514,29 @@ async fn handle_safe_delete(
             {
                 Ok(deleted) => McpToolCallResult::text(format!(
                     "deleted unreferenced Go function {}; compiler-verified under the active Go build flags; 1 path updated:\n{}",
+                    deleted.name,
+                    deleted.path.display()
+                )),
+                Err(error) => McpToolCallResult::error(format!("safe delete refused: {error:#}")),
+            },
+        );
+    }
+    if file_path
+        .extension()
+        .is_some_and(|extension| extension == "ts")
+    {
+        return Ok(
+            match crate::safe_delete_typescript::delete_function(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+            )
+            .await
+            {
+                Ok(deleted) => McpToolCallResult::text(format!(
+                    "deleted unreferenced private TypeScript function {}; compiler-verified under the active TypeScript configuration; 1 path updated:\n{}",
                     deleted.name,
                     deleted.path.display()
                 )),

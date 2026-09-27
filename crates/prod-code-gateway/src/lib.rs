@@ -95,6 +95,21 @@ fn running_commands() -> Vec<prod_code_protocol::RunningCommand> {
 pub static TOTAL_QUERIES: AtomicU64 = AtomicU64::new(0);
 pub static SLOW_QUERIES: AtomicU64 = AtomicU64::new(0);
 
+struct ActiveSession<'a>(&'a AtomicUsize);
+
+impl<'a> ActiveSession<'a> {
+    fn start(counter: &'a AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self(counter)
+    }
+}
+
+impl Drop for ActiveSession<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "prod-code-server",
@@ -2753,7 +2768,7 @@ pub async fn handle_client(
                     }
                 };
                 let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
-                state.active_sessions.fetch_add(1, Ordering::Relaxed);
+                let _active_session = ActiveSession::start(&state.active_sessions);
 
                 let client_root_path = PathBuf::from(&req.client_workspace_root);
                 let server_workspace = workspace::resolve_server_workspace(
@@ -2795,7 +2810,6 @@ pub async fn handle_client(
                         engine,
                         "refusing handshake: engine not served here"
                     );
-                    state.active_sessions.fetch_sub(1, Ordering::Relaxed);
                     framed.send(WireMessage::Disconnect { reason }).await?;
                     return Ok(());
                 }
@@ -2829,7 +2843,6 @@ pub async fn handle_client(
                         session_id,
                     )
                     .await;
-                    state.active_sessions.fetch_sub(1, Ordering::Relaxed);
                     return outcome;
                 }
 
@@ -2849,7 +2862,6 @@ pub async fn handle_client(
                             reason,
                             "refusing handshake: the engine could not be loaded"
                         );
-                        state.active_sessions.fetch_sub(1, Ordering::Relaxed);
                         framed.send(WireMessage::Disconnect { reason }).await?;
                         return Ok(());
                     }
@@ -2900,9 +2912,8 @@ pub async fn handle_client(
                             );
                             state
                                 .workspace_manager
-                                .unregister_session_view(&session_view)
+                                .unregister_session_view(session_view)
                                 .await;
-                            state.active_sessions.fetch_sub(1, Ordering::Relaxed);
                             framed.send(WireMessage::Disconnect { reason }).await?;
                             return Ok(());
                         }
@@ -2959,23 +2970,10 @@ pub async fn handle_client(
                 });
                 let session_res = run_session_loop(framed, &translator, &session_view, meta).await;
 
-                if let Some(engine_lock) = &session_view.workspace.rust_engine {
-                    let mut engine = engine_lock.lock().await;
-                    if let Err(e) = engine.clear_session(session_id) {
-                        tracing::warn!(error = %e, session_id, "failed to drop session overlays");
-                    }
-                }
-                if let Some(engine) = &session_view.workspace.generic_engine
-                    && let Err(err) = engine.close_session(session_id).await
-                {
-                    tracing::warn!(error = %err, session_id, "failed to drop generic session overlays");
-                }
-
                 state
                     .workspace_manager
-                    .unregister_session_view(&session_view)
+                    .unregister_session_view(session_view)
                     .await;
-                state.active_sessions.fetch_sub(1, Ordering::Relaxed);
 
                 tracing::info!(session_id, "Client session retired: {:?}", session_res);
                 return session_res;

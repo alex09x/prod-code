@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -381,6 +382,104 @@ pub struct SessionView {
     /// The loaded workspace the session is counted against, for idle eviction.
     pub accounted: Arc<SharedWorkspace>,
     pub is_single_owner: bool,
+    lease: Option<WorkspaceLease>,
+    owner: Option<WorktreeOwner>,
+}
+
+/// One counted attachment to a loaded workspace. Until it is transferred into a
+/// [`SessionView`], dropping the handshake future returns the count automatically.
+pub struct WorkspaceLease {
+    workspace: Option<Arc<SharedWorkspace>>,
+}
+
+impl WorkspaceLease {
+    fn acquire(workspace: Arc<SharedWorkspace>) -> Self {
+        workspace.active_sessions.fetch_add(1, Ordering::Relaxed);
+        Self {
+            workspace: Some(workspace),
+        }
+    }
+
+    pub fn workspace(&self) -> &Arc<SharedWorkspace> {
+        self.workspace.as_ref().expect("a live workspace lease")
+    }
+}
+
+impl Deref for WorkspaceLease {
+    type Target = SharedWorkspace;
+    fn deref(&self) -> &Self::Target {
+        self.workspace()
+    }
+}
+
+impl Drop for WorkspaceLease {
+    fn drop(&mut self) {
+        if let Some(workspace) = self.workspace.take() {
+            workspace.touch();
+            workspace.active_sessions.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+}
+
+type WorktreeOwners = Arc<std::sync::Mutex<HashMap<PathBuf, usize>>>;
+
+struct WorktreeOwner {
+    root: PathBuf,
+    owners: WorktreeOwners,
+}
+
+impl Drop for WorktreeOwner {
+    fn drop(&mut self) {
+        let mut owners = self.owners.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = owners.get_mut(&self.root) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                owners.remove(&self.root);
+            }
+        }
+    }
+}
+
+impl SessionView {
+    fn start_retirement(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        let lease = self.lease.take()?;
+        let owner = self.owner.take();
+        let workspace = Arc::clone(&self.workspace);
+        let session_id = self.session_id;
+        Some(tokio::spawn(async move {
+            clear_session_overlays(&workspace, session_id).await;
+            drop(owner);
+            drop(lease);
+        }))
+    }
+
+    async fn retire(mut self) {
+        if let Some(retirement) = self.start_retirement()
+            && let Err(err) = retirement.await
+        {
+            tracing::warn!(%err, session_id = self.session_id, "session retirement task failed");
+        }
+    }
+}
+
+impl Drop for SessionView {
+    fn drop(&mut self) {
+        let _ = self.start_retirement();
+    }
+}
+
+async fn clear_session_overlays(workspace: &SharedWorkspace, session_id: u64) {
+    if let Some(engine_lock) = &workspace.rust_engine {
+        let mut engine = engine_lock.lock().await;
+        if let Err(err) = engine.clear_session(session_id) {
+            tracing::warn!(error = %err, session_id, "failed to drop session overlays");
+        }
+    }
+    if let Some(engine) = &workspace.generic_engine
+        && let Err(err) = engine.close_session(session_id).await
+    {
+        tracing::warn!(error = %err, session_id, "failed to drop generic session overlays");
+    }
 }
 
 /// State of an in-flight workspace load.
@@ -389,30 +488,10 @@ enum LoadState {
     Ready(Arc<SharedWorkspace>),
 }
 
-/// The session a load counts for its leader on the workspace it made. Given back, as if the
-/// session had ended, unless the leader claims it: one that stopped waiting must not keep the
-/// workspace from ever being idle.
-struct LeaderSession(Option<Arc<SharedWorkspace>>);
-
-impl LeaderSession {
-    fn claim(mut self) -> Arc<SharedWorkspace> {
-        self.0.take().expect("a leader session is claimed once")
-    }
-}
-
-impl Drop for LeaderSession {
-    fn drop(&mut self) {
-        if let Some(ws) = self.0.take() {
-            ws.touch();
-            ws.active_sessions.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
-}
-
 /// Thread-safe manager coordinating workspace lifecycle and leader-follower loading.
 pub struct WorkspaceManager {
     workspaces: RwLock<HashMap<WorkspaceKey, LoadState>>,
-    worktree_owners: Mutex<HashMap<PathBuf, usize>>,
+    worktree_owners: WorktreeOwners,
     /// The language servers of editors' sessions, which run outside the shared workspaces.
     pub editor_servers: crate::editor_proxy::EditorServers,
     /// Whether the host has memory for another engine (#433).
@@ -441,7 +520,7 @@ impl WorkspaceManager {
     pub fn with_admission(admission: Arc<crate::admission::Admission>) -> Self {
         Self {
             workspaces: RwLock::new(HashMap::new()),
-            worktree_owners: Mutex::new(HashMap::new()),
+            worktree_owners: Arc::new(std::sync::Mutex::new(HashMap::new())),
             editor_servers: crate::editor_proxy::EditorServers::default(),
             admission,
             rust_loader: Arc::new(prod_code_engine_rust::RustEngine::load),
@@ -609,7 +688,7 @@ impl WorkspaceManager {
             .contains_key(&WorkspaceKey(workspace_root.to_path_buf()))
     }
 
-    #[cfg(test)]
+    #[doc(hidden)]
     pub async fn insert_ready_for_test(&self, workspace: Arc<SharedWorkspace>) {
         let mut guard = self.workspaces.write().await;
         guard.insert(workspace.key.clone(), LoadState::Ready(workspace));
@@ -660,91 +739,73 @@ impl WorkspaceManager {
         self: &Arc<Self>,
         workspace_root: &Path,
         engine: &str,
-    ) -> Result<Arc<SharedWorkspace>> {
+    ) -> Result<WorkspaceLease> {
         let key = WorkspaceKey(workspace_root.to_path_buf());
 
-        // Fast path: check if already loaded
-        {
-            let guard = self.workspaces.read().await;
-            if let Some(state) = guard.get(&key) {
-                match state {
-                    LoadState::Ready(ws) if !ws.reusable_for(engine) => {
-                        // The directory was (re)populated since this workspace was loaded,
-                        // e.g. an empty worktree workspace detected as generic before its
-                        // first sync landed, or its language server exited (#355). Fall
-                        // through and load it afresh.
-                        tracing::info!(
-                            workspace = ?workspace_root,
-                            previous = %ws.engine,
-                            engine,
+        loop {
+            let waiting = {
+                let guard = self.workspaces.read().await;
+                match guard.get(&key) {
+                    Some(LoadState::Ready(ws)) if ws.reusable_for(engine) => {
+                        return Ok(WorkspaceLease::acquire(Arc::clone(ws)));
+                    }
+                    Some(LoadState::Ready(ws)) => {
+                        tracing::info!(workspace = ?workspace_root, previous = %ws.engine, engine,
                             server_exited = ws.has_dead_server(),
-                            "Workspace engine changed or its server exited; reloading"
-                        );
+                            "Workspace engine changed or its server exited; reloading");
+                        None
                     }
-                    LoadState::Ready(ws) => {
-                        ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-                        return Ok(Arc::clone(ws));
-                    }
-                    LoadState::Loading(tx) => {
-                        let mut rx = tx.subscribe();
-                        drop(guard);
-                        return match rx.recv().await {
-                            Ok(Ok(ws)) => {
-                                ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-                                Ok(ws)
-                            }
-                            Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
-                            Err(e) => anyhow::bail!("Leader dropped load broadcast: {e}"),
-                        };
-                    }
+                    Some(LoadState::Loading(tx)) => Some(tx.subscribe()),
+                    None => None,
                 }
-            }
-        }
-
-        // Slow path: acquire write lock to become leader
-        let (tx, _rx) = broadcast::channel(1);
-        let mut replaced = Vec::new();
-        {
-            let mut guard = self.workspaces.write().await;
-            let stale =
-                matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for(engine));
-            if stale && let Some(LoadState::Ready(ws)) = guard.remove(&key) {
-                replaced.push(ws);
-            }
-            // Double check
-            if let Some(state) = guard.get(&key) {
-                match state {
-                    LoadState::Ready(ws) => {
-                        ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-                        return Ok(Arc::clone(ws));
-                    }
-                    LoadState::Loading(existing_tx) => {
-                        let mut sub = existing_tx.subscribe();
-                        drop(guard);
-                        return match sub.recv().await {
-                            Ok(Ok(ws)) => {
-                                ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-                                Ok(ws)
-                            }
-                            Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
-                            Err(e) => anyhow::bail!("Leader dropped load broadcast: {e}"),
-                        };
-                    }
+            };
+            if let Some(mut waiting) = waiting {
+                match waiting.recv().await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
+                    Err(err) => anyhow::bail!("Leader dropped load broadcast: {err}"),
                 }
             }
 
-            guard.insert(key.clone(), LoadState::Loading(tx.clone()));
-        }
-        // From here the load runs in a task of its own, which holds the reservation and answers
-        // the map and the followers whatever becomes of this wait: a client that gives up on
-        // its handshake must neither return the memory of a load still running nor leave a
-        // Loading entry that nothing will ever answer.
-        let (leader_tx, leader_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(Arc::clone(self).lead(key, engine.to_string(), tx, replaced, leader_tx));
-        match leader_rx.await {
-            Ok(Ok(session)) => Ok(session.claim()),
-            Ok(Err(err)) => Err(err),
-            Err(_) => anyhow::bail!("the workspace load ended without a result"),
+            let (tx, _rx) = broadcast::channel(1);
+            let mut replaced = Vec::new();
+            let waiting = {
+                let mut guard = self.workspaces.write().await;
+                let stale = matches!(guard.get(&key), Some(LoadState::Ready(ws)) if !ws.reusable_for(engine));
+                if stale && let Some(LoadState::Ready(ws)) = guard.remove(&key) {
+                    replaced.push(ws);
+                }
+                match guard.get(&key) {
+                    Some(LoadState::Ready(ws)) => {
+                        return Ok(WorkspaceLease::acquire(Arc::clone(ws)));
+                    }
+                    Some(LoadState::Loading(existing)) => Some(existing.subscribe()),
+                    None => {
+                        guard.insert(key.clone(), LoadState::Loading(tx.clone()));
+                        None
+                    }
+                }
+            };
+            if let Some(mut waiting) = waiting {
+                match waiting.recv().await {
+                    Ok(Ok(_)) => continue,
+                    Ok(Err(err)) => anyhow::bail!("Workspace load failed: {err}"),
+                    Err(err) => anyhow::bail!("Leader dropped load broadcast: {err}"),
+                }
+            }
+
+            let (leader_tx, leader_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(Arc::clone(self).lead(
+                key.clone(),
+                engine.to_string(),
+                tx,
+                replaced,
+                leader_tx,
+            ));
+            return match leader_rx.await {
+                Ok(result) => result,
+                Err(_) => anyhow::bail!("the workspace load ended without a result"),
+            };
         }
     }
 
@@ -759,7 +820,7 @@ impl WorkspaceManager {
         engine: String,
         tx: broadcast::Sender<Result<Arc<SharedWorkspace>, String>>,
         replaced: Vec<Arc<SharedWorkspace>>,
-        leader: tokio::sync::oneshot::Sender<Result<LeaderSession>>,
+        leader: tokio::sync::oneshot::Sender<Result<WorkspaceLease>>,
     ) {
         let manager = Arc::clone(&self);
         let root = key.0.clone();
@@ -773,13 +834,6 @@ impl WorkspaceManager {
         match loaded {
             Ok((ws, reservation)) => {
                 reservation.release_after_settling();
-                // The leader's session is counted before the workspace can be seen, so it is
-                // never idle in between; one whose leader has gone is not counted, or is given
-                // back by the LeaderSession nobody claims.
-                let session = (!leader.is_closed()).then(|| {
-                    ws.active_sessions.fetch_add(1, Ordering::Relaxed);
-                    LeaderSession(Some(Arc::clone(&ws)))
-                });
                 let mut guard = self.workspaces.write().await;
                 if !matches!(guard.get(&key), Some(LoadState::Loading(t)) if t.same_channel(&tx)) {
                     drop(guard);
@@ -788,6 +842,8 @@ impl WorkspaceManager {
                     let _ = leader.send(Err(anyhow::anyhow!(reason)));
                     return;
                 }
+                let session =
+                    (!leader.is_closed()).then(|| WorkspaceLease::acquire(Arc::clone(&ws)));
                 guard.insert(key, LoadState::Ready(Arc::clone(&ws)));
                 drop(guard);
                 if let Some(session) = session {
@@ -994,36 +1050,46 @@ impl WorkspaceManager {
         &self,
         session_id: u64,
         worktree_root: PathBuf,
-        workspace: Arc<SharedWorkspace>,
+        lease: WorkspaceLease,
     ) -> SessionView {
+        let workspace = Arc::clone(lease.workspace());
         workspace.touch();
-        let mut owners = self.worktree_owners.lock().await;
+        let mut owners = self
+            .worktree_owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let count = owners.entry(worktree_root.clone()).or_insert(0);
         *count += 1;
         let is_single_owner = *count == 1;
+        drop(owners);
 
         SessionView {
             session_id,
-            worktree_root,
+            worktree_root: worktree_root.clone(),
             accounted: Arc::clone(&workspace),
             workspace,
             is_single_owner,
+            lease: Some(lease),
+            owner: Some(WorktreeOwner {
+                root: worktree_root,
+                owners: Arc::clone(&self.worktree_owners),
+            }),
         }
     }
 
-    /// Release a session's view on disconnect.
-    pub async fn unregister_session_view(&self, view: &SessionView) {
-        view.accounted.touch();
-        view.accounted
-            .active_sessions
-            .fetch_sub(1, Ordering::Relaxed);
-        let mut owners = self.worktree_owners.lock().await;
-        if let Some(count) = owners.get_mut(&view.worktree_root) {
-            *count = count.saturating_sub(1);
-            if *count == 0 {
-                owners.remove(&view.worktree_root);
-            }
-        }
+    /// Restore overlays before releasing worktree and workspace ownership.
+    pub async fn unregister_session_view(&self, view: SessionView) {
+        view.retire().await;
+    }
+
+    #[doc(hidden)]
+    pub fn worktree_owner_count_for_test(&self, root: &Path) -> usize {
+        self.worktree_owners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(root)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -2033,7 +2099,7 @@ while True:
             .unwrap()
             .unwrap();
         let registered = manager.get_loaded(&root).await.unwrap();
-        assert!(Arc::ptr_eq(&current, &registered));
+        assert!(Arc::ptr_eq(current.workspace(), &registered));
         assert_eq!(current.active_sessions.load(Ordering::Relaxed), 1);
         assert_eq!(loads.load(Ordering::SeqCst), 2);
     }
@@ -2090,7 +2156,7 @@ while True:
         .expect("the follower waits on the load");
         gate.send(()).unwrap();
 
-        let answered = |task: tokio::task::JoinHandle<Result<Arc<SharedWorkspace>>>| async {
+        let answered = |task: tokio::task::JoinHandle<Result<WorkspaceLease>>| async {
             tokio::time::timeout(Duration::from_secs(30), task)
                 .await
                 .expect("answered")
@@ -2221,7 +2287,7 @@ while True:
         let ws2 = ws2.unwrap();
 
         // Both sessions share the exact same Arc instance in memory!
-        assert!(Arc::ptr_eq(&ws1, &ws2));
+        assert!(Arc::ptr_eq(ws1.workspace(), ws2.workspace()));
         assert_eq!(manager.loaded_count().await, 1);
         assert_eq!(ws1.active_sessions.load(Ordering::Relaxed), 2);
     }
@@ -2232,24 +2298,34 @@ while True:
             crate::admission::Admission::unbounded(),
         )));
         let root = PathBuf::from("/test/repo");
-        let ws = manager.get_or_load(&root, "rust").await.unwrap();
-
         let wt1 = PathBuf::from("/test/repo/worktree-1");
         let wt2 = PathBuf::from("/test/repo/worktree-2");
 
         let view1 = manager
-            .register_session_view(1, wt1.clone(), Arc::clone(&ws))
+            .register_session_view(
+                1,
+                wt1.clone(),
+                manager.get_or_load(&root, "rust").await.unwrap(),
+            )
             .await;
         assert!(view1.is_single_owner, "First agent on wt1 is sole owner");
 
         let view2 = manager
-            .register_session_view(2, wt2.clone(), Arc::clone(&ws))
+            .register_session_view(
+                2,
+                wt2.clone(),
+                manager.get_or_load(&root, "rust").await.unwrap(),
+            )
             .await;
         assert!(view2.is_single_owner, "First agent on wt2 is sole owner");
 
         // Second session attaches to wt1
         let view3 = manager
-            .register_session_view(3, wt1.clone(), Arc::clone(&ws))
+            .register_session_view(
+                3,
+                wt1.clone(),
+                manager.get_or_load(&root, "rust").await.unwrap(),
+            )
             .await;
         assert!(
             !view3.is_single_owner,
@@ -2257,9 +2333,9 @@ while True:
         );
 
         // Cleanup
-        manager.unregister_session_view(&view1).await;
-        manager.unregister_session_view(&view2).await;
-        manager.unregister_session_view(&view3).await;
+        manager.unregister_session_view(view1).await;
+        manager.unregister_session_view(view2).await;
+        manager.unregister_session_view(view3).await;
     }
 
     #[tokio::test]
