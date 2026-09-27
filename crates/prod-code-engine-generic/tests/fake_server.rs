@@ -149,8 +149,10 @@ while True:
         version = message["params"]["textDocument"]["version"]
         publish(uri, version - 1, "from the text before the change")
         # A changed text marked `stale-only` is never built: only the old text's build arrives.
-        if "stale-only" not in message["params"]["contentChanges"][-1]["text"]:
-            threading.Timer(0.3, publish, (uri, version, "from the text as changed")).start()
+        changed = message["params"]["contentChanges"][-1]["text"]
+        if "stale-only" not in changed:
+            result = changed if os.environ.get("FAKE_ECHO_CHANGE") else "from the text as changed"
+            threading.Timer(0.3, publish, (uri, version, result)).start()
     elif method == "workspace/executeCommand":
         command = message["params"].get("command", "")
         if command == "prodCode/edit":
@@ -1422,4 +1424,53 @@ write("mirror-pipeline.svg", s)
             .await
             .unwrap();
     }
+}
+
+/// Pyright-family servers keep one document identity for the engine's lifetime: closing and
+/// reopening can split builtin identities (#466). The adapter restores disk text on close and
+/// changes that retained document for the next session, with exact monotonic versions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_documents_restore_disk_text_and_reopen_as_changes() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("retained.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings
+        .env
+        .insert("FAKE_ECHO_CHANGE".to_string(), "1".to_string());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+
+    engine
+        .send_session_notification(
+            7,
+            "textDocument/didOpen",
+            serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal one\n"}}),
+        )
+        .await
+        .unwrap();
+    engine.close_session(7).await;
+    let restored = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(restored[0]["message"], "baseline\n");
+
+    engine
+        .send_session_notification(
+            8,
+            "textDocument/didOpen",
+            serde_json::json!({"textDocument":{"uri":uri,"languageId":"python","version":1,"text":"proposal two\n"}}),
+        )
+        .await
+        .unwrap();
+    let reopened = engine
+        .current_diagnostics_for(&uri, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(reopened[0]["message"], "proposal two\n");
+    engine.close_session(8).await;
+
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "baseline\n");
 }

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use prod_code_protocol::readiness::{
     BUSY_MEMBER, Busy, INDEX_WAIT, Readiness, ReadySignal, needs_index, pyright_found_sources,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -40,6 +40,10 @@ pub struct GenericLspConfig {
     /// How long such a question waits for the server at most before it is asked anyway, with
     /// a note of how far the server got.
     pub index_wait: Duration,
+    /// Keep documents open and restore their disk text with `didChange` when a client closes
+    /// them. Pyright can retain distinct identities for `builtins.str` and `str` after a
+    /// close/reopen cycle; changing the existing document avoids that corrupt state (#466).
+    pub retain_open_documents: bool,
 }
 
 impl Default for GenericLspConfig {
@@ -53,6 +57,7 @@ impl Default for GenericLspConfig {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Unknown,
             index_wait: INDEX_WAIT,
+            retain_open_documents: false,
         }
     }
 }
@@ -158,7 +163,7 @@ impl GenericLspConfig {
         };
 
         Self {
-            command: cmd,
+            command: cmd.clone(),
             args,
             env: HashMap::new(),
             working_dir: None,
@@ -166,6 +171,7 @@ impl GenericLspConfig {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
             index_wait: INDEX_WAIT,
+            retain_open_documents: cmd.contains("pyright"),
         }
     }
 
@@ -190,6 +196,7 @@ impl GenericLspConfig {
             // `backgroundIndexProgress`: begun at once, ended when the index is complete.
             ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
+            retain_open_documents: false,
         }
     }
 
@@ -226,6 +233,7 @@ impl GenericLspConfig {
             // It reports reloading the package as progress.
             ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
+            retain_open_documents: false,
         }
     }
 
@@ -280,6 +288,7 @@ impl GenericLspConfig {
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
             index_wait: INDEX_WAIT,
+            retain_open_documents: false,
         }
     }
 }
@@ -363,7 +372,16 @@ pub struct GenericLspEngine {
     is_alive: Arc<AtomicBool>,
     /// What the server has said about loading and indexing its project (#391).
     readiness: Arc<Readiness>,
+    /// Documents retained by servers whose close/reopen lifecycle is not reliable, plus the
+    /// URIs owned by each gateway session so an interrupted client can be cleaned up.
+    documents: Mutex<DocumentLifecycle>,
     _child: Arc<Mutex<Child>>,
+}
+
+#[derive(Default)]
+struct DocumentLifecycle {
+    versions: HashMap<String, i64>,
+    sessions: HashMap<u64, HashSet<String>>,
 }
 
 impl GenericLspEngine {
@@ -648,6 +666,7 @@ impl GenericLspEngine {
             apply_edit_waiter,
             is_alive,
             readiness,
+            documents: Mutex::new(DocumentLifecycle::default()),
             _child: Arc::new(Mutex::new(child)),
         };
 
@@ -1015,14 +1034,147 @@ impl GenericLspEngine {
 
     /// Send a notification to the language server.
     pub async fn send_notification(&self, method: &str, params: serde_json::Value) -> Result<()> {
+        self.send_notification_for(method, params).await
+    }
+
+    /// Send a notification owned by one gateway session. Ownership lets a disconnected
+    /// client restore every overlay even when it never sends `didClose`.
+    pub async fn send_session_notification(
+        &self,
+        session_id: u64,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<()> {
+        let uri = params
+            .pointer("/textDocument/uri")
+            .and_then(|u| u.as_str())
+            .map(str::to_string);
+        self.send_notification_for(method, params).await?;
+        if let Some(uri) = uri {
+            let mut documents = self.documents.lock().await;
+            match method {
+                "textDocument/didOpen" | "textDocument/didChange" => {
+                    documents
+                        .sessions
+                        .entry(session_id)
+                        .or_default()
+                        .insert(uri);
+                }
+                "textDocument/didClose" => {
+                    if let Some(opened) = documents.sessions.get_mut(&session_id) {
+                        opened.remove(&uri);
+                        if opened.is_empty() {
+                            documents.sessions.remove(&session_id);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Restore or close every document a lost gateway session owned.
+    pub async fn close_session(&self, session_id: u64) {
+        let uris = self
+            .documents
+            .lock()
+            .await
+            .sessions
+            .remove(&session_id)
+            .unwrap_or_default();
+        for uri in uris {
+            let _ = self
+                .send_notification_for(
+                    "textDocument/didClose",
+                    serde_json::json!({ "textDocument": { "uri": uri } }),
+                )
+                .await;
+        }
+    }
+
+    async fn send_notification_for(
+        &self,
+        method: &str,
+        mut params: serde_json::Value,
+    ) -> Result<()> {
+        // Serializing document notifications keeps the adapter's versions in the same order
+        // as the frames even when several clients share the engine.
+        let mut documents = self.documents.lock().await;
+        let mut sent_method = method;
+        if self.config.retain_open_documents
+            && let Some(uri) = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+        {
+            match method {
+                "textDocument/didOpen" if documents.versions.contains_key(&uri) => {
+                    let text = params
+                        .pointer("/textDocument/text")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let version = documents.versions[&uri] + 1;
+                    documents.versions.insert(uri.clone(), version);
+                    sent_method = "textDocument/didChange";
+                    params = serde_json::json!({
+                        "textDocument": { "uri": uri, "version": version },
+                        "contentChanges": [{ "text": text }]
+                    });
+                }
+                "textDocument/didOpen" => {
+                    let version = params
+                        .pointer("/textDocument/version")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(1);
+                    documents.versions.insert(uri, version);
+                }
+                "textDocument/didChange" => {
+                    let version = documents.versions.get(&uri).map_or_else(
+                        || {
+                            params
+                                .pointer("/textDocument/version")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(1)
+                        },
+                        |version| version + 1,
+                    );
+                    documents.versions.insert(uri, version);
+                    params["textDocument"]["version"] = serde_json::json!(version);
+                }
+                "textDocument/didClose" if documents.versions.contains_key(&uri) => {
+                    let disk_text = url::Url::parse(&uri)
+                        .ok()
+                        .and_then(|url| url.to_file_path().ok())
+                        .filter(|path| path.starts_with(&self.workspace_root))
+                        .and_then(|path| std::fs::read_to_string(path).ok());
+                    if let Some(text) = disk_text {
+                        let version = documents.versions[&uri] + 1;
+                        documents.versions.insert(uri.clone(), version);
+                        sent_method = "textDocument/didChange";
+                        params = serde_json::json!({
+                            "textDocument": { "uri": uri, "version": version },
+                            "contentChanges": [{ "text": text }]
+                        });
+                    } else {
+                        documents.versions.remove(&uri);
+                    }
+                }
+                _ => {}
+            }
+        }
         // Recorded before the text is on its way, so no publication for it can come first.
         if let Some(uri) = params.pointer("/textDocument/uri").and_then(|u| u.as_str()) {
             // A publication from before an open or a close describes a text that is gone:
             // another session's, which numbered its versions from 1 as this one does.
-            if matches!(method, "textDocument/didOpen" | "textDocument/didClose") {
+            if matches!(
+                sent_method,
+                "textDocument/didOpen" | "textDocument/didClose"
+            ) {
                 self.diagnostics.write().await.remove(uri);
             }
-            match method {
+            match sent_method {
                 "textDocument/didOpen" | "textDocument/didChange" => {
                     let version = params
                         .pointer("/textDocument/version")
@@ -1043,7 +1195,7 @@ impl GenericLspEngine {
         }
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": method,
+            "method": sent_method,
             "params": params
         });
         Self::write_frame_raw(&self.stdin, &payload).await

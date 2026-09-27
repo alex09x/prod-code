@@ -2975,3 +2975,58 @@ async fn relative_python_paths_use_the_same_engine_as_absolute_paths() {
         "validation leaves the source untouched"
     );
 }
+
+/// A native basedpyright validation keeps one document identity across the baseline and
+/// proposal sessions, restores the checkout, and still reports a genuine proposal error
+/// (#466). This runs a source-built isolated gateway, never an installed service.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn python_validation_reuses_identity_restores_disk_and_preserves_real_errors() {
+    let _server = which("basedpyright-langserver").expect("native Python language server required");
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().expect("checkout");
+    let root = std::fs::canonicalize(checkout.path()).expect("canonical checkout");
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname = \"identity\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    let file = root.join("identity.py");
+    let baseline = "def write(name, values):\n    return (name, values)\n\n\ndef render():\n    return write(\"out.svg\", [\"<svg>\", \"</svg>\"])\n";
+    let annotated = baseline.replace(
+        "def write(name, values):",
+        "def write(name: str, values: list[str]) -> tuple[str, list[str]]:",
+    );
+    std::fs::write(&file, baseline).unwrap();
+    commit_in(&root);
+
+    let before = prod_code_mcp::diagnostics::diagnostics(gateway.addr, &root, &file)
+        .await
+        .expect("baseline diagnostics");
+    assert_eq!(before.errors, 0, "{}", before.render());
+    let clean = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &file, &annotated)
+        .await
+        .expect("annotated proposal diagnostics");
+    assert_eq!(clean.errors, 0, "{}", clean.render());
+
+    let broken = annotated.replace("write(\"out.svg\"", "write(7");
+    let rejected = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &file, &broken)
+        .await
+        .expect("deliberate type error diagnostics");
+    assert!(
+        rejected.errors > 0
+            && rejected
+                .items
+                .iter()
+                .any(|item| item.source.as_deref() == Some("basedpyright")),
+        "{}",
+        rejected.render()
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), baseline);
+
+    let subsequent =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &file, &annotated)
+            .await
+            .expect("subsequent validation session");
+    assert_eq!(subsequent.errors, 0, "{}", subsequent.render());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), baseline);
+}

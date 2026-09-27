@@ -2846,6 +2846,18 @@ pub async fn handle_client(
                         .validation_view(state.workspace_manager.admission())
                         .await;
                 }
+                let _generic_validation_session = if req.purpose.as_deref()
+                    == Some(prod_code_protocol::PURPOSE_VALIDATION)
+                    && session_view.workspace.generic_engine.is_some()
+                {
+                    Some(
+                        Arc::clone(&session_view.workspace.generic_validation_session)
+                            .lock_owned()
+                            .await,
+                    )
+                } else {
+                    None
+                };
 
                 tracing::info!(
                     session_id,
@@ -2902,6 +2914,9 @@ pub async fn handle_client(
                     if let Err(e) = engine.clear_session(session_id) {
                         tracing::warn!(error = %e, session_id, "failed to drop session overlays");
                     }
+                }
+                if let Some(engine) = &session_view.workspace.generic_engine {
+                    engine.close_session(session_id).await;
                 }
 
                 state
@@ -3828,7 +3843,9 @@ async fn on_client_message(
                         return Flow::Next;
                     } else if let Some(m) = method {
                         let params = val.get("params").cloned().unwrap_or(serde_json::json!({}));
-                        let _ = generic_eng.send_notification(m, params).await;
+                        let _ = generic_eng
+                            .send_session_notification(view.session_id, m, params)
+                            .await;
                         return Flow::Next;
                     }
                 }
