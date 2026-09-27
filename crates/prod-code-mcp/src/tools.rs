@@ -4991,7 +4991,13 @@ async fn handle_rename(
             ));
         }
         let text = std::fs::read_to_string(&file_path).unwrap_or_default();
-        let at = crate::signature::offset_of(&text, line, character).unwrap_or(0);
+        // A position on no character names no old name; the file's first word is not one.
+        let Some(at) = crate::signature::offset_of(&text, line, character) else {
+            return Ok(McpToolCallResult::error(format!(
+                "{path_str}:{line}:{character} is not a position in the file, so the old name \
+                 in comments cannot be found; nothing was written"
+            )));
+        };
         let start = text[..at]
             .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
             .map_or(0, |i| i + 1);
@@ -5437,7 +5443,7 @@ async fn handle_safe_delete(
             .iter()
             .map(|k| crate::signature::parse_param(k))
             .collect::<Result<Vec<_>>>()?;
-        let (fl, fc) = crate::signature::line_col_at(&text, fn_at);
+        let (fl, fc) = crate::signature::position_at(&text, fn_at)?;
         let change = crate::signature::change(
             remote,
             workspace_root,

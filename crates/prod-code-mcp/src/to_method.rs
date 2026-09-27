@@ -305,7 +305,7 @@ pub async fn convert_to_method(
         + first
             .find(binding.as_str())
             .context("the parameter's name is not in its declaration")?;
-    let (bl, bc) = crate::signature::line_col_at(&text, binding_at);
+    let (bl, bc) = crate::signature::position_at(&text, binding_at)?;
     let mut renamed_uses = 0usize;
     let uses = crate::signature::references(remote, root, file, bl, bc)
         .await
@@ -348,7 +348,7 @@ pub async fn convert_to_method(
     let mut rewritten_calls = 0usize;
     let mut unchanged = Vec::new();
     let mut unmatched = Vec::new();
-    let (nl, nc) = crate::signature::line_col_at(&text, start);
+    let (nl, nc) = crate::signature::position_at(&text, start)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
         .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;

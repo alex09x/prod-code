@@ -260,7 +260,7 @@ pub async fn wrap(
         };
 
     // rust-analyzer's half: the signature and every returned value.
-    let (rl, rc) = crate::signature::line_col_at(&text, ret_start);
+    let (rl, rc) = crate::signature::position_at(&text, ret_start)?;
     let uri = url::Url::from_file_path(file)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
         .to_string();
@@ -330,7 +330,7 @@ pub async fn wrap(
     let mut propagated = 0usize;
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
-    let (nl, nc) = crate::signature::line_col_at(&text, start);
+    let (nl, nc) = crate::signature::position_at(&text, start)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
         .with_context(|| format!("cannot find the callers of `{name}`; nothing was planned"))?;

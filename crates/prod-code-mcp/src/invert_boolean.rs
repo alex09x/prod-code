@@ -328,7 +328,7 @@ pub async fn invert(
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let (mut negated, mut cancelled) = (0usize, 0usize);
     let mut unmatched = Vec::new();
-    let (nl, nc) = crate::signature::line_col_at(&text, start);
+    let (nl, nc) = crate::signature::position_at(&text, start)?;
     let refs = crate::signature::references(remote, root, file, nl, nc)
         .await
         .with_context(|| format!("cannot find the calls to `{name}`; nothing was planned"))?;

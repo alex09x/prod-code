@@ -531,7 +531,7 @@ pub async fn extract(
         .rfind(owner.as_str())
         .map(|i| impl_at + i)
         .context("the `impl` header does not name its type")?;
-    let (hl, hc) = crate::signature::line_col_at(&text, owner_in_header);
+    let (hl, hc) = crate::signature::position_at(&text, owner_in_header)?;
     let definition = crate::tools::execute_lsp_query(
         remote,
         root,
@@ -681,7 +681,7 @@ pub async fn extract(
     braces.dedup();
     for (path, open) in braces {
         let body = &texts[&path];
-        let (line, col) = crate::signature::line_col_at(body, open);
+        let (line, col) = crate::signature::position_at(body, open)?;
         let Some(close) = crate::parameter_object::matching_bracket(body, open) else {
             unmatched.push(format!(
                 "{}:{line}:{col} (a construction whose braces do not close)",

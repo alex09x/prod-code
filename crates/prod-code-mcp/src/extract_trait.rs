@@ -397,7 +397,7 @@ pub async fn extract_trait(
             + text[item.start..item.end]
                 .find(&format!("fn {fn_name}"))
                 .map_or(0, |i| i + 3);
-        let (l, c) = crate::signature::line_col_at(&text, name_at);
+        let (l, c) = crate::signature::position_at(&text, name_at)?;
         for (path, _, _) in crate::signature::references(remote, root, file, l, c).await? {
             if path == file {
                 continue;

@@ -34,6 +34,10 @@
 - Linux overlay shadow commands drop mount-time namespace capabilities before running (#491),
   so read-only files are refused as in ordinary execution. Overlay support now requires
   `setpriv` on the gateway PATH; the capability probe reports when it is unavailable.
+- Rust refactoring planners and the native Rust engine now convert UTF-16 source columns
+  consistently (#456), including supplementary characters and CRLF. Invalid planner positions
+  are refused before edits; the editor bridge clamps positions to valid character and line
+  boundaries. A final bare carriage return remains source text.
 - Multi-file Rust validation checks candidate definitions before warning about a removed
   name (#483). Relocated declarations and names that resolve in the complete proposal no
   longer count as stale callers; unresolved uses and malformed definition evidence still warn.
