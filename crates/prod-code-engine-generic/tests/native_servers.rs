@@ -194,3 +194,46 @@ async fn installed_native_typescript_initializes_and_answers_before_and_after_pr
     std::fs::write(&path, text).expect("fixture");
     hover_before_and_after_probes(dir.path(), config, &path, "typescript", text, 0, 10).await;
 }
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn installed_sourcekit_lsp_initializes_and_answers_before_and_after_probes() {
+    let config = GenericLspConfig::for_swift();
+    let sourcekit_lsp = match config.command.as_str() {
+        "sourcekit-lsp" => prod_code_engine_generic::which_bin("sourcekit-lsp").is_ok(),
+        "xcrun" => std::process::Command::new("xcrun")
+            .args(&config.args)
+            .arg("--version")
+            .status()
+            .is_ok_and(|status| status.success()),
+        _ => false,
+    };
+    if !engine_is_available(
+        "installed_sourcekit_lsp_initializes_and_answers_before_and_after_probes",
+        "sourcekit-lsp",
+        sourcekit_lsp,
+    ) {
+        return;
+    }
+    let dir = tempfile::tempdir().expect("isolated SwiftPM workspace");
+    let sources = dir.path().join("Sources").join("HealthFixture");
+    std::fs::create_dir_all(&sources).expect("SwiftPM sources directory");
+    std::fs::write(
+        dir.path().join("Package.swift"),
+        "// swift-tools-version: 5.10\nimport PackageDescription\n\nlet package = Package(\n    name: \"HealthFixture\",\n    targets: [.target(name: \"HealthFixture\")]\n)\n",
+    )
+    .expect("SwiftPM manifest");
+    let path = sources.join("Answer.swift");
+    let text = "public func answer() -> Int {\n    42\n}\n\nlet result = answer()\n";
+    std::fs::write(&path, text).expect("Swift fixture");
+    let swift_build = std::process::Command::new("swift")
+        .arg("build")
+        .current_dir(dir.path())
+        .status()
+        .expect("swift build executes for the private fixture");
+    assert!(
+        swift_build.success(),
+        "swift build succeeds for the private fixture: {swift_build}"
+    );
+    hover_before_and_after_probes(dir.path(), config, &path, "swift", text, 4, 14).await;
+}
