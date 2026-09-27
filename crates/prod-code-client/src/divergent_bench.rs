@@ -56,6 +56,10 @@ pub const BENCH_WORKSPACE_SUFFIX: &str = "-divergent-bench";
 const FIXTURE_REPO_NAME: &str = "fixture";
 const FIXTURE_CARGO_TOML: &str = "[package]\nname = \"divergent-bench-fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n";
 const FIXTURE_LIB_RS: &str = "pub fn compute_signal(input: i64) -> i64 {\n    input * 2\n}\n";
+/// Caps each initial sync and session setup so a silent gateway cannot leave a
+/// benchmark worker hanging forever. This is deliberately separate from the 30-second hover
+/// response budget, which measures query behavior rather than session setup reliability.
+const SESSION_SETUP_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Language of the base repository, which decides manifest, mutation and symbol conventions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -930,6 +934,30 @@ pub async fn initial_sync(
     root: &Path,
     workspace_name: &str,
 ) -> Result<SyncSummary> {
+    initial_sync_with_timeout(remote, root, workspace_name, SESSION_SETUP_TIMEOUT).await
+}
+
+async fn initial_sync_with_timeout(
+    remote: SocketAddr,
+    root: &Path,
+    workspace_name: &str,
+    setup_timeout: Duration,
+) -> Result<SyncSummary> {
+    timeout(
+        setup_timeout,
+        initial_sync_unbounded(remote, root, workspace_name),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!("timed out after {setup_timeout:?} completing benchmark initial workspace sync")
+    })?
+}
+
+async fn initial_sync_unbounded(
+    remote: SocketAddr,
+    root: &Path,
+    workspace_name: &str,
+) -> Result<SyncSummary> {
     prod_code_mcp::sync::clear_sync_cache(root);
     let identity = prod_code_mcp::sync::WorkspaceIdentity {
         name: workspace_name.to_string(),
@@ -963,6 +991,34 @@ async fn open_session(
     wt: &DivergentWorktree,
     client_name: String,
 ) -> Result<Framed<TcpStream, ProdCodeCodec>> {
+    open_session_with_timeout(remote, wt, client_name, SESSION_SETUP_TIMEOUT).await
+}
+
+/// Runs the whole setup sequence under one deadline. The inner future owns its transport, so a
+/// timeout drops the framed TCP stream instead of leaving detached setup work behind.
+async fn open_session_with_timeout(
+    remote: SocketAddr,
+    wt: &DivergentWorktree,
+    client_name: String,
+    setup_timeout: Duration,
+) -> Result<Framed<TcpStream, ProdCodeCodec>> {
+    timeout(
+        setup_timeout,
+        open_session_unbounded(remote, wt, client_name),
+    )
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "timed out after {setup_timeout:?} completing gateway session setup (connect, pre-flight sync, handshake, initialize)"
+        )
+    })?
+}
+
+async fn open_session_unbounded(
+    remote: SocketAddr,
+    wt: &DivergentWorktree,
+    client_name: String,
+) -> Result<Framed<TcpStream, ProdCodeCodec>> {
     let ws_root_str = wt.root.to_string_lossy().to_string();
     let stream = prod_code_protocol::transport::connect(remote)
         .await
@@ -976,7 +1032,9 @@ async fn open_session(
         name: wt.workspace_name.clone(),
         base: None,
     };
-    prod_code_mcp::sync::push_workspace_sync(&mut framed, &wt.root, &identity, None).await?;
+    prod_code_mcp::sync::push_workspace_sync(&mut framed, &wt.root, &identity, None)
+        .await
+        .context("pre-flight workspace sync before gateway handshake")?;
 
     framed
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
@@ -992,10 +1050,19 @@ async fn open_session(
             client_host: Some(prod_code_protocol::client_host()),
             purpose: None,
         }))
-        .await?;
+        .await
+        .context("send gateway handshake request")?;
 
-    match framed.next().await {
-        Some(Ok(WireMessage::HandshakeResponse(_))) => {}
+    let handshake_response = framed
+        .next()
+        .await
+        .transpose()
+        .context("wait for gateway handshake response")?
+        .ok_or_else(|| {
+            anyhow!("remote gateway closed connection waiting for handshake response")
+        })?;
+    match handshake_response {
+        WireMessage::HandshakeResponse(_) => {}
         other => bail!("unexpected handshake response: {other:?}"),
     }
 
@@ -1011,8 +1078,11 @@ async fn open_session(
     });
     framed
         .send(WireMessage::LspPayload(init_req.to_string()))
-        .await?;
-    read_response_matching_id(&mut framed, 1, Duration::from_secs(10)).await?;
+        .await
+        .context("send initialize request")?;
+    read_response_matching_id(&mut framed, 1, Duration::from_secs(10))
+        .await
+        .context("wait for initialize response")?;
 
     let initialized = serde_json::json!({
         "jsonrpc": "2.0",
@@ -1021,7 +1091,8 @@ async fn open_session(
     });
     framed
         .send(WireMessage::LspPayload(initialized.to_string()))
-        .await?;
+        .await
+        .context("send initialized notification")?;
     Ok(framed)
 }
 
@@ -1452,10 +1523,89 @@ pub async fn run(config: DivergentBenchConfig) -> Result<DivergentBenchReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use prod_code_protocol::{HandshakeResponse, SyncProbeResponse, SyncResponse};
+    use tokio::net::TcpListener;
 
     const BASE_SIGNATURE: &str = "pub fn compute_signal(input: i64) -> i64";
     const MUTATED_SIGNATURE: &str =
         "pub fn compute_signal(input: i64, divergent_marker: i64) -> i64";
+
+    fn fixture_worktree() -> (tempfile::TempDir, DivergentWorktree) {
+        let tmp = tempfile::tempdir().expect("temporary fixture directory");
+        let setup = setup(None, tmp.path(), WorkspaceMode::Shared, 1)
+            .expect("fixture setup should succeed");
+        let worktree = setup
+            .worktrees
+            .into_iter()
+            .find(|wt| wt.kind == WorktreeKind::Master)
+            .expect("fixture has master worktree");
+        (tmp, worktree)
+    }
+
+    async fn receive_sync_then_handshake(
+        framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    ) -> HandshakeRequest {
+        loop {
+            match framed
+                .next()
+                .await
+                .expect("client should keep the setup transport open")
+                .expect("client setup frame should decode")
+            {
+                WireMessage::SyncProbeRequest(req) => {
+                    framed
+                        .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                            server_workspace_root: req.client_workspace_root,
+                            seeded: false,
+                            files_deleted: 0,
+                            missing: Vec::new(),
+                        }))
+                        .await
+                        .expect("reply to sync probe");
+                }
+                WireMessage::SyncRequest(req) => {
+                    framed
+                        .send(WireMessage::SyncResponse(SyncResponse {
+                            server_workspace_root: req.client_workspace_root,
+                            files_updated: 0,
+                            files_deleted: 0,
+                            bytes_transferred: 0,
+                            duration_ms: 1,
+                            workspace_was_fresh: false,
+                            stale_paths: Vec::new(),
+                        }))
+                        .await
+                        .expect("reply to sync request");
+                }
+                WireMessage::HandshakeRequest(req) => return req,
+                other => panic!("unexpected setup frame: {other:?}"),
+            }
+        }
+    }
+
+    fn handshake_response(req: HandshakeRequest) -> HandshakeResponse {
+        HandshakeResponse {
+            protocol_version: PROTOCOL_VERSION,
+            server_pid: std::process::id(),
+            session_id: 1,
+            server_workspace_root: req.client_workspace_root,
+            detected_engine: "rust".to_string(),
+            stale_paths: Vec::new(),
+            engine_age_ms: None,
+            index_gated: false,
+        }
+    }
+
+    fn assert_lsp_method(message: WireMessage, expected_method: &str) {
+        let WireMessage::LspPayload(payload) = message else {
+            panic!("expected LSP payload, got {message:?}");
+        };
+        let payload: serde_json::Value = serde_json::from_str(&payload).expect("valid LSP JSON");
+        assert_eq!(
+            payload.get("method").and_then(|m| m.as_str()),
+            Some(expected_method)
+        );
+    }
 
     fn expectations() -> Expectations {
         Expectations {
@@ -1585,6 +1735,201 @@ mod tests {
     fn extract_hover_text_from_array() {
         let result = serde_json::json!({ "contents": [ { "value": "a" }, "b" ] });
         assert_eq!(extract_hover_text(&result), "a\nb");
+    }
+
+    #[tokio::test]
+    async fn initial_sync_deadline_closes_a_stalled_origin_transport() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            assert!(matches!(
+                framed.next().await,
+                Some(Ok(WireMessage::SyncProbeRequest(_)))
+            ));
+            assert!(
+                framed.next().await.is_none(),
+                "expired origin sync must close its transport"
+            );
+        });
+        let result = timeout(
+            Duration::from_secs(3),
+            initial_sync_with_timeout(
+                remote,
+                &worktree.root,
+                &worktree.workspace_name,
+                Duration::from_millis(500),
+            ),
+        )
+        .await
+        .expect("the initial sync deadline must finish before the outer assertion");
+        let error = result.expect_err("silent initial sync must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("completing benchmark initial workspace sync"),
+            "{error:#}"
+        );
+        timeout(Duration::from_secs(3), peer)
+            .await
+            .expect("peer must observe closure")
+            .expect("peer completes");
+    }
+
+    #[tokio::test]
+    async fn open_session_completes_normal_sync_handshake_and_initialize() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            let request = receive_sync_then_handshake(&mut framed).await;
+            framed
+                .send(WireMessage::HandshakeResponse(handshake_response(request)))
+                .await
+                .expect("reply to handshake");
+            assert_lsp_method(
+                framed
+                    .next()
+                    .await
+                    .expect("initialize frame")
+                    .expect("initialize decode"),
+                "initialize",
+            );
+            framed
+                .send(WireMessage::LspPayload(
+                    serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": {} }).to_string(),
+                ))
+                .await
+                .expect("reply to initialize");
+            assert_lsp_method(
+                framed
+                    .next()
+                    .await
+                    .expect("initialized frame")
+                    .expect("initialized decode"),
+                "initialized",
+            );
+            assert!(matches!(
+                framed.next().await,
+                Some(Ok(WireMessage::Disconnect { .. }))
+            ));
+        });
+
+        let session = open_session_with_timeout(
+            remote,
+            &worktree,
+            "divergent-bench-normal-setup".to_string(),
+            Duration::from_secs(3),
+        )
+        .await
+        .expect("normal setup succeeds");
+        close_session(session).await;
+        peer.await.expect("peer task completes");
+    }
+
+    #[tokio::test]
+    async fn open_session_times_out_after_silent_handshake_and_closes_transport() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            let _request = receive_sync_then_handshake(&mut framed).await;
+            assert!(
+                framed.next().await.is_none(),
+                "timed-out setup must drop its owned transport"
+            );
+        });
+
+        let result = timeout(
+            Duration::from_secs(3),
+            open_session_with_timeout(
+                remote,
+                &worktree,
+                "divergent-bench-silent-handshake".to_string(),
+                Duration::from_millis(500),
+            ),
+        )
+        .await
+        .expect("the internal setup deadline must finish before this outer assertion");
+        let error = result.expect_err("silent handshake must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("completing gateway session setup"),
+            "{error:#}"
+        );
+        peer.await.expect("peer observes connection closure");
+    }
+
+    #[tokio::test]
+    async fn open_session_timeout_covers_a_stalled_preflight_sync() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            assert!(matches!(
+                framed.next().await,
+                Some(Ok(WireMessage::SyncProbeRequest(_)))
+            ));
+            assert!(
+                framed.next().await.is_none(),
+                "timed-out pre-flight sync must close its transport"
+            );
+        });
+
+        let result = timeout(
+            Duration::from_secs(3),
+            open_session_with_timeout(
+                remote,
+                &worktree,
+                "divergent-bench-stalled-preflight".to_string(),
+                Duration::from_millis(500),
+            ),
+        )
+        .await
+        .expect("the internal setup deadline must bound pre-flight sync");
+        let error = result.expect_err("stalled pre-flight sync must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("completing gateway session setup")
+        );
+        peer.await.expect("peer observes connection closure");
+    }
+
+    #[tokio::test]
+    async fn open_session_keeps_unexpected_handshake_response_errors_contextual() {
+        let (_tmp, worktree) = fixture_worktree();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind peer");
+        let remote = listener.local_addr().expect("peer address");
+        let peer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("accept client");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            let _request = receive_sync_then_handshake(&mut framed).await;
+            framed
+                .send(WireMessage::Pong)
+                .await
+                .expect("send invalid reply");
+        });
+
+        let error = open_session_with_timeout(
+            remote,
+            &worktree,
+            "divergent-bench-bad-handshake".to_string(),
+            Duration::from_secs(3),
+        )
+        .await
+        .expect_err("unexpected handshake reply must fail");
+        assert!(error.to_string().contains("unexpected handshake response"));
+        peer.await.expect("peer task completes");
     }
 
     #[test]

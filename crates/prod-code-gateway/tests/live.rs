@@ -43,7 +43,7 @@ impl Gateway {
             .env("PROD_CODE_STORAGE", storage.path())
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
-            .env("RUST_LOG", "info")
+            .env_remove("RUST_LOG")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
         let mut wanted: Option<SocketAddr> = None;
@@ -1787,7 +1787,7 @@ async fn two_gateways_find_each_other_and_place_work() {
 /// kind of language server, and the refusal that keeps work off a node that cannot do it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_python_checkout_and_a_node_that_refuses_it() {
-    // No RUST_LOG here, so the daemon builds its own default filter — the one path in the
+    // RUST_LOG is deliberately unset, so the daemon builds its own default filter — the one path in the
     // binary a test that sets the variable can never take.
     let gateway = Gateway::start_with(&[("RUST_LOG", "")]);
     let checkout = tempfile::tempdir().expect("checkout");
