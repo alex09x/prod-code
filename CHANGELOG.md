@@ -70,6 +70,9 @@
   replies (#572). Failure, timeout or cancellation retires the owned server generation,
   clears pending requests and capabilities, and ends generic document acceptance; ordinary
   request timeouts keep their existing behavior.
+- MCP multi-file validation accepts each advertised input form in its schema (#585):
+  whole-file `edits`, `diff` or `workspace_edit`. At least one remains required, and
+  the existing input precedence and field types are preserved.
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.
