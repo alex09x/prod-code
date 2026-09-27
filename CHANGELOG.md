@@ -66,6 +66,10 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Go and generic language-server adapters reject unsuccessful or malformed initialization
+  replies (#572). Failure, timeout or cancellation retires the owned server generation,
+  clears pending requests and capabilities, and ends generic document acceptance; ordinary
+  request timeouts keep their existing behavior.
 - MCP multi-file validation accepts each advertised input form in its schema (#585):
   whole-file `edits`, `diff` or `workspace_edit`. At least one remains required, and
   the existing input precedence and field types are preserved.
