@@ -132,9 +132,15 @@ func OldShadow(n int) byte         { return n }
 func VariadicResult(xs ...int) int { return len(xs) }
 func BodyMismatch(n int) int       { return n }
 func TestCaller(n int) int         { return n }
-func ValueResult(n int) int        { return n }
+func FreeValueResult(n int) int    { return n }
 
-var savedResult = ValueResult
+type ResultValue struct{}
+type ResultPointer struct{}
+
+func (value ResultValue) ValueResult(n int) int { return 7 }
+func (pointer *ResultPointer) PointerResult(n int) int { return 7 }
+
+var savedResult = FreeValueResult
 "#;
 
 const MAIN: &str = r#"package main
@@ -145,6 +151,9 @@ func main() {
 	note, prio := "fragile", 2
 	fmt.Println(Ship(3, "glass", 1, "LA"), Ship(mark("m", 2), note, prio, "NY")) // Ship(1, "x", 2, "y")
 	fmt.Println(Count(mark("count", 1)))
+	value := ResultValue{}
+	pointer := ResultPointer{}
+	fmt.Println(value.ValueResult(mark("value result", 2)), pointer.PointerResult(mark("pointer result", 3)))
 	fmt.Println(Drop(1, mark("call", 2)), note, prio, trace)
 }
 "#;
@@ -163,6 +172,14 @@ func TestShip(t *testing.T) {
 func TestCount(t *testing.T) {
 	if Count(1) != 7 {
 		t.Fatal("count")
+	}
+}
+
+func TestReceiverResultCallers(t *testing.T) {
+	value := ResultValue{}
+	pointer := ResultPointer{}
+	if value.ValueResult(1) != 7 || pointer.PointerResult(2) != 7 {
+		t.Fatal("receiver result")
 	}
 }
 
@@ -796,6 +813,67 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         std::fs::read_to_string(project.join("lib.go")).unwrap(),
         count_lib
     );
+
+    // The same source-built CLI and MCP tool support ordinary value and pointer receiver results
+    // only when every use is a direct selector call and the real compiler accepts test callers.
+    let receiver_untouched = snapshot(&root);
+    let (value_preview_ok, value_preview) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "ValueResult",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+        ],
+    );
+    assert!(value_preview_ok && value_preview.contains("nothing was written"), "{value_preview}");
+    assert_eq!(snapshot(&root), receiver_untouched, "value receiver preview wrote");
+    let (value_apply_ok, value_apply) = cli(
+        &root,
+        addr,
+        &[
+            "change-signature",
+            "ValueResult",
+            "--param",
+            "n",
+            "--returns",
+            "int64",
+            "--apply",
+        ],
+    );
+    assert!(value_apply_ok, "{value_apply}");
+    let pointer_preview = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "PointerResult", "params": ["n"], "returns": "int64" }),
+    )
+    .await;
+    assert!(
+        !pointer_preview.starts_with("error: ") && pointer_preview.contains("nothing was written"),
+        "{pointer_preview}"
+    );
+    let pointer_apply = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({ "symbol": "PointerResult", "params": ["n"], "returns": "int64", "apply": true }),
+    )
+    .await;
+    assert!(!pointer_apply.starts_with("error: "), "{pointer_apply}");
+    let receiver_lib = std::fs::read_to_string(project.join("lib.go")).expect("receiver lib");
+    assert!(
+        receiver_lib.contains("func (value ResultValue) ValueResult(n int) int64 { return 7 }")
+            && receiver_lib.contains("func (pointer *ResultPointer) PointerResult(n int) int64 { return 7 }"),
+        "{receiver_lib}"
+    );
+    for path in ["project/main.go", "project/main_test.go"] {
+        assert_eq!(snapshot(&root)[path], receiver_untouched[path], "receiver result touched {path}");
+    }
+    assert_eq!(behaviour(&project), before, "receiver result conversion changed behavior");
     let untouched = snapshot(&root);
 
     // A no-op still lists complete references and compiles packages plus test callers remotely.
@@ -832,7 +910,7 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
             "primitive type identity cannot be proven",
         ),
         ("VariadicResult", "int64", "variadic function"),
-        ("ValueResult", "int64", "used as a value"),
+        ("FreeValueResult", "int64", "used as a value"),
     ] {
         let refused = tool(
             addr,

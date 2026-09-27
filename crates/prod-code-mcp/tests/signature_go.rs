@@ -1042,6 +1042,84 @@ async fn unsupported_or_unsafe_changes_are_refused_and_write_nothing() {
     assert_eq!(fixture.run(), before);
 }
 
+/// Result replacements on ordinary named value and pointer receiver methods preserve the receiver,
+/// parameter list and direct callers; only the primitive result tokens are eligible.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unnamed_primitive_receiver_results_are_replaced_without_touching_direct_callers() {
+    require_go_toolchain();
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/receiverresult\n\ngo 1.22\n"),
+        (
+            "lib.go",
+            "package main\n\ntype Value struct{}\ntype Pointer struct{}\n\nfunc (value Value) ValueResult(n int) int { return 7 }\nfunc (pointer *Pointer) PointerResult(n int) int { return 7 }\n",
+        ),
+        (
+            "main.go",
+            "package main\n\nimport \"fmt\"\n\nfunc main() { value := Value{}; pointer := Pointer{}; fmt.Println(value.ValueResult(1), pointer.PointerResult(2)) }\n",
+        ),
+        (
+            "main_test.go",
+            "package main\n\nimport \"testing\"\n\nfunc TestReceiverResults(t *testing.T) { value := Value{}; pointer := Pointer{}; if value.ValueResult(1) != 7 || pointer.PointerResult(2) != 7 { t.Fatal(\"result\") } }\n",
+        ),
+    ]);
+    let before = fixture.run();
+    let untouched = fixture.snapshot();
+    let bridge = GoplsBridge::start(&fixture).await;
+    let remote = with_compiler_shadow(bridge.addr()).await;
+    let modifiers = Modifiers {
+        returns: Some("int64".into()),
+        ..Default::default()
+    };
+    for (needle, method) in [
+        ("ValueResult(n", "ValueResult"),
+        ("PointerResult(n", "PointerResult"),
+    ] {
+        let before_preview = fixture.snapshot();
+        let preview = change_with(
+            remote,
+            &fixture,
+            "lib.go",
+            needle,
+            &[Param::Keep("n".into())],
+            &modifiers,
+            false,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method} preview: {error:#}"));
+        assert!(!preview.applied);
+        assert_eq!(preview.returns, Some(("int".into(), "int64".into())));
+        assert_eq!(preview.rewritten.len(), 1, "only {method}'s result token changes");
+        assert_eq!(fixture.snapshot(), before_preview, "{method} preview wrote");
+        let applied = change_with(
+            remote,
+            &fixture,
+            "lib.go",
+            needle,
+            &[Param::Keep("n".into())],
+            &modifiers,
+            true,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{method} apply: {error:#}"));
+        assert!(applied.applied);
+    }
+    let lib = fixture.read("lib.go");
+    assert!(
+        lib.contains("func (value Value) ValueResult(n int) int64 { return 7 }"),
+        "{lib}"
+    );
+    assert!(
+        lib.contains("func (pointer *Pointer) PointerResult(n int) int64 { return 7 }"),
+        "{lib}"
+    );
+    assert_eq!(fixture.read("main.go").as_bytes(), untouched["main.go"].as_slice());
+    assert_eq!(
+        fixture.read("main_test.go").as_bytes(),
+        untouched["main_test.go"].as_slice()
+    );
+    assert_eq!(fixture.run(), before, "receiver and direct-caller evaluation changed");
+}
+
 fn text_of(result: &prod_code_mcp::protocol::McpToolCallResult) -> String {
     result
         .content
@@ -1173,7 +1251,6 @@ var saved = Value
         ("Void(n", "int64", "no result"),
         ("Composite(n", "int64", "one unnamed primitive"),
         ("Generic[T", "int64", "generic function"),
-        ("Method(n", "int64", "receiver method"),
         ("Value(n", "string", "used as a value"),
     ] {
         public_result_refusal(remote, &fixture, needle, json!(["n"]), returns, &[], said).await;

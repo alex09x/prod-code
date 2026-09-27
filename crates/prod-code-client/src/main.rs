@@ -984,7 +984,7 @@ enum Commands {
     },
     /// Change what a function takes, with its call sites: Rust reorders, adds and removes
     /// parameters; Go reorders, removes provably unused ones, adds typed literal parameters, or
-    /// replaces one primitive result of an ordinary free function.
+    /// replaces one primitive result of an ordinary free function or named value/pointer receiver method.
     ///
     /// Rust: refuses changes to argument evaluation or destruction order (including possible
     /// Deref coercions).
@@ -1029,7 +1029,8 @@ enum Commands {
         #[arg(long, conflicts_with = "params")]
         remove_all: bool,
         /// Rust: the return type it should have; `()` removes it. Go: replaces one existing,
-        /// unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free function;
+        /// unnamed, unshadowed primitive result of an ordinary non-generic, non-variadic free function or
+        /// named value/pointer receiver method;
         /// parameters must be listed exactly as declared and Go compiler verification always runs
         /// remotely.
         #[arg(long)]
