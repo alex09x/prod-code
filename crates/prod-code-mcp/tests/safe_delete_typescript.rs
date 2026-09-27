@@ -108,11 +108,14 @@ impl CompilerProxy {
 
     async fn shutdown(mut self) {
         self.cancel.cancel();
-        let task = self.task.take().expect("proxy task");
-        tokio::time::timeout(std::time::Duration::from_secs(5), task)
-            .await
-            .expect("proxy shutdown timed out")
-            .expect("proxy task panicked");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.task.as_mut().expect("proxy task"),
+        )
+        .await
+        .expect("proxy shutdown timed out")
+        .expect("proxy task panicked");
+        self.task.take();
     }
 }
 
@@ -520,10 +523,35 @@ async fn hidden_direct_eval_spellings_refuse_with_force_and_preserve_every_byte(
 async fn compiler_proxy_cancellation_reaps_owned_connections() {
     let gateway = ScriptedGateway::start(|_, _| Value::Null).await;
     let proxy = CompilerProxy::start(gateway.addr(), ShadowReply::Pass).await;
-    let _connection = tokio::net::TcpStream::connect(proxy.addr)
-        .await
-        .expect("proxy connection");
+    let mut connection = Framed::new(
+        tokio::net::TcpStream::connect(proxy.addr)
+            .await
+            .expect("proxy connection"),
+        ProdCodeCodec::new(),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        connection
+            .send(WireMessage::LspPayload(
+                json!({"jsonrpc": "2.0", "id": 42, "method": "initialize", "params": {}})
+                    .to_string(),
+            ))
+            .await
+            .expect("proxy request");
+        let Some(Ok(WireMessage::LspPayload(response))) = connection.next().await else {
+            panic!("accepted proxy must forward a response");
+        };
+        let response: Value = serde_json::from_str(&response).expect("proxy response JSON");
+        assert_eq!(response["id"], json!(42));
+    })
+    .await
+    .expect("accepted proxy connection must answer before cancellation");
     proxy.shutdown().await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), connection.next())
+            .await
+            .expect("accepted connection must close before runtime shutdown")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -609,4 +637,26 @@ async fn direct_entrypoint_refuses_wrong_files_modules_and_utf16_positions() {
     .await
     .expect_err("an absent UTF-16 position is refused");
     assert!(format!("{error:#}").contains("not a valid UTF-16 source position"));
+}
+
+#[tokio::test]
+async fn type_only_marker_in_preserve_mode_refuses_global_function_deletion() {
+    const SOURCE: &str = "export type Marker = number;\nfunction hidden(): number { return 7; }\n(globalThis as any)[\"output\"] = (globalThis as any)[\"hidden\"]();\n";
+    let fixture = fixture(SOURCE);
+    let config = fixture.path("tsconfig.json");
+    let mut json: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
+    json["compilerOptions"]["module"] = json!("preserve");
+    std::fs::write(config, serde_json::to_string(&json).unwrap()).unwrap();
+    let references = declaration_reference(&fixture.path("src/main.ts"), SOURCE, "hidden");
+    let gateway = gateway(SOURCE, references).await;
+    let proxy = CompilerProxy::start(gateway.addr(), ShadowReply::Pass).await;
+    let before = snapshot(&fixture.root());
+    let result = call(proxy.addr, &fixture, SOURCE, "hidden", true).await;
+    proxy.shutdown().await;
+    assert!(
+        result.is_error,
+        "a type-only marker cannot prove runtime module privacy: {}",
+        text(&result)
+    );
+    assert_eq!(snapshot(&fixture.root()), before);
 }

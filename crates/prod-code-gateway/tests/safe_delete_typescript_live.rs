@@ -612,4 +612,41 @@ async fn typescript_safe_delete_has_native_gateway_cli_mcp_and_compiler_proof() 
             "dynamic refusal changed bytes"
         );
     }
+
+    let source = "export type Marker = number;\nfunction hidden(): number { return 7; }\n(globalThis as any)[\"output\"] = (globalThis as any)[\"hidden\"]();\n";
+    let (_preserve_dir, preserve_root) = checkout(source, deadline);
+    let config_path = preserve_root.join("tsconfig.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).expect("preserve config")).unwrap();
+    config["compilerOptions"]["module"] = serde_json::json!("preserve");
+    std::fs::write(&config_path, serde_json::to_vec(&config).unwrap())
+        .expect("write preserve config");
+    let (compiled, output) = compile(&preserve_root, deadline);
+    assert!(compiled, "preserve baseline compile: {output}");
+    wait_for_typescript(gateway.addr, &preserve_root, source, deadline).await;
+    assert_declaration_only_reference(gateway.addr, &preserve_root, source, deadline).await;
+    let untouched = snapshot(&preserve_root);
+    let (line, character) = position(source, "hidden");
+    let (ok, output) = tool(
+        gateway.addr,
+        &preserve_root,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": "src/main.ts",
+            "line": line,
+            "character": character,
+            "force": true
+        }),
+        deadline,
+    )
+    .await;
+    assert!(
+        !ok && output.contains("module mode"),
+        "unsafe preserve-mode deletion: {output}"
+    );
+    assert_eq!(
+        snapshot(&preserve_root),
+        untouched,
+        "preserve refusal changed bytes"
+    );
 }

@@ -619,7 +619,7 @@ fn inspect_project(checkout: &Path, source: &Path) -> Result<Project> {
     anyhow::ensure!(
         matches!(
             module.to_ascii_lowercase().as_str(),
-            "es2020" | "es2022" | "esnext" | "node16" | "nodenext" | "preserve"
+            "es2020" | "es2022" | "esnext" | "node16" | "nodenext"
         ),
         "compilerOptions.module is not a supported ES module mode"
     );
