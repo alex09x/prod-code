@@ -3300,3 +3300,66 @@ async fn cli_assist_refuses_invalid_positions_and_backwards_selections() {
     }
     assert_eq!(gw.calls.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn lsp_rejects_malformed_editor_input_without_forwarding_it() {
+    use tokio::io::AsyncWriteExt;
+    for malformed in [
+        b"Content-Length: 1\r\nContent-Length: 2\r\n\r\n{}".as_slice(),
+        b"Content-Length: 2\r\n".as_slice(),
+        b"Content-Length: 1\r\n\r\n\xff".as_slice(),
+    ] {
+        let ws = make_workspace();
+        let home = tempfile::tempdir().expect("isolated home");
+        let (addr, seen) = recording_gateway(|_| None, HashMap::new()).await;
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_prod-code"))
+            .args(["lsp", "--language", "go", "--remote", &addr.to_string()])
+            .env("HOME", home.path())
+            .env("XDG_CACHE_HOME", home.path().join(".cache"))
+            .current_dir(ws.root())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("owned lsp child");
+        let mut stdin = child.stdin.take().expect("stdin");
+        let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout"));
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"capabilities": {}}
+        })
+        .to_string();
+        stdin
+            .write_all(
+                format!("Content-Length: {}\r\n\r\n{initialize}", initialize.len()).as_bytes(),
+            )
+            .await
+            .expect("initialize");
+        read_lsp_message(&mut stdout).await;
+        stdin.write_all(malformed).await.expect("malformed input");
+        stdin.shutdown().await.expect("input EOF");
+        drop(stdin);
+        let output =
+            tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+                .await
+                .expect("malformed input retires the child")
+                .expect("child output");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "malformed input exited successfully: {malformed:?}"
+        );
+        assert!(stderr.contains("reading the editor's message"), "{stderr}");
+        let log = seen.lock().expect("gateway log");
+        let forwarded: Vec<_> = log
+            .iter()
+            .filter(|(_, event)| event.starts_with("lsp "))
+            .map(|(_, event)| event.as_str())
+            .collect();
+        assert_eq!(
+            forwarded,
+            ["lsp initialize"],
+            "malformed body reached the gateway"
+        );
+    }
+}

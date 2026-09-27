@@ -56,6 +56,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Stdio-to-TCP bidirectional streaming with zero allocations on hot paths.
   - Non-blocking watchdog and auto-reconnect logic on transient network disconnects.
   - Strict exit codes and stderr reporting (fail loudly, never exit 0 on unhandled daemon death).
+  - Client stdin uses the shared bounded LSP reader (#577): malformed/truncated frames and
+    invalid UTF-8 fail; headers and bodies follow the protocol size limits.
   - Status (audited 2026-09-26): the bridge used to notice a gateway that went away only on the editor's next message, and then exited 0. Since #394 it prints which gateway closed or broke the connection and exits 1 at once, and the editor restarts it with a fresh session. That restart is the reconnect: the bridge does not re-open a session itself, because the language server's state on the node is gone with the old one. The CLI and the MCP server open a connection per call, so a transient disconnect costs one call.
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
