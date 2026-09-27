@@ -561,10 +561,11 @@ impl BackendWorker {
                                 }
                             };
                             let mut state = lock_unpoisoned(&reader_probe_state);
-                            state.valid_evidence_epoch = state.valid_evidence_epoch.wrapping_add(1);
-                            state.consecutive_timeouts = 0;
                             if sequence > state.latest_valid_sequence {
                                 state.latest_valid_sequence = sequence;
+                                state.valid_evidence_epoch =
+                                    state.valid_evidence_epoch.wrapping_add(1);
+                                state.consecutive_timeouts = 0;
                                 state.valid_completions += 1;
                             }
                             drop(state);

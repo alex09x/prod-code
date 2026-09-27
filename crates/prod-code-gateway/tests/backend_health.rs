@@ -343,6 +343,22 @@ async fn controlled_backends_prove_health_lifecycle_and_private_routing() {
                 assert!(worker.is_alive(), "late valid replies reset timeout epochs");
                 assert_no_private_frames(&mut replies);
             }
+            "replay" => {
+                wait_until(
+                    Duration::from_millis(300),
+                    "first replayed probe reply",
+                    || worker.health_probe_completions() >= 1,
+                )
+                .await;
+                wait_until(
+                    Duration::from_millis(500),
+                    "three unanswered probes despite replayed reply",
+                    || !worker.is_alive(),
+                )
+                .await;
+                assert_eq!(worker.health_probe_completions(), 1);
+                assert_no_private_frames(&mut replies);
+            }
             "malformed" => {
                 wait_until(
                     Duration::from_millis(500),
@@ -540,6 +556,10 @@ while True:
             if late is not None:
                 send({'jsonrpc': '2.0', 'id': late, 'error': {'code': -32601, 'message': 'late unknown method'}})
             late = request['id']
+        elif mode == 'replay':
+            if 'replayed' not in globals():
+                replayed = {'jsonrpc': '2.0', 'id': request['id'], 'result': None}
+            send(replayed)
         elif mode == 'malformed':
             send({'jsonrpc': '2.0', 'id': request['id'], 'method': 'workspace/configuration', 'params': {'items': []}})
             reply = read()
@@ -570,6 +590,7 @@ while True:
         "success",
         "error",
         "late",
+        "replay",
         "malformed",
         "activity",
         "flood",
