@@ -896,3 +896,85 @@ async fn real_gopls_keeps_initialize_open_hover_watch_and_disconnect_intact() {
     wait_for_exit(pid).await.unwrap();
     assert_eq!(servers.count(), 0);
 }
+
+const BARRIER_FLOOD_OUTPUT: &str = r#"
+import json, os, sys, time
+open(os.environ['EDITOR_PID_FILE'], 'w').write(str(os.getpid()))
+value = 'x' * (32 * 1024)
+for number in range(4096):
+    body = json.dumps({'jsonrpc':'2.0','method':'window/logMessage','params':{'type':3,'message':value}}).encode()
+    sys.stdout.buffer.write(b'Content-Length: ' + str(len(body)).encode() + b'\r\n\r\n' + body)
+    sys.stdout.buffer.flush()
+    if number == 320:
+        open(os.environ['EDITOR_FLOOD_READY_FILE'], 'w').write('ready')
+time.sleep(60)
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connected_nonreading_editor_does_not_block_disconnect() {
+    let temp = tempfile::tempdir().expect("temporary editor root");
+    let pid_file = temp.path().join("server.pid");
+    let ready_file = temp.path().join("flood.ready");
+    let mut command = python_command(
+        temp.path(),
+        "barrier_flood.py",
+        BARRIER_FLOOD_OUTPUT,
+        &pid_file,
+    );
+    command.env.push((
+        "EDITOR_FLOOD_READY_FILE".to_string(),
+        ready_file.to_string_lossy().into_owned(),
+    ));
+    let servers = Arc::new(EditorServers::default());
+    let mut session = start_session(
+        temp.path(),
+        command,
+        Arc::clone(&servers),
+        SHORT_WRITE,
+        SHORT_TEARDOWN,
+    )
+    .await;
+    let pid = wait_for_pids(&pid_file, 1).await.unwrap()[0];
+    let readiness = tokio::time::timeout(WAIT, async {
+        while !ready_file.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    let send = send_before(
+        session.editor.as_mut().unwrap(),
+        WireMessage::Disconnect {
+            reason: "connected nonreading editor".to_string(),
+        },
+        tokio::time::Instant::now() + WAIT,
+        "sending disconnect without closing editor",
+    )
+    .await;
+    // Keep the socket open and unread through the observation. Closing it first would release
+    // a legacy blocked socket writer and turn this regression into a false pass.
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(2),
+        session.task.as_mut().expect("owned session task"),
+    )
+    .await;
+    let finished_without_peer_close = matches!(&outcome, Ok(Ok(Ok(()))));
+    if outcome.is_ok() {
+        session.task.take();
+    } else {
+        session.task.as_ref().unwrap().abort();
+        let _ = tokio::time::timeout(WAIT, session.task.as_mut().unwrap()).await;
+    }
+    drop(session);
+    let cleanup = wait_for_exit(pid).await;
+    assert!(
+        readiness.is_ok(),
+        "the controlled output flood reached its barrier"
+    );
+    assert!(send.is_ok(), "disconnect reached the proxy: {send:?}");
+    cleanup.expect("the exact owned child is reaped even after a failing baseline observation");
+    assert!(
+        finished_without_peer_close,
+        "disconnect must retire a connected nonreading editor within the absolute budget: {outcome:?}"
+    );
+    assert_eq!(servers.count(), 0);
+}
