@@ -66,6 +66,11 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Rust impact analysis follows callers through ordinary helpers in test files instead of
+  treating every function there as a runnable test (#560). Attributes belong to their exact
+  enclosing declaration; nested helpers do not inherit an outer test marker. Ambiguous
+  same-name declarations on one line force the full suite. Multiple selected Rust tests run
+  with one Cargo filter per test, preserving each failure status.
 - The editor's remote-file mirror preserves source, edits and documentation while translating
   LSP locations (#568). Encoded cache paths round-trip correctly, sibling directory prefixes
   stay unchanged, and workspace-edit URI keys use the same mapping as location values.
