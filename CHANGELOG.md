@@ -83,6 +83,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Gateway handshake and shared-session resources retire on errors and cancellation (#583).
+  Workspace and worktree ownership remains held until the canceled session's overlays are
+  restored, preserving independent sessions and subsequent single-owner behavior.
 - Dedicated editor sessions bound server-input and editor-output writes and teardown (#574).
   A stalled peer cannot retain its child process group; watched-file fanout retires only
   lagging sessions. Cleanup also retires descendants after their parent exits, and final

@@ -68,6 +68,8 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 - [x] **1.4. Server Gateway Skeleton (`crates/prod-code-gateway`)**
   - Multi-threaded TCP listener accepting concurrent agent and editor connections.
   - Session registry tracking active client IDs, workspace paths, and leased resources.
+  - Failed handshakes and canceled shared sessions retire their counted resources (#583);
+    overlays are restored before workspace and worktree ownership is released.
   - Non-blocking status reporting endpoint (`prod-code status`) returning instant JSON health snapshots.
   - Status (audited 2026-09-26): `prod-code status --json` and `prod-code cluster --json` followed on 2026-09-26 (#398). The status carries engines, sessions, running commands, the host's memory and disk, `healthy` and `pressure`; the cluster snapshot carries the gossip view and each node's snapshot or error.
 
