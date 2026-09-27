@@ -154,7 +154,7 @@ pub struct RemoteFiles {
     remote: SocketAddr,
     /// The node's absolute paths live under this directory.
     mirror: PathBuf,
-    mirror_uri: String,
+    mirror_paths: prod_code_protocol::path::PathTranslator,
     client_root: PathBuf,
     server_root: PathBuf,
 }
@@ -181,7 +181,10 @@ impl RemoteFiles {
         let mirror = cache.join(remote.to_string().replace(':', "_"));
         Self {
             remote,
-            mirror_uri: format!("file://{}", mirror.display()),
+            mirror_paths: prod_code_protocol::path::PathTranslator::new(
+                &mirror.to_string_lossy(),
+                "/",
+            ),
             mirror,
             client_root: client_root.to_path_buf(),
             server_root: server_root.to_path_buf(),
@@ -190,12 +193,7 @@ impl RemoteFiles {
 
     /// The editor's message with every path of a mirrored copy turned back into the node's.
     pub fn to_node(&self, raw: &str) -> String {
-        let mirror = self.mirror.to_string_lossy();
-        if !raw.contains(mirror.as_ref()) {
-            return raw.to_string();
-        }
-        raw.replace(&self.mirror_uri, "file://")
-            .replace(mirror.as_ref(), "")
+        self.mirror_paths.translate_lsp_to_server(raw)
     }
 
     /// The node path a `file://` URI of a server's message names, when the editor cannot open
@@ -245,7 +243,12 @@ impl RemoteFiles {
             return raw;
         };
         let mut uris = Vec::new();
-        collect_uris(&value, &mut uris);
+        prod_code_protocol::path::map_lsp_locations(&mut value, &mut |text| {
+            if text.starts_with("file://") {
+                uris.push(text.to_string());
+            }
+            None
+        });
         let mut copies = HashMap::new();
         for uri in uris {
             if copies.contains_key(&uri) {
@@ -258,31 +261,10 @@ impl RemoteFiles {
         if copies.is_empty() {
             return raw;
         }
-        replace_uris(&mut value, &copies);
+        prod_code_protocol::path::map_lsp_locations(&mut value, &mut |text| {
+            copies.get(text).cloned()
+        });
         value.to_string()
-    }
-}
-
-/// Every string in `value` that is a `file://` URI.
-fn collect_uris(value: &serde_json::Value, out: &mut Vec<String>) {
-    match value {
-        serde_json::Value::String(s) if s.starts_with("file://") => out.push(s.clone()),
-        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_uris(v, out)),
-        serde_json::Value::Object(map) => map.values().for_each(|v| collect_uris(v, out)),
-        _ => {}
-    }
-}
-
-fn replace_uris(value: &mut serde_json::Value, copies: &HashMap<String, String>) {
-    match value {
-        serde_json::Value::String(s) => {
-            if let Some(local) = copies.get(s.as_str()) {
-                *s = local.clone();
-            }
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| replace_uris(v, copies)),
-        serde_json::Value::Object(map) => map.values_mut().for_each(|v| replace_uris(v, copies)),
-        _ => {}
     }
 }
 

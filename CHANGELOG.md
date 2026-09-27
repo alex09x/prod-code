@@ -66,6 +66,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- The editor's remote-file mirror preserves source, edits and documentation while translating
+  LSP locations (#568). Encoded cache paths round-trip correctly, sibling directory prefixes
+  stay unchanged, and workspace-edit URI keys use the same mapping as location values.
 - Symbol resolution refuses missing, malformed and overflowing LSP response coordinates (#564)
   instead of defaulting or wrapping them to another source position. Matching workspace hits,
   qualified members and fallback declarations propagate the error before any refactoring write,
