@@ -680,6 +680,12 @@ fn bracket_declares_type_parameters(text: &str, open: usize, close: usize) -> bo
     if start == close || text[start..close].starts_with("...") {
         return false;
     }
+    let Ok(has_comma) = bracket_has_top_level_comma(text, start, close) else {
+        return true;
+    };
+    if has_comma {
+        return true;
+    }
     let Some(name_end) = ascii_identifier_end(text, start) else {
         return false;
     };
@@ -690,11 +696,26 @@ fn bracket_declares_type_parameters(text: &str, open: usize, close: usize) -> bo
         return false;
     }
     match text.as_bytes()[after] {
-        b'.' | b'(' | b'+' | b'-' | b'/' | b'%' | b'&' | b'|' | b'^' | b'<' | b'>' => false,
-        b',' | b'~' | b'[' | b'*' => true,
+        b'.' | b'(' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^' | b'<' | b'>' => false,
+        b'~' | b'[' => true,
         byte if byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80 => true,
         _ => true,
     }
+}
+
+fn bracket_has_top_level_comma(text: &str, mut cursor: usize, close: usize) -> Result<bool> {
+    while cursor < close {
+        if let Some(end) = opaque_end(text, cursor)? {
+            cursor = end;
+            continue;
+        }
+        match text.as_bytes()[cursor] {
+            b'(' | b'[' | b'{' => cursor = matching(text, cursor)? + 1,
+            b',' => return Ok(true),
+            _ => cursor += 1,
+        }
+    }
+    Ok(false)
 }
 
 fn receiver_type_names(
@@ -751,13 +772,17 @@ fn type_aliases(text: &str) -> Result<Vec<(String, String)>> {
                     cursor = close + 1;
                     continue;
                 }
-                if let Some(end) = ascii_identifier_end(text, start) {
+                if let Some(end) = go_identifier_end(text, start) {
                     if let Some(target) = type_alias_target(text, end)? {
                         aliases.push((text[start..end].to_string(), target));
                     }
                     cursor = end;
                     continue;
                 }
+                anyhow::ensure!(
+                    bytes.get(start).is_none_or(|byte| *byte < 0x80),
+                    "a non-ASCII type declaration cannot be inspected conservatively"
+                );
             }
             _ => {}
         }
@@ -791,7 +816,7 @@ fn grouped_type_aliases(
             && braces == 0
             && brackets == 0
             && parens == 0
-            && let Some(end) = ascii_identifier_end(text, cursor)
+            && let Some(end) = go_identifier_end(text, cursor)
         {
             if let Some(target) = type_alias_target(text, end)? {
                 aliases.push((text[cursor..end].to_string(), target));
@@ -800,6 +825,10 @@ fn grouped_type_aliases(
             cursor = end;
             continue;
         }
+        anyhow::ensure!(
+            !spec_start || bytes[cursor] < 0x80,
+            "a non-ASCII grouped type declaration cannot be inspected conservatively"
+        );
         match bytes[cursor] {
             b'{' => braces += 1,
             b'}' => braces = braces.saturating_sub(1),
@@ -825,13 +854,31 @@ fn type_alias_target(text: &str, name_end: usize) -> Result<Option<String>> {
         return Ok(None);
     }
     cursor = skip_trivia(text, cursor + 1)?;
-    if text.as_bytes().get(cursor) == Some(&b'*') {
-        cursor = skip_trivia(text, cursor + 1)?;
+
+    let mut closes = Vec::new();
+    loop {
+        match text.as_bytes().get(cursor) {
+            Some(b'*') => cursor = skip_trivia(text, cursor + 1)?,
+            Some(b'(') => {
+                closes.push(matching(text, cursor)?);
+                cursor = skip_trivia(text, cursor + 1)?;
+            }
+            _ => break,
+        }
     }
-    let Some(end) = ascii_identifier_end(text, cursor) else {
+    let Some(end) = go_identifier_end(text, cursor) else {
         return Ok(None);
     };
-    Ok(Some(text[cursor..end].to_string()))
+    let target = text[cursor..end].to_string();
+    cursor = end;
+    while let Some(close) = closes.pop() {
+        cursor = skip_trivia(text, cursor)?;
+        if cursor != close {
+            return Ok(None);
+        }
+        cursor = close + 1;
+    }
+    Ok(Some(target))
 }
 
 fn embeds_receiver(text: &str, receiver_names: &BTreeSet<String>) -> Result<bool> {
@@ -906,7 +953,7 @@ fn field_embeds(field: &str, receiver_names: &BTreeSet<String>) -> Result<bool> 
     if field.as_bytes().get(cursor) == Some(&b'*') {
         cursor += 1;
     }
-    let Some(end) = ascii_identifier_end(field, cursor) else {
+    let Some(end) = go_identifier_end(field, cursor) else {
         return Ok(false);
     };
     if !receiver_names.contains(&field[cursor..end]) {
@@ -1293,6 +1340,22 @@ fn ascii_identifier_end(text: &str, start: usize) -> Option<usize> {
         .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
     {
         end += 1;
+    }
+    Some(end)
+}
+
+fn go_identifier_end(text: &str, start: usize) -> Option<usize> {
+    let mut chars = text.get(start..)?.char_indices();
+    let (_, first) = chars.next()?;
+    if first != '_' && !unicode_ident::is_xid_start(first) {
+        return None;
+    }
+    let mut end = start + first.len_utf8();
+    for (offset, character) in chars {
+        if character != '_' && !unicode_ident::is_xid_continue(character) {
+            break;
+        }
+        end = start + offset + character.len_utf8();
     }
     Some(end)
 }

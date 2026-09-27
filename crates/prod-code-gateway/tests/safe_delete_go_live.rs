@@ -570,6 +570,83 @@ async fn go_function_safe_delete_has_real_gateway_cli_and_mcp_proof() {
         );
     }
 
+    let constant_source = "package main\n\nconst Count = 2\ntype item [Count*2]int\n\nfunc (value item) unusedConstantArray() int { return len(value) }\n\nfunc main() {}\n";
+    let (_constant_dir, constant_root) = checkout(constant_source, EMPTY_TEST);
+    let constant_project = constant_root.join("project");
+    let before = behaviour(&constant_project);
+    let mut expected = snapshot(&constant_root);
+    expected.insert(
+        "project/main.go".into(),
+        constant_source
+            .replace(
+                "func (value item) unusedConstantArray() int { return len(value) }",
+                "",
+            )
+            .into_bytes(),
+    );
+    wait_for_gopls(
+        gateway.addr,
+        &constant_root,
+        "unusedConstantArray",
+        "func (value item) unusedConstantArray",
+    )
+    .await;
+    let (line, character) = tool_position(constant_source, "unusedConstantArray");
+    let (ok, output) = cli(
+        &constant_root,
+        gateway.addr,
+        &[
+            "safe-delete",
+            "project/main.go",
+            &line.to_string(),
+            &character.to_string(),
+        ],
+    );
+    assert!(ok && output.contains("compiler-verified"), "{output}");
+    assert_eq!(
+        snapshot(&constant_root),
+        expected,
+        "constant array CLI deletion snapshot"
+    );
+    assert_eq!(
+        behaviour(&constant_project),
+        before,
+        "constant array CLI deletion changed behavior"
+    );
+
+    let alias_source = "package main\n\ntype item struct{}\ntype (\n\tdirect = (((item)))\n\ttransitive = ((direct))\n\t別名 = (transitive)\n)\ntype outer struct { 別名 }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let (_alias_dir, alias_root) = checkout(alias_source, EMPTY_TEST);
+    let alias_project = alias_root.join("project");
+    let _ = behaviour(&alias_project);
+    wait_for_gopls(
+        gateway.addr,
+        &alias_root,
+        "hidden",
+        "func (value item) hidden",
+    )
+    .await;
+    let untouched = snapshot(&alias_root);
+    let (line, character) = tool_position(alias_source, "hidden");
+    let (ok, output) = cli(
+        &alias_root,
+        gateway.addr,
+        &[
+            "safe-delete",
+            "project/main.go",
+            &line.to_string(),
+            &character.to_string(),
+        ],
+    );
+    assert!(
+        !ok && output.contains("embedded or promoted") && output.contains("project/main.go"),
+        "{output}"
+    );
+    assert_eq!(
+        snapshot(&alias_root),
+        untouched,
+        "parenthesized alias CLI refusal wrote"
+    );
+
     for (source, through_cli) in [
         (
             "package main\n\ntype item struct{}\ntype outer struct { field struct { item } }\n\nfunc (value item) hidden() {}\nfunc main() {}\n",

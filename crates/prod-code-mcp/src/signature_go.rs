@@ -1871,8 +1871,8 @@ pub(crate) fn package_interface_method_file(file: &Path, name: &str) -> Result<O
     let directory = file
         .parent()
         .with_context(|| format!("{} has no containing package directory", file.display()))?;
-    let declaration_text = std::fs::read_to_string(file)
-        .with_context(|| format!("cannot read {}", file.display()))?;
+    let declaration_text =
+        std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let package = package_name(&declaration_text)
         .with_context(|| format!("cannot identify the Go package in {}", file.display()))?;
     for entry in std::fs::read_dir(directory).with_context(|| {

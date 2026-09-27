@@ -351,6 +351,67 @@ async fn unreferenced_value_and_pointer_receiver_methods_are_deleted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn constant_array_receiver_deletes_and_parenthesized_alias_refuses() {
+    require_go_toolchain();
+    let source = "package main\n\nconst Count = 2\ntype item [Count*2]int\n\nfunc (value item) unusedConstantArray() int { return len(value) }\n\nfunc main() {}\n";
+    let fixture = GoModule::new(&[
+        ("go.mod", "module example.com/constantarray\n\ngo 1.22\n"),
+        ("main.go", source),
+    ]);
+    let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+    assert!(compiled, "constant array fixture: {compile_output}");
+    let before = fixture.snapshot();
+    let mut expected = before.clone();
+    expected.insert(
+        "main.go".into(),
+        source
+            .replace(
+                "func (value item) unusedConstantArray() int { return len(value) }",
+                "",
+            )
+            .into_bytes(),
+    );
+    let bridge = GoplsBridge::start(&fixture).await;
+    let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+    let result = call(
+        proxy.addr(),
+        &fixture,
+        "main.go",
+        "unusedConstantArray",
+        false,
+    )
+    .await;
+    let output = text_of(&result);
+    assert!(
+        !result.is_error && output.contains("compiler-verified"),
+        "{output}"
+    );
+    assert_eq!(
+        fixture.snapshot(),
+        expected,
+        "constant array deletion snapshot"
+    );
+    let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+    assert!(compiled, "deleted constant array fixture: {compile_output}");
+
+    let source = "package main\n\ntype item struct{}\ntype (\n\tdirect = (((item)))\n\ttransitive = ((direct))\n\t別名 = (transitive)\n)\ntype outer struct { 別名 }\n\nfunc (value item) hidden() {}\nfunc main() {}\n";
+    let fixture = GoModule::new(&[
+        (
+            "go.mod",
+            "module example.com/parenthesizedalias\n\ngo 1.22\n",
+        ),
+        ("main.go", source),
+    ]);
+    let (compiled, compile_output) = fixture.go(&["test", "./..."]);
+    assert!(compiled, "parenthesized alias fixture: {compile_output}");
+    let bridge = GoplsBridge::start(&fixture).await;
+    let proxy = CompilerProxy::start(bridge.addr(), ShadowReply::Pass).await;
+    let output = refused(proxy.addr(), &fixture, "main.go", "hidden", false).await;
+    assert!(output.contains("embedded or promoted"), "{output}");
+    assert!(output.contains("main.go"), "{output}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unsupported_shapes_and_non_name_positions_are_refused_without_writes() {
     require_go_toolchain();
     let fixture = GoModule::new(&[
@@ -605,6 +666,10 @@ async fn alias_generic_and_embedded_receivers_refuse_unchanged() {
         ),
         (
             "package main\n\ntype item struct{}\ntype alias = item\ntype outer struct { alias }\n\nfunc (value item) hidden() {}\n",
+            "embedded or promoted",
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype pointer = ((*item))\ntype outer struct { pointer }\n\nfunc (value item) hidden() {}\n",
             "embedded or promoted",
         ),
         (
