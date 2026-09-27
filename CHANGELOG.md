@@ -66,6 +66,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- MCP multi-file validation accepts each advertised input form in its schema (#585):
+  whole-file `edits`, `diff` or `workspace_edit`. At least one remains required, and
+  the existing input precedence and field types are preserved.
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.
