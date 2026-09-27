@@ -473,19 +473,16 @@ fn receiver_source_evidence(
         declarations.len()
     );
     let (alias, generic) = declarations[0];
-    anyhow::ensure!(
-        !alias,
-        "receiver type {} is an alias",
-        receiver.type_name
-    );
+    anyhow::ensure!(!alias, "receiver type {} is an alias", receiver.type_name);
     anyhow::ensure!(
         !generic,
         "receiver type {} is generic or parameterized",
         receiver.type_name
     );
+    let receiver_names = receiver_type_names(&sources, &receiver.type_name)?;
     for (path, source) in &sources {
         anyhow::ensure!(
-            !embeds_receiver(source, &receiver.type_name)?,
+            !embeds_receiver(source, &receiver_names)?,
             "receiver type {} is embedded or promoted in {}",
             receiver.type_name,
             path.display()
@@ -501,11 +498,17 @@ fn package_sources(file: &Path, declaration_text: &str) -> Result<BTreeMap<PathB
     let package = go_package_name(declaration_text)
         .with_context(|| format!("cannot identify the Go package in {}", file.display()))?;
     let mut sources = BTreeMap::new();
-    for entry in std::fs::read_dir(directory)
-        .with_context(|| format!("cannot inspect Go package directory {}", directory.display()))?
-    {
+    for entry in std::fs::read_dir(directory).with_context(|| {
+        format!(
+            "cannot inspect Go package directory {}",
+            directory.display()
+        )
+    })? {
         let entry = entry.with_context(|| {
-            format!("cannot inspect an entry in Go package directory {}", directory.display())
+            format!(
+                "cannot inspect an entry in Go package directory {}",
+                directory.display()
+            )
         })?;
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "go") {
@@ -566,12 +569,11 @@ fn type_declarations(text: &str, wanted: &str) -> Vec<(bool, bool)> {
             b']' => brackets = brackets.saturating_sub(1),
             b'(' => parens += 1,
             b')' => parens = parens.saturating_sub(1),
-            b't'
-                if braces == 0
-                    && brackets == 0
-                    && parens == 0
-                    && bytes[cursor..].starts_with(b"type")
-                    && token_boundary(bytes, cursor, 4) =>
+            b't' if braces == 0
+                && brackets == 0
+                && parens == 0
+                && bytes[cursor..].starts_with(b"type")
+                && token_boundary(bytes, cursor, 4) =>
             {
                 let Ok(start) = skip_trivia(text, cursor + 4) else {
                     return found;
@@ -586,11 +588,7 @@ fn type_declarations(text: &str, wanted: &str) -> Vec<(bool, bool)> {
                 }
                 if let Some(end) = ascii_identifier_end(text, start) {
                     if &text[start..end] == wanted {
-                        let after = skip_trivia(text, end).unwrap_or(end);
-                        found.push((
-                            bytes.get(after) == Some(&b'='),
-                            bytes.get(after) == Some(&b'['),
-                        ));
+                        found.push(declaration_shape(text, end));
                     }
                     cursor = end;
                     continue;
@@ -632,11 +630,7 @@ fn grouped_type_declarations(
             && let Some(end) = ascii_identifier_end(text, cursor)
         {
             if &text[cursor..end] == wanted {
-                let after = skip_trivia(text, end).unwrap_or(end);
-                found.push((
-                    bytes.get(after) == Some(&b'='),
-                    bytes.get(after) == Some(&b'['),
-                ));
+                found.push(declaration_shape(text, end));
             }
             spec_start = false;
             cursor = end;
@@ -657,7 +651,190 @@ fn grouped_type_declarations(
     }
 }
 
-fn embeds_receiver(text: &str, receiver: &str) -> Result<bool> {
+fn declaration_shape(text: &str, name_end: usize) -> (bool, bool) {
+    let Ok(after) = skip_trivia(text, name_end) else {
+        return (false, true);
+    };
+    if text.as_bytes().get(after) == Some(&b'=') {
+        return (true, false);
+    }
+    if text.as_bytes().get(after) != Some(&b'[') {
+        return (false, false);
+    }
+    let Ok(close) = matching(text, after) else {
+        return (false, true);
+    };
+    let Ok(tail) = skip_trivia(text, close + 1) else {
+        return (false, true);
+    };
+    (
+        text.as_bytes().get(tail) == Some(&b'='),
+        bracket_declares_type_parameters(text, after, close),
+    )
+}
+
+fn bracket_declares_type_parameters(text: &str, open: usize, close: usize) -> bool {
+    let Ok(start) = skip_trivia(text, open + 1) else {
+        return true;
+    };
+    if start == close || text[start..close].starts_with("...") {
+        return false;
+    }
+    let Some(name_end) = ascii_identifier_end(text, start) else {
+        return false;
+    };
+    let Ok(after) = skip_trivia(text, name_end) else {
+        return true;
+    };
+    if after == close {
+        return false;
+    }
+    match text.as_bytes()[after] {
+        b'.' | b'(' | b'+' | b'-' | b'/' | b'%' | b'&' | b'|' | b'^' | b'<' | b'>' => false,
+        b',' | b'~' | b'[' | b'*' => true,
+        byte if byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80 => true,
+        _ => true,
+    }
+}
+
+fn receiver_type_names(
+    sources: &BTreeMap<PathBuf, String>,
+    receiver: &str,
+) -> Result<BTreeSet<String>> {
+    let aliases = sources
+        .values()
+        .map(|source| type_aliases(source))
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut names = BTreeSet::from([receiver.to_string()]);
+    loop {
+        let mut changed = false;
+        for (alias, target) in &aliases {
+            if names.contains(target) {
+                changed |= names.insert(alias.clone());
+            }
+        }
+        if !changed {
+            return Ok(names);
+        }
+    }
+}
+
+fn type_aliases(text: &str) -> Result<Vec<(String, String)>> {
+    let bytes = text.as_bytes();
+    let (mut braces, mut brackets, mut parens, mut cursor) = (0usize, 0usize, 0usize, 0usize);
+    let mut aliases = Vec::new();
+    while cursor < bytes.len() {
+        if let Some(end) = opaque_end(text, cursor)? {
+            cursor = end;
+            continue;
+        }
+        match bytes[cursor] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b't' if braces == 0
+                && brackets == 0
+                && parens == 0
+                && bytes[cursor..].starts_with(b"type")
+                && token_boundary(bytes, cursor, 4) =>
+            {
+                let start = skip_trivia(text, cursor + 4)?;
+                if bytes.get(start) == Some(&b'(') {
+                    let close = matching(text, start)?;
+                    grouped_type_aliases(text, start, close, &mut aliases)?;
+                    cursor = close + 1;
+                    continue;
+                }
+                if let Some(end) = ascii_identifier_end(text, start) {
+                    if let Some(target) = type_alias_target(text, end)? {
+                        aliases.push((text[start..end].to_string(), target));
+                    }
+                    cursor = end;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Ok(aliases)
+}
+
+fn grouped_type_aliases(
+    text: &str,
+    open: usize,
+    close: usize,
+    aliases: &mut Vec<(String, String)>,
+) -> Result<()> {
+    let bytes = text.as_bytes();
+    let (mut braces, mut brackets, mut parens) = (0usize, 0usize, 0usize);
+    let (mut cursor, mut spec_start) = (open + 1, true);
+    while cursor < close {
+        if let Some(end) = opaque_end(text, cursor)? {
+            if text[cursor..end].contains('\n') && braces == 0 && brackets == 0 && parens == 0 {
+                spec_start = true;
+            }
+            cursor = end;
+            continue;
+        }
+        if spec_start && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+            continue;
+        }
+        if spec_start
+            && braces == 0
+            && brackets == 0
+            && parens == 0
+            && let Some(end) = ascii_identifier_end(text, cursor)
+        {
+            if let Some(target) = type_alias_target(text, end)? {
+                aliases.push((text[cursor..end].to_string(), target));
+            }
+            spec_start = false;
+            cursor = end;
+            continue;
+        }
+        match bytes[cursor] {
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b'[' => brackets += 1,
+            b']' => brackets = brackets.saturating_sub(1),
+            b'(' => parens += 1,
+            b')' => parens = parens.saturating_sub(1),
+            b';' if braces == 0 && brackets == 0 && parens == 0 => spec_start = true,
+            b'\n' if braces == 0 && brackets == 0 && parens == 0 => spec_start = true,
+            _ => {}
+        }
+        cursor += 1;
+    }
+    Ok(())
+}
+
+fn type_alias_target(text: &str, name_end: usize) -> Result<Option<String>> {
+    let mut cursor = skip_trivia(text, name_end)?;
+    if text.as_bytes().get(cursor) == Some(&b'[') {
+        cursor = skip_trivia(text, matching(text, cursor)? + 1)?;
+    }
+    if text.as_bytes().get(cursor) != Some(&b'=') {
+        return Ok(None);
+    }
+    cursor = skip_trivia(text, cursor + 1)?;
+    if text.as_bytes().get(cursor) == Some(&b'*') {
+        cursor = skip_trivia(text, cursor + 1)?;
+    }
+    let Some(end) = ascii_identifier_end(text, cursor) else {
+        return Ok(None);
+    };
+    Ok(Some(text[cursor..end].to_string()))
+}
+
+fn embeds_receiver(text: &str, receiver_names: &BTreeSet<String>) -> Result<bool> {
     let bytes = text.as_bytes();
     let mut cursor = 0usize;
     while cursor < bytes.len() {
@@ -669,10 +846,10 @@ fn embeds_receiver(text: &str, receiver: &str) -> Result<bool> {
             let open = skip_trivia(text, cursor + 6)?;
             if bytes.get(open) == Some(&b'{') {
                 let close = matching(text, open)?;
-                if struct_body_embeds(&text[open + 1..close], receiver)? {
+                if struct_body_embeds(&text[open + 1..close], receiver_names)? {
                     return Ok(true);
                 }
-                cursor = close + 1;
+                cursor = open + 1;
                 continue;
             }
         }
@@ -681,15 +858,26 @@ fn embeds_receiver(text: &str, receiver: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn struct_body_embeds(body: &str, receiver: &str) -> Result<bool> {
+fn struct_body_embeds(body: &str, receiver_names: &BTreeSet<String>) -> Result<bool> {
     let bytes = body.as_bytes();
     let (mut braces, mut brackets, mut parens, mut start, mut cursor) =
         (0usize, 0usize, 0usize, 0usize, 0usize);
     while cursor <= bytes.len() {
         if cursor == bytes.len() {
-            return field_embeds(&body[start..cursor], receiver);
+            return field_embeds(&body[start..cursor], receiver_names);
         }
         if let Some(end) = opaque_end(body, cursor)? {
+            if bytes[cursor] == b'/'
+                && body[cursor..end].contains('\n')
+                && braces == 0
+                && brackets == 0
+                && parens == 0
+            {
+                if field_embeds(&body[start..cursor], receiver_names)? {
+                    return Ok(true);
+                }
+                start = end;
+            }
             cursor = end;
             continue;
         }
@@ -701,7 +889,7 @@ fn struct_body_embeds(body: &str, receiver: &str) -> Result<bool> {
             b'(' => parens += 1,
             b')' => parens = parens.saturating_sub(1),
             b';' | b'\n' if braces == 0 && brackets == 0 && parens == 0 => {
-                if field_embeds(&body[start..cursor], receiver)? {
+                if field_embeds(&body[start..cursor], receiver_names)? {
                     return Ok(true);
                 }
                 start = cursor + 1;
@@ -713,7 +901,7 @@ fn struct_body_embeds(body: &str, receiver: &str) -> Result<bool> {
     Ok(false)
 }
 
-fn field_embeds(field: &str, receiver: &str) -> Result<bool> {
+fn field_embeds(field: &str, receiver_names: &BTreeSet<String>) -> Result<bool> {
     let mut cursor = skip_trivia(field, 0)?;
     if field.as_bytes().get(cursor) == Some(&b'*') {
         cursor += 1;
@@ -721,7 +909,7 @@ fn field_embeds(field: &str, receiver: &str) -> Result<bool> {
     let Some(end) = ascii_identifier_end(field, cursor) else {
         return Ok(false);
     };
-    if &field[cursor..end] != receiver {
+    if !receiver_names.contains(&field[cursor..end]) {
         return Ok(false);
     }
     cursor = skip_trivia(field, end)?;

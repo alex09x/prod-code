@@ -278,25 +278,53 @@ async fn unreferenced_go_function_is_deleted_through_public_mcp() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unreferenced_value_and_pointer_receiver_methods_are_deleted() {
     require_go_toolchain();
-    for (declaration, receiver, method) in [
+    for (declaration, receiver, method, retained) in [
         (
             "type item struct{ value string }",
             "item",
             "unusedValue",
+            "item struct{ value string }",
         ),
         (
             "type item struct{ value string }",
             "*item",
             "unusedPointer",
+            "item struct{ value string }",
         ),
         (
             "type (\n\titem struct{ value string }\n)",
             "item",
             "unusedGrouped",
+            "item struct{ value string }",
+        ),
+        ("type item []int", "item", "unusedSliceValue", "item []int"),
+        (
+            "type item [2]int",
+            "*item",
+            "unusedArrayPointer",
+            "item [2]int",
+        ),
+        (
+            "type (\n\titem [2]int\n)",
+            "item",
+            "unusedGroupedArrayValue",
+            "item [2]int",
+        ),
+        (
+            "type (\n\titem []int\n)",
+            "*item",
+            "unusedGroupedSlicePointer",
+            "item []int",
+        ),
+        (
+            "type item struct{}\ntype outer struct { item item }",
+            "item",
+            "unusedNamedField",
+            "outer struct { item item }",
         ),
     ] {
         let source = format!(
-            "package main\n\n{declaration}\n\nfunc (value {receiver}) {method}() string {{ return value.value }}\n\nfunc main() {{}}\n"
+            "package main\n\n{declaration}\n\nfunc (value {receiver}) {method}() int {{ return 0 }}\n\nfunc main() {{}}\n"
         );
         let fixture = GoModule::new(&[
             ("go.mod", "module example.com/methoddelete\n\ngo 1.22\n"),
@@ -317,7 +345,7 @@ async fn unreferenced_value_and_pointer_receiver_methods_are_deleted() {
         assert!(output.contains("compiler-verified"), "{output}");
         let written = fixture.read("main.go");
         assert!(!written.contains(method), "{written}");
-        assert!(written.contains("item struct{ value string }"));
+        assert!(written.contains(retained));
         assert!(written.contains("func main() {}"));
     }
 }
@@ -571,6 +599,18 @@ async fn alias_generic_and_embedded_receivers_refuse_unchanged() {
             "package main\n\ntype item struct{}\ntype outer struct{ item }\n\nfunc (value item) hidden() {}\n",
             "embedded or promoted",
         ),
+        (
+            "package main\n\ntype item struct{}\ntype outer struct { field struct { item } }\n\nfunc (value item) hidden() {}\n",
+            "embedded or promoted",
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype alias = item\ntype outer struct { alias }\n\nfunc (value item) hidden() {}\n",
+            "embedded or promoted",
+        ),
+        (
+            "package main\n\ntype item struct{}\ntype outer struct { named int /* field boundary\n*/ item }\n\nfunc (value item) hidden() {}\n",
+            "embedded or promoted",
+        ),
     ] {
         let fixture = GoModule::new(&[
             ("go.mod", "module example.com/methodshape\n\ngo 1.22\n"),
@@ -601,7 +641,10 @@ async fn evidence_gateway(references: Value) -> ScriptedGateway {
 #[tokio::test]
 async fn failed_malformed_and_nonempty_implementation_evidence_refuses_unchanged() {
     for (implementation, expected) in [
-        (answers::failure("implementation unavailable"), "could not list"),
+        (
+            answers::failure("implementation unavailable"),
+            "could not list",
+        ),
         (json!("malformed"), "not a location"),
         (
             json!([{
