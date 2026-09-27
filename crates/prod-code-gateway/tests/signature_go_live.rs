@@ -180,17 +180,23 @@ func main() {
 	meter := Meter{total: 3}
 	fmt.Println(markMeter("value receiver", &meter).Add(mark("value argument", 2)))
 	fmt.Println(markMeter("pointer receiver", &meter).Scale(mark("pointer argument", 4)))
+	fmt.Println(trace)
 }
 "#;
 
 const RECEIVER_TEST: &str = r#"package main
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 func TestReceiverMethods(t *testing.T) {
+	trace = nil
 	meter := Meter{total: 2}
 	if got := meter.Add(3); got != "5" { t.Fatalf("Add = %s", got) }
 	if got := (&meter).Scale(2); got != "4" { t.Fatalf("Scale = %s", got) }
+	if got, want := fmt.Sprint(trace), "[Add(5) Scale(4)]"; got != want { t.Fatalf("trace = %s, want %s", got, want) }
 }
 "#;
 
@@ -385,8 +391,61 @@ async fn tool(addr: SocketAddr, root: &Path, name: &str, args: serde_json::Value
     }
 }
 
+const SENTINEL_CHILD: &str = "PROD_CODE_GO_SENTINEL_CHILD";
+const SENTINEL_ROOT: &str = "PROD_CODE_GO_SENTINEL_ROOT";
+const SENTINEL_ADDR: &str = "PROD_CODE_GO_SENTINEL_ADDR";
+
+/// This runs in an explicitly spawned test process whose environment contains the failing
+/// client-only `go`. The parent has already started the real gateway with its normal toolchain.
+async fn client_sentinel_scenario() {
+    let root = PathBuf::from(std::env::var_os(SENTINEL_ROOT).expect("sentinel fixture root"));
+    let addr = std::env::var(SENTINEL_ADDR)
+        .expect("sentinel gateway address")
+        .parse()
+        .expect("sentinel gateway address parses");
+    let before_refusal = snapshot(&root);
+    let refused_addition = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Ship",
+            "params": ["dest", "qty", "bad: string = 1"],
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await;
+    assert!(
+        refused_addition.starts_with("error: ") && refused_addition.contains("does not compile"),
+        "{refused_addition}"
+    );
+    assert_eq!(snapshot(&root), before_refusal, "compiler refusal wrote");
+
+    let added = tool(
+        addr,
+        &root,
+        "code_change_signature",
+        serde_json::json!({
+            "symbol": "Ship",
+            "params": ["dest", "qty", "route: string = \"road,air\""],
+            "apply": true,
+            "force": true
+        }),
+    )
+    .await;
+    assert!(
+        !added.starts_with("error: ") && added.contains("[applied to 3 file(s)]"),
+        "{added}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
+    if std::env::var_os(SENTINEL_CHILD).is_some() {
+        client_sentinel_scenario().await;
+        return;
+    }
     let (ok, version) = run(Path::new("."), "gopls", &["version"]);
     assert!(ok, "gopls version: {version}");
     eprintln!("gopls on this node: {}", version.trim());
@@ -523,56 +582,22 @@ async fn unused_go_parameters_are_removed_through_the_real_gateway_and_gopls() {
         std::iter::once(sentinel.path().to_path_buf()).chain(std::env::split_paths(&original_path)),
     )
     .expect("client PATH");
-    // This test binary contains one test, and the server is already a separate process with its
-    // original environment, so the temporary client-only process environment is isolated here.
-    unsafe {
-        std::env::set_var("PATH", &client_path);
-        std::env::set_var("PROD_CODE_GO_SENTINEL", &marker);
-    }
-
-    let before_refusal = snapshot(&root);
-    let refused_addition = tool(
-        addr,
-        &root,
-        "code_change_signature",
-        serde_json::json!({
-            "symbol": "Ship",
-            "params": ["dest", "qty", "bad: string = 1"],
-            "apply": true,
-            "force": true
-        }),
-    )
-    .await;
-    assert!(
-        refused_addition.starts_with("error: ") && refused_addition.contains("does not compile"),
-        "{refused_addition}"
-    );
-    assert_eq!(snapshot(&root), before_refusal, "compiler refusal wrote");
-
-    // The source-built gateway also carries an explicitly typed addition through public MCP.
-    // gopls supplies the complete reference set; the adapter inserts only the pure literal and
-    // compiles every source and test caller in a private shadow before writing.
-    let added = tool(
-        addr,
-        &root,
-        "code_change_signature",
-        serde_json::json!({
-            "symbol": "Ship",
-            "params": ["dest", "qty", "route: string = \"road,air\""],
-            "apply": true,
-            "force": true
-        }),
-    )
-    .await;
-    eprintln!("applied addition:\n{added}");
-    assert!(
-        !added.starts_with("error: ") && added.contains("[applied to 3 file(s)]"),
-        "{added}"
-    );
-    unsafe {
-        std::env::set_var("PATH", original_path);
-        std::env::remove_var("PROD_CODE_GO_SENTINEL");
-    }
+    // The child alone sees the failing client `go`; it talks to this already-running gateway,
+    // whose inherited toolchain remains real. No process-global test environment is mutated.
+    let status = Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "unused_go_parameters_are_removed_through_the_real_gateway_and_gopls",
+            "--nocapture",
+        ])
+        .env("PATH", client_path)
+        .env("PROD_CODE_GO_SENTINEL", &marker)
+        .env(SENTINEL_CHILD, "1")
+        .env(SENTINEL_ROOT, &root)
+        .env(SENTINEL_ADDR, addr.to_string())
+        .status()
+        .expect("sentinel child starts");
+    assert!(status.success(), "client sentinel child failed: {status}");
     assert!(
         !marker.exists(),
         "the client invoked its failing Go sentinel"

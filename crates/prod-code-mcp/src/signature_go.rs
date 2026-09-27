@@ -1284,14 +1284,12 @@ async fn function_reference_evidence(
         decl.name
     );
     if receiver_type.is_some()
-        && let Some((path, _)) = originals
-            .iter()
-            .find(|(_, source)| declares_interface_method(source, &decl.name))
+        && let Some(path) = interface_method_file(canonical_root, &decl.name)?
     {
         anyhow::bail!(
             "`{}` has an interface declaration in {}; interface dispatch cannot be reconciled",
             decl.name,
-            display(root, path)
+            display(root, &path)
         );
     }
     Ok((originals, calls))
@@ -1321,6 +1319,54 @@ fn declares_interface_method(text: &str, name: &str) -> bool {
         from = at + "interface".len();
     }
     false
+}
+
+/// An interface obligation need not be reported by gopls as a reference to a concrete method.
+/// Scan the checkout before extending a receiver method so an omitted interface declaration
+/// cannot let an interface dispatch compile only after a destructive write.
+fn interface_method_file(root: &Path, name: &str) -> Result<Option<PathBuf>> {
+    fn visit(dir: &Path, name: &str) -> Result<Option<PathBuf>> {
+        for entry in std::fs::read_dir(dir).with_context(|| {
+            format!(
+                "cannot read {} while checking interface obligations",
+                dir.display()
+            )
+        })? {
+            let entry = entry.with_context(|| {
+                format!(
+                    "cannot inspect {} while checking interface obligations",
+                    dir.display()
+                )
+            })?;
+            let path = entry.path();
+            let kind = entry.file_type().with_context(|| {
+                format!(
+                    "cannot inspect {} while checking interface obligations",
+                    path.display()
+                )
+            })?;
+            if kind.is_dir() {
+                if entry.file_name() != ".git"
+                    && let Some(found) = visit(&path, name)?
+                {
+                    return Ok(Some(found));
+                }
+            } else if kind.is_file() && path.extension().is_some_and(|extension| extension == "go")
+            {
+                let text = std::fs::read_to_string(&path).with_context(|| {
+                    format!(
+                        "cannot read {} while checking interface obligations",
+                        path.display()
+                    )
+                })?;
+                if declares_interface_method(&text, name) {
+                    return Ok(Some(path));
+                }
+            }
+        }
+        Ok(None)
+    }
+    visit(root, name)
 }
 
 /// The use of a receiver method must be a selector call. An interface member declaration and a
