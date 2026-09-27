@@ -122,6 +122,30 @@ async fn a_worker_starts_a_language_server_and_talks_to_it() {
         "the answer is about the function under the cursor: {rendered}"
     );
 
+    // Exit detection applies to the fallback too: a cached workspace must not hand a dead
+    // subprocess to the next client after the primary engine has failed.
+    let worker = std::sync::Arc::new(worker);
+    let shared = prod_code_gateway::workspace::SharedWorkspace::new(
+        workspace.path().to_path_buf(),
+        "go".to_string(),
+        None,
+        None,
+        None,
+        Some(std::sync::Arc::clone(&worker)),
+    );
+    assert!(!shared.has_dead_server());
+    worker
+        .send_lsp(r#"{"jsonrpc":"2.0","method":"exit"}"#)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !shared.has_dead_server() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a stopped fallback must make its workspace non-reusable");
+
     // The open document is remembered, so a later session does not re-open it.
     let open = worker.open_files.read().await.clone();
     assert!(
@@ -142,4 +166,112 @@ async fn a_language_nobody_manages_is_refused_by_name() {
         text.contains("cobol"),
         "the refusal names the engine it was asked for: {text}"
     );
+}
+
+/// Each fake-server mode runs in its own test process: PATH is never changed in a shared test.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fallback_initialization_requires_a_valid_response() {
+    const MODE: &str = "PROD_CODE_BACKEND_LIFECYCLE_CASE";
+    if let Ok(mode) = std::env::var(MODE) {
+        let dir = tempfile::tempdir().unwrap();
+        let outcome = BackendWorker::spawn(dir.path(), "go").await;
+        if matches!(mode.as_str(), "valid" | "collision") {
+            let worker = outcome.unwrap_or_else(|error| panic!("{mode}: {error:#}"));
+            let capabilities = worker.capabilities.read().await.clone();
+            assert_eq!(capabilities, Some(serde_json::json!({})), "{mode}");
+        } else {
+            let error = match outcome {
+                Ok(_) => panic!("{mode}: invalid initialization was accepted"),
+                Err(error) => format!("{error:#}"),
+            };
+            assert!(
+                error.to_lowercase().contains("initializ"),
+                "{mode}: {error}"
+            );
+            match mode.as_str() {
+                "error" => assert!(error.contains("fixture refused initialization"), "{error}"),
+                "malformed" => assert!(error.contains("capabilities"), "{error}"),
+                "eof" => assert!(
+                    error.contains("exited") || error.contains("closed"),
+                    "{error}"
+                ),
+                "silent" => assert!(error.to_lowercase().contains("timeout"), "{error}"),
+                _ => panic!("unknown mode"),
+            }
+        }
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let binaries = tempfile::tempdir().unwrap();
+    let script = binaries.path().join("gopls");
+    std::fs::write(&script, r#"#!/usr/bin/env python3
+import json, os, sys, threading
+
+def read():
+    n = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if not line.strip():
+            break
+        if line.lower().startswith(b'content-length:'):
+            n = int(line.split(b':', 1)[1])
+    return json.loads(sys.stdin.buffer.read(n))
+
+def send(value):
+    body = json.dumps(value).encode()
+    sys.stdout.buffer.write(b'Content-Length: %d\r\n\r\n' % len(body) + body)
+    sys.stdout.buffer.flush()
+
+initial = read()
+assert initial['method'] == 'initialize'
+mode = os.environ['PROD_CODE_BACKEND_LIFECYCLE_CASE']
+if mode == 'eof':
+    sys.exit(0)
+if mode == 'silent':
+    threading.Event().wait()
+if mode == 'collision':
+    send({'jsonrpc': '2.0', 'id': 1, 'method': 'workspace/configuration', 'params': {'items': [{}]}})
+    response = read()
+    assert response.get('result') == [{}], response
+if mode == 'error':
+    send({'jsonrpc': '2.0', 'id': 1, 'error': {'code': -32603, 'message': 'fixture refused initialization'}})
+elif mode == 'malformed':
+    send({'jsonrpc': '2.0', 'id': 1, 'result': {}})
+else:
+    send({'jsonrpc': '2.0', 'id': 1, 'result': {'capabilities': {}}})
+while read() is not None:
+    pass
+"#).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(binaries.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let mut failures = Vec::new();
+    for mode in ["valid", "collision", "error", "malformed", "eof", "silent"] {
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "fallback_initialization_requires_a_valid_response",
+                "--nocapture",
+            ])
+            .env(MODE, mode)
+            .env("PATH", &path)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .unwrap();
+        if !output.status.success() {
+            failures.push(format!(
+                "{mode}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -10,8 +10,9 @@ use prod_code_protocol::readiness::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{Mutex, RwLock, broadcast, oneshot};
@@ -88,7 +89,7 @@ pub struct GoEngine {
     workspace_root: PathBuf,
     stdin: Arc<Mutex<ChildStdin>>,
     next_req_id: AtomicU64,
-    pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     pub capabilities: Arc<RwLock<Option<serde_json::Value>>>,
     broadcast_tx: broadcast::Sender<String>,
     /// False once gopls's output has ended: it exited or crashed (#355).
@@ -96,12 +97,53 @@ pub struct GoEngine {
     /// What gopls has said about loading its packages: "Setting up workspace" is begun and
     /// ended as progress (#391).
     readiness: Arc<Readiness>,
-    _child: Arc<Mutex<Child>>,
+    request_timeout: Duration,
+    _child: Arc<StdMutex<Child>>,
+}
+
+struct PendingRequest {
+    id: u64,
+    pending: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    child: Arc<StdMutex<Child>>,
+    is_alive: Arc<AtomicBool>,
+    frame_written: bool,
+}
+
+impl PendingRequest {
+    fn retire_if_partial(&self) {
+        if self.frame_written {
+            return;
+        }
+        self.is_alive.store(false, Ordering::Release);
+        let _ = lock_unpoisoned(&self.child).start_kill();
+        lock_unpoisoned(&self.pending).clear();
+    }
+}
+
+impl Drop for PendingRequest {
+    fn drop(&mut self) {
+        lock_unpoisoned(&self.pending).remove(&self.id);
+        self.retire_if_partial();
+    }
+}
+
+fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> StdMutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 impl GoEngine {
     /// Launch a new managed Go engine for the given workspace root.
     pub async fn load(workspace_root: &Path, config: GoConfig) -> Result<Self> {
+        Self::load_with_request_timeout(workspace_root, config, Duration::from_secs(30)).await
+    }
+
+    async fn load_with_request_timeout(
+        workspace_root: &Path,
+        config: GoConfig,
+        request_timeout: Duration,
+    ) -> Result<Self> {
         let gopls_bin = find_gopls_binary(config.gopls_path.as_deref())
             .ok_or_else(|| anyhow::anyhow!("gopls executable not found on host"))?;
 
@@ -158,8 +200,8 @@ impl GoEngine {
         let (bcast_tx, _) = broadcast::channel(1024);
         let bcast_tx_clone = bcast_tx.clone();
 
-        let pending_requests: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
 
         let stdin_arc = Arc::new(Mutex::new(stdin));
@@ -205,7 +247,7 @@ impl GoEngine {
                                         if val.get("method").is_none()
                                             && let Some(id) = id_val.as_u64()
                                         {
-                                            let mut pending = pending_clone.lock().await;
+                                            let mut pending = lock_unpoisoned(&pending_clone);
                                             if let Some(tx) = pending.remove(&id) {
                                                 let _ = tx.send(val.clone());
                                                 continue;
@@ -258,7 +300,7 @@ impl GoEngine {
             is_alive_reader.store(false, Ordering::Relaxed);
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the timeout (#355).
-            pending_clone.lock().await.clear();
+            lock_unpoisoned(&pending_clone).clear();
             tracing::info!("gopls background reader loop stopped");
         });
 
@@ -271,7 +313,8 @@ impl GoEngine {
             broadcast_tx: bcast_tx,
             is_alive,
             readiness,
-            _child: Arc::new(Mutex::new(child)),
+            request_timeout,
+            _child: Arc::new(StdMutex::new(child)),
         };
 
         // Initialize gopls with workspace root
@@ -361,20 +404,17 @@ impl GoEngine {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("gopls process has exited before request '{method}'");
+        }
         // A question answered from the index waits until gopls has loaded its packages (#391).
         let busy = if needs_index(method) {
             self.readiness.wait(INDEX_WAIT).await
         } else {
             None
         };
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-
-        {
-            let mut pending = self.pending_requests.lock().await;
-            pending.insert(req_id, tx);
-        }
-
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "id": req_id,
@@ -382,11 +422,41 @@ impl GoEngine {
             "params": params
         });
 
-        Self::write_frame_raw(&self.stdin, &payload).await?;
+        let body = payload.to_string();
+        let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let mut writer = tokio::time::timeout_at(deadline, self.stdin.lock())
+            .await
+            .with_context(|| format!("Timeout waiting to send gopls request '{method}'"))?;
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("gopls process has exited before request '{method}'");
+        }
+        let (tx, rx) = oneshot::channel();
+        lock_unpoisoned(&self.pending_requests).insert(req_id, tx);
+        // Declared after `writer`: cancellation or a write error retires the partial stream
+        // while this request still owns the writer lock, before a queued writer can wake.
+        let mut pending = PendingRequest {
+            id: req_id,
+            pending: Arc::clone(&self.pending_requests),
+            child: Arc::clone(&self._child),
+            is_alive: Arc::clone(&self.is_alive),
+            frame_written: false,
+        };
+        tokio::time::timeout_at(deadline, writer.write_all(frame.as_bytes()))
+            .await
+            .with_context(|| format!("Timeout writing gopls request '{method}'"))?
+            .with_context(|| format!("Failed to write gopls request '{method}'"))?;
+        tokio::time::timeout_at(deadline, writer.flush())
+            .await
+            .with_context(|| format!("Timeout flushing gopls request '{method}'"))?
+            .with_context(|| format!("Failed to flush gopls request '{method}'"))?;
+        pending.frame_written = true;
+        drop(writer);
 
-        // Await response with timeout
-        match tokio::time::timeout(tokio::time::Duration::from_secs(30), rx).await {
+        match tokio::time::timeout_at(deadline, rx).await {
             Ok(Ok(mut val)) => {
+                if !self.is_alive.load(Ordering::Acquire) {
+                    anyhow::bail!("gopls has exited while answering '{method}'");
+                }
                 normalize_diagnostic_response(method, &mut val);
                 if let Some(busy) = busy {
                     val[BUSY_MEMBER] = serde_json::to_value(busy)?;
@@ -395,8 +465,6 @@ impl GoEngine {
             }
             Ok(Err(_)) => anyhow::bail!("gopls has exited while answering '{method}'"),
             Err(_) => {
-                let mut pending = self.pending_requests.lock().await;
-                pending.remove(&req_id);
                 anyhow::bail!("Timeout waiting for gopls response to method '{method}'");
             }
         }
@@ -552,6 +620,98 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    #[cfg(unix)]
+    const FAKE_GOPLS: &str = r#"#!/usr/bin/env python3
+import json, os, sys, threading, time
+
+LOCK = threading.Lock()
+SEEN = []
+SEEN_FILE = os.environ.get("FAKE_SEEN_FILE")
+
+def send(message):
+    body = json.dumps(message).encode()
+    with LOCK:
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
+
+def read():
+    length = 0
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.strip()
+        if not line:
+            break
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":")[1])
+    body = b""
+    while len(body) < length:
+        chunk = sys.stdin.buffer.read(min(length - len(body), 4096))
+        if not chunk:
+            return None
+        body += chunk
+        if os.environ.get("FAKE_SLOW_READ"):
+            time.sleep(float(os.environ["FAKE_SLOW_READ"]))
+    return json.loads(body)
+
+while True:
+    message = read()
+    if message is None:
+        break
+    method = message.get("method", "")
+    SEEN.append(method)
+    if SEEN_FILE:
+        with open(SEEN_FILE, "a") as seen:
+            seen.write(method + "\n")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {"hoverProvider": True}}})
+    elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
+        os.close(0)
+        threading.Event().wait()
+    elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
+        threading.Event().wait()
+    elif method == "textDocument/hover":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"contents": "healthy"}})
+    elif method == "prodCode/delay":
+        threading.Timer(0.4, send, ({"jsonrpc": "2.0", "id": message["id"], "result": "late"},)).start()
+    elif method == "prodCode/seen":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": SEEN})
+    elif method == "prodCode/queuedAfterRetirement":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": "unexpected success"})
+"#;
+
+    #[cfg(unix)]
+    async fn fake_engine(
+        mode: Option<(&str, &str)>,
+        timeout: Duration,
+    ) -> (tempfile::TempDir, Arc<GoEngine>) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().expect("tempdir");
+        let script = dir.path().join("fake-gopls");
+        std::fs::write(&script, FAKE_GOPLS).expect("write fake gopls");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("make fake gopls executable");
+        let mut config = GoConfig {
+            gopls_path: Some(script),
+            shared_cache_dir: Some(dir.path().join("cache")),
+            ..Default::default()
+        };
+        config.extra_env.insert(
+            "FAKE_SEEN_FILE".to_string(),
+            dir.path().join("seen").to_string_lossy().into_owned(),
+        );
+        if let Some((name, value)) = mode {
+            config.extra_env.insert(name.to_string(), value.to_string());
+        }
+        let engine = GoEngine::load_with_request_timeout(dir.path(), config, timeout)
+            .await
+            .expect("the fake gopls starts");
+        (dir, Arc::new(engine))
+    }
+
     #[test]
     fn test_gopls_binary_discovery() {
         let found = find_gopls_binary(None);
@@ -649,6 +809,218 @@ func main() {
         let hits = answer["result"].as_array().map(Vec::len).unwrap_or(0);
         assert!(hits >= 1, "{answer}");
         assert_eq!(engine.busy(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn request_deadline_covers_a_blocked_full_frame_write() {
+        let (_dir, engine) =
+            fake_engine(Some(("FAKE_STOP_READING", "1")), Duration::from_millis(200)).await;
+        let observed = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.send_request(
+                "prodCode/large",
+                serde_json::json!({ "payload": "x".repeat(8 * 1024 * 1024) }),
+            ),
+        )
+        .await;
+        let error = observed
+            .expect("the internal deadline includes a blocked write")
+            .expect_err("the full frame cannot be written");
+        let text = format!("{error:#}");
+        assert!(text.contains("prodCode/large"), "{text}");
+        assert!(text.to_lowercase().contains("timeout"), "{text}");
+        assert!(!engine.is_alive(), "the partial stream is retired");
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn writer_lock_timeout_never_sends_the_expired_request() {
+        let (_dir, engine) = fake_engine(
+            Some(("FAKE_SLOW_READ", "0.003")),
+            Duration::from_millis(100),
+        )
+        .await;
+        let writing = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_notification(
+                        "prodCode/largeNotification",
+                        serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
+                    )
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let error = engine
+            .send_request("prodCode/queued", serde_json::json!({}))
+            .await
+            .expect_err("the request expires behind the writer");
+        let text = format!("{error:#}");
+        assert!(text.contains("prodCode/queued"), "{text}");
+        assert!(text.to_lowercase().contains("timeout"), "{text}");
+        writing.await.expect("task").expect("notification");
+
+        let seen = engine
+            .send_request("prodCode/seen", serde_json::json!({}))
+            .await
+            .expect("healthy response after contention");
+        assert!(
+            !seen["result"]
+                .as_array()
+                .expect("methods")
+                .iter()
+                .any(|method| method == "prodCode/queued"),
+            "{seen}"
+        );
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_request_rechecks_retirement_before_writing() {
+        let (dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
+        let writer = engine.stdin.lock().await;
+        let before = engine.next_req_id.load(Ordering::Relaxed);
+        let waiting = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("prodCode/queuedAfterRetirement", serde_json::json!({}))
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.next_req_id.load(Ordering::Relaxed) == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the request reached the occupied writer");
+
+        engine.is_alive.store(false, Ordering::Release);
+        drop(writer);
+        let error = waiting
+            .await
+            .expect("request task")
+            .expect_err("a retired engine cannot answer successfully");
+        assert!(
+            format!("{error:#}").contains("exited before request"),
+            "{error:#}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let seen = std::fs::read_to_string(dir.path().join("seen")).expect("request log");
+        assert!(
+            !seen
+                .lines()
+                .any(|method| method == "prodCode/queuedAfterRetirement"),
+            "{seen}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn write_error_keeps_context_and_retires_the_child() {
+        let (_dir, engine) =
+            fake_engine(Some(("FAKE_CLOSE_STDIN", "1")), Duration::from_secs(2)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let error = engine
+            .send_request(
+                "prodCode/brokenWrite",
+                serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
+            )
+            .await
+            .expect_err("stdin was closed");
+        let text = format!("{error:#}");
+        assert!(text.contains("prodCode/brokenWrite"), "{text}");
+        assert!(text.to_lowercase().contains("write"), "{text}");
+        assert!(!engine.is_alive());
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_partial_frame_retires_the_child_and_wakes_waiters() {
+        let (_dir, engine) =
+            fake_engine(Some(("FAKE_STOP_READING", "1")), Duration::from_secs(10)).await;
+        let writing = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request(
+                        "prodCode/cancelled",
+                        serde_json::json!({ "payload": "x".repeat(8 * 1024 * 1024) }),
+                    )
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let waiting = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("prodCode/waiting", serde_json::json!({}))
+                    .await
+            })
+        };
+        writing.abort();
+        assert!(writing.await.expect_err("cancelled").is_cancelled());
+        let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("the waiter is woken")
+            .expect("waiter task")
+            .expect_err("the child was retired");
+        assert!(
+            format!("{error:#}").contains("prodCode/waiting"),
+            "{error:#}"
+        );
+        assert!(!engine.is_alive());
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_frame_cancellation_cleans_pending_and_keeps_concurrency_healthy() {
+        let (_dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
+        let cancelled = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("prodCode/delay", serde_json::json!({}))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancelled.abort();
+        assert!(cancelled.await.expect_err("cancelled").is_cancelled());
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+
+        let first = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("textDocument/hover", serde_json::json!({}))
+                    .await
+            })
+        };
+        let second = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_request("textDocument/hover", serde_json::json!({}))
+                    .await
+            })
+        };
+        for response in [first, second] {
+            assert_eq!(
+                response.await.expect("task").expect("response")["result"]["contents"],
+                "healthy"
+            );
+        }
+        assert!(engine.is_alive());
+        assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
     }
 }
 
