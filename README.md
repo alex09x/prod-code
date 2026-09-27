@@ -130,7 +130,7 @@ reports also fail validation. Manifest, lockfile and documentation proposals nee
 | `code_validate_edit` · `code_validate_edits` | analyzer diagnostics for proposed file contents, nothing written; several files judged together, with a warning when an edit removes a symbol another file still uses |
 | `code_diagnostics` | diagnostics for a file, in memory, without a build |
 | `code_rename` · `code_safe_delete` | semantic rename across the workspace (a field with its accessors, with `accessors`); delete only when nothing references it, or a parameter with its arguments |
-| `code_change_signature` | Rust signature changes; Go named-parameter permutations through gopls. Both validate callers and refuse uncertain evaluation-order changes |
+| `code_change_signature` | Rust signature changes; Go named-parameter reorder/removal through gopls. Removal requires unused parameters and safely dropped arguments; both validate callers |
 | `code_move` | a declaration moved to another module, with the imports it takes and the imports it leaves behind |
 | `code_move_method` · `code_move_module` | a method moved to the type of one of its parameters, or an associated function to another type; a whole module moved to another parent, with every path that names it |
 | `code_extract_function` | a selection turned into a named function, and its duplicates and near-duplicates in this file and others replaced by calls |

@@ -1,22 +1,29 @@
-//! Go parameter reordering through gopls (#448), with the same arguments and report as
-//! [`crate::signature::change_with`], which hands every `.go` file here; so do the MCP tool
+//! Go parameter reordering and removal through gopls (#448), with the same arguments and report
+//! as [`crate::signature::change_with`], which hands every `.go` file here; so do the MCP tool
 //! and the CLI through it. Nothing here calls back into `change_with`: only its helpers
 //! (references, unreported callers, the whole-file edit), so the dispatch cannot recurse.
 //!
 //! gopls changes a signature when a rename is asked at the `func` keyword of a declaration and
 //! the new name is the new signature: `func(b, a int) error`. Its v0.23.0 implementation accepts
-//! only a permutation of the declared parameters (adding one, changing a type or the results is
-//! refused), and rewrites every call by inlining a wrapper. That inliner runs with effect
-//! analysis switched off, so `f(mark(a), mark(b))` comes back as `f(mark(b), mark(a))`: the
-//! program runs its calls in another order. gopls's own edits are therefore used as they are,
-//! never re-spelled here, but they are not trusted blindly:
+//! the declared parameters reordered, some of them left out (adding one, changing a type or the
+//! results is refused), and rewrites every call by inlining a wrapper. That inliner runs with
+//! effect analysis switched off, so `f(mark(a), mark(b))` comes back as `f(mark(b), mark(a))`,
+//! and the argument of a removed parameter is dropped whatever it does: `f(1, g())` becomes
+//! `f(1)` and `g` no longer runs. A removed parameter the body still reads is left in the body.
+//! gopls's own edits are therefore used as they are, never re-spelled here, but they are not
+//! trusted blindly:
 //!
-//! - every reference is asked for first; a use that is not a call (a function value, a method
-//!   value) and a reorder of two arguments where either can have an effect the other sees are
+//! - a removed parameter must be proven unused, twice: its name appears nowhere in the body, and
+//!   gopls lists its declaration and no other reference;
+//! - every reference to the function is asked for first; a use that is not a call (a function
+//!   value, a method value), a call whose arity cannot be checked, a reorder of two arguments
+//!   where either can have an effect the other sees, and a dropped argument that is anything but
+//!   a literal or a plain variable (a selector can dereference nil, an index can panic) are
 //!   refused before gopls is asked;
-//! - gopls's edit is checked against the permutation that was asked for: every call's arguments
-//!   must come back as exactly the old arguments in the new order, the declaration's parameters
-//!   likewise, and nothing outside those lists may change, in no file outside the checkout;
+//! - gopls's edit is checked against the change that was asked for: every call's arguments must
+//!   come back as exactly the kept old arguments in the new order, the declaration's parameters
+//!   likewise, nothing outside those lists may change, no comment may change anywhere, in no
+//!   file outside the checkout;
 //! - the whole proposal is type-checked in an overlay, and written in one transaction or not at
 //!   all. `force` overrides none of this.
 //!
@@ -33,9 +40,9 @@ pub const GOPLS_VERSION: &str = "v0.23.0";
 
 /// The part of the requirement that a refusal leaves open, so that it stays visible.
 const STILL_OPEN: &str = "Go signature changes here are limited to reordering the named \
-     parameters of a declared function or method through gopls; adding or removing parameters, \
-     changing parameter or result types, changing results, and rewriting function values remain \
-     open requirements";
+     parameters of a declared function or method, and removing the ones its body provably does \
+     not use, through gopls; adding parameters, removing a used one, changing parameter or result \
+     types, changing results, and rewriting function values remain open requirements";
 
 /// A parameter as the declaration declares it, flattened out of Go's grouping: `a, b int` is two.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,10 +93,11 @@ enum ArgKind {
     Effectful,
 }
 
-/// Changes the parameter order of the Go function or method at `file:line:col` (1-based; the
+/// Reorders or removes named parameters of the Go function or method at `file:line:col` (1-based; the
 /// position may be anywhere from its `func` keyword to the `)` closing its parameters).
 ///
-/// `request` must name every declared parameter exactly once; `modifiers` must be empty.
+/// `request` names each retained parameter once; omitted parameters must be provably unused.
+/// `modifiers` must be empty.
 /// `force` is accepted for the common dispatch and overrides no refusal.
 #[allow(clippy::too_many_arguments)]
 pub async fn change_with(
@@ -132,12 +140,70 @@ pub async fn change_with(
         ))
     })?;
     let order = permutation(&declared, request)?;
+    let arity = declared.len();
     let variadic = declared.last().is_some_and(|p| p.ty.starts_with("..."));
-    if variadic && order.last() != Some(&(declared.len() - 1)) {
+    if variadic && order.contains(&(arity - 1)) && order.last() != Some(&(arity - 1)) {
         return Err(refusal(format!(
             "`{}` is variadic, and Go allows `...` only on the last parameter",
-            declared[declared.len() - 1].name
+            declared[arity - 1].name
         )));
+    }
+    let removed: Vec<usize> = (0..arity).filter(|i| !order.contains(i)).collect();
+    let kind = match (removed.is_empty(), is_subsequence(&order)) {
+        (true, _) => "reorder",
+        (false, true) => "removal",
+        (false, false) => "removal and reorder",
+    };
+    // The body, and where each removed parameter is named in the declaration: what the proof
+    // that it is unused is about.
+    let mut removed_at = Vec::new();
+    let mut body = (0, 0);
+    if !removed.is_empty() {
+        let names = removed_names(&declared, &removed);
+        if decl.generic {
+            return Err(refusal(format!(
+                "removing {names} from the generic `{}` is not supported: a type argument may be \
+                 inferred from the removed argument, and gopls cannot change a generic \
+                 function's signature while it has calls",
+                decl.name
+            )));
+        }
+        body = body_open(&text, decl.close + 1)
+            .and_then(|open| closing(&text, open).map(|close| (open, close)))
+            .with_context(|| {
+                refusal(format!(
+                    "removing {names} is refused: `{}` has no body here (a function implemented \
+                     in assembly reads its arguments by position)",
+                    decl.name
+                ))
+            })?;
+        let named_at = parameter_names_at(&text, decl.open, decl.close);
+        for &i in &removed {
+            let name = &declared[i].name;
+            let at = named_at
+                .get(i)
+                .copied()
+                .filter(|&at| ident_at(&text, at) == Some(name.as_str()))
+                .with_context(|| {
+                    refusal(format!(
+                        "removing `{name}` is refused: its name cannot be found in the \
+                         declaration of `{}`",
+                        decl.name
+                    ))
+                })?;
+            let uses: Vec<String> = identifier_uses(&text, body.0, body.1, name)
+                .into_iter()
+                .map(|o| position(root, file, &text, o))
+                .collect();
+            if !uses.is_empty() {
+                return Err(refusal(format!(
+                    "removing `{name}` is refused: the body of `{}` still uses it at {}",
+                    decl.name,
+                    uses.join(", ")
+                )));
+            }
+            removed_at.push((i, at));
+        }
     }
     let new_params: Vec<GoParam> = order.iter().map(|&i| declared[i].clone()).collect();
     let signature = format!(
@@ -211,17 +277,39 @@ pub async fn change_with(
     if !values.is_empty() {
         return Err(refusal(format!(
             "`{}` is used as a value, not called, at {}; a function value keeps the old \
-             parameter order and cannot be rewritten",
+             signature and cannot be rewritten",
             decl.name,
             values.join(", ")
         )));
     }
+    // The analyzer's word that each removed parameter is unused: its declaration, and nothing else.
+    for &(i, at) in &removed_at {
+        let name = &declared[i].name;
+        let uses = parameter_uses(remote, root, file, &text, name, at, body)
+            .await
+            .map_err(|why| {
+                refusal(format!(
+                    "removing `{name}` is refused: gopls's references cannot prove it unused: \
+                     {why:#}"
+                ))
+            })?;
+        if !uses.is_empty() {
+            return Err(refusal(format!(
+                "removing `{name}` is refused: the body of `{}` still uses it at {} (gopls)",
+                decl.name,
+                uses.iter()
+                    .map(|&o| position(root, file, &text, o))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
     let hazards = effect_hazards(&decl.name, &declared, &order, variadic, &calls);
     anyhow::ensure!(
         hazards.is_empty(),
-        "the new parameter order would change what the program does, not only how the calls \
-         are written; nothing was written, and `force` does not override this:\n  {}\nbind such \
-         an argument to a local before the call and pass the local",
+        "the new signature would change what the program does, not only how the calls are \
+         written; nothing was written, and `force` does not override this:\n  {}\nbind such an \
+         argument to a local before the call and pass the local",
         hazards.join("\n  ")
     );
 
@@ -249,14 +337,14 @@ pub async fn change_with(
             ""
         };
         anyhow::anyhow!(
-            "gopls refused to reorder `{}` as `{signature}`{generic}: {e:#}; nothing was \
+            "gopls refused the {kind} of `{}` as `{signature}`{generic}: {e:#}; nothing was \
              written. {STILL_OPEN}",
             decl.name
         )
     })?;
     anyhow::ensure!(
         !edit.is_null(),
-        "gopls answered the reorder of `{}` with no edit; nothing was written. {STILL_OPEN}",
+        "gopls answered the {kind} of `{}` with no edit; nothing was written. {STILL_OPEN}",
         decl.name
     );
     let edits = edits_by_file(&canonical_root, &edit, &mut originals)?;
@@ -266,7 +354,15 @@ pub async fn change_with(
     let mut unexpected = Vec::new();
     for (path, list) in &edits {
         let old = &originals[path];
-        rewritten.insert(path.clone(), splice(old, list));
+        let new = splice(old, list);
+        // gopls prints the new parameter list afresh, and a comment inside it would be lost.
+        if comments(old) != comments(&new) {
+            unexpected.push(format!(
+                "{}: gopls's edit drops or changes a comment",
+                display(root, path)
+            ));
+        }
+        rewritten.insert(path.clone(), new);
         let mut allowed: Vec<(usize, usize)> = calls
             .iter()
             .filter(|c| &c.path == path)
@@ -288,7 +384,7 @@ pub async fn change_with(
     }
     let mut unmatched = Vec::new();
     for call in &calls {
-        let expected = permuted(&call.args, &order, variadic);
+        let expected = permuted(&call.args, &order, arity, variadic);
         let got = match edits.get(&call.path) {
             Some(list) => map_offset(list, call.open).and_then(|open| {
                 let new = &rewritten[&call.path];
@@ -307,7 +403,7 @@ pub async fn change_with(
         });
         if !same {
             unmatched.push(format!(
-                "{}: gopls wrote ({}) where the new order is ({})",
+                "{}: gopls wrote ({}) where the new arguments are ({})",
                 call.at,
                 got.map_or_else(|| "an unreadable call".to_string(), |g| g.join(", ")),
                 expected.join(", ")
@@ -384,7 +480,7 @@ pub async fn change_with(
     if apply {
         anyhow::ensure!(
             unmatched.is_empty() && unexpected.is_empty(),
-            "gopls's edit is not the reorder that was asked for; nothing was written:\n  {}",
+            "gopls's edit is not the {kind} that was asked for; nothing was written:\n  {}",
             unmatched
                 .iter()
                 .chain(&unexpected)
@@ -394,7 +490,7 @@ pub async fn change_with(
         );
         anyhow::ensure!(
             diagnostics.is_empty(),
-            "the reordered program does not type-check ({} error(s)); nothing was written, and \
+            "the changed program does not type-check ({} error(s)); nothing was written, and \
              `force` does not override this:\n  {}",
             diagnostics.len(),
             diagnostics.join("\n  ")
@@ -403,7 +499,7 @@ pub async fn change_with(
             let now = std::fs::read_to_string(path).unwrap_or_default();
             anyhow::ensure!(
                 now == *old,
-                "{} changed while the reorder was planned; nothing was written",
+                "{} changed while the {kind} was planned; nothing was written",
                 display(root, path)
             );
         }
@@ -464,7 +560,8 @@ fn refuse_modifiers(modifiers: &Modifiers) -> Result<()> {
     Ok(())
 }
 
-/// The new order as indices into `declared`: every declared parameter exactly once, reordered.
+/// The new parameters as indices into `declared`: each declared parameter at most once, in the
+/// new order; one left out is to be removed.
 fn permutation(declared: &[GoParam], request: &[Param]) -> Result<Vec<usize>> {
     let mut order = Vec::with_capacity(request.len());
     for want in request {
@@ -490,49 +587,48 @@ fn permutation(declared: &[GoParam], request: &[Param]) -> Result<Vec<usize>> {
         anyhow::ensure!(!order.contains(&at), "`{name}` is listed twice");
         order.push(at);
     }
-    let dropped: Vec<&str> = declared
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| !order.contains(i))
-        .map(|(_, d)| d.name.as_str())
-        .collect();
-    if !dropped.is_empty() {
-        return Err(refusal(format!(
-            "removing {} is not supported for Go: gopls's rename drops a parameter without \
-             checking that the body no longer uses it or that its argument has no effect, and \
-             its unused-parameter fix is not wired here",
-            dropped
-                .iter()
-                .map(|d| format!("`{d}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
     anyhow::ensure!(
-        order.iter().enumerate().any(|(i, o)| i != *o),
+        order.len() < declared.len() || !is_subsequence(&order),
         "the requested order is the declared one; there is nothing to change"
     );
     Ok(order)
 }
 
-/// A call's arguments in the new order; for a variadic function, whose last parameter stays
-/// last, the arguments past the fixed parameters stay where they are, at the end.
-fn permuted(args: &[String], order: &[usize], variadic: bool) -> Vec<String> {
-    let fixed = if variadic {
-        order.len().saturating_sub(1)
-    } else {
-        order.len()
-    };
-    let mut out: Vec<String> = order[..fixed]
+/// Whether the kept parameters keep their declared order.
+fn is_subsequence(order: &[usize]) -> bool {
+    order.windows(2).all(|w| w[0] < w[1])
+}
+
+/// The removed parameters' names, for a message: "`a`, `b`".
+fn removed_names(declared: &[GoParam], removed: &[usize]) -> String {
+    removed
         .iter()
-        .filter_map(|&i| args.get(i).cloned())
-        .collect();
-    out.extend(args.iter().skip(fixed).cloned());
+        .map(|&i| format!("`{}`", declared[i].name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A call's arguments after the change: the kept ones in the new order. `arity` is the number of
+/// parameters declared before the change, not the number kept. For a variadic function the
+/// arguments from its last parameter on are one tail: kept last where the parameter is kept,
+/// spread or not, and gone with it where it is removed.
+fn permuted(args: &[String], order: &[usize], arity: usize, variadic: bool) -> Vec<String> {
+    let tail = if variadic { arity - 1 } else { usize::MAX };
+    let mut out = Vec::with_capacity(args.len());
+    for &i in order {
+        if i == tail {
+            out.extend(args.iter().skip(tail).cloned());
+        } else if let Some(a) = args.get(i) {
+            out.push(a.clone());
+        }
+    }
     out
 }
 
-/// What the new order would change at run time, one line per place: two arguments evaluated
-/// the other way round when either can have an effect the other sees.
+/// What the change would do to the program at run time, one line per place: a call whose
+/// arguments cannot be matched to the declared parameters, two arguments evaluated the other way
+/// round when either can have an effect the other sees, and a dropped argument whose evaluation
+/// could do anything at all.
 fn effect_hazards(
     name: &str,
     declared: &[GoParam],
@@ -583,8 +679,41 @@ fn effect_hazards(
                 ));
             }
         }
+        for (i, param) in declared.iter().enumerate() {
+            if order.contains(&i) {
+                continue;
+            }
+            // The removed variadic parameter takes the whole tail with it, a spread slice too.
+            let dropped: Vec<&String> = if variadic && i == arity - 1 {
+                call.args.iter().skip(i).collect()
+            } else {
+                call.args.get(i).into_iter().collect()
+            };
+            for arg in dropped {
+                let value = arg.trim();
+                if !droppable(value.strip_suffix("...").unwrap_or(value)) {
+                    out.push(format!(
+                        "{}: `{value}` is passed for the removed `{}` and would no longer be \
+                         evaluated; only a literal or a plain variable can be dropped",
+                        call.at, param.name
+                    ));
+                }
+            }
+        }
     }
     out
+}
+
+/// Whether evaluating the argument does nothing the program could notice: a number, string, rune
+/// or function literal, or a plain variable or its address. Not a selector, which can dereference
+/// a nil pointer, nor an index, a call, a receive, a conversion or an operator.
+fn droppable(arg: &str) -> bool {
+    let text = canonical(arg);
+    let mut e = text.as_str();
+    while e.starts_with('(') && closing(e, 0) == Some(e.len() - 1) {
+        e = &e[1..e.len() - 1];
+    }
+    is_literal(e) || is_ident(e.strip_prefix('&').unwrap_or(e))
 }
 
 fn classify(arg: &str) -> ArgKind {
@@ -1209,6 +1338,223 @@ fn call_parens(text: &str, at: usize) -> Option<(usize, usize)> {
     Some((i, closing(text, i)?))
 }
 
+/// Where each flattened parameter's name starts in the list between `open` and `close`, in the
+/// order [`parameters`] gives them: the first word of every piece between top-level commas.
+fn parameter_names_at(text: &str, open: usize, close: usize) -> Vec<usize> {
+    let s = text.as_bytes();
+    let mut starts = vec![open + 1];
+    let (mut depth, mut i) = (0i32, open + 1);
+    while i < close {
+        if let Some(end) = skip_opaque(s, i) {
+            i = end;
+            continue;
+        }
+        match s[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => starts.push(i + 1),
+            _ => {}
+        }
+        i += 1;
+    }
+    starts
+        .into_iter()
+        .map(|start| skip_space(text, start))
+        .filter(|&at| at < close && is_ident_byte(s[at]))
+        .collect()
+}
+
+/// The whole identifier that starts at `at`, if one does.
+fn ident_at(text: &str, at: usize) -> Option<&str> {
+    let s = text.as_bytes();
+    if at >= s.len() || !is_ident_byte(s[at]) || (at > 0 && is_ident_byte(s[at - 1])) {
+        return None;
+    }
+    let end = s[at..]
+        .iter()
+        .position(|&b| !is_ident_byte(b))
+        .map_or(s.len(), |n| at + n);
+    Some(&text[at..end])
+}
+
+/// Where `name` is written as a word in `text[from..to]`, strings and comments aside, unless it
+/// follows a dot (a field, a method or a package member, never a local). Anything else counts,
+/// a struct literal's key or a label too: this is the proof that a name is unused, and it errs
+/// towards a use.
+fn identifier_uses(text: &str, from: usize, to: usize, name: &str) -> Vec<usize> {
+    let s = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = from;
+    while i < to {
+        if let Some(end) = skip_opaque(s, i) {
+            i = end;
+            continue;
+        }
+        if let Some(word) = ident_at(text, i) {
+            if word == name && !text[..i].trim_end().ends_with('.') {
+                out.push(i);
+            }
+            i += word.len();
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `file:line:column`, 1-based, of a byte offset, as a message names a place.
+fn position(root: &Path, file: &Path, text: &str, offset: usize) -> String {
+    let (l, c) = line_col_utf16(text, offset);
+    format!("{}:{}:{}", display(root, file), l + 1, c + 1)
+}
+
+/// The uses gopls knows of the parameter declared at `at`, as offsets in the body. The question
+/// includes the declaration, so that an answer from a server that has not loaded the package
+/// (nothing at all) is told apart from "no use": that one is asked again a few times, then
+/// refused.
+async fn parameter_uses(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    text: &str,
+    name: &str,
+    at: usize,
+    body: (usize, usize),
+) -> Result<Vec<usize>> {
+    let (line, character) = line_col_utf16(text, at);
+    let uri = url::Url::from_file_path(file)
+        .map_err(|_| anyhow::anyhow!("invalid path {}", file.display()))?
+        .to_string();
+    let params = serde_json::json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": line, "character": character },
+        "context": { "includeDeclaration": true },
+    });
+    let mut answer = serde_json::Value::Null;
+    for attempt in 0..=crate::impact::COLD_RETRIES {
+        if attempt > 0 {
+            tokio::time::sleep(crate::impact::COLD_WAIT).await;
+        }
+        answer = crate::tools::execute_lsp_query(
+            remote,
+            root,
+            file,
+            "textDocument/references",
+            params.clone(),
+        )
+        .await
+        .context("the references could not be listed")?;
+        if answer.as_array().is_some_and(|a| !a.is_empty()) {
+            break;
+        }
+    }
+    parameter_evidence(&answer, file, text, name, at, body)
+}
+
+/// The uses in a `textDocument/references` answer for the parameter `name` declared at `at`,
+/// which must be well-formed and complete to count: a list of locations in `file`, each on the
+/// name as the file reads now, the declaration among them, and every other one inside the body.
+/// Anything else is an error, never "unused": a stale position, a location elsewhere, a missing
+/// declaration or an empty answer says the server was not answering about this parameter.
+fn parameter_evidence(
+    answer: &serde_json::Value,
+    file: &Path,
+    text: &str,
+    name: &str,
+    at: usize,
+    body: (usize, usize),
+) -> Result<Vec<usize>> {
+    let entries = answer
+        .as_array()
+        .filter(|a| !a.is_empty())
+        .with_context(|| {
+            format!("the answer lists no location, not even the declaration: {answer}")
+        })?;
+    let mut declared = false;
+    let mut uses = Vec::new();
+    for entry in entries {
+        let number = |end: &str, key: &str| {
+            entry
+                .pointer(&format!("/range/{end}/{key}"))
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u32::try_from(v).ok())
+                .filter(|v| *v < u32::MAX)
+        };
+        let (Some(uri), Some(l), Some(c), Some(el), Some(ec)) = (
+            entry.get("uri").and_then(|u| u.as_str()),
+            number("start", "line"),
+            number("start", "character"),
+            number("end", "line"),
+            number("end", "character"),
+        ) else {
+            anyhow::bail!("a location is malformed: {entry}");
+        };
+        let uri = url::Url::parse(uri).context("a parameter location has an invalid URI")?;
+        anyhow::ensure!(
+            uri.scheme() == "file" && uri.query().is_none() && uri.fragment().is_none(),
+            "a parameter location is not a plain file URI: {uri}"
+        );
+        let path = uri
+            .to_file_path()
+            .map_err(|_| anyhow::anyhow!("a parameter location is not a local file URI: {uri}"))?;
+        anyhow::ensure!(
+            same_file(&path, file),
+            "a use in {} is outside the function; the answer is not about this parameter",
+            path.display()
+        );
+        let offset = offset_at(text, l, c)
+            .filter(|&o| ident_at(text, o) == Some(name))
+            .with_context(|| {
+                format!(
+                    "the location {}:{} is not on `{name}`; the file may have changed since it \
+                     was read",
+                    l + 1,
+                    c + 1
+                )
+            })?;
+        anyhow::ensure!(
+            offset_at(text, el, ec) == offset.checked_add(name.len()),
+            "the location {}:{} does not span exactly `{name}`; its range is stale or malformed",
+            l + 1,
+            c + 1
+        );
+        if offset == at {
+            declared = true;
+        } else {
+            anyhow::ensure!(
+                body.0 < offset && offset < body.1,
+                "the location {}:{} is outside the function's body",
+                l + 1,
+                c + 1
+            );
+            uses.push(offset);
+        }
+    }
+    anyhow::ensure!(
+        declared,
+        "the answer does not include the parameter's own declaration, so it is not about it"
+    );
+    Ok(uses)
+}
+
+/// Every comment of a Go text, in order and as written.
+fn comments(text: &str) -> Vec<&str> {
+    let s = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < s.len() {
+        if let Some(end) = skip_opaque(s, i) {
+            if s[i] == b'/' {
+                out.push(&text[i..end]);
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
 fn display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -1393,10 +1739,130 @@ mod tests {
     #[test]
     fn permutations_keep_variadic_tails_in_place() {
         let args: Vec<String> = ["a", "b", "c", "d"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(permuted(&args[..3], &[2, 0, 1], false), vec!["c", "a", "b"]);
-        assert_eq!(permuted(&args, &[1, 0, 2], true), vec!["b", "a", "c", "d"]);
-        assert_eq!(permuted(&args[..2], &[1, 0, 2], true), vec!["b", "a"]);
-        assert_eq!(permuted(&args[..3], &[1, 0, 2], true), vec!["b", "a", "c"]);
+        assert_eq!(
+            permuted(&args[..3], &[2, 0, 1], 3, false),
+            vec!["c", "a", "b"]
+        );
+        assert_eq!(
+            permuted(&args, &[1, 0, 2], 3, true),
+            vec!["b", "a", "c", "d"]
+        );
+        assert_eq!(permuted(&args[..2], &[1, 0, 2], 3, true), vec!["b", "a"]);
+        assert_eq!(
+            permuted(&args[..3], &[1, 0, 2], 3, true),
+            vec!["b", "a", "c"]
+        );
+    }
+
+    /// The arguments after a removal come from the declared arity, not from how many
+    /// parameters are left: with three declared and one kept, the tail starts at the third
+    /// argument, not the first.
+    #[test]
+    fn removals_keep_the_declared_arity_and_the_variadic_tail() {
+        let args: Vec<String> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(permuted(&args[..3], &[2, 0], 3, false), vec!["c", "a"]);
+        assert_eq!(permuted(&args[..3], &[], 3, false), Vec::<String>::new());
+        // `f(a, b, xs ...int)` without `a`: the tail stays whole and last.
+        assert_eq!(permuted(&args, &[1, 2], 3, true), vec!["b", "c", "d", "e"]);
+        assert_eq!(permuted(&args[..2], &[1, 2], 3, true), vec!["b"]);
+        let spread = vec!["a".to_string(), "b".to_string(), "ys...".to_string()];
+        assert_eq!(permuted(&spread, &[1, 2], 3, true), vec!["b", "ys..."]);
+        // Without `xs`: the whole tail goes, however long, spread or not.
+        assert_eq!(permuted(&args, &[1, 0], 3, true), vec!["b", "a"]);
+        assert_eq!(permuted(&spread, &[0], 3, true), vec!["a"]);
+    }
+
+    #[test]
+    fn dropped_arguments_must_do_nothing_when_evaluated() {
+        use ArgKind::*;
+        for pure in [
+            "1",
+            "\"s\"",
+            "'r'",
+            "x",
+            "&x",
+            "(x)",
+            "nil",
+            "func() { g() }",
+            "x /* c */",
+        ] {
+            assert!(droppable(pure), "{pure}");
+        }
+        // A selector is a `Place` for a reorder, but it can dereference nil and panic.
+        assert_eq!(classify("p.n"), Place);
+        for effect in [
+            "p.n", "&p.n", "g()", "<-ch", "xs[i]", "i+1", "T(x)", "*p", "-x", "x.(T)", "[]int{1}",
+        ] {
+            assert!(!droppable(effect), "{effect}");
+        }
+        let d = declared(&["a", "b", "c"]);
+        let safe = [call(&["g()", "1", "x"]), call(&["g()", "&y", "\"s\""])];
+        assert!(effect_hazards("f", &d, &[0], false, &safe).is_empty());
+        let found = effect_hazards(
+            "f",
+            &d,
+            &[0],
+            false,
+            &[call(&["1", "h()", "p.n"]), call(&["x", "<-ch", "a[0]"])],
+        );
+        assert_eq!(found.len(), 4, "{found:?}");
+        assert!(
+            found[0].contains("`h()` is passed for the removed `b`")
+                && found[1].contains("`p.n` is passed for the removed `c`")
+                && found[2].contains("`<-ch`")
+                && found[3].contains("`a[0]`"),
+            "{found:?}"
+        );
+        // A reorder of what is kept is checked too.
+        let both = effect_hazards("f", &d, &[2, 0], false, &[call(&["g()", "1", "h()"])]);
+        assert_eq!(both.len(), 1, "{both:?}");
+        assert!(both[0].contains("opposite order"), "{both:?}");
+        // A pair passed as the arguments, and too few or too many: the arity cannot be matched.
+        for args in [
+            &["two()"][..],
+            &["1", "2"],
+            &["1", "2", "3", "4"],
+            &["1", "2", "xs..."],
+        ] {
+            let odd = effect_hazards("f", &d, &[0], false, &[call(args)]);
+            assert!(odd[0].contains("cannot be checked"), "{args:?}: {odd:?}");
+        }
+    }
+
+    #[test]
+    fn a_removed_variadic_parameter_takes_its_whole_tail() {
+        let v = declared(&["a", "xs"]);
+        let calls = [
+            call(&["1"]),
+            call(&["1", "2", "x"]),
+            call(&["1", "ys..."]),
+            call(&["g()", "x"]),
+        ];
+        assert!(effect_hazards("f", &v, &[0], true, &calls).is_empty());
+        let found = effect_hazards(
+            "f",
+            &v,
+            &[0],
+            true,
+            &[call(&["1", "2", "g()"]), call(&["1", "p.xs..."])],
+        );
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found[0].contains("`g()` is passed for the removed `xs`")
+                && found[1].contains("`p.xs...` is passed for the removed `xs`"),
+            "{found:?}"
+        );
+        // Kept, the tail is not dropped, and a removed fixed parameter is checked alone.
+        let kept = effect_hazards("f", &v, &[1], true, &[call(&["x", "g()", "h()"])]);
+        assert!(kept.is_empty(), "{kept:?}");
+        let fixed = effect_hazards("f", &v, &[1], true, &[call(&["g()", "1"])]);
+        assert!(
+            fixed[0].contains("`g()` is passed for the removed `a`"),
+            "{fixed:?}"
+        );
     }
 
     #[test]
@@ -1407,11 +1873,17 @@ mod tests {
             permutation(&d, &[keep("b"), keep("a")]).unwrap(),
             vec![1, 0]
         );
-        let dropped = permutation(&d, &[keep("b")]).unwrap_err().to_string();
-        assert!(
-            dropped.contains("removing `a`") && dropped.contains(STILL_OPEN),
-            "{dropped}"
+        // A parameter left out is to be removed, alone, with a reorder, or all of them.
+        assert_eq!(permutation(&d, &[keep("b")]).unwrap(), vec![1]);
+        assert_eq!(permutation(&d, &[keep("a")]).unwrap(), vec![0]);
+        assert_eq!(permutation(&d, &[]).unwrap(), Vec::<usize>::new());
+        let three = declared(&["a", "b", "c"]);
+        assert_eq!(
+            permutation(&three, &[keep("c"), keep("a")]).unwrap(),
+            vec![2, 0]
         );
+        assert!(is_subsequence(&[0, 2]) && !is_subsequence(&[2, 0]));
+        assert_eq!(removed_names(&three, &[0, 2]), "`a`, `c`");
         let added = permutation(
             &d,
             &[
@@ -1447,6 +1919,108 @@ mod tests {
             let err = refuse_modifiers(&m).unwrap_err().to_string();
             assert!(err.contains(STILL_OPEN), "{err}");
         }
+    }
+
+    #[test]
+    fn parameter_names_and_body_uses_are_found_by_word() {
+        let text = "func F(a, /* b */ b int, c func(b int) int,\n\tdd ...string) (b2 int) {\n\
+                    \tx := \"b\" + `b` // b\n\ty := s.b + T{b: 1}.b\n\treturn func() int { return b }()\n}\n";
+        let open = text.find('(').unwrap();
+        let close = closing(text, open).unwrap();
+        let names: Vec<&str> = parameter_names_at(text, open, close)
+            .into_iter()
+            .map(|at| ident_at(text, at).unwrap())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c", "dd"]);
+        assert_eq!(parameter_names_at("f()", 1, 2), Vec::<usize>::new());
+        assert_eq!(parameter_names_at("f(a int,\n)", 1, 9).len(), 1);
+        let body = body_open(text, close + 1).unwrap();
+        let end = closing(text, body).unwrap();
+        // The struct literal's key counts, the field reads after a dot and the texts do not.
+        let uses: Vec<usize> = identifier_uses(text, body, end, "b");
+        let lines: Vec<u32> = uses.iter().map(|&o| line_col_utf16(text, o).0).collect();
+        assert_eq!(lines, vec![3, 4], "{uses:?}");
+        assert!(identifier_uses(text, body, end, "a").is_empty());
+        assert!(identifier_uses(text, body, end, "b2").is_empty());
+        assert_eq!(identifier_uses(text, body, end, "x").len(), 1);
+        assert_eq!(ident_at(text, text.find("dd").unwrap() + 1), None);
+        assert_eq!(ident_at(text, text.len()), None);
+        assert_eq!(
+            position(Path::new("/r"), Path::new("/r/a.go"), text, body),
+            "a.go:2:25"
+        );
+    }
+
+    /// The parameter's references count as proof only when they are well-formed, current and
+    /// complete: anything else is an error, and no answer at all is not "unused".
+    #[test]
+    fn parameter_references_prove_nothing_unless_complete_and_current() {
+        let ws = tempfile::Builder::new().prefix("gosig").tempdir().unwrap();
+        let root = std::fs::canonicalize(ws.path()).unwrap();
+        let file = root.join("a.go");
+        let other = root.join("b.go");
+        let text = "package a\n\nfunc F(a, b int) int {\n\treturn a + b\n}\n\nvar b = 1\n";
+        std::fs::write(&file, text).unwrap();
+        std::fs::write(&other, "package a\n").unwrap();
+        let open = text.find("F(").unwrap() + 1;
+        let close = closing(text, open).unwrap();
+        let at = parameter_names_at(text, open, close)[1];
+        let body_at = body_open(text, close + 1).unwrap();
+        let body = (body_at, closing(text, body_at).unwrap());
+        let loc = |path: &Path, line: u64, character: u64| {
+            serde_json::json!({ "uri": format!("file://{}", path.display()),
+                "range": { "start": { "line": line, "character": character },
+                           "end": { "line": line, "character": character + 1 } } })
+        };
+        let evidence =
+            |answer: serde_json::Value| parameter_evidence(&answer, &file, text, "b", at, body);
+        // Unused: the declaration alone. Used: the declaration and the read in the body.
+        assert_eq!(
+            evidence(serde_json::json!([loc(&file, 2, 10)])).unwrap(),
+            Vec::<usize>::new()
+        );
+        let used = evidence(serde_json::json!([loc(&file, 2, 10), loc(&file, 3, 12)])).unwrap();
+        assert_eq!(used, vec![text.find("+ b").unwrap() + 2]);
+        let refused = |answer: serde_json::Value| {
+            evidence(answer.clone())
+                .map(|ok| format!("accepted {answer} as {ok:?}"))
+                .unwrap_err()
+                .to_string()
+        };
+        for (answer, said) in [
+            (serde_json::Value::Null, "no location"),
+            (serde_json::json!([]), "no location"),
+            (serde_json::json!({ "uri": "x" }), "no location"),
+            (serde_json::json!([{ "uri": 7 }]), "malformed"),
+            (
+                serde_json::json!([{ "uri": "file:///a.go", "range": { "start": { "line": -1, "character": 0 } } }]),
+                "malformed",
+            ),
+            (
+                serde_json::json!([loc(&other, 0, 0)]),
+                "outside the function",
+            ),
+            (serde_json::json!([loc(&file, 2, 11)]), "not on `b`"),
+            (serde_json::json!([loc(&file, 40, 0)]), "not on `b`"),
+            (
+                serde_json::json!([loc(&file, 2, 10), loc(&file, 6, 4)]),
+                "outside the function's body",
+            ),
+            (serde_json::json!([loc(&file, 3, 12)]), "own declaration"),
+        ] {
+            let err = refused(answer.clone());
+            assert!(err.contains(said), "{answer}: {err}");
+        }
+    }
+
+    #[test]
+    fn comments_are_listed_as_written_and_strings_are_not_comments() {
+        let text = "f(a /* x */, \"// no\", '/') // tail\n/* multi\nline */ g(`/*`)\n";
+        assert_eq!(
+            comments(text),
+            vec!["/* x */", "// tail", "/* multi\nline */"]
+        );
+        assert!(comments("f(a, b)").is_empty());
     }
 
     #[test]
@@ -1589,5 +2163,45 @@ mod tests {
         )
         .unwrap();
         assert_eq!(empty[&file], Vec::<TextEdit>::new());
+    }
+}
+
+#[cfg(test)]
+mod removal_evidence_validation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn malformed_parameter_locations_cannot_prove_a_removal_safe() {
+        let file = Path::new("/tmp/parameter-proof.go");
+        let text = "func F(discard int) {}";
+        let at = text.find("discard").unwrap();
+        let body = (text.find('{').unwrap(), text.find('}').unwrap());
+        let good = json!({"uri":url::Url::from_file_path(file).unwrap().to_string(),
+            "range":{"start":{"line":0,"character":at},"end":{"line":0,"character":at+7}}});
+        assert!(
+            parameter_evidence(&json!([good.clone()]), file, text, "discard", at, body)
+                .unwrap()
+                .is_empty()
+        );
+        let mut no_end = good.clone();
+        no_end["range"].as_object_mut().unwrap().remove("end");
+        let mut wrong_end = good.clone();
+        wrong_end["range"]["end"]["character"] = json!(at);
+        let mut raw_path = good.clone();
+        raw_path["uri"] = json!(file.to_str().unwrap());
+        let mut overflow = good;
+        overflow["range"]["start"]["line"] = json!(u32::MAX);
+        overflow["range"]["end"]["line"] = json!(u32::MAX);
+        let mut failures = Vec::new();
+        for entry in [no_end, wrong_end, raw_path, overflow] {
+            let result = std::panic::catch_unwind(|| {
+                parameter_evidence(&json!([entry.clone()]), file, text, "discard", at, body)
+            });
+            if !matches!(result, Ok(Err(_))) {
+                failures.push(format!("accepted or panicked: {entry}: {result:?}"));
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
