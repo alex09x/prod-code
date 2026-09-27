@@ -3890,6 +3890,81 @@ async fn generic_trait_extraction_is_public_and_reference_safe() {
     assert!(full.contains("trait WindowOps"), "{full}");
 }
 
+/// Structural conditions are rejected before references or diagnostics, including with force;
+/// preview and apply both preserve every source byte.
+#[tokio::test]
+async fn conditional_and_self_dependent_trait_extractions_are_refused_without_writes() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let example = write(&ws, "src/lib.rs", "pub struct Example<T>(T);\n");
+    commit(&ws);
+    let gateway = scripted_gateway(Arc::new(|method, _params| match method {
+        "textDocument/references" => serde_json::json!([]),
+        "textDocument/diagnostic" => answers::no_diagnostics(),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    for (source, why) in [
+        (
+            "pub struct Example<T>(T);\n#[cfg(any())] impl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n",
+            "attributes on impl blocks",
+        ),
+        (
+            "pub struct Example<T>(T);\n#[cfg(\n    any()\n)]\n// attached condition remains active\n\nimpl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n",
+            "attributes on impl blocks",
+        ),
+        (
+            "pub struct Example<T>(T);\nimpl<T> Example<T> { #[cfg(any())] pub fn selected(&self) {} pub fn kept(&self) {} }\n",
+            "conditional methods",
+        ),
+        (
+            "pub struct Example<T>(T);\nimpl<T> Example<T> { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] pub fn selected(&self) {} pub fn kept(&self) {} }\n",
+            "conditional methods",
+        ),
+        (
+            "pub struct Example<T>(T);\nimpl<T: From<Self>> Example<T> { pub fn selected(self) -> T { T::from(self) } }\n",
+            "depend on `Self`",
+        ),
+        (
+            "pub struct Example<T>(T);\nimpl<T> Example<T> where T: From<Self> { pub fn selected(self) -> T { T::from(self) } }\n",
+            "depend on `Self`",
+        ),
+    ] {
+        std::fs::write(&example, source).unwrap();
+        let impl_at = source.find("impl").unwrap();
+        let line_start = source[..impl_at].rfind('\n').map_or(0, |i| i + 1);
+        let line = source[..impl_at].matches('\n').count() as u64 + 1;
+        let character = (impl_at - line_start) as u64 + 1;
+        for apply in [false, true] {
+            let args = serde_json::json!({
+                "path": "src/lib.rs",
+                "line": line,
+                "character": character,
+                "methods": ["selected"],
+                "name": "Selected",
+                "apply": apply,
+                "force": true,
+            });
+            let err = prod_code_mcp::tools::execute_tool(
+                gateway,
+                &root,
+                "code_extract_trait",
+                args,
+            )
+            .await
+            .expect_err("structurally unsafe extraction is refused");
+            assert!(format!("{err:#}").contains(why), "{source}: {err:#}");
+            assert_eq!(ws.read("src/lib.rs"), source, "nothing was written");
+        }
+    }
+}
+
 const ORPHANS: &str = "pub fn used() -> u32 {\n    helper()\n}\n\nfn helper() -> u32 {\n    1\n}\n\nfn leftover() -> u32 {\n    2\n}\n\nstruct Unused {\n    a: u32,\n}\n";
 
 /// Every orphan the scan finds goes in one edit, even when the analyzer answers each deletion

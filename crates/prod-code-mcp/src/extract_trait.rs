@@ -153,6 +153,231 @@ fn valid_ident(name: &str) -> bool {
         )
 }
 
+/// Bytes that belong to Rust structure rather than comments or literals. The extraction parser
+/// only needs delimiters and identifiers, but those may appear harmlessly inside all of Rust's
+/// comment and string forms.
+fn lexical_code(text: &str) -> Vec<bool> {
+    let bytes = text.as_bytes();
+    let mut code = vec![true; bytes.len()];
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let end = if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            text[i..].find('\n').map_or(bytes.len(), |n| i + n)
+        } else if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let mut depth = 1usize;
+            let mut j = i + 2;
+            while j < bytes.len() && depth > 0 {
+                if bytes[j] == b'/' && bytes.get(j + 1) == Some(&b'*') {
+                    depth += 1;
+                    j += 2;
+                } else if bytes[j] == b'*' && bytes.get(j + 1) == Some(&b'/') {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            j
+        } else if let Some(end) = raw_string_end(bytes, i) {
+            end
+        } else {
+            let quote = match (bytes[i], bytes.get(i + 1)) {
+                (b'b' | b'c', Some(b'"')) => i + 1,
+                (b'"', _) => i,
+                _ => {
+                    if bytes[i] == b'b' && bytes.get(i + 1) == Some(&b'\'') {
+                        if let Some(end) = char_literal_end(text, i + 1) {
+                            code[i..end].fill(false);
+                            i = end;
+                            continue;
+                        }
+                    } else if bytes[i] == b'\''
+                        && let Some(end) = char_literal_end(text, i)
+                    {
+                        code[i..end].fill(false);
+                        i = end;
+                        continue;
+                    }
+                    i += 1;
+                    continue;
+                }
+            };
+            let mut j = quote + 1;
+            while j < bytes.len() {
+                if bytes[j] == b'\\' {
+                    j = (j + 2).min(bytes.len());
+                } else if bytes[j] == b'"' {
+                    j += 1;
+                    break;
+                } else {
+                    j += 1;
+                }
+            }
+            j
+        };
+        code[i..end].fill(false);
+        i = end;
+    }
+    code
+}
+
+fn raw_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let r = match (bytes[start], bytes.get(start + 1)) {
+        (b'r', _) => start,
+        (b'b' | b'c', Some(b'r')) => start + 1,
+        _ => return None,
+    };
+    let mut quote = r + 1;
+    while bytes.get(quote) == Some(&b'#') {
+        quote += 1;
+    }
+    if bytes.get(quote) != Some(&b'"') {
+        return None;
+    }
+    let hashes = quote - r - 1;
+    let mut i = quote + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'"'
+            && bytes
+                .get(i + 1..i + 1 + hashes)
+                .is_some_and(|tail| tail.iter().all(|b| *b == b'#'))
+        {
+            return Some(i + 1 + hashes);
+        }
+        i += 1;
+    }
+    Some(bytes.len())
+}
+
+fn char_literal_end(text: &str, quote: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = quote + 1;
+    if bytes.get(i) == Some(&b'\\') {
+        i += 1;
+        match bytes.get(i)? {
+            b'x' => i += 3,
+            b'u' if bytes.get(i + 1) == Some(&b'{') => {
+                i += 2;
+                i += bytes.get(i..)?.iter().position(|b| *b == b'}')? + 1;
+            }
+            _ => i += 1,
+        }
+    } else {
+        i += text.get(i..)?.chars().next()?.len_utf8();
+    }
+    (bytes.get(i) == Some(&b'\'')).then_some(i + 1)
+}
+
+fn previous_code(text: &str, code: &[bool], before: usize) -> Option<usize> {
+    (0..before)
+        .rev()
+        .find(|i| code[*i] && !text.as_bytes()[*i].is_ascii_whitespace())
+}
+
+fn next_code(text: &str, code: &[bool], from: usize) -> Option<usize> {
+    (from..text.len()).find(|i| code[*i] && !text.as_bytes()[*i].is_ascii_whitespace())
+}
+
+fn matching_open_square(text: &str, code: &[bool], close: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for i in (0..=close).rev() {
+        if !code[i] {
+            continue;
+        }
+        match text.as_bytes()[i] {
+            b']' => depth += 1,
+            b'[' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn matching_close_brace(text: &str, open: usize) -> Option<usize> {
+    let code = lexical_code(text);
+    let mut depth = 0usize;
+    for (i, is_code) in code.iter().enumerate().skip(open) {
+        if !*is_code {
+            continue;
+        }
+        match text.as_bytes()[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn has_outer_attribute_before(text: &str, at: usize) -> bool {
+    let code = lexical_code(text);
+    let Some(close) = previous_code(text, &code, at).filter(|i| text.as_bytes()[*i] == b']') else {
+        return false;
+    };
+    let Some(open) = matching_open_square(text, &code, close) else {
+        return false;
+    };
+    previous_code(text, &code, open).is_some_and(|i| text.as_bytes()[i] == b'#')
+}
+
+fn attribute_end(text: &str) -> Option<usize> {
+    let code = lexical_code(text);
+    let hash = next_code(text, &code, 0).filter(|i| text.as_bytes()[*i] == b'#')?;
+    let open = next_code(text, &code, hash + 1).filter(|i| text.as_bytes()[*i] == b'[')?;
+    let mut depth = 0usize;
+    for (i, is_code) in code.iter().enumerate().skip(open) {
+        if !*is_code {
+            continue;
+        }
+        match text.as_bytes()[i] {
+            b'[' => depth += 1,
+            b']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn attribute_name(attribute: &str) -> Option<&str> {
+    let code = lexical_code(attribute);
+    let hash = next_code(attribute, &code, 0)?;
+    let open = next_code(attribute, &code, hash + 1)?;
+    let start = next_code(attribute, &code, open + 1)?;
+    let end = attribute[start..]
+        .char_indices()
+        .take_while(|(offset, c)| code[start + offset] && is_ident(*c))
+        .last()
+        .map_or(start, |(offset, c)| start + offset + c.len_utf8());
+    (end > start).then_some(&attribute[start..end])
+}
+
+fn contains_code_word(text: &str, wanted: &str) -> bool {
+    let code = lexical_code(text);
+    text.match_indices(wanted).any(|(i, _)| {
+        code[i..i + wanted.len()].iter().all(|is_code| *is_code)
+            && !text[..i].chars().next_back().is_some_and(is_ident)
+            && !text[i + wanted.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+    })
+}
+
 /// One item of an `impl` block: its text runs from `start` (its comments, docs and attributes
 /// included) to `end`, exclusive.
 #[derive(Debug, Clone, PartialEq)]
@@ -185,9 +410,13 @@ pub struct ImplBlock {
 }
 
 fn matching_angle(text: &str) -> Option<usize> {
+    let code = lexical_code(text);
     let mut depth = 0usize;
     let mut previous = None;
     for (i, c) in text.char_indices() {
+        if !code[i] {
+            continue;
+        }
         match c {
             '<' => depth += 1,
             '>' if previous != Some('-') && depth == 1 => return Some(i),
@@ -201,11 +430,16 @@ fn matching_angle(text: &str) -> Option<usize> {
 
 fn top_level_word(text: &str, wanted: &str) -> Option<usize> {
     let bytes = text.as_bytes();
+    let code = lexical_code(text);
     let mut angle = 0i32;
     let mut paren = 0i32;
     let mut square = 0i32;
     let mut i = 0usize;
     while i < bytes.len() {
+        if !code[i] {
+            i += 1;
+            continue;
+        }
         match bytes[i] {
             b'<' => angle += 1,
             b'>' if angle > 0 && bytes.get(i.wrapping_sub(1)) != Some(&b'-') => angle -= 1,
@@ -234,6 +468,7 @@ fn top_level_word(text: &str, wanted: &str) -> Option<usize> {
 }
 
 fn split_top_level(text: &str) -> Result<Vec<&str>> {
+    let code = lexical_code(text);
     let mut parts = Vec::new();
     let mut angle = 0i32;
     let mut paren = 0i32;
@@ -241,6 +476,9 @@ fn split_top_level(text: &str) -> Result<Vec<&str>> {
     let mut brace = 0i32;
     let mut start = 0usize;
     for (i, c) in text.char_indices() {
+        if !code[i] {
+            continue;
+        }
         match c {
             '<' => angle += 1,
             '>' if !text[..i].ends_with('-') => angle -= 1,
@@ -273,11 +511,15 @@ fn split_top_level(text: &str) -> Result<Vec<&str>> {
 }
 
 fn has_top_level_equals(text: &str) -> bool {
+    let code = lexical_code(text);
     let mut angle = 0i32;
     let mut paren = 0i32;
     let mut square = 0i32;
     let mut brace = 0i32;
     for (i, c) in text.char_indices() {
+        if !code[i] {
+            continue;
+        }
         match c {
             '<' => angle += 1,
             '>' if !text[..i].ends_with('-') && angle > 0 => angle -= 1,
@@ -353,11 +595,16 @@ fn generic_arguments(generics: &str) -> Result<Vec<String>> {
 
 fn impl_body_open(text: &str, impl_at: usize) -> Result<usize> {
     let bytes = text.as_bytes();
+    let code = lexical_code(text);
     let mut angle = 0i32;
     let mut paren = 0i32;
     let mut square = 0i32;
     let mut i = impl_at + 4;
     while i < bytes.len() {
+        if !code[i] {
+            i += 1;
+            continue;
+        }
         match bytes[i] {
             b'<' => angle += 1,
             b'>' if angle > 0 && bytes.get(i.wrapping_sub(1)) != Some(&b'-') => angle -= 1,
@@ -375,8 +622,12 @@ fn impl_body_open(text: &str, impl_at: usize) -> Result<usize> {
 }
 
 fn inside_macro(text: &str, at: usize) -> bool {
+    let code = lexical_code(text);
     let mut opens = Vec::new();
     for (i, byte) in text[..at].bytes().enumerate() {
+        if !code[i] {
+            continue;
+        }
         match byte {
             b'{' => opens.push(i),
             b'}' => {
@@ -394,12 +645,14 @@ fn inside_macro(text: &str, at: usize) -> bool {
 
 /// The inherent `impl` block whose header holds `at`, or which `at` is inside.
 pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
+    let code = lexical_code(text);
     let mut search = (at + 4).min(text.len());
     let impl_at = loop {
         let i = text[..search]
             .rfind("impl")
             .context("no `impl` block at this position")?;
-        let whole = !text[..i].chars().next_back().is_some_and(is_ident)
+        let whole = code[i..i + 4].iter().all(|is_code| *is_code)
+            && !text[..i].chars().next_back().is_some_and(is_ident)
             && !text[i + 4..].chars().next().is_some_and(is_ident);
         if whole {
             break i;
@@ -418,19 +671,12 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
             .any(|qualifier| before.ends_with(qualifier)),
         "specialized, unsafe, and const impl blocks are not supported"
     );
-    let previous = text[..line_start]
-        .trim_end()
-        .lines()
-        .next_back()
-        .unwrap_or("")
-        .trim();
     anyhow::ensure!(
-        !previous.starts_with("#["),
+        !has_outer_attribute_before(text, impl_at),
         "attributes on impl blocks are not supported; remove or expand the conditional impl first"
     );
     let open = impl_body_open(text, impl_at)?;
-    let close = crate::parameter_object::matching_bracket(text, open)
-        .context("the `impl` block is not closed")?;
+    let close = matching_close_brace(text, open).context("the `impl` block is not closed")?;
     anyhow::ensure!(at <= close, "the position is not in an `impl` block");
     let header = text[impl_at + 4..open].trim();
     anyhow::ensure!(
@@ -466,6 +712,10 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
         "`impl {header}` already implements a trait"
     );
     let generic_args = generic_arguments(generics)?;
+    anyhow::ensure!(
+        !contains_code_word(generics, "Self") && !contains_code_word(where_clause, "Self"),
+        "impl bounds that depend on `Self` cannot be preserved safely in an extracted trait"
+    );
     Ok(ImplBlock {
         start: impl_at,
         open,
@@ -484,29 +734,18 @@ pub fn impl_block(text: &str, at: usize) -> Result<ImplBlock> {
 /// closes its body, at the block's own depth; comments and strings are skipped.
 pub fn items(text: &str, open: usize, close: usize) -> Vec<Item> {
     let bytes = text.as_bytes();
+    let code = lexical_code(text);
     let mut out = Vec::new();
     let mut depth = 0i32;
     let mut start: Option<usize> = None;
     let mut i = open + 1;
     while i < close {
         let c = bytes[i];
-        if c == b'/' && bytes.get(i + 1) == Some(&b'/') {
+        if start.is_none() && c == b'/' && matches!(bytes.get(i + 1), Some(b'/') | Some(b'*')) {
             start.get_or_insert(i);
-            i = text[i..close].find('\n').map_or(close, |n| i + n);
-            continue;
         }
-        if c == b'"' {
+        if !code[i] {
             i += 1;
-            while i < close && bytes[i] != b'"' {
-                i += if bytes[i] == b'\\' { 2 } else { 1 };
-            }
-            i += 1;
-            continue;
-        }
-        // A character literal such as '}' (a lifetime has no closing quote two bytes on).
-        if c == b'\'' && bytes.get(i + 2) == Some(&b'\'') {
-            start.get_or_insert(i);
-            i += 3;
             continue;
         }
         if !c.is_ascii_whitespace() {
@@ -561,8 +800,16 @@ pub fn declaration(item: &str) -> (Vec<&str>, &str) {
     let mut rest = item;
     loop {
         let t = rest.trim_start();
-        if t.starts_with("//") || t.starts_with("#[") {
+        if t.starts_with("//") {
             let end = t.find('\n').map_or(t.len(), |n| n + 1);
+            leading.push(t[..end].trim_end());
+            rest = &t[end..];
+        } else if t.starts_with("/*") {
+            let code = lexical_code(t);
+            let end = code.iter().position(|is_code| *is_code).unwrap_or(t.len());
+            leading.push(t[..end].trim_end());
+            rest = &t[end..];
+        } else if let Some(end) = attribute_end(t) {
             leading.push(t[..end].trim_end());
             rest = &t[end..];
         } else {
@@ -591,11 +838,15 @@ pub fn signature(decl: &str) -> Option<&str> {
     let name_at = decl.find("fn ")? + 3;
     let name_at = name_at + (decl[name_at..].len() - decl[name_at..].trim_start().len());
     let (_, _, close) = crate::signature::param_span(decl, name_at)?;
+    let code = lexical_code(decl);
     let mut angle = 0i32;
     let mut paren = 0i32;
     let mut square = 0i32;
     let mut body = None;
     for (offset, c) in decl[close..].char_indices() {
+        if !code[close + offset] {
+            continue;
+        }
         match c {
             '<' => angle += 1,
             '>' if angle > 0 && !decl[..close + offset].ends_with('-') => angle -= 1,
@@ -675,7 +926,7 @@ pub fn rewrite(
         anyhow::ensure!(
             !leading
                 .iter()
-                .any(|line| line.starts_with("#[cfg") || line.starts_with("#[cfg_attr")),
+                .any(|attribute| { matches!(attribute_name(attribute), Some("cfg" | "cfg_attr")) }),
             "method `{chosen}` is conditional; conditional methods cannot be extracted safely"
         );
         let (vis, bare) = visibility(decl);
@@ -941,6 +1192,18 @@ mod tests {
                 "already implements a trait",
             ),
             ("#[cfg(test)]\nimpl Name {}", "attributes on impl blocks"),
+            (
+                "#[cfg(any())] impl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
+                "attributes on impl blocks",
+            ),
+            (
+                "#[cfg(\n    any()\n)]\n// the condition remains attached\n\nimpl<T> Name<T> { fn selected(&self) {} fn kept(&self) {} }",
+                "attributes on impl blocks",
+            ),
+            (
+                "const NOTE: &str = \"} ] #[cfg]\"; /* ] /* } */ [ */ #[cfg(any())] /* [ */ impl Name {}",
+                "attributes on impl blocks",
+            ),
             ("impl<T> Name<make!{T}> {}", "macros in an impl header"),
             (
                 "macro_rules! make { () => { impl<T> Name<T> {} } }",
@@ -950,6 +1213,25 @@ mod tests {
         ] {
             let err = impl_block(source, source.find("impl").unwrap()).unwrap_err();
             assert!(format!("{err:#}").contains(expected), "{source}: {err:#}");
+        }
+
+        let sibling = "#[cfg(any())]\nstruct Disabled;\n\nimpl Name { fn value(&self) {} }";
+        assert!(
+            impl_block(sibling, sibling.find("impl Name").unwrap()).is_ok(),
+            "an attribute on a prior sibling is not attached to the impl"
+        );
+        let sibling_literal = "const NOTE: &str = r#\"impl } ] #[cfg]\"#; /* } ] */ impl Name {}";
+        assert!(
+            impl_block(sibling_literal, sibling_literal.rfind("impl Name").unwrap()).is_ok(),
+            "delimiters in literals and comments do not attach an attribute"
+        );
+
+        for source in [
+            "impl<T: From<Self>> Name<T> { fn value(&self) {} }",
+            "impl<T> Name<T> where T: From<Self> { fn value(&self) {} }",
+        ] {
+            let err = impl_block(source, source.find("impl").unwrap()).unwrap_err();
+            assert!(format!("{err:#}").contains("Self"), "{source}: {err:#}");
         }
 
         let inline =
@@ -965,10 +1247,46 @@ mod tests {
         let err = rewrite(inline, &imp, &["value".into()], "2Value").unwrap_err();
         assert!(format!("{err:#}").contains("valid Rust identifier"));
 
-        let conditional = "impl Name { #[cfg(test)]\nfn value(&self) {} }";
-        let imp = impl_block(conditional, 0).unwrap();
-        let err = rewrite(conditional, &imp, &["value".into()], "Value").unwrap_err();
-        assert!(format!("{err:#}").contains("conditional"), "{err:#}");
+        for conditional in [
+            "impl Name { #[cfg(test)]\nfn value(&self) {} }",
+            "impl Name { #[cfg(any())] fn value(&self) {} }",
+            "impl Name { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] fn value(&self) {} }",
+        ] {
+            let imp = impl_block(conditional, 0).unwrap();
+            let err = rewrite(conditional, &imp, &["value".into()], "Value").unwrap_err();
+            assert!(
+                format!("{err:#}").contains("conditional"),
+                "{conditional}: {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn comments_and_literals_do_not_change_item_structure() {
+        let text = r###"impl Name {
+    /* } /* nested ] */ } */
+    #[inline]
+    fn value(&self) {
+        let _ = "} ]";
+        let _ = b"} ]";
+        let _ = c"} ]";
+        let _ = r#"} ]"#;
+        let _ = br#"} ]"#;
+        let _ = cr#"} ]"#;
+        let _ = '}';
+        let _ = b'}';
+        let _ = '\x7d';
+        let _ = '\u{7d}';
+        let _ = '\'';
+    }
+}"###;
+        let imp = impl_block(text, 0).unwrap();
+        assert_eq!(imp.items.len(), 1);
+        assert_eq!(imp.items[0].name.as_deref(), Some("value"));
+        let (out, kept) = rewrite(text, &imp, &["value".into()], "Value").unwrap();
+        assert!(kept.is_empty());
+        assert!(out.contains("trait Value"), "{out}");
+        assert!(out.contains("let _ = r#\"} ]\"#;"), "{out}");
     }
 
     #[test]

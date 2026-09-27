@@ -3294,12 +3294,25 @@ fn main() {
     println!("{}", report::report(&window, 4));
 }
 "#;
+    const CONDITIONAL_IMPL: &str = "pub struct Example<T>(pub T);\n#[cfg(any())] impl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const COMMENTED_CONDITIONAL_IMPL: &str = "pub struct Example<T>(pub T);\n#[cfg(\n    any()\n)]\n// attached condition remains active\n\nimpl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const CONDITIONAL_METHOD: &str = "pub struct Example<T>(pub T);\nimpl<T> Example<T> { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const SELF_INLINE: &str = "pub struct Example<T>(pub T);\nimpl<T: From<Self>> Example<T> { pub fn selected(self) -> T { T::from(self) } }\n";
+    const SELF_WHERE: &str = "pub struct Example<T>(pub T);\nimpl<T> Example<T> where T: From<Self> { pub fn selected(self) -> T { T::from(self) } }\n";
 
     let gateway = Gateway::start();
     let checkout = Checkout::new();
     checkout.write("src/main.rs", MAIN);
     checkout.write("src/window.rs", WINDOW);
     checkout.write("src/report.rs", REPORT);
+    checkout.write("src/conditional_impl.rs", CONDITIONAL_IMPL);
+    checkout.write(
+        "src/commented_conditional_impl.rs",
+        COMMENTED_CONDITIONAL_IMPL,
+    );
+    checkout.write("src/conditional_method.rs", CONDITIONAL_METHOD);
+    checkout.write("src/self_inline.rs", SELF_INLINE);
+    checkout.write("src/self_where.rs", SELF_WHERE);
     checkout.commit();
     let root = checkout.root();
     let window = checkout.path("src/window.rs");
@@ -3322,6 +3335,72 @@ fn main() {
         ran.stdout
     };
     let before = output();
+
+    let compile_library = |relative: &str| {
+        let temp = tempfile::tempdir().unwrap();
+        let output = Command::new("rustc")
+            .args(["--edition", "2021", "--crate-type", "lib", relative, "-o"])
+            .arg(temp.path().join("self-bound.rlib"))
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            relative,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    compile_library("src/self_inline.rs");
+    compile_library("src/self_where.rs");
+
+    for (relative, source, why) in [
+        (
+            "src/conditional_impl.rs",
+            CONDITIONAL_IMPL,
+            "attributes on impl blocks",
+        ),
+        (
+            "src/commented_conditional_impl.rs",
+            COMMENTED_CONDITIONAL_IMPL,
+            "attributes on impl blocks",
+        ),
+        (
+            "src/conditional_method.rs",
+            CONDITIONAL_METHOD,
+            "conditional methods",
+        ),
+        ("src/self_inline.rs", SELF_INLINE, "depend on `Self`"),
+        ("src/self_where.rs", SELF_WHERE, "depend on `Self`"),
+    ] {
+        let impl_at = source.find("impl").unwrap();
+        let line_start = source[..impl_at].rfind('\n').map_or(0, |i| i + 1);
+        let args = serde_json::json!({
+            "path": relative,
+            "line": source[..impl_at].matches('\n').count() + 1,
+            "character": impl_at - line_start + 1,
+            "methods": ["selected"],
+            "name": "Selected",
+            "apply": true,
+            "force": true,
+        });
+        let err = prod_code_mcp::tools::execute_tool(
+            gateway.addr,
+            &root,
+            "code_extract_trait",
+            args,
+        )
+        .await
+        .expect_err("structurally unsafe extraction is refused even with force");
+        assert!(format!("{err:#}").contains(why), "{relative}: {err:#}");
+        assert_eq!(
+            std::fs::read_to_string(checkout.path(relative)).unwrap(),
+            source,
+            "refusal preserves every byte"
+        );
+    }
+    compile_library("src/self_inline.rs");
+    compile_library("src/self_where.rs");
 
     let bad = serde_json::json!({
         "path": "src/window.rs", "line": 5, "character": 1,
