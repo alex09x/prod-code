@@ -26,7 +26,7 @@ impl Gateway {
             .env("PROD_CODE_STORAGE", storage.path())
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
-            .env("RUST_LOG", "info")
+            .env_remove("RUST_LOG")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()

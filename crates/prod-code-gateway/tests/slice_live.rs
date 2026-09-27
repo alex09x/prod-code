@@ -29,7 +29,7 @@ impl Gateway {
             // No peers, no gossip: this gateway is alone and must not look for others.
             .env("PROD_CODE_PEERS", "")
             .env("PROD_CODE_BIND", "127.0.0.1:0")
-            .env("RUST_LOG", "info")
+            .env_remove("RUST_LOG")
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
