@@ -3,7 +3,7 @@
 //! the diagnostics the gateway pushes after an edit.
 //!
 //! Positions are LSP's: 0-based lines and UTF-16 columns. The rest of the engine speaks 1-based
-//! lines and character columns to the agent tools, which is not what an editor sends.
+//! lines and the same UTF-16 columns to the agent tools (#456).
 
 use crate::{RustEngine, RustEngineSnapshot, line_col_to_offset};
 use anyhow::{Context, Result};
@@ -37,11 +37,26 @@ impl<'a> Lines<'a> {
         Self { text, starts }
     }
 
+    /// The end of a line's source text, before its newline delimiter. CRLF is one delimiter:
+    /// its carriage return is not an LSP character position.
+    fn line_end(&self, line: usize, start: usize) -> usize {
+        let end = self
+            .starts
+            .get(line + 1)
+            .map_or(self.text.len(), |&next| next - 1);
+        if end < self.text.len() && end > start && self.text.as_bytes()[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        }
+    }
+
     /// The LSP position of a byte offset.
     pub fn position(&self, offset: TextSize) -> Value {
         let offset = usize::from(offset).min(self.text.len());
         let line = self.starts.partition_point(|&start| start <= offset) - 1;
         let start = self.starts[line];
+        let offset = offset.min(self.line_end(line, start));
         let character: usize = self
             .text
             .get(start..offset)
@@ -60,10 +75,7 @@ impl<'a> Lines<'a> {
         let Some(&start) = self.starts.get(line as usize) else {
             return TextSize::of(self.text);
         };
-        let end = self
-            .starts
-            .get(line as usize + 1)
-            .map_or(self.text.len(), |&next| next - 1);
+        let end = self.line_end(line as usize, start);
         let mut units = 0u32;
         for (byte, ch) in self.text[start..end].char_indices() {
             if units >= character {
@@ -765,6 +777,31 @@ mod tests {
             })),
             TextRange::new(TextSize::from(0), TextSize::from(x as u32))
         );
+
+        for text in ["\r", "ab\r", "😀\r"] {
+            let lines = Lines::new(text);
+            let units = text.encode_utf16().count() as u32;
+            assert_eq!(
+                lines.position(TextSize::of(text)),
+                json!({ "line": 0, "character": units })
+            );
+            assert_eq!(lines.offset(0, units), TextSize::of(text));
+        }
+        let crlf = "ab\r\ncd";
+        let lines = Lines::new(crlf);
+        // The two CRLF bytes share the preceding line's end position; no editor response
+        // exposes the invalid split between them.
+        assert_eq!(
+            lines.position(TextSize::from(2)),
+            json!({ "line": 0, "character": 2 })
+        );
+        assert_eq!(
+            lines.position(TextSize::from(3)),
+            json!({ "line": 0, "character": 2 })
+        );
+        assert_eq!(usize::from(lines.offset(0, 2)), 2);
+        assert_eq!(usize::from(lines.offset(0, 3)), 2);
+        assert_eq!(usize::from(lines.offset(1, 0)), 4);
     }
 
     #[test]

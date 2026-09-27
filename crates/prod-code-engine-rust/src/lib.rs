@@ -2154,20 +2154,44 @@ impl RustEngine {
     }
 }
 
-/// Convert 1-indexed (line, col) to 0-indexed byte offset.
+/// Convert 1-indexed (line, col) to 0-indexed byte offset. The column counts UTF-16 code units,
+/// as the LSP positions the gateway answers with do (#456); one between the two halves of a
+/// surrogate pair is on no character. A CRLF pair is one line break, so neither byte adds a
+/// source column. A zero line or column, or a column past the end of its own line (rather than
+/// clamped into whatever text follows), is on no position: `None`, never a nearby offset.
 fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<TextSize> {
+    if target_line == 0 || target_col == 0 {
+        return None;
+    }
     let mut current_line = 1;
     let mut line_start = 0;
 
     for (i, c) in text.char_indices() {
         if current_line == target_line {
-            let line_slice = &text[line_start..];
-            for (current_col, (col_offset, _)) in (1..).zip(line_slice.char_indices()) {
-                if current_col == target_col {
-                    return Some(TextSize::from((line_start + col_offset) as u32));
+            // Bound the slice to this line alone: scanning past its `\n` let an oversized
+            // column silently resolve into a later line, or clamp to the end of the file.
+            let line_end = text[line_start..]
+                .find('\n')
+                .map_or(text.len(), |rel| line_start + rel);
+            // A CR immediately before LF is part of the line encoding, not a source column.
+            let line_end = if line_end < text.len()
+                && line_end > line_start
+                && text.as_bytes()[line_end - 1] == b'\r'
+            {
+                line_end - 1
+            } else {
+                line_end
+            };
+            let line_slice = &text[line_start..line_end];
+            let mut current_col = 1u32;
+            for (col_offset, ch) in line_slice.char_indices() {
+                if current_col >= target_col {
+                    return (current_col == target_col)
+                        .then(|| TextSize::from((line_start + col_offset) as u32));
                 }
+                current_col += ch.len_utf16() as u32;
             }
-            return Some(TextSize::from((line_start + line_slice.len()) as u32));
+            return (current_col == target_col).then(|| TextSize::from(line_end as u32));
         }
 
         if c == '\n' {
@@ -2215,7 +2239,9 @@ fn imported_in_scope(node: &ra_ap_syntax::SyntaxNode, name: &str) -> bool {
     })
 }
 
-/// Convert 0-indexed byte offset to 1-indexed (line, col).
+/// Convert 0-indexed byte offset to 1-indexed (line, col), the column in UTF-16 code units.
+/// A CRLF pair is one logical line break, so an offset at either delimiter never produces a
+/// position between them.
 fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
     let target = usize::from(offset);
     let mut line = 1;
@@ -2228,8 +2254,8 @@ fn offset_to_line_col(text: &str, offset: TextSize) -> (u32, u32) {
         if c == '\n' {
             line += 1;
             col = 1;
-        } else {
-            col += 1;
+        } else if c != '\r' || text.as_bytes().get(i + 1) != Some(&b'\n') {
+            col += c.len_utf16() as u32;
         }
     }
 
@@ -2319,6 +2345,91 @@ mod tests {
         // Line 2 Col 5 -> 'p' (offset 16)
         let off = line_col_to_offset(text, 2, 5).unwrap();
         assert_eq!(offset_to_line_col(text, off), (2, 5));
+    }
+
+    /// A column past the end of its own line used to scan through the `\n` into whatever text
+    /// followed, so an oversized column on a short line silently resolved to a position on a
+    /// later line, or clamped to the end of the file (#456 follow-up).
+    #[test]
+    fn an_oversized_column_is_rejected_not_scanned_into_the_next_line() {
+        let text = "ab\ncd\n";
+        // Line 1 is "ab": columns 1-3 are valid (3 is just past 'b', before the '\n').
+        assert_eq!(line_col_to_offset(text, 1, 3), Some(TextSize::from(2)));
+        // Column 4 does not exist on line 1; it must not resolve to 'c' on line 2.
+        assert_eq!(line_col_to_offset(text, 1, 4), None);
+        assert_eq!(line_col_to_offset(text, 1, 100), None);
+        // A line beyond the text (no such line at all) is also rejected, not clamped to EOF.
+        assert_eq!(line_col_to_offset(text, 100, 1), None);
+    }
+
+    /// Line and column are 1-based; either being zero names no position.
+    #[test]
+    fn a_zero_line_or_column_is_on_no_position() {
+        let text = "ab\ncd\n";
+        assert_eq!(line_col_to_offset(text, 0, 1), None);
+        assert_eq!(line_col_to_offset(text, 1, 0), None);
+        assert_eq!(line_col_to_offset("", 0, 1), None);
+        assert_eq!(line_col_to_offset("", 1, 0), None);
+    }
+
+    /// Empty text and the empty final line after a trailing `\n` both resolve col 1 to the end
+    /// of the text, and reject any larger column there.
+    #[test]
+    fn empty_text_and_final_empty_lines_are_consistent() {
+        assert_eq!(line_col_to_offset("", 1, 1), Some(TextSize::from(0)));
+        assert_eq!(line_col_to_offset("", 1, 2), None);
+        assert_eq!(line_col_to_offset("", 2, 1), None);
+
+        let text = "ab\n";
+        // Line 2 is the empty line after the trailing newline.
+        assert_eq!(line_col_to_offset(text, 2, 1), Some(TextSize::from(3)));
+        assert_eq!(line_col_to_offset(text, 2, 2), None);
+
+        let text = "ab\n\n";
+        // Line 2 is the empty line between the two newlines.
+        assert_eq!(line_col_to_offset(text, 2, 1), Some(TextSize::from(3)));
+        assert_eq!(line_col_to_offset(text, 2, 2), None);
+        // Line 3 is the empty final line after the second newline.
+        assert_eq!(line_col_to_offset(text, 3, 1), Some(TextSize::from(4)));
+    }
+
+    /// The columns the gateway answers LSP queries with count UTF-16 units, as a language
+    /// server's do: past 😀, two of them, the column is one more than the character count, and a
+    /// CRLF pair is one line break (#456).
+    #[test]
+    fn columns_count_utf16_units() {
+        let text = "fn a() {}\r\nfn f(😀: u8, x: u8) {}\r\n";
+        let x = text.find("x:").unwrap();
+        assert_eq!(offset_to_line_col(text, TextSize::from(x as u32)), (2, 14));
+        assert_eq!(
+            line_col_to_offset(text, 2, 14),
+            Some(TextSize::from(x as u32))
+        );
+        // Between the halves of 😀.
+        assert_eq!(line_col_to_offset(text, 2, 7), None);
+        let after = text.find(": u8, x").unwrap();
+        assert_eq!(
+            line_col_to_offset(text, 2, 8),
+            Some(TextSize::from(after as u32))
+        );
+    }
+
+    /// A CRLF sequence has no source position between its two bytes. The end of the first line
+    /// is before `\r`, and the next line begins after `\n` (#456).
+    #[test]
+    fn a_crlf_pair_has_no_between_bytes_position() {
+        for text in ["\r", "ab\r", "😀\r"] {
+            let eof = TextSize::of(text);
+            let (line, col) = offset_to_line_col(text, eof);
+            assert_eq!(line_col_to_offset(text, line, col), Some(eof), "{text:?}");
+        }
+        let text = "ab\r\ncd";
+        assert_eq!(line_col_to_offset(text, 1, 3), Some(TextSize::from(2)));
+        assert_eq!(line_col_to_offset(text, 1, 4), None);
+        assert_eq!(line_col_to_offset(text, 2, 1), Some(TextSize::from(4)));
+        assert_eq!(offset_to_line_col(text, TextSize::from(2)), (1, 3));
+        assert_eq!(offset_to_line_col(text, TextSize::from(3)), (1, 3));
+        assert_eq!(offset_to_line_col(text, TextSize::from(4)), (2, 1));
     }
 
     fn create_test_fixture() -> (tempfile::TempDir, PathBuf) {

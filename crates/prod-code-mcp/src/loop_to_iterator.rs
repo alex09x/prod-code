@@ -360,7 +360,7 @@ async fn hover_type(
     text: &str,
     at: usize,
 ) -> Option<String> {
-    let (line, col) = crate::signature::line_col_at(text, at);
+    let (line, col) = crate::signature::line_col_at(text, at)?;
     let uri = url::Url::from_file_path(file).ok()?.to_string();
     let hover = crate::tools::execute_lsp_query(
         remote,
