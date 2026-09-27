@@ -409,16 +409,11 @@ impl RustEngineSnapshot {
 
     /// Retrieve symbol type, docs, and signature at (line, col).
     pub fn hover(&self, path: &Path, line: u32, col: u32) -> Result<Option<String>> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-
-        let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let position = self.file_position(path, line, col)?;
 
         let file_range = FileRange {
-            file_id,
-            range: TextRange::empty(offset),
+            file_id: position.file_id,
+            range: TextRange::empty(position.offset),
         };
 
         let config = HoverConfig {
@@ -448,12 +443,7 @@ impl RustEngineSnapshot {
         col: u32,
         new_name: &str,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-        let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
-        let position = FilePosition { file_id, offset };
+        let position = self.file_position(path, line, col)?;
         let config = RenameConfig {
             show_conflicts: true,
             prefer_no_std: false,
@@ -492,9 +482,12 @@ impl RustEngineSnapshot {
         // be inside an item: at offset 0 a file has no scope and nothing resolves, which looks
         // exactly like "no matches". When the caller has no position of its own, use the body
         // of the file's first function.
-        let offset = match line_col_to_offset(&text, line, col) {
-            Some(offset) if line > 1 || col > 1 => offset,
-            _ => self.first_body_offset(file_id).unwrap_or(TextSize::from(0)),
+        let requested_offset = line_col_to_offset(&text, line, col)
+            .with_context(|| format!("Invalid position {line}:{col} in {}", context.display()))?;
+        let offset = if line > 1 || col > 1 {
+            requested_offset
+        } else {
+            self.first_body_offset(file_id).unwrap_or(TextSize::from(0))
         };
         let position = FilePosition { file_id, offset };
         // Without a scope the search covers the workspace and every crate it depends on,
@@ -644,14 +637,13 @@ impl RustEngineSnapshot {
         col: u32,
         end: Option<(u32, u32)>,
     ) -> Result<FileRange> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-        let text = self.analysis.file_text(file_id)?;
-        let start = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
-        let end = end
-            .and_then(|(l, c)| line_col_to_offset(&text, l, c))
-            .unwrap_or(start);
+        let start = self.file_position(path, line, col)?;
+        let end = match end {
+            Some((line, col)) => self.file_position(path, line, col)?.offset,
+            None => start.offset,
+        };
+        let file_id = start.file_id;
+        let start = start.offset;
         let (start, end) = if end < start {
             (end, start)
         } else {
@@ -784,6 +776,7 @@ impl RustEngineSnapshot {
         line: u32,
         col: u32,
     ) -> Result<std::result::Result<RefactorOutcome, String>> {
+        let position = self.file_position(path, line, col)?;
         let usages = self.find_all_refs(path, line, col)?;
         if !usages.is_empty() {
             let mut listed: Vec<String> = usages
@@ -800,11 +793,9 @@ impl RustEngineSnapshot {
                 listed.join("\n")
             )));
         }
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
+        let file_id = position.file_id;
         let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let offset = position.offset;
         let config = FileStructureConfig {
             exclude_locals: false,
         };
@@ -857,14 +848,7 @@ impl RustEngineSnapshot {
         line: u32,
         col: u32,
     ) -> Result<Vec<DefinitionTarget>> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-
-        let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
-
-        let file_pos = FilePosition { file_id, offset };
+        let file_pos = self.file_position(path, line, col)?;
         let config = GotoDefinitionConfig {
             ra_fixture: RaFixtureConfig::default(),
         };
@@ -898,7 +882,8 @@ impl RustEngineSnapshot {
             .file_id_for_path(path)
             .with_context(|| format!("File not found in VFS: {:?}", path))?;
         let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
+        let offset = line_col_to_offset(&text, line, col)
+            .with_context(|| format!("Invalid position {line}:{col} in {}", path.display()))?;
         Ok(FilePosition { file_id, offset })
     }
 
@@ -1270,14 +1255,7 @@ impl RustEngineSnapshot {
     }
 
     pub fn find_all_refs(&self, path: &Path, line: u32, col: u32) -> Result<Vec<ReferenceTarget>> {
-        let file_id = self
-            .file_id_for_path(path)
-            .with_context(|| format!("File not found in VFS: {:?}", path))?;
-
-        let text = self.analysis.file_text(file_id)?;
-        let offset = line_col_to_offset(&text, line, col).unwrap_or(TextSize::from(0));
-
-        let file_pos = FilePosition { file_id, offset };
+        let file_pos = self.file_position(path, line, col)?;
         let config = FindAllRefsConfig {
             search_scope: None,
             ra_fixture: RaFixtureConfig::default(),
@@ -2519,6 +2497,102 @@ fn main() {
         assert!(defs.iter().any(|d| d.name == "PathTranslator"));
     }
 
+    #[test]
+    fn invalid_positions_fail_before_native_queries_or_refactors() {
+        let (temp, lib_path) = create_test_fixture();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let assert_invalid = |err: anyhow::Error| {
+            assert!(
+                format!("{err:#}").contains("Invalid position 999999:1"),
+                "{err:#}"
+            );
+        };
+
+        for (line, col) in [(0, 1), (1, 0), (1, 999999)] {
+            let error = engine.hover(&lib_path, line, col).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("Invalid position"),
+                "{error:#}"
+            );
+        }
+        assert_invalid(engine.hover(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(engine.rename(&lib_path, 999999, 1, "Renamed").unwrap_err());
+        assert_invalid(engine.goto_definition(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(engine.find_all_refs(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(
+            engine
+                .prepare_call_hierarchy(&lib_path, 999999, 1)
+                .unwrap_err(),
+        );
+        assert_invalid(engine.incoming_calls(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(engine.outgoing_calls(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(
+            engine
+                .goto_implementation(&lib_path, 999999, 1)
+                .unwrap_err(),
+        );
+        assert_invalid(engine.safe_delete(&lib_path, 999999, 1).unwrap_err());
+        assert_invalid(
+            engine
+                .list_assists(&lib_path, 1, 15, Some((999999, 1)))
+                .unwrap_err(),
+        );
+        assert_invalid(
+            engine
+                .apply_assist(&lib_path, 1, 15, Some((999999, 1)), "x", None)
+                .unwrap_err(),
+        );
+        assert_invalid(
+            engine
+                .structural_replace("DEFAULT_PORT ==>> DEFAULT_PORT", &lib_path, 999999, 1, None)
+                .unwrap_err(),
+        );
+    }
+
+    #[test]
+    fn native_queries_accept_utf16_and_eof_positions() {
+        let (temp, lib_path) = create_test_fixture();
+        let text = "/// 😀\r\npub const DEFAULT_PORT: u16 = 9400;\r\npub fn query() -> u16 { let _ = \"😀\"; DEFAULT_PORT }\r\n";
+        std::fs::write(&lib_path, text).unwrap();
+        let engine = RustEngine::load(temp.path()).expect("Must load fixture");
+        let target = text.rfind("DEFAULT_PORT").unwrap();
+        let line_start = text[..target].rfind('\n').map_or(0, |at| at + 1);
+        let col = text[line_start..target].encode_utf16().count() as u32 + 1;
+        let hover = engine
+            .hover(&lib_path, 3, col)
+            .expect("valid UTF-16 position");
+        assert!(hover.is_some(), "the symbol after 😀 resolves");
+
+        let snapshot = engine.snapshot();
+        let forward = snapshot.file_range(&lib_path, 2, 1, Some((2, 4))).unwrap();
+        let reversed = snapshot.file_range(&lib_path, 2, 4, Some((2, 1))).unwrap();
+        assert_eq!(
+            forward.range, reversed.range,
+            "valid reversed selections stay accepted"
+        );
+        assert!(
+            snapshot
+                .file_range(&lib_path, 2, 1, None)
+                .unwrap()
+                .range
+                .is_empty()
+        );
+        let eof = TextSize::of(text);
+        let (line, col) = offset_to_line_col(text, eof);
+        assert!(
+            engine.hover(&lib_path, line, col).is_ok(),
+            "valid EOF position"
+        );
+        assert!(
+            engine.hover(&lib_path, 1, 6).is_err(),
+            "a UTF-16 surrogate interior is rejected"
+        );
+        assert!(
+            engine.hover(&lib_path, 1, 8).is_err(),
+            "a CRLF-adjacent oversized column is rejected"
+        );
+    }
+
     /// The symbol with the very name is found however many names that only hold its letters
     /// sort before it (#348): `a_run_0` to `a_run_29` fill a limit of 10 on their own.
     #[test]
@@ -3178,7 +3252,12 @@ fn main() {
 
         // Another session looks at the base, then session 1 comes back.
         engine.activate_session(2).unwrap();
-        assert!(engine.hover(&scratch, 1, 8).unwrap().is_none());
+        let hidden = engine.hover(&scratch, 1, 8).unwrap_err();
+        assert!(
+            hidden.to_string().contains("Invalid position 1:8"),
+            "{hidden:#}"
+        );
+        assert!(engine.hover(&scratch, 1, 1).unwrap().is_none());
         engine.activate_session(1).unwrap();
         let again = engine.hover(&scratch, 1, 8).unwrap();
         assert!(

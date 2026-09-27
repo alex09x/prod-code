@@ -3130,6 +3130,93 @@ enum Flow {
     Stop,
 }
 
+/// Decode an LSP's zero-based position into the one-based coordinates used by the Rust engine.
+///
+/// LSP positions must be non-negative JSON integers. The engine's one-based API also means
+/// that `u32::MAX` cannot be represented, so reject it rather than truncating or overflowing.
+fn one_based_position(position: Option<&serde_json::Value>) -> Result<(u32, u32), &'static str> {
+    let position = position.ok_or("position is required")?;
+    let coordinate = |name| {
+        position
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .and_then(|value| value.checked_add(1))
+            .ok_or("position coordinates must be non-negative integers below 4294967295")
+    };
+    Ok((coordinate("line")?, coordinate("character")?))
+}
+
+/// Keep request metrics bounded even when a forwarded request has an arbitrary JSON shape.
+fn metric_position(position: Option<&serde_json::Value>) -> (u32, u32) {
+    one_based_position(position).unwrap_or((1, 1))
+}
+
+/// Validate only the Rust methods that consume LSP positions locally.
+fn native_position_params(
+    method: Option<&str>,
+    params: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let params = params.unwrap_or(&serde_json::Value::Null);
+    match method {
+        Some(
+            "textDocument/hover"
+            | "textDocument/definition"
+            | "textDocument/references"
+            | "textDocument/implementation"
+            | "textDocument/prepareCallHierarchy"
+            | "prodCode/safeDelete"
+            | "textDocument/rename",
+        ) => one_based_position(params.get("position"))
+            .map(|_| ())
+            .map_err(str::to_owned),
+        Some("callHierarchy/incomingCalls" | "callHierarchy/outgoingCalls") => one_based_position(
+            params
+                .get("item")
+                .and_then(|item| item.get("selectionRange"))
+                .and_then(|range| range.get("start")),
+        )
+        .map(|_| ())
+        .map_err(|reason| format!("item.selectionRange.start: {reason}")),
+        Some("prodCode/structuralReplace") => params
+            .get("position")
+            .map(|position| {
+                one_based_position(Some(position))
+                    .map(|_| ())
+                    .map_err(str::to_owned)
+            })
+            .unwrap_or(Ok(())),
+        Some("prodCode/assists" | "prodCode/applyAssist") => {
+            one_based_position(params.pointer("/range/start"))
+                .map_err(|reason| format!("range.start: {reason}"))?;
+            if let Some(end) = params.pointer("/range/end") {
+                one_based_position(Some(end)).map_err(|reason| format!("range.end: {reason}"))?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn send_invalid_params(
+    out_tx: &rapidfire::mpsc::Sender<WireMessage>,
+    translator: &PathTranslator,
+    id: &serde_json::Value,
+    method: &str,
+    reason: &str,
+) {
+    let response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32602,
+            "message": format!("invalid params for {method}: {reason}"),
+        }
+    });
+    let client_response = translator.translate_lsp_to_client(&response.to_string());
+    let _ = out_tx.send(WireMessage::LspPayload(client_response)).await;
+}
+
 /// One message from the client: an LSP payload answered by the in-memory engine or forwarded
 /// to the backend, a sync, a status request or a disconnect.
 ///
@@ -3160,6 +3247,16 @@ async fn on_client_message(
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&server_lsp) {
                 let method = val.get("method").and_then(|m| m.as_str());
                 let id = val.get("id").cloned();
+                if view.workspace.rust_engine.is_some()
+                    && let Err(reason) = native_position_params(method, val.get("params"))
+                {
+                    if let (Some(method), Some(id)) =
+                        (method, id.as_ref().filter(|id| !id.is_null()))
+                    {
+                        send_invalid_params(out_tx, translator, id, method, &reason).await;
+                    }
+                    return Flow::Next;
+                }
                 if let (Some(m), Some(id_val)) = (method, &id)
                     && !id_val.is_null()
                     && m != "initialize"
@@ -3182,22 +3279,20 @@ async fn on_client_message(
                     let pos = params.and_then(|p| {
                         p.get("position")
                             .or_else(|| p.get("range").and_then(|r| r.get("start")))
+                            .or_else(|| {
+                                p.get("item")
+                                    .and_then(|item| item.get("selectionRange"))
+                                    .and_then(|range| range.get("start"))
+                            })
                     });
+                    let (line, col) = metric_position(pos);
                     pending.lock().await.insert(
                         id_val.to_string(),
                         PendingRequest {
                             method: m.to_string(),
                             file,
-                            line: pos
-                                .and_then(|p| p.get("line"))
-                                .and_then(|l| l.as_u64())
-                                .unwrap_or(0) as u32
-                                + 1,
-                            col: pos
-                                .and_then(|p| p.get("character"))
-                                .and_then(|c| c.as_u64())
-                                .unwrap_or(0) as u32
-                                + 1,
+                            line,
+                            col,
                             start: Instant::now(),
                         },
                     );
@@ -4080,14 +4175,7 @@ fn lsp_call_hierarchy(
             params.get("position"),
         ),
     };
-    let line = position
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = position
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(position).unwrap_or((1, 1));
     let file_path = uri_or_path(uri);
     let method_name = hm.to_string();
 
@@ -4095,7 +4183,7 @@ fn lsp_call_hierarchy(
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
     let query_start = Instant::now();
-    tracing::info!(req = req_num, session = view.session_id, method = %method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
+    tracing::info!(req = req_num, session = view.session_id, method = %method_name, file = %file_path.display(), pos = format!("{line}:{col}"), in_flight, "🚀 [LSP START]");
 
     let engine_arc = Arc::clone(engine_lock);
     let req_id = id.clone().unwrap_or(serde_json::json!(1));
@@ -4112,7 +4200,7 @@ fn lsp_call_hierarchy(
                 if let Err(e) = engine.activate_session(session_id) {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                hierarchy_query(&engine, &m, &fp_clone, line + 1, col + 1)
+                hierarchy_query(&engine, &m, &fp_clone, line, col)
             })
             .await
             .unwrap_or_else(|e| {
@@ -4185,22 +4273,13 @@ fn lsp_safe_delete(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(params.get("position")).unwrap_or((1, 1));
     let file_path = uri_or_path(uri);
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
     let in_flight = ACTIVE_QUERIES.fetch_add(1, Ordering::Relaxed) + 1;
     TOTAL_QUERIES.fetch_add(1, Ordering::Relaxed);
     let query_start = Instant::now();
-    tracing::info!(req = req_num, session = view.session_id, method = "prodCode/safeDelete", file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), in_flight, "🚀 [LSP START]");
+    tracing::info!(req = req_num, session = view.session_id, method = "prodCode/safeDelete", file = %file_path.display(), pos = format!("{line}:{col}"), in_flight, "🚀 [LSP START]");
     let engine_arc = Arc::clone(engine_lock);
     let req_id = id.clone().unwrap_or(serde_json::json!(1));
     let fp_clone = file_path.clone();
@@ -4214,7 +4293,7 @@ fn lsp_safe_delete(
                 if let Err(e) = engine.activate_session(session_id) {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                engine.safe_delete(&fp_clone, line + 1, col + 1)
+                engine.safe_delete(&fp_clone, line, col)
             })
             .await
             .unwrap_or_else(|e| Err(anyhow::anyhow!("safe delete task failed: {e}")))
@@ -4264,16 +4343,12 @@ fn lsp_structural_replace(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
+    let (line, col) = params
         .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+        .map(|position| one_based_position(Some(position)))
+        .transpose()
+        .unwrap_or(Some((1, 1)))
+        .unwrap_or((1, 1));
     let rule = params
         .get("rule")
         .and_then(|r| r.as_str())
@@ -4295,7 +4370,7 @@ fn lsp_structural_replace(
         session = view.session_id,
         method = "prodCode/structuralReplace",
         file = %file_path.display(),
-        pos = format!("{}:{}", line + 1, col + 1),
+        pos = format!("{line}:{col}"),
         rule = %rule,
         in_flight,
         "🚀 [LSP START]"
@@ -4315,7 +4390,7 @@ fn lsp_structural_replace(
                 if let Err(e) = engine.activate_session(session_id) {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                engine.structural_replace(&rule, &fp_clone, line + 1, col + 1, scope.as_deref())
+                engine.structural_replace(&rule, &fp_clone, line, col, scope.as_deref())
             })
             .await
             .unwrap_or_else(|e| Err(anyhow::anyhow!("codemod task failed: {e}")))
@@ -4364,16 +4439,7 @@ fn lsp_rename(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(params.get("position")).unwrap_or((1, 1));
     let new_name = params
         .get("newName")
         .and_then(|n| n.as_str())
@@ -4390,7 +4456,7 @@ fn lsp_rename(
         session = view.session_id,
         method = "textDocument/rename",
         file = %file_path.display(),
-        pos = format!("{}:{}", line + 1, col + 1),
+        pos = format!("{line}:{col}"),
         new_name = %new_name,
         in_flight,
         "🚀 [LSP START]"
@@ -4410,7 +4476,7 @@ fn lsp_rename(
                 if let Err(e) = engine.activate_session(session_id) {
                     tracing::warn!(error = %e, session = session_id, "session view activation failed");
                 }
-                engine.rename(&fp_clone, line + 1, col + 1, &new_name)
+                engine.rename(&fp_clone, line, col, &new_name)
             })
             .await
             .unwrap_or_else(|e| Err(anyhow::anyhow!("rename task failed: {e}")))
@@ -4461,23 +4527,10 @@ fn lsp_assists(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .pointer("/range/start/line")
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .pointer("/range/start/character")
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
-    let end = match (
-        params.pointer("/range/end/line").and_then(|l| l.as_u64()),
-        params
-            .pointer("/range/end/character")
-            .and_then(|c| c.as_u64()),
-    ) {
-        (Some(l), Some(c)) => Some((l as u32 + 1, c as u32 + 1)),
-        _ => None,
-    };
+    let (line, col) = one_based_position(params.pointer("/range/start")).unwrap_or((1, 1));
+    let end = params
+        .pointer("/range/end")
+        .and_then(|end| one_based_position(Some(end)).ok());
     let assist_id = params
         .get("id")
         .and_then(|v| v.as_str())
@@ -4498,7 +4551,7 @@ fn lsp_assists(
     } else {
         "prodCode/assists"
     };
-    tracing::info!(req = req_num, session = view.session_id, method = method_name, file = %file_path.display(), pos = format!("{}:{}", line + 1, col + 1), assist = %assist_id, in_flight, "🚀 [LSP START]");
+    tracing::info!(req = req_num, session = view.session_id, method = method_name, file = %file_path.display(), pos = format!("{line}:{col}"), assist = %assist_id, in_flight, "🚀 [LSP START]");
 
     let engine_arc = Arc::clone(engine_lock);
     let req_id = id.clone().unwrap_or(serde_json::json!(1));
@@ -4516,11 +4569,11 @@ fn lsp_assists(
                 }
                 if apply {
                     engine
-                        .apply_assist(&fp_clone, line + 1, col + 1, end, &assist_id, subtype)
+                        .apply_assist(&fp_clone, line, col, end, &assist_id, subtype)
                         .map(|r| r.map(|outcome| workspace_edit_json(&outcome)))
                 } else {
                     engine
-                        .list_assists(&fp_clone, line + 1, col + 1, end)
+                        .list_assists(&fp_clone, line, col, end)
                         .map(|list| Ok(serde_json::json!(list)))
                 }
             })
@@ -4769,16 +4822,7 @@ fn lsp_references(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(params.get("position")).unwrap_or((1, 1));
     let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -4791,7 +4835,7 @@ fn lsp_references(
         session = view.session_id,
         method = "textDocument/references",
         file = %file_path.display(),
-        pos = format!("{}:{}", line + 1, col + 1),
+        pos = format!("{line}:{col}"),
         in_flight,
         "🚀 [LSP START]"
     );
@@ -4811,22 +4855,17 @@ fn lsp_references(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.find_all_refs(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    Vec::new()
-                })
+                engine.activate_session(session_id)?;
+                engine.find_all_refs(&fp_clone, line, col)
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let count = refs.len();
+        let count = refs.as_ref().map_or(0, Vec::len);
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4851,7 +4890,7 @@ fn lsp_references(
             );
         }
 
-        let locations: Vec<_> = refs.into_iter().map(|t| {
+        let locations = refs.map(|targets| targets.into_iter().map(|t| {
             serde_json::json!({
                 "uri": file_uri(&t.path),
                 "range": {
@@ -4859,13 +4898,17 @@ fn lsp_references(
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
                 }
             })
-        }).collect();
+        }).collect::<Vec<_>>());
 
-        let resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": locations
-        });
+        let resp = match locations {
+            Ok(locations) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": req_id, "result": locations})
+            }
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
+            }),
+        };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
     });
@@ -4884,16 +4927,7 @@ fn lsp_definition(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(params.get("position")).unwrap_or((1, 1));
     let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -4906,7 +4940,7 @@ fn lsp_definition(
         session = view.session_id,
         method = "textDocument/definition",
         file = %file_path.display(),
-        pos = format!("{}:{}", line + 1, col + 1),
+        pos = format!("{line}:{col}"),
         in_flight,
         "🚀 [LSP START]"
     );
@@ -4926,22 +4960,17 @@ fn lsp_definition(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.goto_definition(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    Vec::new()
-                })
+                engine.activate_session(session_id)?;
+                engine.goto_definition(&fp_clone, line, col)
             })
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let count = defs.len();
+        let count = defs.as_ref().map_or(0, Vec::len);
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -4966,7 +4995,7 @@ fn lsp_definition(
             );
         }
 
-        let locations: Vec<_> = defs.into_iter().map(|t| {
+        let locations = defs.map(|targets| targets.into_iter().map(|t| {
             serde_json::json!({
                 "uri": file_uri(&t.path),
                 "range": {
@@ -4974,13 +5003,17 @@ fn lsp_definition(
                     "end": { "line": t.line.saturating_sub(1), "character": t.col.saturating_sub(1) }
                 }
             })
-        }).collect();
+        }).collect::<Vec<_>>());
 
-        let resp = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": locations
-        });
+        let resp = match locations {
+            Ok(locations) => {
+                serde_json::json!({"jsonrpc": "2.0", "id": req_id, "result": locations})
+            }
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
+            }),
+        };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
         let _ = out_tx_task.send(WireMessage::LspPayload(client_resp)).await;
     });
@@ -4999,16 +5032,7 @@ fn lsp_hover(
         .and_then(|td| td.get("uri"))
         .and_then(|u| u.as_str())
         .unwrap_or("");
-    let line = params
-        .get("position")
-        .and_then(|p| p.get("line"))
-        .and_then(|l| l.as_u64())
-        .unwrap_or(0) as u32;
-    let col = params
-        .get("position")
-        .and_then(|p| p.get("character"))
-        .and_then(|c| c.as_u64())
-        .unwrap_or(0) as u32;
+    let (line, col) = one_based_position(params.get("position")).unwrap_or((1, 1));
     let file_path = uri_or_path(uri);
 
     let req_num = NEXT_REQ_ID.fetch_add(1, Ordering::Relaxed);
@@ -5021,7 +5045,7 @@ fn lsp_hover(
         session = view.session_id,
         method = "textDocument/hover",
         file = %file_path.display(),
-        pos = format!("{}:{}", line + 1, col + 1),
+        pos = format!("{line}:{col}"),
         in_flight,
         "🚀 [LSP START]"
     );
@@ -5042,22 +5066,17 @@ fn lsp_hover(
             // prevents a concurrent edit from cancelling this snapshot.
             let mut engine = engine_arc.lock_owned().await;
             tokio::task::spawn_blocking(move || {
-                if let Err(e) = engine.activate_session(session_id) {
-                    tracing::warn!(error = %e, session = session_id, "session view activation failed");
-                }
-                engine.hover(&fp_clone, line + 1, col + 1).unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, session = session_id, "query failed");
-                    None
-                })
+                engine.activate_session(session_id)?;
+                engine.hover(&fp_clone, line, col)
             })
             .await
-            .unwrap_or(None)
+            .unwrap_or_else(|error| Err(anyhow::anyhow!("native query task failed: {error}")))
         };
 
         let duration = query_start.elapsed();
         let remaining = ACTIVE_QUERIES.fetch_sub(1, Ordering::Relaxed) - 1;
         let ms = duration.as_secs_f64() * 1000.0;
-        let found = hover_res.is_some();
+        let found = matches!(&hover_res, Ok(Some(_)));
 
         if ms > 200.0 {
             SLOW_QUERIES.fetch_add(1, Ordering::Relaxed);
@@ -5083,7 +5102,7 @@ fn lsp_hover(
         }
 
         let resp = match hover_res {
-            Some(markup) => serde_json::json!({
+            Ok(Some(markup)) => serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
@@ -5093,10 +5112,14 @@ fn lsp_hover(
                     }
                 }
             }),
-            None => serde_json::json!({
+            Ok(None) => serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": null
+            }),
+            Err(error) => serde_json::json!({
+                "jsonrpc": "2.0", "id": req_id,
+                "error": { "code": -32603, "message": error.to_string() }
             }),
         };
         let client_resp = translator_task.translate_lsp_to_client(&resp.to_string());
@@ -5602,6 +5625,109 @@ mod tests {
 
     use super::*;
     use prod_code_protocol::HostResources;
+
+    #[test]
+    fn native_position_coordinates_are_checked_before_one_based_conversion() {
+        assert_eq!(
+            one_based_position(Some(&serde_json::json!({ "line": 0, "character": 0 }))),
+            Ok((1, 1))
+        );
+        assert_eq!(
+            one_based_position(Some(&serde_json::json!({
+                "line": 4_294_967_294u64,
+                "character": 4_294_967_294u64,
+            }))),
+            Ok((u32::MAX, u32::MAX))
+        );
+
+        for malformed in [
+            serde_json::json!({}),
+            serde_json::json!({ "line": -1, "character": 0 }),
+            serde_json::json!({ "line": 0.5, "character": 0 }),
+            serde_json::json!({ "line": "0", "character": 0 }),
+            serde_json::json!({ "line": null, "character": 0 }),
+            serde_json::json!({ "line": 4_294_967_295u64, "character": 0 }),
+        ] {
+            assert!(one_based_position(Some(&malformed)).is_err(), "{malformed}");
+        }
+    }
+
+    #[test]
+    fn native_methods_validate_positions_without_breaking_positionless_requests() {
+        let point = serde_json::json!({ "line": 0, "character": 0 });
+        assert!(
+            native_position_params(
+                Some("textDocument/hover"),
+                Some(&serde_json::json!({ "position": point }))
+            )
+            .is_ok()
+        );
+        assert!(
+            native_position_params(Some("textDocument/hover"), Some(&serde_json::json!({})))
+                .is_err()
+        );
+        assert!(
+            native_position_params(
+                Some("callHierarchy/incomingCalls"),
+                Some(&serde_json::json!({
+                    "item": { "selectionRange": { "start": { "line": -1, "character": 0 } } }
+                }))
+            )
+            .is_err()
+        );
+        assert!(
+            native_position_params(
+                Some("prodCode/assists"),
+                Some(&serde_json::json!({
+                    "range": { "start": { "line": 0, "character": 0 } }
+                }))
+            )
+            .is_ok()
+        );
+        assert!(
+            native_position_params(
+                Some("prodCode/assists"),
+                Some(&serde_json::json!({
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": "bad" }
+                    }
+                }))
+            )
+            .is_err()
+        );
+        assert!(
+            native_position_params(
+                Some("prodCode/structuralReplace"),
+                Some(&serde_json::json!({}))
+            )
+            .is_ok()
+        );
+        assert!(
+            native_position_params(
+                Some("prodCode/structuralReplace"),
+                Some(&serde_json::json!({ "position": null }))
+            )
+            .is_err()
+        );
+        assert!(
+            native_position_params(
+                Some("textDocument/documentSymbol"),
+                Some(&serde_json::json!({}))
+            )
+            .is_ok()
+        );
+        assert!(
+            native_position_params(Some("workspace/symbol"), Some(&serde_json::json!({}))).is_ok()
+        );
+        assert!(
+            native_position_params(
+                Some("textDocument/diagnostic"),
+                Some(&serde_json::json!({}))
+            )
+            .is_ok()
+        );
+    }
 
     fn peer(addr: &str, platform: &str, engines: &[&str], load_per_cpu: f64) -> PeerInfo {
         let cpus = 8usize;

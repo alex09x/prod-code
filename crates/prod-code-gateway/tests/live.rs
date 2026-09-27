@@ -764,6 +764,88 @@ async fn the_gateway_answers_a_real_checkout() {
     );
 }
 
+/// Invalid native coordinates must remain errors through the public MCP path: they cannot
+/// become a hover at byte zero or let a forced refactoring touch the checkout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_gateway_refuses_invalid_native_positions_without_writing() {
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    let (addr, root) = (gateway.addr, checkout.root());
+    fn snapshot(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut pending = vec![root.to_path_buf()];
+        let mut files = std::collections::BTreeMap::new();
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_name() == ".git" || entry.file_name() == "target" {
+                    continue;
+                }
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        files
+    }
+    let before = snapshot(&root);
+
+    let hover = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_hover",
+        serde_json::json!({ "path": "src/lib.rs", "line": 999999, "character": 1 }),
+    )
+    .await
+    .expect_err("an invalid hover position is a gateway error");
+    assert!(
+        format!("{hover:#}").contains("Invalid position 999999:1"),
+        "{hover:#}"
+    );
+
+    for method in ["textDocument/definition", "textDocument/references"] {
+        let error = prod_code_mcp::tools::execute_lsp_query(
+            addr, &root, &checkout.path("src/lib.rs"), method,
+            serde_json::json!({"textDocument": {"uri": prod_code_protocol::path::file_uri(&checkout.path("src/lib.rs"))},
+                "position": {"line": 999998, "character": 0}}),
+        ).await.expect_err("a native query error cannot become an empty successful result");
+        assert!(
+            format!("{error:#}").contains("Invalid position 999999:1"),
+            "{error:#}"
+        );
+    }
+
+    let deletion = prod_code_mcp::tools::execute_tool(
+        addr,
+        &root,
+        "code_safe_delete",
+        serde_json::json!({
+            "path": "src/lib.rs",
+            "line": 999999,
+            "character": 1,
+            "force": true
+        }),
+    )
+    .await
+    .expect("the gateway reports a refused mutation");
+    let refused = text_of(&deletion);
+    assert!(deletion.is_error, "the mutation is refused: {refused}");
+    assert!(
+        refused.contains("Invalid position 999999:1"),
+        "the refusal names the invalid coordinate: {refused}"
+    );
+    assert_eq!(
+        snapshot(&root),
+        before,
+        "every source path and byte remains unchanged, even with force"
+    );
+}
+
 /// The same gateway, a Go checkout: the dispatch that forwards to a child language server
 /// instead of the in-process Rust engine, and the backend that manages it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -2121,6 +2203,21 @@ impl EditorSession {
         root: &Path,
         init: serde_json::Value,
     ) -> (Self, serde_json::Value) {
+        Self::open_for(
+            addr,
+            root,
+            init,
+            Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+        )
+        .await
+    }
+
+    async fn open_for(
+        addr: SocketAddr,
+        root: &Path,
+        init: serde_json::Value,
+        purpose: Option<String>,
+    ) -> (Self, serde_json::Value) {
         use futures_util::{SinkExt, StreamExt};
         let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
         let mut framed =
@@ -2142,7 +2239,7 @@ impl EditorSession {
                     engine_subpath: None,
                     client_agent: None,
                     client_host: None,
-                    purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+                    purpose,
                 },
             ))
             .await
@@ -3735,4 +3832,170 @@ pub fn call() -> u8 {
         "{error:#}"
     );
     assert_eq!(std::fs::read_to_string(&api).unwrap(), before_refusal);
+}
+
+/// The public wire boundary rejects malformed positions before converting them to native
+/// one-based coordinates. A good request still works after every rejected request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_and_malformed_wire_positions_never_select_another_token() {
+    use serde_json::json;
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    checkout.write("src/lib.rs", "pub const VALUE: u8 = 1;\n");
+    checkout.commit();
+    let root = checkout.root();
+    let file = checkout.path("src/lib.rs");
+    let original = std::fs::read(&file).unwrap();
+    let uri = prod_code_protocol::path::file_uri(&file);
+    // No editor purpose: this must exercise the embedded Rust engine, not the separate
+    // rust-analyzer subprocess used by editors. Use the wire helper's bounded response wait;
+    // the MCP cold-hover budget is tracked separately in #408.
+    let (mut session, initialized) = EditorSession::open_for(
+        gateway.addr,
+        &root,
+        json!({"rootUri": prod_code_protocol::path::file_uri(&root), "capabilities": {}}),
+        None,
+    )
+    .await;
+    assert!(initialized.get("error").is_none(), "{initialized}");
+    session
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": uri, "languageId": "rust", "version": 1,
+                "text": String::from_utf8(original.clone()).unwrap(),
+            }}),
+        )
+        .await;
+    for position in [
+        json!({"line": 4294967296_u64, "character": 0}),
+        json!({"line": u32::MAX, "character": 0}),
+        json!({"line": 0, "character": u64::MAX}),
+        json!({"line": -1, "character": 0}),
+        json!({"line": 0.5, "character": 0}),
+        json!({"line": "0", "character": 0}),
+        json!({"line": null, "character": 0}),
+        json!({"line": 0}),
+        json!({"character": 0}),
+        json!(null),
+        json!([]),
+    ] {
+        for method in [
+            "textDocument/hover",
+            "textDocument/rename",
+            "prodCode/safeDelete",
+        ] {
+            let response = session
+                .request(
+                    method,
+                    json!({"textDocument": {"uri": uri}, "position": position, "newName": "Other"}),
+                )
+                .await;
+            assert_eq!(
+                response["error"]["code"], -32602,
+                "{method} {position}: {response}"
+            );
+            assert!(response.get("result").is_none(), "{response}");
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("position"),
+                "{response}"
+            );
+        }
+    }
+    let missing = session
+        .request("textDocument/hover", json!({"textDocument": {"uri": uri}}))
+        .await;
+    assert_eq!(missing["error"]["code"], -32602, "{missing}");
+    assert!(
+        missing["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("position"),
+        "{missing}"
+    );
+    for method in ["prodCode/assists", "prodCode/applyAssist"] {
+        for end in [
+            json!({"line": 4294967296_u64, "character": 0}),
+            json!({"line": 0}),
+            json!(null),
+        ] {
+            let response = session.request(method,
+                json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}, "end": end}, "id": "extract_variable"}),
+            ).await;
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+            assert!(
+                response["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("range.end"),
+                "{response}"
+            );
+        }
+    }
+    for method in ["callHierarchy/incomingCalls", "callHierarchy/outgoingCalls"] {
+        let response = session.request(method,
+            json!({"item": {"uri": uri, "selectionRange": {"start": {"line": 4294967296_u64, "character": 0}}}}),
+        ).await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("selectionRange"),
+            "{response}"
+        );
+    }
+    session
+        .notify(
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": {"line": -1, "character": 0}}),
+        )
+        .await;
+    let valid_hover = session
+        .request(
+            "textDocument/hover",
+            json!({"textDocument": {"uri": uri}, "position": {"line": 0, "character": 10}}),
+        )
+        .await;
+    assert!(valid_hover.get("error").is_none(), "{valid_hover}");
+    assert!(
+        valid_hover["result"].to_string().contains("VALUE"),
+        "{valid_hover}"
+    );
+    assert!(
+        session
+            .notes
+            .iter()
+            .all(|note| note.get("id").is_none() || note.get("error").is_none()),
+        "an invalid notification receives no synthetic error response: {:?}",
+        session.notes
+    );
+    let assists = session
+        .request(
+            "prodCode/assists",
+            json!({"textDocument": {"uri": uri}, "range": {"start": {"line": 0, "character": 0}}}),
+        )
+        .await;
+    assert!(
+        assists["result"].is_array(),
+        "omitting the optional end stays valid: {assists}"
+    );
+    let diagnostics = session
+        .request(
+            "textDocument/diagnostic",
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    assert!(
+        diagnostics["result"].is_object(),
+        "positionless diagnostics stay valid: {diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        original,
+        "refused wire mutations leave the source unchanged"
+    );
 }
