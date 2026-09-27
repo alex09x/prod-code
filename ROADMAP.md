@@ -41,7 +41,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
   - Status (audited 2026-09-26):
     - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). The length ends the frame, so there are no NUL markers.
-    - Both sides send `PROTOCOL_VERSION`. Compatibility comes from fields that default when absent, not from negotiation: in the handshake, status, sync and exec messages, only the first fields are required and every field added later is `#[serde(default)]`.
+    - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Optional fields retain compatibility defaults; capability negotiation remains open.
     - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. A gateway with one closes a connection without it before serving anything, and the commands it runs never see it. Off by default.
     - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers are left to the kernel's autotuning.
     - No Unix-socket or named-pipe transport: a gateway on the same machine is reached over loopback TCP.

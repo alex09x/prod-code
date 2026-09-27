@@ -179,6 +179,7 @@ async fn test_full_phase1_e2e_flow() {
         framed
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(vec![PROTOCOL_VERSION]),
                 client_name: "test-client".to_string(),
                 client_pid: 9999,
                 auth_token: None,

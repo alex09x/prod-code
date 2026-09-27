@@ -26,8 +26,8 @@
 
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeResponse, PROTOCOL_VERSION, ProdCodeCodec, ReadFileResponse, SyncProbeResponse,
-    SyncResponse, WireMessage,
+    HandshakeResponse, ProdCodeCodec, ReadFileResponse, SyncProbeResponse, SyncResponse,
+    WireMessage, negotiate_protocol_version,
 };
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -123,6 +123,17 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                     .await?;
             }
             WireMessage::HandshakeRequest(req) => {
+                let protocol_version = match negotiate_protocol_version(&req) {
+                    Ok(version) => version,
+                    Err(err) => {
+                        framed
+                            .send(WireMessage::Disconnect {
+                                reason: format!("protocol negotiation failed: {err}"),
+                            })
+                            .await?;
+                        return Ok(());
+                    }
+                };
                 // Shown to the script as `prod-code/handshake`, so a test can see which engine
                 // a session asked for (`purpose`); an answer with `engine_age_ms` says how long
                 // ago the engine was loaded (#381), any other answer leaves it unsaid.
@@ -132,7 +143,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                 );
                 framed
                     .send(WireMessage::HandshakeResponse(HandshakeResponse {
-                        protocol_version: PROTOCOL_VERSION,
+                        protocol_version,
                         server_pid: std::process::id(),
                         session_id: 1,
                         // The same path on both sides, so `PathTranslator` is the identity and
@@ -488,5 +499,41 @@ pub mod answers {
     /// The `file://` URI of `path`, as the other answers spell it.
     pub fn uri(path: &Path) -> String {
         prod_code_protocol::path::file_uri(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn incompatible_handshakes_close_the_scripted_connection() {
+        let gateway = ScriptedGateway::start(|_, _| panic!("no LSP query may run")).await;
+        let socket = TcpStream::connect(gateway.addr()).await.unwrap();
+        let mut framed = Framed::new(socket, ProdCodeCodec::new());
+        let request = serde_json::from_value(serde_json::json!({
+            "type": "HandshakeRequest",
+            "payload": {
+                "protocol_version": 1,
+                "supported_versions": [],
+                "client_name": "bad-offer",
+                "client_pid": 1,
+                "auth_token": null,
+                "client_workspace_root": "/workspace"
+            }
+        }))
+        .unwrap();
+        framed.send(request).await.unwrap();
+        assert!(matches!(
+            framed.next().await,
+            Some(Ok(WireMessage::Disconnect { .. }))
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), framed.next())
+                .await
+                .expect("the rejected connection must close")
+                .is_none()
+        );
+        assert_eq!(gateway.calls(), 0);
     }
 }
