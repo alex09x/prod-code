@@ -35,7 +35,10 @@
   (#466). Closing a validation restores the current disk text through a monotonic document
   change; later proposals no longer split `builtins.str` from `str`. Generic validation uses a
   separate, session-serialized server, so proposals cannot leak into ordinary or parallel
-  clients, interrupted sessions are restored, and genuine diagnostics remain errors.
+  clients, interrupted sessions are restored, and genuine diagnostics remain errors. Retained
+  documents follow later disk notifications while active overlays remain owned by their client;
+  bounded generations are replaced whole, and a private-server admission or startup failure is
+  reported instead of falling back to the ordinary engine.
 - Relative source paths passed to library diagnostics and validation select their engine
   relative to the supplied checkout, so nested Python files in Rust projects reach Python
   instead of failing in the Rust VFS (#488). Absolute paths retain the same behavior.

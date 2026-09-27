@@ -1450,7 +1450,7 @@ async fn retained_documents_restore_disk_text_and_reopen_as_changes() {
         )
         .await
         .unwrap();
-    engine.close_session(7).await;
+    engine.close_session(7).await.unwrap();
     let restored = engine
         .current_diagnostics_for(&uri, Duration::from_secs(5))
         .await
@@ -1470,7 +1470,7 @@ async fn retained_documents_restore_disk_text_and_reopen_as_changes() {
         .await
         .unwrap();
     assert_eq!(reopened[0]["message"], "proposal two\n");
-    engine.close_session(8).await;
+    engine.close_session(8).await.unwrap();
 
     assert_eq!(std::fs::read_to_string(file).unwrap(), "baseline\n");
 }
@@ -1495,7 +1495,7 @@ async fn primary_review_closing_one_session_preserves_the_other_session_text() {
             .unwrap()[0]["message"],
         "proposal two\n"
     );
-    engine.close_session(7).await;
+    engine.close_session(7).await.unwrap();
     let current = engine
         .current_diagnostics_for(&uri, Duration::from_secs(5))
         .await
@@ -1504,7 +1504,201 @@ async fn primary_review_closing_one_session_preserves_the_other_session_text() {
         current[0]["message"], "proposal two\n",
         "closing another client discarded the active overlay"
     );
-    engine.close_session(8).await;
+    engine.close_session(8).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_and_session_owners_close_without_discarding_each_other() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("owned.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine
+        .send_session_notification(7, "textDocument/didOpen", serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "session\n"}
+        }))
+        .await
+        .unwrap();
+    engine
+        .send_notification("textDocument/didOpen", serde_json::json!({
+            "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "direct\n"}
+        }))
+        .await
+        .unwrap();
+    engine.close_session(7).await.unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "direct\n"
+    );
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({"textDocument": {"uri": uri}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "baseline\n"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watched_disk_changes_refresh_only_logically_closed_retained_documents() {
+    let (dir, script) = workspace();
+    let closed = dir.path().join("closed.py");
+    let active = dir.path().join("active.py");
+    std::fs::write(&closed, "closed baseline\n").unwrap();
+    std::fs::write(&active, "active baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let closed_uri = url::Url::from_file_path(&closed).unwrap().to_string();
+    let active_uri = url::Url::from_file_path(&active).unwrap().to_string();
+    for (uri, text) in [
+        (&closed_uri, "closed overlay\n"),
+        (&active_uri, "active overlay\n"),
+    ] {
+        engine
+            .send_notification(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": text}
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    engine
+        .send_notification(
+            "textDocument/didChange",
+            serde_json::json!({
+                "textDocument": {"uri": active_uri, "version": 2},
+                "contentChanges": [{"text": "active overlay\n"}]
+            }),
+        )
+        .await
+        .unwrap();
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({
+                "textDocument": {"uri": closed_uri}
+            }),
+        )
+        .await
+        .unwrap();
+    std::fs::write(&closed, "closed changed\n").unwrap();
+    std::fs::write(&active, "active changed\n").unwrap();
+    engine
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({
+                "changes": [
+                    {"uri": closed_uri, "type": 2},
+                    {"uri": active_uri, "type": 2}
+                ]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&closed_uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "closed changed\n"
+    );
+    assert_eq!(
+        engine
+            .current_diagnostics_for(&active_uri, Duration::from_secs(5))
+            .await
+            .unwrap()[0]["message"],
+        "active overlay\n"
+    );
+    std::fs::remove_file(&closed).unwrap();
+    engine
+        .send_notification(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({"changes": [{"uri": closed_uri, "type": 3}]}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !engine.accepts_documents(),
+        "a truly closed retained identity retires the whole generation"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_retained_generation_requires_whole_engine_eviction() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("bounded.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    settings.max_retained_documents = 1;
+    settings.env.insert("FAKE_ECHO_CHANGE".into(), "1".into());
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_notification("textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "proposal\n"}
+    })).await.unwrap();
+    engine
+        .send_notification(
+            "textDocument/didClose",
+            serde_json::json!({
+                "textDocument": {"uri": uri}
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !engine.accepts_documents(),
+        "the full generation is retired"
+    );
+    let err = engine.send_notification("textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": "another\n"}
+    })).await.expect_err("an evicted identity must not be reopened in the same server");
+    assert!(format!("{err:#}").contains("restart"), "{err:#}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_version_overflow_is_refused_without_losing_ownership() {
+    let (dir, script) = workspace();
+    let file = dir.path().join("overflow.py");
+    std::fs::write(&file, "baseline\n").unwrap();
+    let mut settings = config(&script);
+    settings.retain_open_documents = true;
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    let uri = url::Url::from_file_path(&file).unwrap().to_string();
+    engine.send_session_notification(9, "textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": i64::MAX, "text": "proposal\n"}
+    })).await.unwrap();
+    let err = engine
+        .close_session(9)
+        .await
+        .expect_err("version overflow is explicit");
+    assert!(format!("{err:#}").contains("version overflowed"), "{err:#}");
+    let again = engine
+        .close_session(9)
+        .await
+        .expect_err("ownership remains for retry");
+    assert!(
+        format!("{again:#}").contains("version overflowed"),
+        "{again:#}"
+    );
 }
 
 #[tokio::test]

@@ -2979,6 +2979,101 @@ async fn relative_python_paths_use_the_same_engine_as_absolute_paths() {
 /// A native basedpyright validation keeps one document identity across the baseline and
 /// proposal sessions, restores the checkout, and still reports a genuine proposal error
 /// (#466). This runs a source-built isolated gateway, never an installed service.
+const PYTHON_IDENTITY_SOURCE: &str = r####"#!/usr/bin/env python3
+"""Regenerate the replication figures in docs/img from the numbers in docs/replication.md.
+Dependency-free (hand-written SVG) so the figures are reproducible anywhere."""
+import os, textwrap
+
+OUT = os.path.join(os.path.dirname(__file__), "img")
+FONT = "font-family='JetBrains Mono, SFMono-Regular, Menlo, monospace'"
+INK, MUTED, GRID, PANEL = "#1f2328", "#6a737d", "#d0d7de", "#f6f8fa"
+RING, RING_FILL = "#c0392b", "#fdecea"
+NET, NET_FILL = "#1d4ed8", "#e8efff"
+OK, OK_FILL = "#2e7d32", "#e8f5e9"
+OTHER = "#8fa3b8"
+
+def esc(t):
+    return str(t).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def para(x, y, text, width=95, color=None, size=12, lh=17):
+    col = color or MUTED
+    return "".join(f"<text x='{x}' y='{y + i * lh}' fill='{col}' font-size='{size}'>{esc(line)}</text>"
+                   for i, line in enumerate(textwrap.wrap(text, width)))
+
+def head(W, H, title, sub=None):
+    s = [f"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {W} {H}' width='{W}' height='{H}' {FONT} font-size='12'>",
+         "<defs>"
+         f"<marker id='a' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{INK}'/></marker>"
+         f"<marker id='n' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{NET}'/></marker>"
+         f"<marker id='r' markerWidth='8' markerHeight='8' refX='7' refY='4' orient='auto'><path d='M0,0 L8,4 L0,8 z' fill='{RING}'/></marker>"
+         "</defs>",
+         f"<rect width='{W}' height='{H}' fill='white'/>",
+         f"<text x='16' y='24' font-size='15' font-weight='bold' fill='{INK}'>{esc(title)}</text>"]
+    if sub:
+        s.append(f"<text x='16' y='42' fill='{MUTED}'>{esc(sub)}</text>")
+    return s
+
+def box(x, y, w, h, text, sub=None, fill="white", stroke=INK, bold=True, size=12):
+    t = f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='6' fill='{fill}' stroke='{stroke}' stroke-width='1.5'/>"
+    t += f"<text x='{x + w / 2}' y='{y + h / 2 + (-2 if sub else 5)}' text-anchor='middle' fill='{INK}' font-size='{size}' font-weight='{'bold' if bold else 'normal'}'>{esc(text)}</text>"
+    if sub:
+        t += f"<text x='{x + w / 2}' y='{y + h / 2 + 14}' text-anchor='middle' fill='{MUTED}' font-size='11'>{esc(sub)}</text>"
+    return t
+
+def ring(x, y, w, h, text="ring", sub="/dev/shm"):
+    return box(x, y, w, h, text, sub, fill=RING_FILL, stroke=RING)
+
+def panel(x, y, w, h, title, fill=PANEL):
+    return (f"<rect x='{x}' y='{y}' width='{w}' height='{h}' rx='10' fill='{fill}' stroke='{GRID}'/>"
+            f"<text x='{x + 12}' y='{y + 20}' fill='{INK}' font-weight='bold' font-size='13'>{esc(title)}</text>")
+
+def arrow(x1, y1, x2, y2, label=None, color=INK, marker="a", dash=None, above=True, size=11):
+    d = f" stroke-dasharray='{dash}'" if dash else ""
+    t = f"<line x1='{x1}' y1='{y1}' x2='{x2}' y2='{y2}' stroke='{color}' stroke-width='1.5' marker-end='url(#{marker})'{d}/>"
+    if label:
+        ly = min(y1, y2) - 7 if above else max(y1, y2) + 15
+        t += f"<text x='{(x1 + x2) / 2}' y='{ly}' text-anchor='middle' fill='{color}' font-size='{size}'>{esc(label)}</text>"
+    return t
+
+def write(name, s):
+    s.append("</svg>")
+    open(os.path.join(OUT, name), "w").write("\n".join(s))
+
+W, H = 960, 340
+s = head(W, H, "One record's path: source ring to mirror ring, same sequence number everywhere",
+         "push on the source host → read on the mirror host, measured, 64-byte records")
+s.append(panel(16, 56, 330, 190, "source host"))
+s.append(box(30, 96, 86, 44, "producer", "push()"))
+s.append(arrow(116, 118, 142, 118))
+s.append(ring(142, 90, 96, 56, "ring", "seq 1, 2, 3 …"))
+s.append(arrow(238, 104, 262, 104))
+s.append(box(262, 86, 74, 36, "serve", "raw reader", size=11))
+s.append(arrow(238, 132, 262, 160))
+s.append(box(262, 150, 74, 36, "readers", "0.1 µs", size=11))
+s.append(f"<text x='181' y='222' text-anchor='middle' fill='{MUTED}' font-size='11'>fixed slots, or descriptors + arena</text>")
+s.append(f"<rect x='356' y='66' width='250' height='170' rx='10' fill='{NET_FILL}' stroke='{NET}' stroke-dasharray='4 3'/>")
+s.append(f"<text x='481' y='86' text-anchor='middle' fill='{NET}' font-weight='bold'>network</text>")
+s.append(arrow(336, 118, 616, 118, "DATA: raw slot bytes + seq", NET, "n"))
+s.append(f"<text x='481' y='146' text-anchor='middle' fill='{NET}' font-size='11'>UDP multicast · UDP unicast · TCP</text>")
+s.append(arrow(616, 186, 336, 186, "NAK / GAP over TCP", NET, "n", dash="4 3", above=False))
+s.append(f"<text x='481' y='214' text-anchor='middle' fill='{MUTED}' font-size='11'>the source ring is</text>")
+s.append(f"<text x='481' y='228' text-anchor='middle' fill='{MUTED}' font-size='11'>the retransmission buffer</text>")
+s.append(panel(616, 56, 328, 190, "mirror host"))
+s.append(box(630, 100, 84, 36, "mirror", "one writer", size=11))
+s.append(arrow(714, 118, 736, 118))
+s.append(ring(736, 90, 96, 56, "ring", "same seq"))
+s.append(arrow(832, 118, 852, 118))
+s.append(box(852, 96, 80, 44, "readers", "as local", size=11))
+s.append(f"<text x='780' y='222' text-anchor='middle' fill='{MUTED}' font-size='11'>written in order, never duplicated</text>")
+y = 276
+for x, label, val in [(30, "same ring", "0.1 µs"), (250, "mirror on the same host", "3.8 µs"),
+                      (490, "mirror across a 1 GbE LAN", "30 µs"), (730, "Tokyo → Los Angeles", "51.7 ms, p99 +50 µs")]:
+    s.append(f"<text x='{x}' y='{y}' fill='{INK}' font-weight='bold' font-size='13'>{esc(val)}</text>")
+    s.append(f"<text x='{x}' y='{y + 16}' fill='{MUTED}' font-size='11'>{esc(label)}</text>")
+s.append(f"<text x='30' y='{y + 40}' fill='{MUTED}' font-size='11'>push → read, p50, measured on each host; remote hosts corrected for clock offset</text>")
+write("mirror-pipeline.svg", s)
+"####;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn python_validation_reuses_identity_restores_disk_and_preserves_real_errors() {
     let _server = which("basedpyright-langserver").expect("native Python language server required");
@@ -2991,10 +3086,10 @@ async fn python_validation_reuses_identity_restores_disk_and_preserves_real_erro
     )
     .unwrap();
     let file = root.join("identity.py");
-    let baseline = "def write(name, values):\n    return (name, values)\n\n\ndef render():\n    return write(\"out.svg\", [\"<svg>\", \"</svg>\"])\n";
+    let baseline = PYTHON_IDENTITY_SOURCE;
     let annotated = baseline.replace(
-        "def write(name, values):",
-        "def write(name: str, values: list[str]) -> tuple[str, list[str]]:",
+        "def write(name, s):",
+        "def write(name: str, s: list[str]) -> None:",
     );
     std::fs::write(&file, baseline).unwrap();
     commit_in(&root);
@@ -3008,7 +3103,7 @@ async fn python_validation_reuses_identity_restores_disk_and_preserves_real_erro
         .expect("annotated proposal diagnostics");
     assert_eq!(clean.errors, 0, "{}", clean.render());
 
-    let broken = annotated.replace("write(\"out.svg\"", "write(7");
+    let broken = annotated.replace("write(\"mirror-pipeline.svg\", s)", "write(7, s)");
     let rejected = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &file, &broken)
         .await
         .expect("deliberate type error diagnostics");
@@ -3029,4 +3124,123 @@ async fn python_validation_reuses_identity_restores_disk_and_preserves_real_erro
             .expect("subsequent validation session");
     assert_eq!(subsequent.errors, 0, "{}", subsequent.render());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), baseline);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn python_editor_overlay_is_isolated_from_validation() {
+    let _server = which("basedpyright-langserver").expect("native Python language server required");
+    let gateway = Gateway::start();
+    let checkout = tempfile::tempdir().unwrap();
+    let root = checkout.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname='isolation'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    let file = root.join("subject.py");
+    let disk = "number: int = 1\n";
+    std::fs::write(&file, disk).unwrap();
+    commit_in(&root);
+    let (mut editor, _) = EditorSession::open(gateway.addr, &root).await;
+    let uri = prod_code_protocol::path::file_uri(&file);
+    let editor_text = "number: int = 'editor overlay'\n";
+    editor.notify("textDocument/didOpen", serde_json::json!({
+        "textDocument": {"uri": uri, "languageId": "python", "version": 1, "text": editor_text}
+    })).await;
+    let before = editor
+        .request(
+            "textDocument/diagnostic",
+            serde_json::json!({
+                "textDocument": {"uri": uri}
+            }),
+        )
+        .await;
+    assert!(
+        !before["result"]["items"].as_array().unwrap().is_empty(),
+        "{before}"
+    );
+
+    let validation =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &file, "number: int = 2\n")
+            .await
+            .expect("private validation succeeds beside the editor");
+    assert_eq!(validation.errors, 0, "{}", validation.render());
+    let after = editor
+        .request(
+            "textDocument/diagnostic",
+            serde_json::json!({
+                "textDocument": {"uri": uri}
+            }),
+        )
+        .await;
+    assert!(
+        !after["result"]["items"].as_array().unwrap().is_empty(),
+        "{after}"
+    );
+    assert_eq!(std::fs::read_to_string(file).unwrap(), disk);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_private_python_server_does_not_fall_back_to_the_main_engine() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let actual = which("basedpyright-langserver").expect("native Python language server required");
+    let wrappers = tempfile::tempdir().unwrap();
+    let bin = wrappers.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let lock = wrappers.path().join("first-server");
+    let wrapper = bin.join("basedpyright-langserver");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nif mkdir '{}' 2>/dev/null; then exec '{}' \"$@\"; fi\nexit 72\n",
+            lock.display(),
+            actual.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    let path = std::env::join_paths(paths)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let home = wrappers.path().to_string_lossy().into_owned();
+    let gateway = Gateway::start_with(&[("PATH", &path), ("HOME", &home)]);
+    let checkout = tempfile::tempdir().unwrap();
+    let root = checkout.path().canonicalize().unwrap();
+    std::fs::write(
+        root.join("pyproject.toml"),
+        "[project]\nname='failure'\nversion='0.1.0'\n",
+    )
+    .unwrap();
+    let file = root.join("subject.py");
+    let disk = "number: int = 1\n";
+    std::fs::write(&file, disk).unwrap();
+    commit_in(&root);
+
+    let before = prod_code_mcp::diagnostics::diagnostics(gateway.addr, &root, &file)
+        .await
+        .expect("the main engine is loaded first");
+    assert_eq!(before.errors, 0, "{}", before.render());
+    let err = prod_code_mcp::diagnostics::validate_text(
+        gateway.addr,
+        &root,
+        &file,
+        "number: int = 'proposal'\n",
+    )
+    .await
+    .expect_err("the private server failure is reported");
+    assert!(
+        format!("{err:#}").contains("private validation engine unavailable"),
+        "{err:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), disk);
+    let after = prod_code_mcp::diagnostics::diagnostics(gateway.addr, &root, &file)
+        .await
+        .expect("the ordinary engine still answers");
+    assert_eq!(after.errors, 0, "{}", after.render());
 }

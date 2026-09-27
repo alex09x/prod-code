@@ -2675,8 +2675,9 @@ pub async fn handle_client(
                     let workspace = workspace.clone();
                     let admission = Arc::clone(state.workspace_manager.admission());
                     tokio::spawn(async move {
-                        let view = loaded.validation_view(&admission).await;
-                        if let Some(engine) = view.rust_engine.clone() {
+                        if let Ok(view) = loaded.validation_view(&admission).await
+                            && let Some(engine) = view.rust_engine.clone()
+                        {
                             priming::warm_in_background(engine, workspace, synced_rust);
                         }
                     });
@@ -2834,30 +2835,50 @@ pub async fn handle_client(
                         .as_ref()
                         .is_some_and(|engine| engine.readiness_known());
 
+                let validation =
+                    req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION);
+                let generic_validation_session = if validation && shared_ws.generic_engine.is_some()
+                {
+                    Some(Arc::clone(&shared_ws.generic_validation_session))
+                } else {
+                    None
+                };
                 let mut session_view = state
                     .workspace_manager
                     .register_session_view(session_id, client_root_path.clone(), shared_ws)
                     .await;
                 // A session that only validates proposed texts runs on the workspace's second
                 // engine, so its overlays never invalidate the main one (#73).
-                if req.purpose.as_deref() == Some(prod_code_protocol::PURPOSE_VALIDATION) {
-                    session_view.workspace = session_view
-                        .accounted
-                        .validation_view(state.workspace_manager.admission())
-                        .await;
-                }
-                let _generic_validation_session = if req.purpose.as_deref()
-                    == Some(prod_code_protocol::PURPOSE_VALIDATION)
-                    && session_view.workspace.generic_engine.is_some()
-                {
-                    Some(
-                        Arc::clone(&session_view.workspace.generic_validation_session)
-                            .lock_owned()
-                            .await,
-                    )
+                let _generic_validation_session = if let Some(serial) = generic_validation_session {
+                    Some(serial.lock_owned().await)
                 } else {
                     None
                 };
+                if validation {
+                    let validation_view = session_view
+                        .accounted
+                        .validation_view(state.workspace_manager.admission())
+                        .await;
+                    match validation_view {
+                        Ok(view) => session_view.workspace = view,
+                        Err(err) => {
+                            let reason = format!("private validation engine unavailable: {err:#}");
+                            tracing::warn!(
+                                session_id,
+                                engine,
+                                reason,
+                                "refusing validation handshake"
+                            );
+                            state
+                                .workspace_manager
+                                .unregister_session_view(&session_view)
+                                .await;
+                            state.active_sessions.fetch_sub(1, Ordering::Relaxed);
+                            framed.send(WireMessage::Disconnect { reason }).await?;
+                            return Ok(());
+                        }
+                    }
+                }
 
                 tracing::info!(
                     session_id,
@@ -2915,8 +2936,10 @@ pub async fn handle_client(
                         tracing::warn!(error = %e, session_id, "failed to drop session overlays");
                     }
                 }
-                if let Some(engine) = &session_view.workspace.generic_engine {
-                    engine.close_session(session_id).await;
+                if let Some(engine) = &session_view.workspace.generic_engine
+                    && let Err(err) = engine.close_session(session_id).await
+                {
+                    tracing::warn!(error = %err, session_id, "failed to drop generic session overlays");
                 }
 
                 state
