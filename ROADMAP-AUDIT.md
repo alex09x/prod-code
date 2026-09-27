@@ -57,7 +57,7 @@ tests. Unit and mock coverage complements real-server checks; it does not replac
 
 ## Checkbox reconciliation
 
-The following checkboxes changed from `[x]` to `[~]`. Their delivered behavior and recorded
+The following 14 checkboxes changed from `[x]` to `[~]` (#480). Their delivered behavior and recorded
 evidence remain above; the original mechanism or required scope remains open.
 
 - **1.1**: length framing, compatibility defaults and loopback TCP do not implement NUL framing,
