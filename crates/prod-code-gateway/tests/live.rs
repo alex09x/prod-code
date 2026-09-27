@@ -3244,3 +3244,137 @@ async fn failed_private_python_server_does_not_fall_back_to_the_main_engine() {
         .expect("the ordinary engine still answers");
     assert_eq!(after.errors, 0, "{}", after.render());
 }
+
+/// #505: generic inherent implementations keep their lifetime/type/const declarations and
+/// constraints when a real analyzer extracts a subset, updates an external caller, and then
+/// extracts the complete remaining block. The same fixture executes identically throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn generic_trait_extraction_preserves_a_real_rust_program() {
+    const WINDOW: &str = r#"pub struct Window<'a, T, const N: usize> {
+    pub values: &'a [T; N],
+}
+
+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>
+where
+    T: std::fmt::Display,
+{
+    pub fn first(&self) -> T {
+        self.values[0]
+    }
+
+    pub fn total<I>(&self, extra: I) -> i64
+    where
+        I: IntoIterator<Item = T>,
+    {
+        self.values[0].into() + extra.into_iter().map(Into::into).sum::<i64>()
+    }
+
+    pub fn copied(&self) -> Self {
+        Self { values: self.values }
+    }
+}
+"#;
+    const REPORT: &str = r#"use crate::window::Window;
+
+pub fn report<'a, T: Copy + Into<i64> + std::fmt::Display, const N: usize>(
+    window: &Window<'a, T, N>,
+    extra: T,
+) -> i64 {
+    window.total([extra]) + window.copied().first().into()
+}
+"#;
+    const MAIN: &str = r#"mod report;
+mod window;
+
+use window::Window;
+
+fn main() {
+    let values = [1_i32, 2, 3];
+    let window = Window { values: &values };
+    println!("{}", report::report(&window, 4));
+}
+"#;
+
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    checkout.write("src/main.rs", MAIN);
+    checkout.write("src/window.rs", WINDOW);
+    checkout.write("src/report.rs", REPORT);
+    checkout.commit();
+    let root = checkout.root();
+    let window = checkout.path("src/window.rs");
+    let output = || {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("generic-extract-fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", "-A", "warnings", "src/main.rs", "-o"])
+            .arg(&bin)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&bin).output().unwrap();
+        assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+        ran.stdout
+    };
+    let before = output();
+
+    let bad = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["missing"], "name": "WindowOps", "apply": true, "force": true
+    });
+    let err = prod_code_mcp::tools::execute_tool(
+        gateway.addr,
+        &root,
+        "code_extract_trait",
+        bad,
+    )
+    .await
+    .expect_err("a genuinely absent method is refused even with force");
+    assert!(format!("{err:#}").contains("has no method `missing`"), "{err:#}");
+    assert_eq!(std::fs::read_to_string(&window).unwrap(), WINDOW);
+
+    let subset = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["total", "copied"], "name": "WindowOps", "apply": true
+    });
+    let changed = tool(
+        gateway.addr,
+        &root,
+        "code_extract_trait",
+        subset,
+    )
+    .await;
+    assert!(!changed.is_error, "{}", text_of(&changed));
+    let after_subset = std::fs::read_to_string(&window).unwrap();
+    assert!(after_subset.contains("trait WindowOps<'a, T: Copy + Into<i64>, const N: usize>"));
+    assert!(after_subset.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
+    assert!(after_subset.contains("fn total<I>(&self, extra: I) -> i64"));
+    assert!(after_subset.contains("fn copied(&self) -> Self"));
+    assert!(
+        std::fs::read_to_string(checkout.path("src/report.rs"))
+            .unwrap()
+            .contains("use crate::window::WindowOps;")
+    );
+    assert_eq!(output(), before, "subset extraction preserves execution");
+
+    let full = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["first"], "name": "WindowView", "apply": true
+    });
+    let changed = tool(gateway.addr, &root, "code_extract_trait", full).await;
+    assert!(!changed.is_error, "{}", text_of(&changed));
+    let after_full = std::fs::read_to_string(&window).unwrap();
+    assert!(!after_full.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
+    assert!(after_full.contains("trait WindowView<'a, T: Copy + Into<i64>, const N: usize>"));
+    assert!(
+        std::fs::read_to_string(checkout.path("src/report.rs"))
+            .unwrap()
+            .contains("use crate::window::WindowView;")
+    );
+    assert_eq!(output(), before, "full extraction preserves execution");
+}

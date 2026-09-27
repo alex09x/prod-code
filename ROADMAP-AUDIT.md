@@ -76,8 +76,9 @@ evidence remain above; the original mechanism or required scope remains open.
   artifact cache.
 - **7.1 `extract_function`**: token-matched copies, with optional other-file search, are not
   automatic workspace-wide structural duplicate detection.
-- **7.1 `extract_trait` / `extract_interface`**: imports for moved methods do not update caller
-  type annotations, and generic implementations are refused.
+- **7.1 `extract_trait` / `extract_interface`**: #505 supports ordinary Rust inherent lifetime,
+  type and const parameters with bounds, but imports for moved methods still do not update caller
+  type annotations; conditional/macro/specialized shapes and other languages remain open.
 - **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
   the promised general `for`/`while` iterator/fold transformation.
 - **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM storage

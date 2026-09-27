@@ -3733,6 +3733,163 @@ async fn a_trait_is_extracted_from_the_methods_named_with_its_callers_imports() 
     );
 }
 
+const GENERIC_WINDOW: &str = r#"pub struct Window<'a, T, const N: usize> {
+    values: &'a [T; N],
+}
+
+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>
+where
+    T: std::fmt::Display,
+{
+    pub fn first(&self) -> T {
+        self.values[0]
+    }
+
+    /// Adds an arbitrary sequence to the first value.
+    pub fn total<I>(&self, extra: I) -> i64
+    where
+        I: IntoIterator<Item = T>,
+    {
+        self.values[0].into() + extra.into_iter().map(Into::into).sum::<i64>()
+    }
+
+    pub fn copied(&self) -> Self {
+        Self { values: self.values }
+    }
+}
+"#;
+
+const GENERIC_REPORT: &str = r#"use crate::window::Window;
+
+pub fn report<'a, T: Copy + Into<i64> + std::fmt::Display, const N: usize>(
+    window: &Window<'a, T, N>,
+    extra: T,
+) -> (i64, T) {
+    (window.total([extra]), window.copied().first())
+}
+"#;
+
+/// The public MCP entry point previews and applies a generic extraction. It carries declaration
+/// bounds to the trait, uses only parameter names as trait arguments, preserves `Self` and a
+/// method-level associated-type bound, and refuses malformed references even with force.
+#[tokio::test]
+async fn generic_trait_extraction_is_public_and_reference_safe() {
+    let ws = workspace();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(&ws, "src/lib.rs", "pub mod report;\npub mod window;\n");
+    let window = write(&ws, "src/window.rs", GENERIC_WINDOW);
+    let report = write(&ws, "src/report.rs", GENERIC_REPORT);
+    commit(&ws);
+
+    let total_line = GENERIC_WINDOW[..GENERIC_WINDOW.find("fn total").unwrap()]
+        .matches('\n')
+        .count() as u64;
+    let copied_line = GENERIC_WINDOW[..GENERIC_WINDOW.find("fn copied").unwrap()]
+        .matches('\n')
+        .count() as u64;
+    let script = |malformed_references: bool| {
+        let report = report.clone();
+        scripted_gateway(Arc::new(move |method, params| match method {
+            "textDocument/references" if malformed_references => {
+                serde_json::json!({ "missing": "locations" })
+            }
+            "textDocument/references" => {
+                let line = params.pointer("/position/line").and_then(|v| v.as_u64());
+                if line == Some(total_line) || line == Some(copied_line) {
+                    answers::locations(&report, &[(7, 13)])
+                } else {
+                    serde_json::json!([])
+                }
+            }
+            "textDocument/diagnostic" => answers::no_diagnostics(),
+            _ => serde_json::Value::Null,
+        }))
+    };
+    let args = |apply: bool, force: bool, methods: &[&str]| {
+        serde_json::json!({
+            "path": "src/window.rs",
+            "line": 5,
+            "character": 1,
+            "methods": methods,
+            "name": "WindowOps",
+            "apply": apply,
+            "force": force,
+        })
+    };
+
+    let preview = prod_code_mcp::tools::execute_tool(
+        script(false).await,
+        &root,
+        "code_extract_trait",
+        args(false, false, &["total", "copied"]),
+    )
+    .await
+    .expect("public preview");
+    assert!(!preview.is_error, "{preview:?}");
+    let preview = format!("{preview:?}");
+    assert!(
+        preview.contains("trait WindowOps<'a, T: Copy + Into<i64>, const N: usize>"),
+        "{preview}"
+    );
+    assert!(preview.contains("WindowOps<'a, T, N> for Window<'a, T, N>"), "{preview}");
+    assert!(preview.contains("IntoIterator<Item = T>"), "{preview}");
+    assert!(preview.contains("fn copied(&self) -> Self"), "{preview}");
+    assert_eq!(ws.read("src/window.rs"), GENERIC_WINDOW, "preview writes nothing");
+
+    let applied = prod_code_mcp::tools::execute_tool(
+        script(false).await,
+        &root,
+        "code_extract_trait",
+        args(true, false, &["total", "copied"]),
+    )
+    .await
+    .expect("public apply");
+    assert!(!applied.is_error, "{applied:?}");
+    let rewritten = ws.read("src/window.rs");
+    assert!(rewritten.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
+    assert!(rewritten.contains("pub fn first(&self) -> T"));
+    assert!(rewritten.contains("impl<'a, T: Copy + Into<i64>, const N: usize> WindowOps<'a, T, N>"));
+    assert_eq!(
+        ws.read("src/report.rs"),
+        GENERIC_REPORT.replacen(
+            "use crate::window::Window;\n",
+            "use crate::window::Window;\nuse crate::window::WindowOps;\n",
+            1,
+        )
+    );
+
+    std::fs::write(&window, GENERIC_WINDOW).unwrap();
+    std::fs::write(&report, GENERIC_REPORT).unwrap();
+    let refused = prod_code_mcp::tools::execute_tool(
+        script(true).await,
+        &root,
+        "code_extract_trait",
+        args(true, true, &["total"]),
+    )
+    .await
+    .expect_err("malformed references are never ignored by force");
+    assert!(format!("{refused:#}").contains("references are not a list"));
+    assert_eq!(ws.read("src/window.rs"), GENERIC_WINDOW);
+    assert_eq!(ws.read("src/report.rs"), GENERIC_REPORT);
+
+    let full = prod_code_mcp::tools::execute_tool(
+        script(false).await,
+        &root,
+        "code_extract_trait",
+        args(false, false, &["first", "total", "copied"]),
+    )
+    .await
+    .expect("full extraction preview");
+    let full = format!("{full:?}");
+    assert!(!full.contains("+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"), "{full}");
+    assert!(full.contains("trait WindowOps"), "{full}");
+}
+
 const ORPHANS: &str = "pub fn used() -> u32 {\n    helper()\n}\n\nfn helper() -> u32 {\n    1\n}\n\nfn leftover() -> u32 {\n    2\n}\n\nstruct Unused {\n    a: u32,\n}\n";
 
 /// Every orphan the scan finds goes in one edit, even when the analyzer answers each deletion
