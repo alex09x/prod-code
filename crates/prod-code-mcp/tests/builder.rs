@@ -61,6 +61,24 @@ pub struct Pair<T> {
     pub right: T,
 }
 
+pub struct Packet<'a, T: Clone, const N: usize>
+where
+    T: PartialEq,
+{
+    pub label: &'a str,
+    pub payload: T,
+    pub bytes: [u8; N],
+    pub nested: std::option::Option<Vec<T>>,
+}
+
+pub struct Defaults<T: Clone = String, const N: usize = 4>
+where
+    T: PartialEq,
+{
+    pub value: T,
+    pub bytes: [u8; N],
+}
+
 pub struct Point(pub i32, pub i32);
 
 pub fn plain() {}
@@ -76,6 +94,9 @@ const CONFIG_FIELDS: [&str; 8] = [
     "score",
     "tags",
 ];
+
+const PACKET_FIELDS: [&str; 4] = ["label", "payload", "bytes", "nested"];
+const DEFAULT_FIELDS: [&str; 2] = ["value", "bytes"];
 
 /// Uses the builder the way a test would: setters in the reverse of declaration order, a field
 /// left out, nothing set at all.
@@ -130,6 +151,43 @@ pub fn run() {
 const PRINTED: &str = "n 3 Just(5) 4 Endpoint { host: \"h\", port: 80 } 3 7 [\"a\", \"b\"]\n\
 match | `Config` field `match` was never set\n\
 name | `Config` field `name` was never set\n";
+
+const PACKET_USAGE: &str = r#"use crate::settings::{Packet, PacketBuilder, PacketBuilderError};
+
+pub fn run() {
+    let packet: Packet<'_, String, 3> = PacketBuilder::new()
+        .nested(Some(vec!["nested".to_string()]))
+        .bytes([1, 2, 3])
+        .payload("payload".to_string())
+        .label("label")
+        .build()
+        .expect("every field is set");
+    println!("{} {} {:?} {:?}", packet.label, packet.payload, packet.bytes, packet.nested);
+
+    let missing: Result<Packet<'_, String, 3>, PacketBuilderError> = PacketBuilder::new()
+        .nested(None)
+        .payload("payload".to_string())
+        .label("label")
+        .build();
+    let error = match missing {
+        Err(error) => error,
+        Ok(_) => panic!("missing bytes unexpectedly built"),
+    };
+    println!("{}", error);
+}
+"#;
+
+const DEFAULT_USAGE: &str = r#"use crate::settings::{Defaults, DefaultsBuilder};
+
+pub fn run() {
+    let value: Defaults = DefaultsBuilder::new()
+        .value("default".to_string())
+        .bytes([4, 3, 2, 1])
+        .build()
+        .expect("defaults remain legal");
+    println!("{} {:?}", value.value, value.bytes);
+}
+"#;
 
 /// How the scripted analyzer behaves.
 #[derive(Default, Clone)]
@@ -237,10 +295,38 @@ async fn gateway(file: &Path, script: Script) -> Scripted {
                     fields.push(answers::document_symbol("ghost", 8, to, to, 5));
                 }
                 let (pair, _) = find(SETTINGS, "pub struct Pair");
+                let (packet, _) = find(SETTINGS, "pub struct Packet");
+                let (packet_end, _) = find(SETTINGS, "\n}\n\npub struct Defaults");
+                let packet_fields = PACKET_FIELDS.map(|field| {
+                    let (line, col) = find(SETTINGS, &format!("pub {field}:"));
+                    answers::document_symbol(field, 8, line, line, col + 4)
+                });
+                let (defaults, _) = find(SETTINGS, "pub struct Defaults");
+                let (defaults_end, _) = find(SETTINGS, "\n}\n\npub struct Point");
+                let default_fields = DEFAULT_FIELDS.map(|field| {
+                    let needle = if field == "bytes" {
+                        SETTINGS.rfind("pub bytes:").expect("default bytes")
+                    } else {
+                        SETTINGS.find("pub value:").expect("default value")
+                    };
+                    let line = SETTINGS[..needle].matches('\n').count() as u32 + 1;
+                    let col = (needle - SETTINGS[..needle].rfind('\n').map_or(0, |p| p + 1))
+                        as u32
+                        + 5;
+                    answers::document_symbol(field, 8, line, line, col)
+                });
                 let (point, _) = find(SETTINGS, "pub struct Point");
                 serde_json::json!([
                     answers::nested(answers::document_symbol("Config", 23, from, to + 1, 12), fields),
                     answers::document_symbol("Pair", 23, pair, pair + 3, 12),
+                    answers::nested(
+                        answers::document_symbol("Packet", 23, packet, packet_end + 1, 12),
+                        packet_fields.into_iter().collect(),
+                    ),
+                    answers::nested(
+                        answers::document_symbol("Defaults", 23, defaults, defaults_end + 1, 12),
+                        default_fields.into_iter().collect(),
+                    ),
                     answers::document_symbol("Point", 23, point, point, 12),
                 ])
             }
@@ -270,8 +356,8 @@ async fn gateway(file: &Path, script: Script) -> Scripted {
                 if let Some(answer) = scripted {
                     return answer.clone();
                 }
-                if name == "Config" {
-                    let (line, col) = find(SETTINGS, "pub struct Config");
+                if SETTINGS.contains(&format!("pub struct {name}")) {
+                    let (line, col) = find(SETTINGS, &format!("pub struct {name}"));
                     answers::locations(&file, &[(line, col + 11)])
                 } else if script.in_scope.contains(&name.as_str()) {
                     answers::locations(Path::new("/toolchain/lib/rustlib/src/core/src/lib.rs"), &[(9, 1)])
@@ -531,16 +617,114 @@ async fn errors_in_the_builder_reject_it_with_their_lines() {
 }
 
 #[tokio::test]
+async fn named_generic_structs_have_builder_previews() {
+    let (ws, file) = workspace();
+    let root = ws.root();
+    let before = snapshot(&root);
+    let scripted = gateway(&file, Script::default()).await;
+
+    let packet = builder::preview(scripted.gateway.addr(), &root, &request("Packet", true))
+        .await
+        .expect("a generic struct has a builder preview");
+    assert_eq!(packet.verification, Verification::Clean);
+    assert_eq!(packet.plan.type_name, "Packet");
+    assert_eq!(
+        packet
+            .plan
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.ty.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("label", "&'a str"),
+            ("payload", "T"),
+            ("bytes", "[u8; N]"),
+            ("nested", "std::option::Option<Vec<T>>"),
+        ]
+    );
+    let code = &packet.plan.code;
+    assert!(
+        code.contains(
+            "pub struct PacketBuilder<'a, T: Clone, const N: usize> where T: PartialEq, {"
+        )
+    );
+    assert!(code.contains(
+        "impl<'a, T: Clone, const N: usize> PacketBuilder<'a, T, N> where T: PartialEq, {"
+    ));
+    assert!(code.contains("Result<Packet<'a, T, N>, PacketBuilderError>"));
+    assert!(code.contains("pub fn nested(mut self, value: std::option::Option<Vec<T>>) -> Self"));
+    let main = "mod settings;\nmod usage;\n\nfn main() { usage::run(); }\n";
+    let printed = compile_and_run(&[
+        ("main.rs", main),
+        ("settings.rs", &packet.plan.file_text),
+        ("usage.rs", PACKET_USAGE),
+    ]);
+    assert_eq!(
+        printed,
+        "label payload [1, 2, 3] Some([\"nested\"])\n`Packet` field `bytes` was never set\n"
+    );
+
+    let defaults = builder::preview(scripted.gateway.addr(), &root, &request("Defaults", true))
+        .await
+        .expect("defaulted generic parameters have a builder preview");
+    assert_eq!(defaults.verification, Verification::Clean);
+    let code = &defaults.plan.code;
+    assert!(code.contains(
+        "pub struct DefaultsBuilder<T: Clone = String, const N: usize = 4> where T: PartialEq, {"
+    ));
+    assert!(
+        code.contains("impl<T: Clone, const N: usize> DefaultsBuilder<T, N> where T: PartialEq, {")
+    );
+    assert!(!code.contains("impl<T: Clone ="), "{code}");
+    assert!(!code.contains("impl<T: Clone, const N: usize ="), "{code}");
+    let printed = compile_and_run(&[
+        ("main.rs", main),
+        ("settings.rs", &defaults.plan.file_text),
+        ("usage.rs", DEFAULT_USAGE),
+    ]);
+    assert_eq!(printed, "default [4, 3, 2, 1]\n");
+    assert_eq!(snapshot(&root), before, "generic previews write nothing");
+
+    for (text, expected) in [
+        (
+            "pub struct Rebound<T> where Self: Sized { value: T }\n",
+            "where clause of `Rebound` spells `Self`",
+        ),
+        (
+            "pub struct Expanded<T: bounds!()> { value: T }\n",
+            "macro-expanded generic syntax",
+        ),
+        (
+            "pub struct Expanded { value: field_type!() }\n",
+            "macro-expanded field types",
+        ),
+        (
+            "pub struct Expression<const N: usize> { value: [u8; N + 1] }\n",
+            "unsupported const expression",
+        ),
+        (
+            "pub struct DefaultExpression<const N: usize = { 1 + 1 }> { value: [u8; N] }\n",
+            "unsupported const expression",
+        ),
+    ] {
+        let name = text
+            .split_whitespace()
+            .nth(2)
+            .expect("struct name")
+            .split('<')
+            .next()
+            .expect("base name");
+        let error = format!("{:#}", builder::plan(text, name, (1, 1), None).unwrap_err());
+        assert!(error.contains(expected), "{text}\n=> {error}");
+    }
+}
+
+#[tokio::test]
 async fn collisions_and_unsupported_shapes_are_refused_and_nothing_is_written() {
     let (ws, file) = workspace();
     let root = ws.root();
     let before = snapshot(&root);
     let cases: Vec<(Script, BuilderRequest<'_>, &str)> = vec![
-        (
-            Script::default(),
-            request("Pair", true),
-            "generic parameters",
-        ),
         (Script::default(), request("Point", true), "tuple struct"),
         (
             Script {
