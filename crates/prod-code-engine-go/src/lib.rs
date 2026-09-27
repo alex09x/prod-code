@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use prod_code_protocol::readiness::{
     BUSY_MEMBER, Busy, INDEX_WAIT, Readiness, ReadySignal, needs_index,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -48,6 +48,7 @@ impl Default for GoConfig {
 const DEFAULT_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_IDLE_PROBE_TIMEOUTS: usize = 3;
 const HEALTH_PROBE_METHOD: &str = "prodCode/healthProbe";
+const HEALTH_PROBE_ID_PREFIX: &str = "prod-code-health:";
 
 /// Discovers the `gopls` executable on the host system.
 pub fn find_gopls_binary(explicit: Option<&Path>) -> Option<PathBuf> {
@@ -119,8 +120,9 @@ pub struct GoEngine {
     request_timeout: Duration,
     ordinary_activity: Arc<AtomicUsize>,
     ordinary_epoch: Arc<AtomicU64>,
-    probe_failures: Arc<AtomicUsize>,
-    health_probe_ids: Arc<StdMutex<HashSet<u64>>>,
+    probe_state: Arc<StdMutex<ProbeState>>,
+    next_probe_id: Arc<AtomicU64>,
+    health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>>,
     _health_probe: Option<HealthProbeTask>,
     _child: Arc<StdMutex<Child>>,
 }
@@ -154,23 +156,32 @@ impl Drop for OrdinaryActivity {
 }
 
 struct ProbePending {
-    id: u64,
-    pending: Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
-    health_ids: Weak<StdMutex<HashSet<u64>>>,
-    preserve_health_id: bool,
+    id: String,
+    pending: Weak<StdMutex<Option<HealthProbePending>>>,
 }
 
 impl Drop for ProbePending {
     fn drop(&mut self) {
-        if !self.preserve_health_id
-            && let Some(ids) = self.health_ids.upgrade()
-        {
-            lock_unpoisoned(&ids).remove(&self.id);
-        }
         if let Some(pending) = self.pending.upgrade() {
-            lock_unpoisoned(&pending).remove(&self.id);
+            let mut pending = lock_unpoisoned(&pending);
+            if pending.as_ref().is_some_and(|slot| slot.id == self.id) {
+                pending.take();
+            }
         }
     }
+}
+
+struct HealthProbePending {
+    id: String,
+    response: oneshot::Sender<serde_json::Value>,
+}
+
+#[derive(Default)]
+struct ProbeState {
+    consecutive_timeouts: usize,
+    valid_evidence_epoch: u64,
+    latest_valid_sequence: u64,
+    valid_completions: u64,
 }
 
 struct PendingRequest {
@@ -256,12 +267,22 @@ fn validate_initialize_response(
         .context("initialize response has no capabilities object")
 }
 
-fn valid_health_response(response: &serde_json::Value, id: u64) -> bool {
+fn health_probe_sequence(response: &serde_json::Value, next_probe_id: u64) -> Option<u64> {
+    let suffix = response
+        .get("id")?
+        .as_str()?
+        .strip_prefix(HEALTH_PROBE_ID_PREFIX)?;
+    let sequence = suffix.parse::<u64>().ok()?;
+    (sequence != 0 && sequence < next_probe_id && sequence.to_string() == suffix)
+        .then_some(sequence)
+}
+
+fn valid_health_response(response: &serde_json::Value, id: &str) -> bool {
     let Some(envelope) = response.as_object() else {
         return false;
     };
     if envelope.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0")
-        || envelope.get("id").and_then(|value| value.as_u64()) != Some(id)
+        || envelope.get("id").and_then(|value| value.as_str()) != Some(id)
         || envelope.contains_key("method")
     {
         return false;
@@ -282,7 +303,7 @@ fn valid_health_response(response: &serde_json::Value, id: u64) -> bool {
 async fn retire_health_generation(
     child: &Weak<StdMutex<Child>>,
     pending: &Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
-    health_ids: &Weak<StdMutex<HashSet<u64>>>,
+    health_pending: &Weak<StdMutex<Option<HealthProbePending>>>,
     is_alive: &Weak<AtomicBool>,
     capabilities: &Weak<RwLock<Option<serde_json::Value>>>,
 ) {
@@ -295,8 +316,8 @@ async fn retire_health_generation(
     if let Some(pending) = pending.upgrade() {
         lock_unpoisoned(&pending).clear();
     }
-    if let Some(health_ids) = health_ids.upgrade() {
-        lock_unpoisoned(&health_ids).clear();
+    if let Some(health_pending) = health_pending.upgrade() {
+        lock_unpoisoned(&health_pending).take();
     }
     if let Some(capabilities) = capabilities.upgrade() {
         *capabilities.write().await = None;
@@ -399,10 +420,12 @@ impl GoEngine {
         let pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
-        let health_probe_ids = Arc::new(StdMutex::new(HashSet::new()));
-        let health_probe_ids_reader = Arc::clone(&health_probe_ids);
-        let probe_failures = Arc::new(AtomicUsize::new(0));
-        let probe_failures_reader = Arc::clone(&probe_failures);
+        let health_probe_pending = Arc::new(StdMutex::new(None::<HealthProbePending>));
+        let health_probe_pending_reader = Arc::clone(&health_probe_pending);
+        let next_probe_id = Arc::new(AtomicU64::new(1));
+        let next_probe_id_reader = Arc::clone(&next_probe_id);
+        let probe_state = Arc::new(StdMutex::new(ProbeState::default()));
+        let probe_state_reader = Arc::clone(&probe_state);
         let ordinary_activity = Arc::new(AtomicUsize::new(0));
         let ordinary_epoch = Arc::new(AtomicU64::new(0));
 
@@ -441,20 +464,43 @@ impl GoEngine {
                         if val.get("method").is_none()
                             && let Some(id) = id_val.as_u64()
                         {
-                            let is_health = lock_unpoisoned(&health_probe_ids_reader).remove(&id);
                             let mut pending = lock_unpoisoned(&pending_clone);
                             if let Some(tx) = pending.remove(&id) {
-                                if !is_health {
-                                    probe_failures_reader.store(0, Ordering::Release);
-                                }
+                                lock_unpoisoned(&probe_state_reader).consecutive_timeouts = 0;
                                 let _ = tx.send(val.clone());
                                 continue;
                             }
-                            if is_health {
-                                // A response that arrived after its probe timeout is still
-                                // private health traffic, not a subscriber notification.
-                                continue;
+                        } else if val.get("method").is_none()
+                            && let Some(sequence) = health_probe_sequence(
+                                &val,
+                                next_probe_id_reader.load(Ordering::Acquire),
+                            )
+                        {
+                            let id = id_val.as_str().expect("health ids are strings");
+                            let response = {
+                                let mut pending = lock_unpoisoned(&health_probe_pending_reader);
+                                if pending.as_ref().is_some_and(|slot| slot.id == id) {
+                                    pending.take().map(|slot| slot.response)
+                                } else {
+                                    None
+                                }
+                            };
+                            if valid_health_response(&val, id) {
+                                let mut state = lock_unpoisoned(&probe_state_reader);
+                                state.valid_evidence_epoch =
+                                    state.valid_evidence_epoch.wrapping_add(1);
+                                state.consecutive_timeouts = 0;
+                                if sequence > state.latest_valid_sequence {
+                                    state.latest_valid_sequence = sequence;
+                                    state.valid_completions += 1;
+                                }
                             }
+                            if let Some(response) = response {
+                                let _ = response.send(val.clone());
+                            }
+                            // All issued health ids stay recognizable without retaining them,
+                            // so even very late or malformed probe traffic remains private.
+                            continue;
                         }
 
                         // Server-initiated request requiring auto-reply
@@ -542,7 +588,7 @@ impl GoEngine {
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the timeout (#355).
             lock_unpoisoned(&pending_clone).clear();
-            lock_unpoisoned(&health_probe_ids_reader).clear();
+            lock_unpoisoned(&health_probe_pending_reader).take();
             *capabilities_reader.write().await = None;
             if let Some(child) = child_writer.upgrade() {
                 let _ = lock_unpoisoned(&child).start_kill();
@@ -572,8 +618,9 @@ impl GoEngine {
             request_timeout,
             ordinary_activity,
             ordinary_epoch,
-            probe_failures,
-            health_probe_ids,
+            probe_state,
+            next_probe_id,
+            health_probe_pending,
             _health_probe: None,
             _child: child,
         };
@@ -630,16 +677,16 @@ impl GoEngine {
 
     fn start_health_probe(&mut self, interval: Duration) {
         let stdin = Arc::downgrade(&self.stdin);
-        let next_req_id = Arc::downgrade(&self.next_req_id);
         let pending = Arc::downgrade(&self.pending_requests);
-        let health_ids = Arc::downgrade(&self.health_probe_ids);
+        let next_probe_id = Arc::downgrade(&self.next_probe_id);
+        let health_pending = Arc::downgrade(&self.health_probe_pending);
         let child = Arc::downgrade(&self._child);
         let is_alive = Arc::downgrade(&self.is_alive);
         let capabilities = Arc::downgrade(&self.capabilities);
         let readiness = Arc::downgrade(&self.readiness);
         let ordinary_activity = Arc::downgrade(&self.ordinary_activity);
         let ordinary_epoch = Arc::downgrade(&self.ordinary_epoch);
-        let probe_failures = Arc::downgrade(&self.probe_failures);
+        let probe_state = Arc::downgrade(&self.probe_state);
         let response_timeout = self.request_timeout;
 
         self._health_probe = Some(HealthProbeTask(tokio::spawn(async move {
@@ -683,29 +730,30 @@ impl GoEngine {
                     continue;
                 }
 
-                let Some(ids) = health_ids.upgrade() else {
+                let Some(health_pending_slot) = health_pending.upgrade() else {
                     break;
                 };
-                let Some(ids_allocator) = next_req_id.upgrade() else {
+                let Some(ids_allocator) = next_probe_id.upgrade() else {
                     break;
                 };
-                let id = ids_allocator.fetch_add(1, Ordering::Relaxed);
+                let sequence = ids_allocator.fetch_add(1, Ordering::AcqRel);
+                let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
                 let payload = serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": id,
+                    "id": &id,
                     "method": HEALTH_PROBE_METHOD,
                     "params": {}
                 });
                 let body = payload.to_string();
                 let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
                 let (tx, rx) = oneshot::channel();
-                lock_unpoisoned(&ids).insert(id);
-                lock_unpoisoned(&pending_requests).insert(id, tx);
-                let mut probe_pending = ProbePending {
-                    id,
-                    pending: pending.clone(),
-                    health_ids: health_ids.clone(),
-                    preserve_health_id: false,
+                *lock_unpoisoned(&health_pending_slot) = Some(HealthProbePending {
+                    id: id.clone(),
+                    response: tx,
+                });
+                let probe_pending = ProbePending {
+                    id: id.clone(),
+                    pending: health_pending.clone(),
                 };
                 let mut frame_write = FrameWrite {
                     child: child.clone(),
@@ -734,7 +782,7 @@ impl GoEngine {
                     retire_health_generation(
                         &child,
                         &pending,
-                        &health_ids,
+                        &health_pending,
                         &is_alive,
                         &capabilities,
                     )
@@ -745,24 +793,24 @@ impl GoEngine {
                 drop(frame_write);
                 drop(writer);
                 drop(stdin);
-                drop(ids);
+                drop(health_pending_slot);
                 drop(pending_requests);
 
                 let Some(epoch) = ordinary_epoch.upgrade() else {
                     break;
                 };
                 let activity_before_wait = epoch.load(Ordering::Acquire);
+                let Some(state) = probe_state.upgrade() else {
+                    break;
+                };
+                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 match tokio::time::timeout_at(deadline, rx).await {
-                    Ok(Ok(response)) if valid_health_response(&response, id) => {
-                        if let Some(failures) = probe_failures.upgrade() {
-                            failures.store(0, Ordering::Release);
-                        }
-                    }
+                    Ok(Ok(response)) if valid_health_response(&response, &id) => {}
                     Ok(Ok(_)) => {
                         retire_health_generation(
                             &child,
                             &pending,
-                            &health_ids,
+                            &health_pending,
                             &is_alive,
                             &capabilities,
                         )
@@ -771,9 +819,6 @@ impl GoEngine {
                     }
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        // Keep the id classified as health traffic so a late response cannot
-                        // escape to subscribers, but remove the exact pending sender now.
-                        probe_pending.preserve_health_id = true;
                         drop(probe_pending);
                         let became_active = activity.load(Ordering::Acquire) != 0
                             || epoch.load(Ordering::Acquire) != activity_before_wait
@@ -781,14 +826,20 @@ impl GoEngine {
                         if became_active {
                             continue;
                         }
-                        let Some(failures) = probe_failures.upgrade() else {
-                            break;
+                        let should_retire = {
+                            let mut state = lock_unpoisoned(&state);
+                            if state.valid_evidence_epoch != evidence_before_wait {
+                                false
+                            } else {
+                                state.consecutive_timeouts += 1;
+                                state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS
+                            }
                         };
-                        if failures.fetch_add(1, Ordering::AcqRel) + 1 >= MAX_IDLE_PROBE_TIMEOUTS {
+                        if should_retire {
                             retire_health_generation(
                                 &child,
                                 &pending,
-                                &health_ids,
+                                &health_pending,
                                 &is_alive,
                                 &capabilities,
                             )
@@ -868,6 +919,7 @@ impl GoEngine {
         self.is_alive.store(false, Ordering::Release);
         let _ = lock_unpoisoned(&self._child).start_kill();
         lock_unpoisoned(&self.pending_requests).clear();
+        lock_unpoisoned(&self.health_probe_pending).take();
     }
 
     /// The package loading gopls is still doing, if any (#391).
@@ -951,6 +1003,17 @@ impl GoEngine {
     /// Whether gopls is still running: false once its output has ended (#355).
     pub fn is_alive(&self) -> bool {
         self.is_alive.load(Ordering::Relaxed)
+    }
+
+    /// Number of distinct scheduled health probes answered with a valid JSON-RPC envelope.
+    #[doc(hidden)]
+    pub fn health_probe_completions(&self) -> u64 {
+        lock_unpoisoned(&self.probe_state).valid_completions
+    }
+
+    #[cfg(test)]
+    fn retained_health_responses(&self) -> usize {
+        usize::from(lock_unpoisoned(&self.health_probe_pending).is_some())
     }
 
     /// Send an asynchronous JSON-RPC notification to `gopls`.
@@ -1226,6 +1289,10 @@ while True:
             send({"jsonrpc": "2.0", "id": message["id"], "result": None})
         elif health == "malformed":
             send({"jsonrpc": "2.0", "id": message["id"], "unexpected": True})
+        elif health == "delay":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "result": None},)).start()
+        elif health == "delay-malformed":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "unexpected": True},)).start()
         else:
             send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "unknown method"}})
     elif method == "prodCode/seen":
@@ -1276,6 +1343,26 @@ while True:
             .await
             .expect("the fake gopls starts");
         (dir, Arc::new(engine))
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_gopls_probe_count(path: &Path, count: usize) {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let seen = std::fs::read_to_string(path).unwrap_or_default();
+                if seen
+                    .lines()
+                    .filter(|method| *method == HEALTH_PROBE_METHOD)
+                    .count()
+                    >= count
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the scheduled probes reach fake gopls");
     }
 
     #[cfg(unix)]
@@ -1394,6 +1481,87 @@ while True:
             drop(engine);
             assert_process_exits(&dir.path().join("pid")).await;
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay")),
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+        )
+        .await;
+        let mut subscriber = engine.subscribe();
+        wait_for_gopls_probe_count(&dir.path().join("seen"), 4).await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.health_probe_completions() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("at least two delayed matching replies are validated");
+        assert!(
+            engine.is_alive(),
+            "late valid replies reset the failure streak"
+        );
+        assert!(matches!(
+            subscriber.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn delayed_malformed_probe_responses_do_not_reset_failures() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "delay-malformed")),
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("three timeouts retire despite late malformed traffic");
+        assert_eq!(engine.health_probe_completions(), 0);
+        let seen = std::fs::read_to_string(dir.path().join("seen")).unwrap();
+        assert_eq!(
+            seen.lines()
+                .filter(|method| *method == HEALTH_PROBE_METHOD)
+                .count(),
+            3,
+            "{seen}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn busy_probe_timeouts_retain_at_most_one_response_slot() {
+        let (dir, engine) = fake_engine_with_probe(
+            Some(("FAKE_HEALTH", "silence")),
+            Duration::from_millis(80),
+            Duration::from_millis(10),
+        )
+        .await;
+        let seen = dir.path().join("seen");
+        for count in 1..=20 {
+            wait_for_gopls_probe_count(&seen, count).await;
+            engine
+                .send_notification("prodCode/activity", serde_json::json!({}))
+                .await
+                .expect("ordinary activity overlaps the probe wait");
+            assert!(engine.retained_health_responses() <= 1);
+        }
+        wait_for_gopls_probe_count(&seen, 21).await;
+        assert!(
+            engine.is_alive(),
+            "busy deferrals do not become timeout failures"
+        );
+        assert_eq!(engine.retained_health_responses(), 1);
     }
 
     #[cfg(unix)]
@@ -1670,7 +1838,13 @@ func main() {
         })
         .await
         .expect("gopls becomes idle before dispatch probes");
-        tokio::time::sleep(Duration::from_millis(350)).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while engine.health_probe_completions() < 2 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("gopls answers at least two scheduled probes");
         let hover_after_probes = engine.hover(&file_uri, 4, 6).await.unwrap();
         assert!(
             hover_after_probes.is_some(),

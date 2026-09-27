@@ -71,7 +71,13 @@ async fn hover_before_and_after_probes(
     })
     .await
     .expect("the native server becomes idle before probing");
-    tokio::time::sleep(Duration::from_millis(350)).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while engine.health_probe_completions() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the native server answers at least two scheduled probes");
     let after = hover(&engine, &uri, line, character).await;
     assert!(after.get("error").is_none(), "{after}");
     assert!(

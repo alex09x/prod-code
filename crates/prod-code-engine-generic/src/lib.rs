@@ -21,6 +21,7 @@ const DEFAULT_MAX_RETAINED_DOCUMENTS: usize = 128;
 const DEFAULT_HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_IDLE_PROBE_TIMEOUTS: usize = 3;
 const HEALTH_PROBE_METHOD: &str = "prodCode/healthProbe";
+const HEALTH_PROBE_ID_PREFIX: &str = "prod-code-health:";
 
 /// Configuration for a generic LSP server adapter.
 #[derive(Debug, Clone)]
@@ -402,8 +403,9 @@ pub struct GenericLspEngine {
     accepts_documents: Arc<AtomicBool>,
     ordinary_activity: Arc<AtomicUsize>,
     ordinary_epoch: Arc<AtomicU64>,
-    probe_failures: Arc<AtomicUsize>,
-    health_probe_ids: Arc<StdMutex<HashSet<u64>>>,
+    probe_state: Arc<StdMutex<ProbeState>>,
+    next_probe_id: Arc<AtomicU64>,
+    health_probe_pending: Arc<StdMutex<Option<HealthProbePending>>>,
     _health_probe: Option<HealthProbeTask>,
     _child: Arc<StdMutex<Child>>,
 }
@@ -437,23 +439,32 @@ impl Drop for OrdinaryActivity {
 }
 
 struct ProbePending {
-    id: u64,
-    pending: Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
-    health_ids: Weak<StdMutex<HashSet<u64>>>,
-    preserve_health_id: bool,
+    id: String,
+    pending: Weak<StdMutex<Option<HealthProbePending>>>,
 }
 
 impl Drop for ProbePending {
     fn drop(&mut self) {
-        if !self.preserve_health_id
-            && let Some(ids) = self.health_ids.upgrade()
-        {
-            lock_unpoisoned(&ids).remove(&self.id);
-        }
         if let Some(pending) = self.pending.upgrade() {
-            lock_unpoisoned(&pending).remove(&self.id);
+            let mut pending = lock_unpoisoned(&pending);
+            if pending.as_ref().is_some_and(|slot| slot.id == self.id) {
+                pending.take();
+            }
         }
     }
+}
+
+struct HealthProbePending {
+    id: String,
+    response: oneshot::Sender<serde_json::Value>,
+}
+
+#[derive(Default)]
+struct ProbeState {
+    consecutive_timeouts: usize,
+    valid_evidence_epoch: u64,
+    latest_valid_sequence: u64,
+    valid_completions: u64,
 }
 
 struct PendingRequest {
@@ -539,12 +550,22 @@ fn validate_initialize_response(response: &serde_json::Value) -> Result<serde_js
         .context("initialize response has no capabilities object")
 }
 
-fn valid_health_response(response: &serde_json::Value, id: u64) -> bool {
+fn health_probe_sequence(response: &serde_json::Value, next_probe_id: u64) -> Option<u64> {
+    let suffix = response
+        .get("id")?
+        .as_str()?
+        .strip_prefix(HEALTH_PROBE_ID_PREFIX)?;
+    let sequence = suffix.parse::<u64>().ok()?;
+    (sequence != 0 && sequence < next_probe_id && sequence.to_string() == suffix)
+        .then_some(sequence)
+}
+
+fn valid_health_response(response: &serde_json::Value, id: &str) -> bool {
     let Some(envelope) = response.as_object() else {
         return false;
     };
     if envelope.get("jsonrpc").and_then(|value| value.as_str()) != Some("2.0")
-        || envelope.get("id").and_then(|value| value.as_u64()) != Some(id)
+        || envelope.get("id").and_then(|value| value.as_str()) != Some(id)
         || envelope.contains_key("method")
     {
         return false;
@@ -565,7 +586,7 @@ fn valid_health_response(response: &serde_json::Value, id: u64) -> bool {
 async fn retire_health_generation(
     child: &Weak<StdMutex<Child>>,
     pending: &Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
-    health_ids: &Weak<StdMutex<HashSet<u64>>>,
+    health_pending: &Weak<StdMutex<Option<HealthProbePending>>>,
     is_alive: &Weak<AtomicBool>,
     capabilities: &Weak<RwLock<Option<serde_json::Value>>>,
     accepts_documents: &Weak<AtomicBool>,
@@ -582,8 +603,8 @@ async fn retire_health_generation(
     if let Some(pending) = pending.upgrade() {
         lock_unpoisoned(&pending).clear();
     }
-    if let Some(health_ids) = health_ids.upgrade() {
-        lock_unpoisoned(&health_ids).clear();
+    if let Some(health_pending) = health_pending.upgrade() {
+        lock_unpoisoned(&health_pending).take();
     }
     if let Some(capabilities) = capabilities.upgrade() {
         *capabilities.write().await = None;
@@ -712,10 +733,12 @@ impl GenericLspEngine {
         let pending_requests: Arc<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>> =
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
-        let health_probe_ids = Arc::new(StdMutex::new(HashSet::new()));
-        let health_probe_ids_reader = Arc::clone(&health_probe_ids);
-        let probe_failures = Arc::new(AtomicUsize::new(0));
-        let probe_failures_reader = Arc::clone(&probe_failures);
+        let health_probe_pending = Arc::new(StdMutex::new(None::<HealthProbePending>));
+        let health_probe_pending_reader = Arc::clone(&health_probe_pending);
+        let next_probe_id = Arc::new(AtomicU64::new(1));
+        let next_probe_id_reader = Arc::clone(&next_probe_id);
+        let probe_state = Arc::new(StdMutex::new(ProbeState::default()));
+        let probe_state_reader = Arc::clone(&probe_state);
         let ordinary_activity = Arc::new(AtomicUsize::new(0));
         let ordinary_epoch = Arc::new(AtomicU64::new(0));
 
@@ -763,22 +786,45 @@ impl GenericLspEngine {
                         if val.get("method").is_none()
                             && let Some(id) = id_val.as_u64()
                         {
-                            let is_health = lock_unpoisoned(&health_probe_ids_reader).remove(&id);
                             let tx = lock_unpoisoned(&pending_clone).remove(&id);
                             if let Some(tx) = tx {
-                                if !is_health {
-                                    probe_failures_reader.store(0, Ordering::Release);
-                                    let mut activity = activity_updater.write().await;
-                                    *activity = Instant::now();
-                                }
+                                lock_unpoisoned(&probe_state_reader).consecutive_timeouts = 0;
+                                let mut activity = activity_updater.write().await;
+                                *activity = Instant::now();
                                 let _ = tx.send(val.clone());
                                 continue;
                             }
-                            if is_health {
-                                // Late probe responses remain private and cannot appear as
-                                // ordinary adapter notifications.
-                                continue;
+                        } else if val.get("method").is_none()
+                            && let Some(sequence) = health_probe_sequence(
+                                &val,
+                                next_probe_id_reader.load(Ordering::Acquire),
+                            )
+                        {
+                            let id = id_val.as_str().expect("health ids are strings");
+                            let response = {
+                                let mut pending = lock_unpoisoned(&health_probe_pending_reader);
+                                if pending.as_ref().is_some_and(|slot| slot.id == id) {
+                                    pending.take().map(|slot| slot.response)
+                                } else {
+                                    None
+                                }
+                            };
+                            if valid_health_response(&val, id) {
+                                let mut state = lock_unpoisoned(&probe_state_reader);
+                                state.valid_evidence_epoch =
+                                    state.valid_evidence_epoch.wrapping_add(1);
+                                state.consecutive_timeouts = 0;
+                                if sequence > state.latest_valid_sequence {
+                                    state.latest_valid_sequence = sequence;
+                                    state.valid_completions += 1;
+                                }
                             }
+                            if let Some(response) = response {
+                                let _ = response.send(val.clone());
+                            }
+                            // Issued string ids remain classifiable after their bounded slot
+                            // is cleared, so no late probe response reaches subscribers.
+                            continue;
                         }
 
                         // Auto-respond to server requests
@@ -943,7 +989,7 @@ impl GenericLspEngine {
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the request timeout (#355).
             lock_unpoisoned(&pending_clone).clear();
-            lock_unpoisoned(&health_probe_ids_reader).clear();
+            lock_unpoisoned(&health_probe_pending_reader).take();
             accepts_documents_reader.store(false, Ordering::Release);
             *capabilities_reader.write().await = None;
             if let Some(child) = child_writer.upgrade() {
@@ -982,8 +1028,9 @@ impl GenericLspEngine {
             accepts_documents,
             ordinary_activity,
             ordinary_epoch,
-            probe_failures,
-            health_probe_ids,
+            probe_state,
+            next_probe_id,
+            health_probe_pending,
             _health_probe: None,
             _child: child,
         };
@@ -1040,9 +1087,9 @@ impl GenericLspEngine {
 
     fn start_health_probe(&mut self, interval: Duration) {
         let stdin = Arc::downgrade(&self.stdin);
-        let next_req_id = Arc::downgrade(&self.next_req_id);
         let pending = Arc::downgrade(&self.pending_requests);
-        let health_ids = Arc::downgrade(&self.health_probe_ids);
+        let next_probe_id = Arc::downgrade(&self.next_probe_id);
+        let health_pending = Arc::downgrade(&self.health_probe_pending);
         let child = Arc::downgrade(&self._child);
         let is_alive = Arc::downgrade(&self.is_alive);
         let capabilities = Arc::downgrade(&self.capabilities);
@@ -1050,7 +1097,7 @@ impl GenericLspEngine {
         let readiness = Arc::downgrade(&self.readiness);
         let ordinary_activity = Arc::downgrade(&self.ordinary_activity);
         let ordinary_epoch = Arc::downgrade(&self.ordinary_epoch);
-        let probe_failures = Arc::downgrade(&self.probe_failures);
+        let probe_state = Arc::downgrade(&self.probe_state);
         let response_timeout = self.config.request_timeout;
 
         self._health_probe = Some(HealthProbeTask(tokio::spawn(async move {
@@ -1093,29 +1140,30 @@ impl GenericLspEngine {
                     continue;
                 }
 
-                let Some(ids) = health_ids.upgrade() else {
+                let Some(health_pending_slot) = health_pending.upgrade() else {
                     break;
                 };
-                let Some(ids_allocator) = next_req_id.upgrade() else {
+                let Some(ids_allocator) = next_probe_id.upgrade() else {
                     break;
                 };
-                let id = ids_allocator.fetch_add(1, Ordering::Relaxed);
+                let sequence = ids_allocator.fetch_add(1, Ordering::AcqRel);
+                let id = format!("{HEALTH_PROBE_ID_PREFIX}{sequence}");
                 let payload = serde_json::json!({
                     "jsonrpc": "2.0",
-                    "id": id,
+                    "id": &id,
                     "method": HEALTH_PROBE_METHOD,
                     "params": {}
                 });
                 let body = payload.to_string();
                 let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
                 let (tx, rx) = oneshot::channel();
-                lock_unpoisoned(&ids).insert(id);
-                lock_unpoisoned(&pending_requests).insert(id, tx);
-                let mut probe_pending = ProbePending {
-                    id,
-                    pending: pending.clone(),
-                    health_ids: health_ids.clone(),
-                    preserve_health_id: false,
+                *lock_unpoisoned(&health_pending_slot) = Some(HealthProbePending {
+                    id: id.clone(),
+                    response: tx,
+                });
+                let probe_pending = ProbePending {
+                    id: id.clone(),
+                    pending: health_pending.clone(),
                 };
                 let mut frame_write = FrameWrite {
                     child: child.clone(),
@@ -1142,7 +1190,7 @@ impl GenericLspEngine {
                     retire_health_generation(
                         &child,
                         &pending,
-                        &health_ids,
+                        &health_pending,
                         &is_alive,
                         &capabilities,
                         &accepts_documents,
@@ -1154,24 +1202,24 @@ impl GenericLspEngine {
                 drop(frame_write);
                 drop(writer);
                 drop(stdin);
-                drop(ids);
+                drop(health_pending_slot);
                 drop(pending_requests);
 
                 let Some(epoch) = ordinary_epoch.upgrade() else {
                     break;
                 };
                 let activity_before_wait = epoch.load(Ordering::Acquire);
+                let Some(state) = probe_state.upgrade() else {
+                    break;
+                };
+                let evidence_before_wait = lock_unpoisoned(&state).valid_evidence_epoch;
                 match tokio::time::timeout_at(deadline, rx).await {
-                    Ok(Ok(response)) if valid_health_response(&response, id) => {
-                        if let Some(failures) = probe_failures.upgrade() {
-                            failures.store(0, Ordering::Release);
-                        }
-                    }
+                    Ok(Ok(response)) if valid_health_response(&response, &id) => {}
                     Ok(Ok(_)) => {
                         retire_health_generation(
                             &child,
                             &pending,
-                            &health_ids,
+                            &health_pending,
                             &is_alive,
                             &capabilities,
                             &accepts_documents,
@@ -1181,7 +1229,6 @@ impl GenericLspEngine {
                     }
                     Ok(Err(_)) => break,
                     Err(_) => {
-                        probe_pending.preserve_health_id = true;
                         drop(probe_pending);
                         let became_active = activity.load(Ordering::Acquire) != 0
                             || epoch.load(Ordering::Acquire) != activity_before_wait
@@ -1189,14 +1236,20 @@ impl GenericLspEngine {
                         if became_active {
                             continue;
                         }
-                        let Some(failures) = probe_failures.upgrade() else {
-                            break;
+                        let should_retire = {
+                            let mut state = lock_unpoisoned(&state);
+                            if state.valid_evidence_epoch != evidence_before_wait {
+                                false
+                            } else {
+                                state.consecutive_timeouts += 1;
+                                state.consecutive_timeouts >= MAX_IDLE_PROBE_TIMEOUTS
+                            }
                         };
-                        if failures.fetch_add(1, Ordering::AcqRel) + 1 >= MAX_IDLE_PROBE_TIMEOUTS {
+                        if should_retire {
                             retire_health_generation(
                                 &child,
                                 &pending,
-                                &health_ids,
+                                &health_pending,
                                 &is_alive,
                                 &capabilities,
                                 &accepts_documents,
@@ -2024,6 +2077,7 @@ impl GenericLspEngine {
         self.is_alive.store(false, Ordering::Release);
         let _ = lock_unpoisoned(&self._child).start_kill();
         lock_unpoisoned(&self.pending_requests).clear();
+        lock_unpoisoned(&self.health_probe_pending).take();
     }
 
     /// Check if the process is currently running and healthy.
@@ -2032,6 +2086,18 @@ impl GenericLspEngine {
     /// server has exited (#355).
     pub fn is_alive(&self) -> bool {
         self.is_alive.load(Ordering::Relaxed)
+    }
+
+    /// Number of distinct scheduled health probes answered with a valid JSON-RPC envelope.
+    #[doc(hidden)]
+    pub fn health_probe_completions(&self) -> u64 {
+        lock_unpoisoned(&self.probe_state).valid_completions
+    }
+
+    /// Number of health-response senders currently retained by the bounded classifier.
+    #[doc(hidden)]
+    pub fn retained_health_responses(&self) -> usize {
+        usize::from(lock_unpoisoned(&self.health_probe_pending).is_some())
     }
 
     /// Elapsed time since the last active message.

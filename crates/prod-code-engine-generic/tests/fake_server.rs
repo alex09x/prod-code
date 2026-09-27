@@ -257,7 +257,9 @@ while True:
         elif health == "malformed":
             send({"jsonrpc": "2.0", "id": message["id"], "unexpected": True})
         elif health == "delay":
-            threading.Timer(0.2, send, ({"jsonrpc": "2.0", "id": message["id"], "result": None},)).start()
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "result": None},)).start()
+        elif health == "delay-malformed":
+            threading.Timer(float(os.environ.get("FAKE_HEALTH_DELAY", "0.2")), send, ({"jsonrpc": "2.0", "id": message["id"], "unexpected": True},)).start()
         else:
             send({"jsonrpc": "2.0", "id": message["id"], "error": {"code": -32601, "message": "unknown method"}})
     elif method == "prodCode/die":
@@ -608,26 +610,34 @@ async fn a_matching_normal_response_resets_idle_probe_timeout_failures() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_late_obsolete_probe_response_is_never_broadcast() {
+async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic() {
     let (dir, script) = workspace();
     let seen_file = dir.path().join("seen");
     let mut settings = config(&script);
-    settings.health_probe_interval = Some(Duration::from_millis(100));
+    settings.health_probe_interval = Some(Duration::from_millis(60));
     settings.request_timeout = Duration::from_millis(40);
     settings.env.insert("FAKE_HEALTH".into(), "delay".into());
+    settings
+        .env
+        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
         seen_file.to_string_lossy().into_owned(),
     );
     let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
     let mut subscriber = engine.subscribe();
-    wait_for_probe_count(&seen_file, 1).await;
-    engine
-        .send_request("textDocument/hover", serde_json::json!({}))
-        .await
-        .expect("ordinary traffic remains usable after a probe timeout");
-    tokio::time::sleep(Duration::from_millis(240)).await;
-    assert!(engine.is_alive());
+    wait_for_probe_count(&seen_file, 4).await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.health_probe_completions() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("at least two delayed matching replies are validated");
+    assert!(
+        engine.is_alive(),
+        "late valid replies reset the failure streak"
+    );
     assert!(
         matches!(
             subscriber.try_recv(),
@@ -635,6 +645,96 @@ async fn a_late_obsolete_probe_response_is_never_broadcast() {
         ),
         "late probe response stays private"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_malformed_probe_responses_do_not_reset_failures() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(60));
+    settings.request_timeout = Duration::from_millis(40);
+    settings
+        .env
+        .insert("FAKE_HEALTH".into(), "delay-malformed".into());
+    settings
+        .env
+        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while engine.is_alive() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("three timeouts retire despite late malformed traffic");
+    assert_eq!(engine.health_probe_completions(), 0);
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert_eq!(
+        seen.lines()
+            .filter(|method| *method == "prodCode/healthProbe")
+            .count(),
+        3,
+        "{seen}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn busy_probe_timeouts_retain_at_most_one_response_slot() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = Some(Duration::from_millis(10));
+    settings.request_timeout = Duration::from_millis(80);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    for count in 1..=20 {
+        wait_for_probe_count(&seen_file, count).await;
+        engine
+            .send_notification("prodCode/activity", serde_json::json!({}))
+            .await
+            .expect("ordinary activity overlaps the probe wait");
+        assert!(engine.retained_health_responses() <= 1);
+    }
+    wait_for_probe_count(&seen_file, 21).await;
+    assert!(
+        engine.is_alive(),
+        "busy deferrals do not become timeout failures"
+    );
+    assert_eq!(engine.retained_health_responses(), 1);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabled_periodic_supervision_is_an_explicit_non_retirement_control() {
+    let (dir, script) = workspace();
+    let seen_file = dir.path().join("seen");
+    let mut settings = config(&script);
+    settings.health_probe_interval = None;
+    settings.request_timeout = Duration::from_millis(40);
+    settings.env.insert("FAKE_HEALTH".into(), "silence".into());
+    settings.env.insert(
+        "FAKE_SEEN_FILE".into(),
+        seen_file.to_string_lossy().into_owned(),
+    );
+    let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        engine.is_alive(),
+        "disabled supervision does not infer failure"
+    );
+    let seen = std::fs::read_to_string(seen_file).unwrap();
+    assert!(!seen.lines().any(|method| method == "prodCode/healthProbe"));
 }
 
 #[cfg(unix)]
