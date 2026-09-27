@@ -175,12 +175,16 @@ fn map_location(value: &str, from: &Root, to: &Root) -> Option<String> {
     }
 }
 
-/// Maps every location in `value`: string values (URIs, plain paths, command arguments) and
-/// URI object keys (a `WorkspaceEdit`'s `changes`), leaving text fields alone. Whether anything
-/// changed.
-fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
+/// Maps LSP location strings and file-URI object keys, leaving source and documentation text
+/// alone. The mapper returns `None` for locations it does not own. This also lets the editor
+/// mirror use the same payload boundaries as workspace translation. Returns whether anything
+/// changed; a mapper that only observes locations can always return `None`.
+pub fn map_lsp_locations(
+    value: &mut Value,
+    mapper: &mut impl FnMut(&str) -> Option<String>,
+) -> bool {
     match value {
-        Value::String(text) => match map_location(text, from, to) {
+        Value::String(text) => match mapper(text) {
             Some(mapped) => {
                 *text = mapped;
                 true
@@ -188,13 +192,14 @@ fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
             None => false,
         },
         Value::Array(items) => items.iter_mut().fold(false, |changed, item| {
-            translate_value(item, from, to) | changed
+            map_lsp_locations(item, mapper) | changed
         }),
         Value::Object(map) => {
             let mut changed = false;
             let uri_keys: Vec<(String, String)> = map
                 .keys()
-                .filter_map(|key| map_uri(key, from, to).map(|mapped| (key.clone(), mapped)))
+                .filter(|key| key.starts_with("file:"))
+                .filter_map(|key| mapper(key).map(|mapped| (key.clone(), mapped)))
                 .collect();
             for (key, mapped) in uri_keys {
                 if let Some(item) = map.remove(&key) {
@@ -204,7 +209,7 @@ fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
             }
             for (key, item) in map.iter_mut() {
                 if !TEXT_FIELDS.contains(&key.as_str()) || (key == "label" && item.is_array()) {
-                    changed |= translate_value(item, from, to);
+                    changed |= map_lsp_locations(item, mapper);
                 }
             }
             changed
@@ -216,11 +221,13 @@ fn translate_value(value: &mut Value, from: &Root, to: &Root) -> bool {
 /// `json` with its locations moved from `from` to `to`; the original text when nothing moved.
 fn translate_json(json: &str, from: &Root, to: &Root) -> Result<String, serde_json::Error> {
     let mut value: Value = serde_json::from_str(json)?;
-    Ok(if translate_value(&mut value, from, to) {
-        value.to_string()
-    } else {
-        json.to_string()
-    })
+    Ok(
+        if map_lsp_locations(&mut value, &mut |text| map_location(text, from, to)) {
+            value.to_string()
+        } else {
+            json.to_string()
+        },
+    )
 }
 
 /// Bi-directional path and URI translator for prod-code sessions.

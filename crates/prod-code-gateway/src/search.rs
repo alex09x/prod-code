@@ -22,6 +22,7 @@ use crate::embed::Embed;
 use prod_code_protocol::{DenseStatus, SearchHit, SearchRequest, SearchResponse};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -103,6 +104,7 @@ impl Indexed {
 /// What a file contributed, with the stamp that tells us whether to redo it.
 struct FileEntry {
     stamp: (u64, u64),
+    generation: u64,
     decls: Vec<Indexed>,
 }
 
@@ -158,6 +160,8 @@ struct Inner {
     passage_model: Mutex<Model>,
     /// Workspaces a background pass is embedding right now.
     embedding: Mutex<HashSet<PathBuf>>,
+    /// Unique file-entry identities, including across workspace eviction and recreation.
+    next_generation: AtomicU64,
 }
 
 impl Default for SearchIndexes {
@@ -200,6 +204,7 @@ impl SearchIndexes {
                 query_model: Mutex::new(query),
                 passage_model: Mutex::new(passages),
                 embedding: Mutex::new(HashSet::new()),
+                next_generation: AtomicU64::new(0),
             }),
         }
     }
@@ -208,17 +213,18 @@ impl SearchIndexes {
     /// ways when there is a model. Declarations without a vector are embedded in the
     /// background afterwards.
     pub fn search(&self, root: &Path, query: &str, limit: usize, subpath: Option<&str>) -> Found {
+        let root = canonical_root(root);
         let query_vector = self.inner.query_vector(query);
         let found = {
             let mut guard = self.inner.lock_indexes();
-            let index = guard.entry(root.to_path_buf()).or_default();
+            let index = guard.entry(root.clone()).or_default();
             if !index.built {
-                refresh(root, index);
+                refresh(&root, index, &self.inner.next_generation);
                 index.built = true;
             } else if !index.pending.is_empty() {
                 let pending = std::mem::take(&mut index.pending);
                 for rel in pending {
-                    reindex_one(root, index, &rel);
+                    reindex_one(&root, index, &rel, &self.inner.next_generation);
                 }
             }
             let embedded = index.declarations().filter(|d| d.vector.is_some()).count();
@@ -238,7 +244,7 @@ impl SearchIndexes {
             .as_ref()
             .is_some_and(|d| d.embedded < found.declarations)
         {
-            self.embed_in_background(root);
+            self.embed_in_background(&root);
         }
         found
     }
@@ -284,7 +290,7 @@ impl SearchIndexes {
     /// Embeds up to `max` declarations of the workspace that have no vector yet, in the calling
     /// thread. Returns how many got one.
     pub fn embed_pending(&self, root: &Path, max: usize) -> usize {
-        self.inner.embed_pending(root, max)
+        self.inner.embed_pending(&canonical_root(root), max)
     }
 
     /// Records that these workspace-relative paths were written or deleted, so the next query
@@ -294,12 +300,15 @@ impl SearchIndexes {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
+        let root = canonical_root(root);
         let mut guard = self.inner.lock_indexes();
-        let Some(index) = guard.get_mut(root) else {
+        let Some(index) = guard.get_mut(&root) else {
             return;
         };
         for path in paths {
-            let rel = path.as_ref().replace('\\', "/");
+            let Some(rel) = normalize_relative_path(path.as_ref()) else {
+                continue;
+            };
             if language_of(rel.rsplit('/').next().unwrap_or(&rel)).is_some() {
                 index.pending.push(rel);
             }
@@ -308,7 +317,7 @@ impl SearchIndexes {
 
     /// Drops a workspace's index (its engine was evicted or its directory pruned).
     pub fn forget(&self, root: &Path) {
-        self.inner.lock_indexes().remove(root);
+        self.inner.lock_indexes().remove(&canonical_root(root));
     }
 }
 
@@ -329,7 +338,7 @@ impl Inner {
 
     fn embed_pending(&self, root: &Path, max: usize) -> usize {
         // What to embed, taken under the index lock and computed without it, so queries go on.
-        let batch: Vec<(String, (u64, u64), usize, String)> = {
+        let batch: Vec<(String, u64, usize, String)> = {
             let guard = self.lock_indexes();
             let Some(index) = guard.get(root) else {
                 return 0;
@@ -343,7 +352,7 @@ impl Inner {
                         .iter()
                         .enumerate()
                         .filter(|(_, d)| d.vector.is_none())
-                        .map(move |(i, d)| (rel.clone(), entry.stamp, i, d.passage()))
+                        .map(move |(i, d)| (rel.clone(), entry.generation, i, d.passage()))
                 })
                 .take(max)
                 .collect()
@@ -367,10 +376,10 @@ impl Inner {
             return 0;
         };
         let mut installed = 0;
-        for ((rel, stamp, i, _), vector) in batch.into_iter().zip(vectors) {
-            // A file reindexed meanwhile has new declarations; they wait for the next batch.
+        for ((rel, generation, i, _), vector) in batch.into_iter().zip(vectors) {
+            // A replacement entry has new declarations; they wait for the next batch.
             if let Some(entry) = index.files.get_mut(&rel)
-                && entry.stamp == stamp
+                && entry.generation == generation
                 && let Some(decl) = entry.decls.get_mut(i)
             {
                 decl.vector = Some(vector);
@@ -404,7 +413,7 @@ fn loaded<'a>(slot: &'a Mutex<Model>, purpose: &str) -> std::sync::MutexGuard<'a
 }
 
 /// Walks the workspace copy and reindexes files whose stamp changed.
-fn refresh(root: &Path, index: &mut WorkspaceIndex) {
+fn refresh(root: &Path, index: &mut WorkspaceIndex, generations: &AtomicU64) {
     let mut present = Vec::new();
     collect_source_files(root, root, &mut present);
     let mut seen: HashMap<String, ()> = HashMap::with_capacity(present.len());
@@ -434,14 +443,24 @@ fn refresh(root: &Path, index: &mut WorkspaceIndex) {
             .into_iter()
             .map(Indexed::new)
             .collect();
-        index.files.insert(rel, FileEntry { stamp, decls });
+        index.files.insert(
+            rel,
+            FileEntry {
+                stamp,
+                generation: generations.fetch_add(1, Ordering::Relaxed),
+                decls,
+            },
+        );
     }
     index.files.retain(|rel, _| seen.contains_key(rel));
 }
 
 /// Reindexes one file after the sync layer wrote or removed it.
-fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str) {
-    let path = root.join(rel);
+fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: &AtomicU64) {
+    let Some(path) = source_path(root, rel) else {
+        index.files.remove(rel);
+        return;
+    };
     let Ok(meta) = std::fs::metadata(&path) else {
         index.files.remove(rel);
         return;
@@ -466,9 +485,57 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str) {
         .into_iter()
         .map(Indexed::new)
         .collect();
-    index
-        .files
-        .insert(rel.to_string(), FileEntry { stamp, decls });
+    index.files.insert(
+        rel.to_string(),
+        FileEntry {
+            stamp,
+            generation: generations.fetch_add(1, Ordering::Relaxed),
+            decls,
+        },
+    );
+}
+
+/// Resolves the checkout itself once, so aliases to the checkout behave like the checkout, but
+/// never resolves descendants: a source link is not part of the checkout.
+fn canonical_root(root: &Path) -> PathBuf {
+    root.canonicalize().unwrap_or_else(|_| root.to_path_buf())
+}
+
+/// Normalizes an invalidation path using wire-path rules. Unlike a search scope, it must name a
+/// file, so absolute and parent-traversal forms are ignored rather than joined onto `root`.
+fn normalize_relative_path(raw: &str) -> Option<String> {
+    if raw.starts_with(['/', '\\']) {
+        return None;
+    }
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
+    let mut components = Vec::new();
+    for component in raw.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => return None,
+            component => components.push(component),
+        }
+    }
+    (!components.is_empty()).then(|| components.join("/"))
+}
+
+/// A source path is safe only when every descendant component exists without being a link.
+/// `root` itself is already canonicalized, allowing a checkout alias while rejecting arbitrary
+/// links below it (including a linked parent directory during incremental invalidation).
+fn source_path(root: &Path, rel: &str) -> Option<PathBuf> {
+    let rel = normalize_relative_path(rel)?;
+    let mut path = root.to_path_buf();
+    for component in rel.split('/') {
+        path.push(component);
+        let meta = std::fs::symlink_metadata(&path).ok()?;
+        if meta.file_type().is_symlink() {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 /// Source files worth indexing, relative path first. Mirrors the sync layer's exclusions.
@@ -478,6 +545,13 @@ fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        // `Path::is_dir` follows symlinks, which would escape the checkout or recurse forever.
+        if file_type.is_symlink() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().to_string();
         if matches!(
             name.as_str(),
@@ -496,9 +570,10 @@ fn collect_source_files(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)
         {
             continue;
         }
-        if path.is_dir() {
+        if file_type.is_dir() {
             collect_source_files(root, &path, out);
-        } else if language_of(&name).is_some()
+        } else if file_type.is_file()
+            && language_of(&name).is_some()
             && let Ok(rel) = path.strip_prefix(root)
         {
             out.push((rel.to_string_lossy().replace('\\', "/"), path));
@@ -916,9 +991,19 @@ fn candidates<'a>(
         .any(|t| matches!(t.as_str(), "test" | "spec" | "fixture" | "mock"));
     index
         .declarations()
-        .filter(|d| subpath.is_none_or(|p| d.decl.file.starts_with(p)))
+        .filter(|d| subpath.is_none_or(|p| path_is_in_scope(&d.decl.file, p)))
         .filter(|d| wants_tests || !d.decl.is_test)
         .collect()
+}
+
+/// Whether a workspace-relative indexed file is the scope itself or one of its descendants.
+/// Search paths are normalized before this is called, so a separator is the only valid
+/// component boundary and string prefixes such as `src/foo.rs` never match `src/foo.rsx`.
+fn path_is_in_scope(file: &str, scope: &str) -> bool {
+    file == scope
+        || file
+            .strip_prefix(scope)
+            .is_some_and(|remainder| remainder.starts_with('/'))
 }
 
 /// The lexical ranking, and the dense one when a query vector is given, fused by reciprocal
@@ -1059,6 +1144,30 @@ fn count(tokens: &[String], term: &str) -> f64 {
     tokens.iter().filter(|t| t.as_str() == term).count() as f64
 }
 
+/// Normalizes a wire path without host path semantics, so every gateway rejects the same
+/// absolute, drive and parent-traversal forms. Empty and dot-only paths mean the workspace root.
+fn normalize_subpath(raw: Option<&str>) -> Result<Option<String>, &'static str> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let bytes = raw.as_bytes();
+    if raw.starts_with(['/', '\\']) {
+        return Err("must be relative");
+    }
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err("must not use a drive path");
+    }
+    let mut components = Vec::new();
+    for component in raw.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => return Err("must not contain parent traversal"),
+            component => components.push(component),
+        }
+    }
+    Ok((!components.is_empty()).then(|| components.join("/")))
+}
+
 /// The first sentence of a doc block, for a one-line result.
 fn first_sentence(doc: &str) -> String {
     let trimmed = doc.trim();
@@ -1118,8 +1227,24 @@ pub fn run_search(
     } else {
         req.limit
     };
-    let subpath = req.subpath.as_deref().filter(|p| !p.is_empty());
-    let found = indexes.search(&workspace, &req.query, limit, subpath);
+    let subpath = match normalize_subpath(req.subpath.as_deref()) {
+        Ok(subpath) => subpath,
+        Err(reason) => {
+            return SearchResponse {
+                server_workspace_root: workspace_str,
+                hits: Vec::new(),
+                indexed_files: 0,
+                indexed_declarations: 0,
+                took_ms: started.elapsed().as_millis() as u64,
+                error: Some(format!(
+                    "invalid search subpath {:?}: {reason}",
+                    req.subpath
+                )),
+                dense: None,
+            };
+        }
+    };
+    let found = indexes.search(&workspace, &req.query, limit, subpath.as_deref());
     SearchResponse {
         server_workspace_root: workspace_str,
         hits: found.hits,
@@ -1140,6 +1265,181 @@ mod tests {
             .into_iter()
             .map(Indexed::new)
             .collect()
+    }
+
+    fn scoped_request(workspace: &str, query: &str, subpath: Option<&str>) -> SearchRequest {
+        SearchRequest {
+            client_workspace_root: "/client/workspace".into(),
+            base_workspace_name: Some(workspace.into()),
+            query: query.into(),
+            limit: 20,
+            subpath: subpath.map(str::to_owned),
+            client_agent: None,
+            client_host: None,
+        }
+    }
+
+    fn hit_files(response: &SearchResponse) -> Vec<String> {
+        response.hits.iter().map(|hit| hit.file.clone()).collect()
+    }
+
+    fn write_scope_fixture(root: &Path) {
+        for (rel, source) in [
+            (
+                "src/foo/nested.rs",
+                "/// Scope target in the requested directory.\npub fn in_directory() {}\n",
+            ),
+            (
+                "src/foo.rs",
+                "/// Scope target in a sibling file.\npub fn sibling_file() {}\n",
+            ),
+            (
+                "src/foobar/outside.rs",
+                "/// Scope target in a sibling string prefix.\npub fn sibling_prefix() {}\n",
+            ),
+            (
+                "src/füß/δ.rs",
+                "/// Scope target in a Unicode directory.\npub fn unicode_directory() {}\n",
+            ),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+    }
+
+    #[test]
+    fn run_search_scopes_components_normalization_and_workspaces() {
+        let storage = tempfile::tempdir().unwrap();
+        let scope_root = storage.path().join("scope");
+        write_scope_fixture(&scope_root);
+        let other_root = storage.path().join("other");
+        std::fs::create_dir_all(other_root.join("src/foo")).unwrap();
+        std::fs::write(
+            other_root.join("src/foo/other.rs"),
+            "/// Scope target in another workspace.\npub fn other_workspace() {}\n",
+        )
+        .unwrap();
+        let indexes = SearchIndexes::new();
+
+        let scoped = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/foo")),
+        );
+        assert_eq!(hit_files(&scoped), vec!["src/foo/nested.rs"]);
+
+        let file = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/foo.rs")),
+        );
+        assert_eq!(hit_files(&file), vec!["src/foo.rs"]);
+
+        let unicode = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/füß")),
+        );
+        assert_eq!(hit_files(&unicode), vec!["src/füß/δ.rs"]);
+
+        let root = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", None),
+        );
+        for scope in [Some(""), Some("."), Some("./")] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", scope),
+            );
+            assert_eq!(hit_files(&response), hit_files(&root), "{scope:?}");
+        }
+        for scope in [Some("src/foo/"), Some("src/./foo"), Some("src\\.\\foo\\")] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", scope),
+            );
+            assert_eq!(hit_files(&response), vec!["src/foo/nested.rs"], "{scope:?}");
+        }
+
+        for scope in [
+            "/src/foo",
+            "../src/foo",
+            "src/../foo",
+            "C:\\src\\foo",
+            "\\\\server\\share",
+        ] {
+            let response = run_search(
+                &indexes,
+                storage.path(),
+                &scoped_request("scope", "scope target", Some(scope)),
+            );
+            assert!(
+                response
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("invalid search subpath")),
+                "{scope:?}: {response:?}"
+            );
+        }
+
+        let missing = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("scope", "scope target", Some("src/missing")),
+        );
+        assert!(missing.error.is_none());
+        assert!(missing.hits.is_empty());
+
+        let other = run_search(
+            &indexes,
+            storage.path(),
+            &scoped_request("other", "scope target", Some("src/foo")),
+        );
+        assert_eq!(hit_files(&other), vec!["src/foo/other.rs"]);
+    }
+
+    #[test]
+    fn run_search_scope_filters_dense_candidates_after_invalidation() {
+        let storage = tempfile::tempdir().unwrap();
+        let root = storage.path().join("dense");
+        for (rel, source) in [
+            (
+                "src/foo/dense.rs",
+                "/// Re-establishes the socket after a drop.\npub fn inside_scope() {}\n",
+            ),
+            (
+                "src/foobar.rs",
+                "/// Re-establishes the socket outside the requested directory.\npub fn sibling_scope() {}\n",
+            ),
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, source).unwrap();
+        }
+        let indexes = SearchIndexes::with_embedders(Box::new(Concepts), Box::new(Concepts));
+        let request = scoped_request("dense", "restore the connection", Some("src/foo"));
+        let first = run_search(&indexes, storage.path(), &request);
+        assert!(first.hits.is_empty(), "the lexical half shares no words");
+        indexes.embed_pending(&root, 100);
+        let dense = run_search(&indexes, storage.path(), &request);
+        assert!(dense.dense.as_ref().is_some_and(|status| status.used));
+        assert_eq!(hit_files(&dense), vec!["src/foo/dense.rs"]);
+
+        std::fs::write(
+            root.join("src/foo/dense.rs"),
+            "/// Re-establishes the socket after a drop again.\npub fn inside_scope() {}\n",
+        )
+        .unwrap();
+        indexes.invalidate(&root, ["src/foo/dense.rs"]);
+        let _ = run_search(&indexes, storage.path(), &request);
+        indexes.embed_pending(&root, 100);
+        let refreshed = run_search(&indexes, storage.path(), &request);
+        assert!(refreshed.dense.as_ref().is_some_and(|status| status.used));
+        assert_eq!(hit_files(&refreshed), vec!["src/foo/dense.rs"]);
     }
 
     #[test]
@@ -1230,6 +1530,7 @@ impl Metrics {
             "src/place.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "src/place.rs",
                     "/// Decides which node runs a workspace: the one already holding it, else the quietest.\npub fn place(name: &str) -> Node { todo!() }\n",
@@ -1240,6 +1541,7 @@ impl Metrics {
             "src/sync.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "src/sync.rs",
                     "/// Uploads changed files to the gateway.\npub fn push_sync(files: Vec<File>) {}\n",
@@ -1271,6 +1573,7 @@ impl Metrics {
             "src/shadow.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: [
                     Declaration {
                         file: "src/shadow.rs".into(),
@@ -1333,6 +1636,7 @@ impl Metrics {
             "a.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls: index_decls(
                     "a.rs",
                     "/// Adds two numbers.\npub fn add(a: i32, b: i32) -> i32 { a + b }\n",
@@ -1442,8 +1746,13 @@ impl Metrics {
     /// Stands in for the model on a busy node: a batch of declarations says it has started and
     /// then blocks until the test releases it (or gives up after `BLOCK`), so a batch is in
     /// progress for as long as the test needs.
+    enum BatchPhase {
+        Started,
+        Finished,
+    }
+
     struct Blocking {
-        started: std::sync::mpsc::Sender<()>,
+        phase: std::sync::mpsc::Sender<BatchPhase>,
         release: std::sync::mpsc::Receiver<()>,
     }
 
@@ -1451,14 +1760,284 @@ impl Metrics {
 
     impl Embed for Blocking {
         fn passages(&mut self, texts: &[String]) -> anyhow::Result<Vec<Vec<f32>>> {
-            let _ = self.started.send(());
+            let _ = self.phase.send(BatchPhase::Started);
             let _ = self.release.recv_timeout(BLOCK);
+            let _ = self.phase.send(BatchPhase::Finished);
             Ok(texts.iter().map(|t| concept_vector(t)).collect())
         }
 
         fn query(&mut self, text: &str) -> anyhow::Result<Vec<f32>> {
             Ok(concept_vector(text))
         }
+    }
+
+    /// Releases a blocked batch even if an assertion fails.
+    struct ReleaseOnDrop(Option<std::sync::mpsc::Sender<()>>);
+
+    impl ReleaseOnDrop {
+        fn release(&self) {
+            self.0
+                .as_ref()
+                .expect("the release sender is present")
+                .send(())
+                .expect("the background batch is waiting");
+        }
+    }
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            if let Some(release) = &self.0 {
+                let _ = release.send(());
+            }
+        }
+    }
+
+    fn wait_for_background(indexes: &SearchIndexes, root: &Path) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while indexes
+            .inner
+            .embedding
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(root)
+        {
+            assert!(Instant::now() < deadline, "the background batch finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn wait_for_first_publication(indexes: &SearchIndexes, root: &Path) -> Found {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let found = indexes.search(root, "restore connection", 5, None);
+            if found.dense.as_ref().is_some_and(|dense| dense.embedded > 0) {
+                return found;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the first embedding publication completed"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    fn restore_modified(path: &Path, modified: std::time::SystemTime) {
+        std::fs::File::open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_skips_linked_sources_cycles_and_unsafe_invalidations() {
+        use std::os::unix::fs::symlink;
+
+        let storage = tempfile::tempdir().unwrap();
+        let checkout = storage.path().join("checkout");
+        let outside = storage.path().join("outside");
+        let outside_file = outside.join("sentinel.rs");
+        let outside_source =
+            "/// Outside sentinel must never be indexed.\npub fn outside_sentinel() {}\n";
+        std::fs::create_dir_all(checkout.join("nested")).unwrap();
+        std::fs::create_dir_all(outside.join("ancestor")).unwrap();
+        std::fs::write(
+            checkout.join("plain.rs"),
+            "/// Ordinary declaration remains searchable.\npub fn ordinary_source() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            checkout.join("nested/child.rs"),
+            "/// Stale ancestor declaration.\npub fn stale_ancestor() {}\n",
+        )
+        .unwrap();
+        std::fs::write(&outside_file, outside_source).unwrap();
+        std::fs::write(
+            outside.join("ancestor/child.rs"),
+            "/// Outside ancestor sentinel.\npub fn outside_ancestor() {}\n",
+        )
+        .unwrap();
+        symlink(&outside_file, checkout.join("linked.rs")).unwrap();
+        symlink(&outside, checkout.join("linked_dir")).unwrap();
+        symlink(&checkout, checkout.join("loop")).unwrap();
+
+        let indexes = SearchIndexes::new();
+        let request = scoped_request("checkout", "outside sentinel", None);
+        let (sent, received) = std::sync::mpsc::channel();
+        let search_indexes = indexes.clone();
+        let storage_root = storage.path().to_path_buf();
+        std::thread::spawn(move || {
+            let _ = sent.send(run_search(&search_indexes, &storage_root, &request));
+        });
+        let response = received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("linked directory cycle finishes within the watchdog");
+        assert!(response.hits.is_empty());
+        assert_eq!(response.indexed_files, 2);
+        assert_eq!(response.indexed_declarations, 2);
+
+        let alias = storage.path().join("checkout-alias");
+        symlink(&checkout, &alias).unwrap();
+        let ordinary = indexes.search(&alias, "ordinary declaration", 5, None);
+        assert_eq!(ordinary.hits[0].name, "ordinary_source");
+
+        symlink(&outside_file, checkout.join("plain.rs.new")).unwrap();
+        std::fs::remove_file(checkout.join("plain.rs")).unwrap();
+        std::fs::rename(checkout.join("plain.rs.new"), checkout.join("plain.rs")).unwrap();
+        indexes.invalidate(
+            &checkout,
+            ["plain.rs", "../outside/sentinel.rs", "/tmp/nope.rs"],
+        );
+        let linked = indexes.search(&checkout, "ordinary declaration", 5, None);
+        assert!(linked.hits.iter().all(|hit| hit.name != "ordinary_source"));
+        assert_eq!(
+            linked.files, 1,
+            "linked file remained indexed: {:?}",
+            linked.hits
+        );
+
+        std::fs::remove_dir_all(checkout.join("nested")).unwrap();
+        symlink(outside.join("ancestor"), checkout.join("nested")).unwrap();
+        indexes.invalidate(&checkout, ["nested/child.rs"]);
+        let ancestor = indexes.search(&checkout, "stale ancestor", 5, None);
+        assert!(
+            ancestor.hits.is_empty(),
+            "linked ancestor left stale hits: {:?}",
+            ancestor.hits
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_file).unwrap(),
+            outside_source
+        );
+
+        let dense = SearchIndexes::with_embedders(Box::new(Concepts), Box::new(Concepts));
+        let first = dense.search(&checkout, "outside sentinel", 5, None);
+        assert_eq!(
+            first.declarations, 0,
+            "linked sources became embedding input"
+        );
+        wait_for_background(&dense, &checkout);
+        assert_eq!(dense.embed_pending(&checkout, 100), 0);
+    }
+
+    #[test]
+    fn stale_batch_does_not_publish_to_replaced_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("net.rs");
+        let old = "/// Re-establishes the socket after a drop.\npub fn old_socket() {}\n/// Paints the hex colour.\npub fn old_paint() {}\n";
+        let mut current =
+            "/// Adds a note.\npub fn inserted_item() {}\n/// Re-establishes the socket.\npub fn moved_socket() {}\n".to_string();
+        assert!(current.len() <= old.len());
+        current.push_str(&" ".repeat(old.len() - current.len()));
+        assert_eq!(current.len(), old.len());
+        std::fs::write(&path, old).unwrap();
+        std::fs::write(
+            root.join("stable.rs"),
+            "/// Counts the comet.\npub fn stable_item() {}\n",
+        )
+        .unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let (phase, batch_phase) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let indexes = SearchIndexes::with_embedders(
+            Box::new(Concepts),
+            Box::new(Blocking {
+                phase,
+                release: released,
+            }),
+        );
+        let release = ReleaseOnDrop(Some(release));
+
+        indexes.search(&root, "restore connection", 5, None);
+        assert!(matches!(
+            batch_phase
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the old batch started"),
+            BatchPhase::Started
+        ));
+
+        // This is a delete/recreate with the old length and exact modification time. The new
+        // declaration also moves the reconnect passage to a different ordinal.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, &current).unwrap();
+        restore_modified(&path, modified);
+        indexes.invalidate(&root, ["net.rs"]);
+        let reindexed = indexes.search(&root, "restore connection", 5, None);
+        assert_eq!(reindexed.declarations, 3);
+        assert_eq!(reindexed.dense.as_ref().unwrap().embedded, 0);
+
+        release.release();
+        // The old batch either publishes and finishes, or the replacement batch has already
+        // begun. In both cases inspect the actual post-publication state before waiting for a
+        // replacement batch: without generation guards the stale vectors land right here.
+        assert!(matches!(
+            batch_phase
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the old batch finished"),
+            BatchPhase::Finished
+        ));
+
+        // The untouched file keeps its valid vector, but neither old vector can land on the
+        // replacement declarations.
+        let stale = wait_for_first_publication(&indexes, &root);
+        assert_eq!(stale.dense.as_ref().unwrap().embedded, 1);
+        assert!(stale.hits.iter().all(|hit| hit.name != "inserted_item"));
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let current = embedded(&indexes, &root, "restore connection");
+        assert!(current.dense.as_ref().unwrap().used);
+        assert_eq!(current.hits[0].name, "moved_socket", "{:?}", current.hits);
+    }
+
+    #[test]
+    fn stale_batch_does_not_survive_workspace_forget_and_recreation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let path = root.join("net.rs");
+        let old = "/// Re-establishes the socket.\npub fn old_socket() {}\n";
+        let mut current = "/// Paints the hex colour.\npub fn new_paint() {}\n".to_string();
+        assert!(current.len() <= old.len());
+        current.push_str(&" ".repeat(old.len() - current.len()));
+        assert_eq!(current.len(), old.len());
+        std::fs::write(&path, old).unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let (phase, batch_phase) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let indexes = SearchIndexes::with_embedders(
+            Box::new(Concepts),
+            Box::new(Blocking {
+                phase,
+                release: released,
+            }),
+        );
+        let release = ReleaseOnDrop(Some(release));
+
+        indexes.search(&root, "restore connection", 5, None);
+        assert!(matches!(
+            batch_phase
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the old batch started"),
+            BatchPhase::Started
+        ));
+        indexes.forget(&root);
+        std::fs::write(&path, &current).unwrap();
+        restore_modified(&path, modified);
+        let recreated = indexes.search(&root, "color", 5, None);
+        assert_eq!(recreated.declarations, 1);
+        assert_eq!(recreated.dense.as_ref().unwrap().embedded, 0);
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let stale = indexes.search(&root, "restore connection", 5, None);
+        assert!(!stale.hits.iter().any(|hit| hit.name == "new_paint"));
+
+        release.release();
+        wait_for_background(&indexes, &root);
+        let current = embedded(&indexes, &root, "color");
+        assert!(current.dense.as_ref().unwrap().used);
+        assert_eq!(current.hits[0].name, "new_paint", "{:?}", current.hits);
     }
 
     #[test]
@@ -1471,21 +2050,24 @@ impl Metrics {
         )
         .unwrap();
         let question = "restore the connection when the server goes away";
-        let (started, batch_started) = std::sync::mpsc::channel();
+        let (phase, batch_phase) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
         let indexes = SearchIndexes::with_embedders(
             Box::new(Concepts),
             Box::new(Blocking {
-                started,
+                phase,
                 release: released,
             }),
         );
 
         // The first search starts the background pass, whose batch then blocks.
         indexes.search(&root, question, 5, None);
-        batch_started
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("the background pass started a batch");
+        assert!(matches!(
+            batch_phase
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the background pass started a batch"),
+            BatchPhase::Started
+        ));
 
         // A question asked meanwhile is answered without waiting for that batch, and says how
         // far the embedding has got.
@@ -1530,6 +2112,7 @@ impl Metrics {
             "a.rs".to_string(),
             FileEntry {
                 stamp: (0, 0),
+                generation: 0,
                 decls,
             },
         );
@@ -1618,7 +2201,7 @@ impl Metrics {
         let mut model = crate::embed::OnnxEmbedder::load(&crate::embed::model_dir(&storage))
             .expect("the model is installed on this node");
         let mut index = WorkspaceIndex::default();
-        refresh(&root, &mut index);
+        refresh(&root, &mut index, &AtomicU64::new(0));
         let started = Instant::now();
         let mut count = 0;
         for entry in index.files.values_mut() {

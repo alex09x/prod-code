@@ -190,7 +190,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_safe_delete".to_string(),
-            description: "Delete the item (function, type, const, field, module) at a 1-based position only if nothing in the workspace references it; otherwise returns the list of usages that block the deletion. At a parameter of a function, the parameter is removed together with its argument at every call site (the same rewrite as `code_change_signature`), refused while the body still uses it, and type-checked before it is written. The edit is written into the checkout."
+            description: "Delete the item at a 1-based declaration-name position only when the analyzer proves it unreferenced. Rust items retain analyzer safe-delete behavior, and Rust parameters retain the code_change_signature rewrite. For Go, this writes only an ordinary unexported, ASCII-named, non-generic top-level function with a body: gopls must report exactly its declaration and no use, the range must match current source, and the complete proposal must compile remotely before it is applied. Go compiler verification uses the active Go build flags and is not an all-platform reachability proof; force bypasses none of these checks. Imports are not cleaned automatically."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -198,7 +198,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File path (relative to workspace or absolute)" },
                     "line": { "type": "integer", "description": "1-based line of the item's name" },
                     "character": { "type": "integer", "description": "1-based column of the item's name" },
-                    "force": { "type": "boolean", "description": "For a parameter: remove it even when the body uses it or the result does not compile" }
+                    "force": { "type": "boolean", "description": "Rust parameter compatibility option; it never bypasses Go safe-delete checks" }
                 },
                 "required": ["path", "line", "character"]
             }),
@@ -5484,15 +5484,39 @@ async fn handle_safe_delete(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument")? as u32;
-    let character = args
-        .get("character")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument")? as u32;
+    let line =
+        checked_position_argument(args.get("line").context("Missing 'line' argument")?, "line")?;
+    let character = checked_position_argument(
+        args.get("character")
+            .context("Missing 'character' argument")?,
+        "character",
+    )?;
     let file_path = resolve_file_path(workspace_root, path_str);
+    // Go has no analyzer safe-delete request. Its narrow compiler-verified planner must run
+    // before the Rust parameter scanner can mistake Go syntax for a parameter.
+    if file_path
+        .extension()
+        .is_some_and(|extension| extension == "go")
+    {
+        return Ok(
+            match crate::safe_delete_go::delete_function(
+                remote,
+                workspace_root,
+                &file_path,
+                line,
+                character,
+            )
+            .await
+            {
+                Ok(deleted) => McpToolCallResult::text(format!(
+                    "deleted unreferenced Go function {}; compiler-verified under the active Go build flags; 1 path updated:\n{}",
+                    deleted.name,
+                    deleted.path.display()
+                )),
+                Err(error) => McpToolCallResult::error(format!("safe delete refused: {error:#}")),
+            },
+        );
+    }
     // A parameter goes from the declaration and from every call at once, through
     // `change_signature`, which refuses while the body still uses it.
     let text = std::fs::read_to_string(&file_path).unwrap_or_default();
@@ -5889,6 +5913,56 @@ fn symbol_kind_name(kind: u64) -> &'static str {
     }
 }
 
+/// An LSP position is zero-based, but every tool position we retain is one-based.  Keep a
+/// distinct error type so a nested-project search can still ignore an unavailable server while
+/// refusing evidence that a server did return but encoded incorrectly.
+#[derive(Debug)]
+struct MalformedLspCoordinate(String);
+
+impl std::fmt::Display for MalformedLspCoordinate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MalformedLspCoordinate {}
+
+fn lsp_coordinate(start: &serde_json::Value, field: &str, context: &str) -> Result<u32> {
+    let value = start.get(field).ok_or_else(|| {
+        anyhow::Error::new(MalformedLspCoordinate(format!(
+            "malformed LSP {context}: missing `{field}` coordinate"
+        )))
+    })?;
+    let value = value.as_u64().ok_or_else(|| {
+        anyhow::Error::new(MalformedLspCoordinate(format!(
+            "malformed LSP {context}: `{field}` must be a non-negative integer"
+        )))
+    })?;
+    let value = u32::try_from(value).map_err(|_| {
+        anyhow::Error::new(MalformedLspCoordinate(format!(
+            "malformed LSP {context}: `{field}` exceeds u32"
+        )))
+    })?;
+    value.checked_add(1).ok_or_else(|| {
+        anyhow::Error::new(MalformedLspCoordinate(format!(
+            "malformed LSP {context}: `{field}` cannot be converted to a one-based coordinate"
+        )))
+    })
+}
+
+fn lsp_position(start: &serde_json::Value, context: &str) -> Result<(u32, u32)> {
+    Ok((
+        lsp_coordinate(start, "line", context)?,
+        lsp_coordinate(start, "character", context)?,
+    ))
+}
+
+fn is_malformed_lsp_coordinate(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<MalformedLspCoordinate>())
+}
+
 /// `workspace/symbol` through the pooled session of the project `hint` belongs to (the root
 /// when absent). Hits without a range (LSP `WorkspaceSymbol` without resolve) are skipped.
 pub async fn workspace_symbol_search(
@@ -5942,17 +6016,37 @@ pub async fn workspace_symbol_search(
         let Some(name) = sym.get("name").and_then(|n| n.as_str()) else {
             continue;
         };
+        let context = format!("workspace symbol `{name}`");
         let Some(uri) = sym.pointer("/location/uri").and_then(|u| u.as_str()) else {
+            if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
+                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
+                    "malformed LSP {context}: missing location URI"
+                ))));
+            }
             continue;
         };
         let Some(path) = Url::parse(uri).ok().and_then(|u| u.to_file_path().ok()) else {
+            if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
+                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
+                    "malformed LSP {context}: invalid location URI"
+                ))));
+            }
             continue;
         };
         let Some(start) = sym.pointer("/location/range/start") else {
+            if bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query)) {
+                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
+                    "malformed LSP {context}: missing location range start"
+                ))));
+            }
             continue;
         };
-        let line = start.get("line").and_then(|l| l.as_u64()).unwrap_or(0) as u32 + 1;
-        let col = start.get("character").and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1;
+        let matching = bare_symbol_name(name).eq_ignore_ascii_case(bare_symbol_name(query));
+        let (line, col) = match lsp_position(start, &context) {
+            Ok(position) => position,
+            Err(error) if matching => return Err(error),
+            Err(_) => continue,
+        };
         hits.push(SymbolHit {
             path,
             name: name.to_string(),
@@ -6619,7 +6713,7 @@ async fn type_members(
             continue;
         };
         let mut found = Vec::new();
-        collect_members(&outline, root, file, owner, member, &[], &mut found);
+        collect_members(&outline, root, file, owner, member, &[], &mut found)?;
         for (name, kind, line, col) in found {
             let hit = SymbolHit {
                 path: file.clone(),
@@ -6659,7 +6753,7 @@ fn collect_members(
     member: &str,
     ancestors: &[String],
     out: &mut Vec<(String, u64, u32, u32)>,
-) {
+) -> Result<()> {
     let type_name = owner.last().copied().unwrap_or_default();
     let is_member = |sym: &serde_json::Value| {
         let name = sym.get("name").and_then(|n| n.as_str()).unwrap_or("");
@@ -6672,7 +6766,7 @@ fn collect_members(
                 owner_path_matches(root, path, owner, &owner_segments(parent))
             })
         {
-            out.extend(member_at(sym));
+            out.push(member_at(sym)?);
         }
         let Some(children) = sym.get("children") else {
             continue;
@@ -6683,7 +6777,7 @@ fn collect_members(
         if names_type(name, type_name) && owner_path_matches(root, path, owner, &declared) {
             for child in children.as_array().into_iter().flatten() {
                 if is_member(child) {
-                    out.extend(member_at(child));
+                    out.push(member_at(child)?);
                 }
             }
         }
@@ -6693,21 +6787,34 @@ fn collect_members(
         } else {
             ancestors.to_vec()
         };
-        collect_members(children, root, path, owner, member, &nested_ancestors, out);
+        collect_members(children, root, path, owner, member, &nested_ancestors, out)?;
     }
+    Ok(())
 }
 
 /// A document symbol as (name, kind, line, column) of its name, 1-based: the selection range
 /// when there is one, which is the name rather than the doc comment the range starts at.
-fn member_at(sym: &serde_json::Value) -> Option<(String, u64, u32, u32)> {
+fn member_at(sym: &serde_json::Value) -> Result<(String, u64, u32, u32)> {
     let start = sym
         .pointer("/selectionRange/start")
         .or_else(|| sym.pointer("/range/start"))
-        .or_else(|| sym.pointer("/location/range/start"))?;
-    let line = start.get("line").and_then(|l| l.as_u64())? as u32 + 1;
-    let col = start.get("character").and_then(|c| c.as_u64()).unwrap_or(0) as u32 + 1;
-    Some((
-        sym.get("name")?.as_str()?.to_string(),
+        .or_else(|| sym.pointer("/location/range/start"))
+        .ok_or_else(|| {
+            anyhow::Error::new(MalformedLspCoordinate(
+                "malformed LSP member symbol: missing selection range start".to_string(),
+            ))
+        })?;
+    let name = sym
+        .get("name")
+        .and_then(|name| name.as_str())
+        .ok_or_else(|| {
+            anyhow::Error::new(MalformedLspCoordinate(
+                "malformed LSP member symbol: missing name".to_string(),
+            ))
+        })?;
+    let (line, col) = lsp_position(start, &format!("member symbol `{name}`"))?;
+    Ok((
+        name.to_string(),
         sym.get("kind").and_then(|k| k.as_u64()).unwrap_or(0),
         line,
         col,
@@ -6811,7 +6918,7 @@ async fn symbol_search_across_projects(
             } else {
                 files_naming(hint, engine, name)
             };
-            hits.extend(declarations_in(node, root, &files, name).await);
+            hits.extend(declarations_in(node, root, &files, name).await?);
         }
         return Ok(hits);
     }
@@ -6842,6 +6949,9 @@ async fn symbol_search_across_projects(
                     error = %format!("{err:#}"),
                     "a nested project's symbol search failed"
                 );
+                if is_malformed_lsp_coordinate(&err) {
+                    return Err(err);
+                }
                 Vec::new()
             }
         };
@@ -6853,7 +6963,7 @@ async fn symbol_search_across_projects(
             // sourcekit-lsp has no index for Swift files a package does not build, and answers
             // `workspace/symbol` with nothing: their outlines still name what they declare.
             let files = files_naming(&root.join(&subpath), engine, name);
-            hits.extend(declarations_in(node, root, &files, name).await);
+            hits.extend(declarations_in(node, root, &files, name).await?);
         }
     }
     Ok(hits)
@@ -6937,7 +7047,7 @@ async fn declarations_in(
     root: &Path,
     files: &[std::path::PathBuf],
     name: &str,
-) -> Vec<SymbolHit> {
+) -> Result<Vec<SymbolHit>> {
     let mut hits = Vec::new();
     for file in files {
         let Ok(uri) = Url::from_file_path(file) else {
@@ -6949,9 +7059,9 @@ async fn declarations_in(
         else {
             continue;
         };
-        collect_named(&outline, name, None, file, &mut hits);
+        collect_named(&outline, name, None, file, &mut hits)?;
     }
-    hits
+    Ok(hits)
 }
 
 /// Walks a `textDocument/documentSymbol` answer, nested or flat, for the symbols called `name`.
@@ -6961,7 +7071,7 @@ fn collect_named(
     parent: Option<&str>,
     file: &Path,
     out: &mut Vec<SymbolHit>,
-) {
+) -> Result<()> {
     for symbol in symbols.as_array().into_iter().flatten() {
         let own = symbol.get("name").and_then(|n| n.as_str()).unwrap_or("");
         if bare_symbol_name(own).eq_ignore_ascii_case(name) {
@@ -6969,7 +7079,7 @@ fn collect_named(
                 .pointer("/selectionRange/start")
                 .or_else(|| symbol.pointer("/location/range/start"));
             if let Some(start) = start {
-                let at = |key: &str| start.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let (line, col) = lsp_position(start, &format!("named declaration `{own}`"))?;
                 out.push(SymbolHit {
                     path: file.to_path_buf(),
                     name: own.to_string(),
@@ -6983,15 +7093,20 @@ fn collect_named(
                             .filter(|c| !c.is_empty())
                             .map(str::to_string)
                     }),
-                    line: at("line") + 1,
-                    col: at("character") + 1,
+                    line,
+                    col,
                 });
+            } else {
+                return Err(anyhow::Error::new(MalformedLspCoordinate(format!(
+                    "malformed LSP named declaration `{own}`: missing selection range start"
+                ))));
             }
         }
         if let Some(children) = symbol.get("children") {
-            collect_named(children, name, Some(own), file, out);
+            collect_named(children, name, Some(own), file, out)?;
         }
     }
+    Ok(())
 }
 
 /// One source file of each project in the checkout besides the root's, with the project's

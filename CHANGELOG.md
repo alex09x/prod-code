@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- Go safe-delete supports ordinary unexported, ASCII-named, non-generic top-level functions
+  with bodies (#550). Exact gopls declaration/reference evidence and remote package/test
+  compilation precede the write. Used functions, generated or linked sources, uncertain
+  evidence and unsupported declarations refuse without changes, including with force.
+  Verification uses the active build flags; imports are not removed automatically.
 - Session handshakes negotiate a mutually supported protocol version (#537). Legacy peers
   remain compatible; empty or incompatible offers refuse before session creation, and clients
   reject unsupported selections before initializing a language server.
@@ -61,6 +66,23 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- The editor's remote-file mirror preserves source, edits and documentation while translating
+  LSP locations (#568). Encoded cache paths round-trip correctly, sibling directory prefixes
+  stay unchanged, and workspace-edit URI keys use the same mapping as location values.
+- Symbol resolution refuses missing, malformed and overflowing LSP response coordinates (#564)
+  instead of defaulting or wrapping them to another source position. Matching workspace hits,
+  qualified members and fallback declarations propagate the error before any refactoring write,
+  including forced application.
+- Delayed search embeddings carry a file-entry generation, so a same-size edit or an index
+  recreation cannot attach an older vector to a current declaration (#556). Search indexing
+  skips descendant file and directory symlinks, removes invalidated linked sources, and ignores
+  absolute or parent-traversal invalidations (#557). Checkout-root aliases remain supported.
+- Search scopes match an exact file or directory descendants, excluding sibling string prefixes
+  (#555). Root and dot components are normalized consistently; absolute and parent-traversal
+  scopes return an error. Lexical and dense ranking use the same scope.
+- Fallback LSP requests already answered by the gateway stay out of editor sessions (#554).
+  Unknown server requests still reach the editor, while notifications and client responses
+  preserve their routing even when server and client request IDs collide.
 - Fallback LSP writes have one deadline covering writer contention, frame bytes and flush
   (#548). Interrupted partial frames retire the owned child before queued writers resume;
   caller-side timeouts before writing leave a healthy worker usable. A failed automatic reply
