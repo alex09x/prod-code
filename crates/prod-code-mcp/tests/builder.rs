@@ -1074,3 +1074,37 @@ fn a_wide_struct_builds_with_every_setter_and_names_the_missing_one() {
     let printed = compile_and_run(&[("main.rs", &main), ("wide.rs", &plan.file_text)]);
     assert_eq!(printed, "46 2\nf17\n");
 }
+
+#[test]
+fn primary_review_generic_builders_preserve_nontrivial_bounds_without_extra_traits() {
+    for (source, name, usage, output) in [
+        (
+            "pub struct Holder<T> {\n    pub value: T,\n}\n",
+            "Holder",
+            "struct Opaque(u8); fn main() { let v = HolderBuilder::new().value(Opaque(7)).build().unwrap(); println!(\"{}\", v.value.0); }",
+            "7\n",
+        ),
+        (
+            "pub struct Borrowed<'a, 'b: 'a, T: ?Sized + 'b> {\n    pub left: &'a T,\n    pub right: &'b T,\n}\n",
+            "Borrowed",
+            "fn main() { let v = BorrowedBuilder::new().left(\"a\").right(\"b\").build().unwrap(); println!(\"{}{}\", v.left, v.right); }",
+            "ab\n",
+        ),
+        (
+            "pub struct Iter<T: Iterator<Item = u8>> where T::Item: Copy {\n    pub iterator: T,\n    pub item: T::Item,\n}\n",
+            "Iter",
+            "fn main() { let v = IterBuilder::new().iterator(std::iter::empty::<u8>()).item(7).build().unwrap(); println!(\"{}\", v.item); }",
+            "7\n",
+        ),
+        (
+            "pub struct Callable<F: for<'a> Fn(&'a str) -> &'a str = fn(&str) -> &str> {\n    pub function: F,\n}\n",
+            "Callable",
+            "fn main() { let v: Callable = CallableBuilder::new().function((|s| s) as fn(&str)->&str).build().unwrap(); println!(\"{}\", (v.function)(\"ok\")); }",
+            "ok\n",
+        ),
+    ] {
+        let plan = builder::plan(source, name, (1, source.lines().count() as u32), None).unwrap();
+        let program = format!("{}\n{}\n", plan.file_text, usage);
+        assert_eq!(compile_and_run(&[("main.rs", &program)]), output, "{name}");
+    }
+}

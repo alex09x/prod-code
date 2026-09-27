@@ -464,7 +464,8 @@ enum Commands {
         command: Vec<String>,
     },
     /// Generate a Rust value or typed builder, checked by the analyzer before it is printed.
-    /// Builders support named-field, non-generic structs and require every field at build time.
+    /// Builders support named fields with ordinary lifetime/type/const parameters and bounds.
+    /// Every field is required; Self-dependent bounds, macros and complex const expressions are refused.
     /// Preview only: no files are written. `--no-verify` prints an explicitly unverified draft.
     Fixture {
         /// The type to build.
