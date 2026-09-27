@@ -66,6 +66,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Dedicated editor servers share the bounded LSP frame reader (#573). Duplicate or
+  malformed headers, oversized or truncated frames and invalid UTF-8 end the owned
+  session without forwarding corrupted text.
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.

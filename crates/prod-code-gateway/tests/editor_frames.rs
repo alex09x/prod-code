@@ -107,6 +107,7 @@ async fn retire_owned_child(pid: i32) -> Result<(), String> {
         wait_for_exit(pid)
             .await
             .map_err(|kill_error| format!("{wait_error}; {kill_error}"))?;
+        return Err(wait_error);
     }
     Ok(())
 }
@@ -199,4 +200,29 @@ async fn malformed_editor_stdout_closes_the_owned_session_without_lossy_text() {
     ] {
         malformed_stdout_closes_session(frame, close_stdout).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cleanup_reports_a_child_that_needed_forced_retirement() {
+    let mut child = tokio::process::Command::new("sleep")
+        .arg("30")
+        .kill_on_drop(true)
+        .spawn()
+        .expect("start an owned, deliberately surviving child");
+    let pid = i32::try_from(child.id().expect("owned child pid")).expect("PID fits i32");
+    let mut reap = tokio::spawn(async move { child.wait().await });
+    let outcome = retire_owned_child(pid).await;
+    let reaped = tokio::time::timeout(WAIT, &mut reap).await;
+    if reaped.is_err() {
+        reap.abort();
+        let _ = tokio::time::timeout(WAIT, &mut reap).await;
+    }
+    assert!(
+        matches!(&reaped, Ok(Ok(Ok(status))) if !status.success()),
+        "the cleanup must reap its forcibly retired child: {reaped:?}"
+    );
+    assert!(
+        outcome.is_err(),
+        "forcing cleanup must report the original child-retirement failure"
+    );
 }
