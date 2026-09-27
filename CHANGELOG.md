@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- Go signature changes can replace one unnamed primitive result on ordinary non-generic,
+  non-variadic free functions (#529). The named parameter list must stay unchanged; complete
+  direct-call evidence and remote compilation of packages and test callers are mandatory for
+  preview and apply, including no-ops. Shadowed primitive names, linked package sources and
+  unsupported result shapes refuse before writing, even with force. Broader Go signatures
+  remain open (#448).
 - Generic Rust inherent implementations can now use `code_extract_trait` (#505). Ordinary
   lifetime, type and const parameters, inline bounds and `where` clauses are carried to the
   generated trait and trait implementation, while retained methods keep the original inherent

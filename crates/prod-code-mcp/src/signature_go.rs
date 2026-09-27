@@ -1240,12 +1240,22 @@ fn ensure_predeclared_types_unshadowed(root: &Path, file: &Path, types: &[&str])
             )
         })?;
         let path = entry.path();
-        if path.extension().is_none_or(|extension| extension != "go")
-            || !entry
-                .file_type()
-                .with_context(|| format!("cannot inspect {}", path.display()))?
-                .is_file()
-        {
+        if path.extension().is_none_or(|extension| extension != "go") {
+            continue;
+        }
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("cannot inspect {}", path.display()))?;
+        // `DirEntry::file_type` deliberately does not follow links. Go and the checkout sync
+        // do, so silently skipping one could make a package-level alias look predeclared. Do
+        // not follow it here: the link might lead outside the checkout we are allowed to read.
+        if file_type.is_symlink() {
+            anyhow::bail!(
+                "cannot prove primitive type identity: linked Go source {} is not inspected",
+                display(root, &path)
+            );
+        }
+        if !file_type.is_file() {
             continue;
         }
         let source = std::fs::read_to_string(&path)
