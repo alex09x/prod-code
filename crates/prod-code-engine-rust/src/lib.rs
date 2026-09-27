@@ -2174,7 +2174,10 @@ fn line_col_to_offset(text: &str, target_line: u32, target_col: u32) -> Option<T
                 .find('\n')
                 .map_or(text.len(), |rel| line_start + rel);
             // A CR immediately before LF is part of the line encoding, not a source column.
-            let line_end = if line_end > line_start && text.as_bytes()[line_end - 1] == b'\r' {
+            let line_end = if line_end < text.len()
+                && line_end > line_start
+                && text.as_bytes()[line_end - 1] == b'\r'
+            {
                 line_end - 1
             } else {
                 line_end
@@ -2415,6 +2418,11 @@ mod tests {
     /// is before `\r`, and the next line begins after `\n` (#456).
     #[test]
     fn a_crlf_pair_has_no_between_bytes_position() {
+        for text in ["\r", "ab\r", "😀\r"] {
+            let eof = TextSize::of(text);
+            let (line, col) = offset_to_line_col(text, eof);
+            assert_eq!(line_col_to_offset(text, line, col), Some(eof), "{text:?}");
+        }
         let text = "ab\r\ncd";
         assert_eq!(line_col_to_offset(text, 1, 3), Some(TextSize::from(2)));
         assert_eq!(line_col_to_offset(text, 1, 4), None);

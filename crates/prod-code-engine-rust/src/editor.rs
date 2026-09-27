@@ -44,7 +44,7 @@ impl<'a> Lines<'a> {
             .starts
             .get(line + 1)
             .map_or(self.text.len(), |&next| next - 1);
-        if end > start && self.text.as_bytes()[end - 1] == b'\r' {
+        if end < self.text.len() && end > start && self.text.as_bytes()[end - 1] == b'\r' {
             end - 1
         } else {
             end
@@ -778,6 +778,15 @@ mod tests {
             TextRange::new(TextSize::from(0), TextSize::from(x as u32))
         );
 
+        for text in ["\r", "ab\r", "😀\r"] {
+            let lines = Lines::new(text);
+            let units = text.encode_utf16().count() as u32;
+            assert_eq!(
+                lines.position(TextSize::of(text)),
+                json!({ "line": 0, "character": units })
+            );
+            assert_eq!(lines.offset(0, units), TextSize::of(text));
+        }
         let crlf = "ab\r\ncd";
         let lines = Lines::new(crlf);
         // The two CRLF bytes share the preceding line's end position; no editor response

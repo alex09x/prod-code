@@ -406,10 +406,9 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     transactional for text edits since #70. The #425 repair extends rollback across ordered create,
     rename and delete operations, uses UTF-16 columns, rechecks containment after directory moves,
     and removes backups from their final paths. Rust outcomes send rewrites before moves. The
-    #456 coordinate repair makes planner and native-editor positions UTF-16, with strict source
-    line bounds: CRLF is one logical break and no position can split it or a surrogate pair.
-    Resource
-    operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
+    #456 coordinate repair makes source positions UTF-16: planners refuse invalid line or
+    character boundaries, while the editor clamps them. CRLF is one logical break and a final
+    bare carriage return remains source text. Resource operations remain explicitly unmodeled by the diagnostic preview; analyzer validation is not
     a compiler proof or a filesystem transaction preview.
     - **Conflict Detection & Pre-Validation**: detects shadowed identifiers, unresolvable ambiguities, visibility violations, and trait constraint breaches *before* applying any changes, emitting a structured conflict preview.
     - **Client-Side Atomic Transactional Applicator**: applies `TextEdit` batches directly to local files with microsecond latency, featuring automatic snapshot & instant rollback if any disk write fails.
