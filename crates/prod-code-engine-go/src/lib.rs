@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -109,6 +109,36 @@ struct PendingRequest {
     frame_written: bool,
 }
 
+struct FrameWrite {
+    child: Weak<StdMutex<Child>>,
+    pending: Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+    is_alive: Weak<AtomicBool>,
+    started: bool,
+    complete: bool,
+}
+
+impl FrameWrite {
+    fn retire(&self) {
+        if let Some(is_alive) = self.is_alive.upgrade() {
+            is_alive.store(false, Ordering::Release);
+        }
+        if let Some(child) = self.child.upgrade() {
+            let _ = lock_unpoisoned(&child).start_kill();
+        }
+        if let Some(pending) = self.pending.upgrade() {
+            lock_unpoisoned(&pending).clear();
+        }
+    }
+}
+
+impl Drop for FrameWrite {
+    fn drop(&mut self) {
+        if self.started && !self.complete {
+            self.retire();
+        }
+    }
+}
+
 impl PendingRequest {
     fn retire_if_partial(&self) {
         if self.frame_written {
@@ -204,19 +234,23 @@ impl GoEngine {
             Arc::new(StdMutex::new(HashMap::new()));
         let pending_clone = pending_requests.clone();
 
+        let child = Arc::new(StdMutex::new(child));
+        let child_writer = Arc::downgrade(&child);
+        let pending_writer = Arc::downgrade(&pending_requests);
         let stdin_arc = Arc::new(Mutex::new(stdin));
         let stdin_writer = stdin_arc.clone();
         let is_alive = Arc::new(AtomicBool::new(true));
         let is_alive_reader = Arc::clone(&is_alive);
         let readiness = Arc::new(Readiness::new(ReadySignal::Progress));
         let readiness_reader = Arc::clone(&readiness);
+        let auto_reply_timeout = request_timeout;
 
         // Background reader loop: decodes LSP frames and routes responses to oneshot channels
         tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             let mut header_line = String::new();
 
-            loop {
+            'reader: loop {
                 header_line.clear();
                 match reader.read_line(&mut header_line).await {
                     Ok(0) => break, // EOF
@@ -257,33 +291,54 @@ impl GoEngine {
                                         // Server-initiated request requiring auto-reply
                                         let method = val.get("method").and_then(|m| m.as_str());
                                         if let Some(m) = method {
-                                            match m {
+                                            let auto_resp = match m {
                                                 "window/workDoneProgress/create"
                                                 | "client/registerCapability" => {
-                                                    let auto_resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": null
-                                                    });
-                                                    let _ = Self::write_frame_raw(
-                                                        &stdin_writer,
-                                                        &auto_resp,
-                                                    )
-                                                    .await;
+                                                    })
                                                 }
                                                 "workspace/configuration" => {
-                                                    let auto_resp = serde_json::json!({
+                                                    serde_json::json!({
                                                         "jsonrpc": "2.0",
                                                         "id": id_val,
                                                         "result": [{}]
-                                                    });
-                                                    let _ = Self::write_frame_raw(
-                                                        &stdin_writer,
-                                                        &auto_resp,
-                                                    )
-                                                    .await;
+                                                    })
                                                 }
-                                                _ => {}
+                                                _ => serde_json::json!({
+                                                    "jsonrpc": "2.0",
+                                                    "id": id_val,
+                                                    "error": { "code": -32601, "message": format!("{m} is not supported by prod-code") }
+                                                }),
+                                            };
+                                            if let Err(error) = Self::write_frame_until(
+                                                &stdin_writer,
+                                                &auto_resp,
+                                                tokio::time::Instant::now() + auto_reply_timeout,
+                                                m,
+                                                &child_writer,
+                                                &pending_writer,
+                                                &Arc::downgrade(&is_alive_reader),
+                                            )
+                                            .await
+                                            {
+                                                tracing::warn!(
+                                                    method = m,
+                                                    error = %error,
+                                                    "failed to answer gopls request; retiring process"
+                                                );
+                                                let mut retirement = FrameWrite {
+                                                    child: child_writer.clone(),
+                                                    pending: pending_writer.clone(),
+                                                    is_alive: Arc::downgrade(&is_alive_reader),
+                                                    started: true,
+                                                    complete: false,
+                                                };
+                                                retirement.retire();
+                                                retirement.complete = true;
+                                                break 'reader;
                                             }
                                         }
                                     }
@@ -301,6 +356,19 @@ impl GoEngine {
             // No answer is coming for a request still waiting: dropping its sender ends the
             // wait now, not at the timeout (#355).
             lock_unpoisoned(&pending_clone).clear();
+            if let Some(child) = child_writer.upgrade() {
+                let _ = lock_unpoisoned(&child).start_kill();
+                for _ in 0..200 {
+                    let status = {
+                        let mut child = lock_unpoisoned(&child);
+                        child.try_wait()
+                    };
+                    match status {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => tokio::time::sleep(Duration::from_millis(5)).await,
+                    }
+                }
+            }
             tracing::info!("gopls background reader loop stopped");
         });
 
@@ -314,7 +382,7 @@ impl GoEngine {
             is_alive,
             readiness,
             request_timeout,
-            _child: Arc::new(StdMutex::new(child)),
+            _child: child,
         };
 
         // Initialize gopls with workspace root
@@ -324,15 +392,43 @@ impl GoEngine {
     }
 
     /// Helper to write an LSP Content-Length frame directly to child stdin.
-    async fn write_frame_raw(
+    async fn write_frame_until(
         writer: &Arc<Mutex<ChildStdin>>,
         val: &serde_json::Value,
+        deadline: tokio::time::Instant,
+        method: &str,
+        child: &Weak<StdMutex<Child>>,
+        pending: &Weak<StdMutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
+        is_alive: &Weak<AtomicBool>,
     ) -> Result<()> {
         let body = val.to_string();
         let frame = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
-        let mut sin = writer.lock().await;
-        sin.write_all(frame.as_bytes()).await?;
-        sin.flush().await?;
+        let mut sin = tokio::time::timeout_at(deadline, writer.lock())
+            .await
+            .with_context(|| format!("Timeout waiting to send gopls message '{method}'"))?;
+        if !is_alive
+            .upgrade()
+            .is_some_and(|alive| alive.load(Ordering::Acquire))
+        {
+            anyhow::bail!("gopls process has exited before message '{method}'");
+        }
+        // Declared after `sin`, so cancellation retires the process before unlocking stdin.
+        let mut frame_write = FrameWrite {
+            child: child.clone(),
+            pending: pending.clone(),
+            is_alive: is_alive.clone(),
+            started: true,
+            complete: false,
+        };
+        tokio::time::timeout_at(deadline, sin.write_all(frame.as_bytes()))
+            .await
+            .with_context(|| format!("Timeout writing gopls message '{method}'"))?
+            .with_context(|| format!("Failed to write gopls message '{method}'"))?;
+        tokio::time::timeout_at(deadline, sin.flush())
+            .await
+            .with_context(|| format!("Timeout flushing gopls message '{method}'"))?
+            .with_context(|| format!("Failed to flush gopls message '{method}'"))?;
+        frame_write.complete = true;
         Ok(())
     }
 
@@ -477,12 +573,25 @@ impl GoEngine {
 
     /// Send an asynchronous JSON-RPC notification to `gopls`.
     pub async fn send_notification(&self, method: &str, params: serde_json::Value) -> Result<()> {
+        if !self.is_alive.load(Ordering::Acquire) {
+            anyhow::bail!("gopls process has exited before notification '{method}'");
+        }
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
             "method": method,
             "params": params
         });
-        Self::write_frame_raw(&self.stdin, &payload).await
+        Self::write_frame_until(
+            &self.stdin,
+            &payload,
+            deadline,
+            method,
+            &Arc::downgrade(&self._child),
+            &Arc::downgrade(&self.pending_requests),
+            &Arc::downgrade(&self.is_alive),
+        )
+        .await
     }
 
     /// Notify `gopls` that a document was opened in an editor or worktree.
@@ -627,6 +736,9 @@ import json, os, sys, threading, time
 LOCK = threading.Lock()
 SEEN = []
 SEEN_FILE = os.environ.get("FAKE_SEEN_FILE")
+if os.environ.get("FAKE_PID_FILE"):
+    with open(os.environ["FAKE_PID_FILE"], "w") as pid_file:
+        pid_file.write(str(os.getpid()))
 
 def send(message):
     body = json.dumps(message).encode()
@@ -670,6 +782,9 @@ while True:
     elif method == "initialized" and os.environ.get("FAKE_CLOSE_STDIN"):
         os.close(0)
         threading.Event().wait()
+    elif method == "initialized" and os.environ.get("FAKE_HUGE_AUTO_REQUEST"):
+        send({"jsonrpc": "2.0", "id": 7001, "method": "x" * (8 * 1024 * 1024), "params": {}})
+        threading.Event().wait()
     elif method == "initialized" and os.environ.get("FAKE_STOP_READING"):
         threading.Event().wait()
     elif method == "textDocument/hover":
@@ -703,6 +818,10 @@ while True:
             "FAKE_SEEN_FILE".to_string(),
             dir.path().join("seen").to_string_lossy().into_owned(),
         );
+        config.extra_env.insert(
+            "FAKE_PID_FILE".to_string(),
+            dir.path().join("pid").to_string_lossy().into_owned(),
+        );
         if let Some((name, value)) = mode {
             config.extra_env.insert(name.to_string(), value.to_string());
         }
@@ -710,6 +829,31 @@ while True:
             .await
             .expect("the fake gopls starts");
         (dir, Arc::new(engine))
+    }
+
+    #[cfg(unix)]
+    async fn assert_process_exits(pid_file: &Path) {
+        let pid = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(pid) = std::fs::read_to_string(pid_file) {
+                    break pid;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the fake server records its pid");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while std::process::Command::new("kill")
+                .args(["-0", pid.trim()])
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the owned fake server exits");
     }
 
     #[test]
@@ -837,31 +981,24 @@ func main() {
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn writer_lock_timeout_never_sends_the_expired_request() {
-        let (_dir, engine) = fake_engine(
-            Some(("FAKE_SLOW_READ", "0.003")),
-            Duration::from_millis(100),
-        )
-        .await;
-        let writing = {
+        let (dir, engine) = fake_engine(None, Duration::from_millis(100)).await;
+        let writer = engine.stdin.lock().await;
+        let waiting = {
             let engine = Arc::clone(&engine);
             tokio::spawn(async move {
                 engine
-                    .send_notification(
-                        "prodCode/largeNotification",
-                        serde_json::json!({ "payload": "x".repeat(1024 * 1024) }),
-                    )
+                    .send_request("prodCode/queued", serde_json::json!({}))
                     .await
             })
         };
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let error = engine
-            .send_request("prodCode/queued", serde_json::json!({}))
+        let error = waiting
             .await
+            .expect("request task")
             .expect_err("the request expires behind the writer");
         let text = format!("{error:#}");
         assert!(text.contains("prodCode/queued"), "{text}");
         assert!(text.to_lowercase().contains("timeout"), "{text}");
-        writing.await.expect("task").expect("notification");
+        drop(writer);
 
         let seen = engine
             .send_request("prodCode/seen", serde_json::json!({}))
@@ -876,6 +1013,8 @@ func main() {
             "{seen}"
         );
         assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+        let methods = std::fs::read_to_string(dir.path().join("seen")).expect("request log");
+        assert!(!methods.lines().any(|method| method == "prodCode/queued"));
     }
 
     #[cfg(unix)]
@@ -1021,6 +1160,93 @@ func main() {
         }
         assert!(engine.is_alive());
         assert!(lock_unpoisoned(&engine.pending_requests).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notification_deadline_covers_a_blocked_frame() {
+        let (dir, engine) =
+            fake_engine(Some(("FAKE_STOP_READING", "1")), Duration::from_millis(200)).await;
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(2),
+            engine.send_notification("textDocument/didOpen", serde_json::json!({
+                "textDocument": {"uri": "file:///notification.go", "languageId":"go", "version":1, "text": "x".repeat(8 * 1024 * 1024)}
+            })),
+        ).await.expect("notification must honor its internal write budget");
+        let error = outcome.expect_err("the server never reads the notification");
+        let text = format!("{error:#}");
+        assert!(text.contains("textDocument/didOpen"), "{text}");
+        assert!(text.to_lowercase().contains("timeout"), "{text}");
+        assert!(
+            !engine.is_alive(),
+            "a partial document frame cannot be reused"
+        );
+        assert_process_exits(&dir.path().join("pid")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_a_notification_retires_its_owned_process() {
+        let (dir, engine) =
+            fake_engine(Some(("FAKE_STOP_READING", "1")), Duration::from_secs(10)).await;
+        let writing = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move {
+                engine
+                    .send_notification(
+                        "prodCode/cancelledNotification",
+                        serde_json::json!({"payload": "x".repeat(8 * 1024 * 1024)}),
+                    )
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        writing.abort();
+        assert!(writing.await.expect_err("cancelled").is_cancelled());
+        assert!(!engine.is_alive());
+        assert_process_exits(&dir.path().join("pid")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_automatic_response_retires_gopls() {
+        let (dir, engine) = fake_engine(
+            Some(("FAKE_HUGE_AUTO_REQUEST", "1")),
+            Duration::from_millis(200),
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while engine.is_alive() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the automatic response has a bounded write");
+        assert_process_exits(&dir.path().join("pid")).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_notification_keeps_gopls_healthy() {
+        let (_dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
+        engine
+            .send_notification("workspace/didChangeConfiguration", serde_json::json!({}))
+            .await
+            .unwrap();
+        let response = engine
+            .send_request("textDocument/hover", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(response["result"]["contents"], "healthy");
+        assert!(engine.is_alive());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropping_the_engine_kills_a_reader_owned_server() {
+        let (dir, engine) = fake_engine(None, Duration::from_secs(2)).await;
+        drop(engine);
+        assert_process_exits(&dir.path().join("pid")).await;
     }
 }
 
