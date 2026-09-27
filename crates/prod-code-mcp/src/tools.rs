@@ -5906,24 +5906,32 @@ pub async fn resolve_symbol(
     let (exact, others): (Vec<SymbolHit>, Vec<SymbolHit>) = hits
         .into_iter()
         .partition(|hit| bare_symbol_name(&hit.name).eq_ignore_ascii_case(name));
-    if let Some(q) = qualifier {
-        // rust-analyzer's index leaves struct fields out, so `Type::field` has no hit of its
-        // own, and an exact hit outside the named type (a free function `field`) is not what
-        // `Type::field` means. The type's outline is what knows its members.
-        let inside_type = exact
-            .iter()
-            .any(|hit| hit.container.as_deref().is_some_and(|c| c.contains(q)));
-        if !inside_type {
-            let members = type_members(remote, root, q, name, hint).await?;
-            if !members.is_empty() {
-                return single_candidate(root, symbol, &members.iter().collect::<Vec<_>>());
-            }
-        }
-    }
     if exact.is_empty() {
         let unindexed = unindexed_declarations(remote, root, name).await;
         anyhow::bail!("{}{unindexed}", no_symbol_message(symbol, name, &others));
     }
+    let exact = if let Some(q) = qualifier {
+        // A qualifier is an eligibility requirement, not a scoring preference: choosing a
+        // same-named member of another type would make every symbol-addressable tool act on a
+        // declaration the caller explicitly did not name. rust-analyzer can omit fields and
+        // methods from its index, so ask the named type's outline after the eligible index hits
+        // are exhausted.
+        let eligible: Vec<SymbolHit> = exact
+            .into_iter()
+            .filter(|hit| qualifier_matches(root, hit, q, qualifiers))
+            .collect();
+        if !eligible.is_empty() {
+            eligible
+        } else {
+            let members = type_members(remote, root, q, name, hint).await?;
+            if !members.is_empty() {
+                return single_candidate(root, symbol, &members.iter().collect::<Vec<_>>());
+            }
+            anyhow::bail!("{}", no_symbol_message(symbol, name, &others));
+        }
+    } else {
+        exact
+    };
     let remote_texts = remote_sources(remote, &exact).await;
     let hint_str = hint.map(|h| h.to_string_lossy().into_owned());
     let mut scored: Vec<(i32, SymbolHit)> = exact
@@ -5931,22 +5939,9 @@ pub async fn resolve_symbol(
         .map(|hit| {
             let bare = bare_symbol_name(&hit.name);
             let mut score = if bare == name { 100 } else { 60 };
-            if let Some(q) = qualifier {
-                let by_container = match &hit.container {
-                    Some(c)
-                        if c == q
-                            || c.ends_with(&format!("::{q}"))
-                            || c.ends_with(&format!(".{q}")) =>
-                    {
-                        Some(50)
-                    }
-                    Some(c) if c.contains(q) => Some(30),
-                    Some(_) => Some(-10),
-                    None => None,
-                };
-                // A free function has no container: its module path is its file's (#324).
-                let by_module = module_path_ends_with(root, &hit.path, qualifiers).then_some(50);
-                score += by_module.max(by_container).unwrap_or(0);
+            if qualifier.is_some() {
+                // Qualified hits already passed `qualifier_matches`; the score is only for
+                // ordinary tie-breakers such as a caller's path hint.
             } else if hit.kind == "EnumMember" {
                 // A bare name is the type's, not an enum's variant of the same name, which Rust
                 // reaches as `Enum::Variant` (#325).
@@ -6010,6 +6005,17 @@ pub async fn resolve_symbol(
         declarations
     };
     single_candidate(root, symbol, &ties)
+}
+
+/// Whether a qualified request can name `hit`. A member belongs to the requested type when its
+/// container names that type (including generic and impl labels); a free function belongs when
+/// its file's module path has every qualifier. This deliberately never uses substring matching:
+/// `Consumer::recv` must not resolve to `AsyncConsumer::recv`.
+fn qualifier_matches(root: &Path, hit: &SymbolHit, qualifier: &str, qualifiers: &[&str]) -> bool {
+    hit.container
+        .as_deref()
+        .is_some_and(|container| names_type(container, qualifier))
+        || module_path_ends_with(root, &hit.path, qualifiers)
 }
 
 /// Whether the module path `path`'s file gives it ends with `qualifiers`:

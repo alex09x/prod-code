@@ -4595,3 +4595,199 @@ async fn absent_qualified_methods_never_resolve_to_unrelated_types() {
         );
     }
 }
+
+/// A type qualifier accepts its own generic container, but neither a substring container nor a
+/// path hint can make another type eligible. A hint still disambiguates equally eligible hits.
+#[tokio::test]
+async fn qualified_members_require_an_exact_container_before_hints_break_ties() {
+    let ws = workspace();
+    let first = write(&ws, "src/first.rs", "pub fn try_recv() {}\n");
+    let second = write(&ws, "src/second.rs", "pub fn try_recv() {}\n");
+    let ring = write(&ws, "src/ring.rs", "pub fn try_recv() {}\n");
+    commit(&ws);
+    let (first_hit, second_hit, ring_hit) = (first.clone(), second.clone(), ring.clone());
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"].as_str() == Some("try_recv") => {
+            let mut first = answers::symbol("try_recv", 6, &first_hit, 1, 8);
+            first["containerName"] = serde_json::json!("impl<T> AsyncConsumer<T>");
+            let mut second = answers::symbol("try_recv", 6, &second_hit, 1, 8);
+            second["containerName"] = serde_json::json!("AsyncConsumer<T>");
+            let mut ring = answers::symbol("try_recv", 6, &ring_hit, 1, 8);
+            ring["containerName"] = serde_json::json!("RingConsumer<T>");
+            serde_json::json!([first, second, ring])
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+
+    let hit = prod_code_mcp::tools::resolve_symbol(
+        remote,
+        &ws.root(),
+        "AsyncConsumer::try_recv",
+        Some(&second),
+    )
+    .await
+    .expect("a hint disambiguates members of the same generic type");
+    assert_eq!(hit.path, second);
+
+    let hit = prod_code_mcp::tools::resolve_symbol(
+        remote,
+        &ws.root(),
+        "RingConsumer::try_recv",
+        Some(&first),
+    )
+    .await
+    .expect("a contradictory hint cannot override the type qualifier");
+    assert_eq!(hit.path, ring);
+
+    let error = prod_code_mcp::tools::resolve_symbol(
+        remote,
+        &ws.root(),
+        "Consumer::try_recv",
+        Some(&first),
+    )
+    .await
+    .expect_err("a substring container is not the requested type");
+    assert!(
+        format!("{error:#}").contains("no symbol named `Consumer::try_recv`"),
+        "{error:#}"
+    );
+}
+
+/// A real rust-analyzer indexes generic methods by their owning type. The absent member must
+/// stay unresolved even when two other generic types have that member, while the real member
+/// of the third type still resolves. Run against an isolated gateway built from this checkout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires PROD_CODE_LIVE_GATEWAY pointing to an isolated source-built gateway"]
+async fn a_real_rust_analyzer_keeps_absent_qualified_generic_methods_unresolved() {
+    let remote = std::env::var("PROD_CODE_LIVE_GATEWAY")
+        .expect("set PROD_CODE_LIVE_GATEWAY to run this integration test")
+        .parse::<SocketAddr>()
+        .expect("PROD_CODE_LIVE_GATEWAY must be a socket address");
+    let dir = tempfile::Builder::new()
+        .prefix("qualified-method-live-")
+        .tempdir()
+        .expect("checkout dir");
+    let root = std::fs::canonicalize(dir.path()).expect("canonical root");
+    for (rel, text) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"qualified-method-live\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub struct AsyncConsumer<T>(pub T);\nimpl<T> AsyncConsumer<T> { pub fn try_recv(&self) {} }\npub struct RingConsumer<T>(pub T);\nimpl<T> RingConsumer<T> { pub fn try_recv(&self) {} }\npub struct Missing;\nimpl Missing { pub fn recv(&self) {} }\n",
+        ),
+    ] {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().expect("parent dir")).expect("mkdir");
+        std::fs::write(path, text).expect("write fixture");
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("git runs")
+    };
+    assert!(git(&["init", "-q"]).success());
+    assert!(git(&["add", "-A"]).success());
+    assert!(
+        git(&[
+            "-c",
+            "user.email=test@example.invalid",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-qm",
+            "fixture",
+        ])
+        .success()
+    );
+
+    let mut absent = None;
+    let mut present = None;
+    for _ in 0..120 {
+        absent = Some(
+            prod_code_mcp::tools::resolve_symbol(remote, &root, "Missing::try_recv", None).await,
+        );
+        present =
+            Some(prod_code_mcp::tools::resolve_symbol(remote, &root, "Missing::recv", None).await);
+        if absent.as_ref().is_some_and(Result::is_err)
+            && present.as_ref().is_some_and(Result::is_ok)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+    let absent = absent
+        .expect("the resolver was queried")
+        .expect_err("missing method stays unresolved");
+    assert!(
+        format!("{absent:#}").contains("no symbol named `Missing::try_recv`"),
+        "{absent:#}"
+    );
+    let present = present
+        .expect("the resolver was queried")
+        .expect("the existing method resolves");
+    assert_eq!(present.name, "recv");
+}
+
+#[tokio::test]
+async fn primary_review_qualified_member_requires_the_full_owner_path() {
+    let ws = workspace();
+    let file = write(
+        &ws,
+        "src/alpha.rs",
+        "pub struct Widget; impl Widget { pub fn run() {} }\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "run" => {
+            let mut hit = answers::symbol("run", 6, &file, 1, 39);
+            hit["containerName"] = serde_json::json!("Widget");
+            serde_json::json!([hit])
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "alpha::Widget::run", None)
+        .await
+        .expect("the real full owner resolves");
+    let result =
+        prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "beta::Widget::run", None).await;
+    assert!(
+        result.is_err(),
+        "a different module must not satisfy an explicit owner path: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn primary_review_module_path_does_not_override_a_different_member_owner() {
+    let ws = workspace();
+    let file = write(
+        &ws,
+        "src/alpha.rs",
+        "pub struct Widget; impl Widget { pub fn run() {} }\n",
+    );
+    commit(&ws);
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "workspace/symbol" if params["query"] == "run" => {
+            let mut hit = answers::symbol("run", 6, &file, 1, 39);
+            hit["containerName"] = serde_json::json!("Widget");
+            serde_json::json!([hit])
+        }
+        "workspace/symbol" | "textDocument/documentSymbol" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = prod_code_mcp::tools::resolve_symbol(remote, &ws.root(), "alpha::run", None).await;
+    assert!(
+        result.is_err(),
+        "a type member is not a free function of the containing module: {result:?}"
+    );
+}
