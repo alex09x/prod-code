@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Generic Rust inherent implementations can now use `code_extract_trait` (#505). Ordinary
+  lifetime, type and const parameters, inline bounds and `where` clauses are carried to the
+  generated trait and trait implementation, while retained methods keep the original inherent
+  constraints. Method-level generics, associated-type bounds, concrete `Self` returns, comments
+  and external caller imports are preserved. Attributed impls, conditional methods, `Self`-dependent
+  impl bounds, macro-shaped, specialized and trait impls remain explicit refusals; caller
+  type-annotation migration and other languages remain open.
+- Rust trait extraction handles Unicode impl-header positions without slicing through characters
+  (#509). Opaque `impl Trait` return types are refused before edits, even with force, because
+  extraction can change lifetime capture and break valid callers (#510). Macro arguments are
+  refused for all three delimiter forms, including force (#512).
 - Typed Rust builder previews through `prod-code fixture --builder` and
   `code_generate_fixture` with `builder: true` (#459, #497). Named structs, including
   ordinary lifetime, type and const parameters with inline bounds, defaults and `where`

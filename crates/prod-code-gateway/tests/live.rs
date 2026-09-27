@@ -3244,3 +3244,320 @@ async fn failed_private_python_server_does_not_fall_back_to_the_main_engine() {
         .expect("the ordinary engine still answers");
     assert_eq!(after.errors, 0, "{}", after.render());
 }
+
+/// #505: generic inherent implementations keep their lifetime/type/const declarations and
+/// constraints when a real analyzer extracts a subset, updates an external caller, and then
+/// extracts the complete remaining block. The same fixture executes identically throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn generic_trait_extraction_preserves_a_real_rust_program() {
+    const WINDOW: &str = r#"pub struct Window<'a, T, const N: usize> {
+    pub values: &'a [T; N],
+}
+
+impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>
+where
+    T: std::fmt::Display,
+{
+    pub fn first(&self) -> T {
+        self.values[0]
+    }
+
+    pub fn total<I>(&self, extra: I) -> i64
+    where
+        I: IntoIterator<Item = T>,
+    {
+        self.values[0].into() + extra.into_iter().map(Into::into).sum::<i64>()
+    }
+
+    pub fn copied(&self) -> Self {
+        Self { values: self.values }
+    }
+}
+"#;
+    const REPORT: &str = r#"use crate::window::Window;
+
+pub fn report<'a, T: Copy + Into<i64> + std::fmt::Display, const N: usize>(
+    window: &Window<'a, T, N>,
+    extra: T,
+) -> i64 {
+    window.total([extra]) + window.copied().first().into()
+}
+"#;
+    const MAIN: &str = r#"mod report;
+mod window;
+
+use window::Window;
+
+fn main() {
+    let values = [1_i32, 2, 3];
+    let window = Window { values: &values };
+    println!("{}", report::report(&window, 4));
+}
+"#;
+    const CONDITIONAL_IMPL: &str = "pub struct Example<T>(pub T);\n#[cfg(any())] impl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const COMMENTED_CONDITIONAL_IMPL: &str = "pub struct Example<T>(pub T);\n#[cfg(\n    any()\n)]\n// attached condition remains active\n\nimpl<T> Example<T> { pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const CONDITIONAL_METHOD: &str = "pub struct Example<T>(pub T);\nimpl<T> Example<T> { #[cfg_attr(\n    any(),\n    allow(dead_code)\n)] pub fn selected(&self) {} pub fn kept(&self) {} }\n";
+    const SELF_INLINE: &str = "pub struct Example<T>(pub T);\nimpl<T: From<Self>> Example<T> { pub fn selected(self) -> T { T::from(self) } }\n";
+    const SELF_WHERE: &str = "pub struct Example<T>(pub T);\nimpl<T> Example<T> where T: From<Self> { pub fn selected(self) -> T { T::from(self) } }\n";
+
+    let gateway = Gateway::start();
+    let checkout = Checkout::new();
+    checkout.write("src/main.rs", MAIN);
+    checkout.write("src/window.rs", WINDOW);
+    checkout.write("src/report.rs", REPORT);
+    checkout.write("src/conditional_impl.rs", CONDITIONAL_IMPL);
+    checkout.write(
+        "src/commented_conditional_impl.rs",
+        COMMENTED_CONDITIONAL_IMPL,
+    );
+    checkout.write("src/conditional_method.rs", CONDITIONAL_METHOD);
+    checkout.write("src/self_inline.rs", SELF_INLINE);
+    checkout.write("src/self_where.rs", SELF_WHERE);
+    checkout.commit();
+    let root = checkout.root();
+    let window = checkout.path("src/window.rs");
+    let output = || {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("generic-extract-fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", "-A", "warnings", "src/main.rs", "-o"])
+            .arg(&bin)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&bin).output().unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        ran.stdout
+    };
+    let before = output();
+
+    let compile_library = |relative: &str| {
+        let temp = tempfile::tempdir().unwrap();
+        let output = Command::new("rustc")
+            .args(["--edition", "2021", "--crate-type", "lib", relative, "-o"])
+            .arg(temp.path().join("self-bound.rlib"))
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            relative,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    compile_library("src/self_inline.rs");
+    compile_library("src/self_where.rs");
+
+    for (relative, source, why) in [
+        (
+            "src/conditional_impl.rs",
+            CONDITIONAL_IMPL,
+            "attributes on impl blocks",
+        ),
+        (
+            "src/commented_conditional_impl.rs",
+            COMMENTED_CONDITIONAL_IMPL,
+            "attributes on impl blocks",
+        ),
+        (
+            "src/conditional_method.rs",
+            CONDITIONAL_METHOD,
+            "conditional methods",
+        ),
+        ("src/self_inline.rs", SELF_INLINE, "depend on `Self`"),
+        ("src/self_where.rs", SELF_WHERE, "depend on `Self`"),
+    ] {
+        let impl_at = source.find("impl").unwrap();
+        let line_start = source[..impl_at].rfind('\n').map_or(0, |i| i + 1);
+        let args = serde_json::json!({
+            "path": relative,
+            "line": source[..impl_at].matches('\n').count() + 1,
+            "character": impl_at - line_start + 1,
+            "methods": ["selected"],
+            "name": "Selected",
+            "apply": true,
+            "force": true,
+        });
+        let err =
+            prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", args)
+                .await
+                .expect_err("structurally unsafe extraction is refused even with force");
+        assert!(format!("{err:#}").contains(why), "{relative}: {err:#}");
+        assert_eq!(
+            std::fs::read_to_string(checkout.path(relative)).unwrap(),
+            source,
+            "refusal preserves every byte"
+        );
+    }
+    compile_library("src/self_inline.rs");
+    compile_library("src/self_where.rs");
+
+    let bad = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["missing"], "name": "WindowOps", "apply": true, "force": true
+    });
+    let err = prod_code_mcp::tools::execute_tool(gateway.addr, &root, "code_extract_trait", bad)
+        .await
+        .expect_err("a genuinely absent method is refused even with force");
+    assert!(
+        format!("{err:#}").contains("has no method `missing`"),
+        "{err:#}"
+    );
+    assert_eq!(std::fs::read_to_string(&window).unwrap(), WINDOW);
+
+    let subset = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["total", "copied"], "name": "WindowOps", "apply": true
+    });
+    let changed = tool(gateway.addr, &root, "code_extract_trait", subset).await;
+    assert!(!changed.is_error, "{}", text_of(&changed));
+    let after_subset = std::fs::read_to_string(&window).unwrap();
+    assert!(after_subset.contains("trait WindowOps<'a, T: Copy + Into<i64>, const N: usize>"));
+    assert!(
+        after_subset.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>")
+    );
+    assert!(after_subset.contains("fn total<I>(&self, extra: I) -> i64"));
+    assert!(after_subset.contains("fn copied(&self) -> Self"));
+    assert!(
+        std::fs::read_to_string(checkout.path("src/report.rs"))
+            .unwrap()
+            .contains("use crate::window::WindowOps;")
+    );
+    assert_eq!(output(), before, "subset extraction preserves execution");
+
+    let full = serde_json::json!({
+        "path": "src/window.rs", "line": 5, "character": 1,
+        "methods": ["first"], "name": "WindowView", "apply": true
+    });
+    let changed = tool(gateway.addr, &root, "code_extract_trait", full).await;
+    assert!(!changed.is_error, "{}", text_of(&changed));
+    let after_full = std::fs::read_to_string(&window).unwrap();
+    assert!(!after_full.contains("impl<'a, T: Copy + Into<i64>, const N: usize> Window<'a, T, N>"));
+    assert!(after_full.contains("trait WindowView<'a, T: Copy + Into<i64>, const N: usize>"));
+    assert!(
+        std::fs::read_to_string(checkout.path("src/report.rs"))
+            .unwrap()
+            .contains("use crate::window::WindowView;")
+    );
+    assert_eq!(output(), before, "full extraction preserves execution");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn trait_extraction_preserves_unicode_positions_and_refuses_opaque_capture() {
+    let gateway = Gateway::start();
+    let checkout = Checkout {
+        dir: tempfile::tempdir().unwrap(),
+    };
+    checkout.write(
+        "Cargo.toml",
+        "[package]\nname = \"trait_boundary\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    const UNICODE: &str = "struct 名字;\nimpl 名字 { fn value(&self) -> u8 { 7 } }\nfn main() { println!(\"{}\", 名字.value()); }\n";
+    const OPAQUE: &str = "pub struct Example;\nimpl Example { pub fn value(&self) -> impl Copy { 7_u8 } }\nfn main() { let owner = Example; let result = owner.value(); drop(owner); std::hint::black_box(result); }\n";
+    checkout.write("src/main.rs", UNICODE);
+    const MACRO: &str = "pub struct Example;\nmacro_rules! make { ($item:item) => { $item } }\nmake!(impl Example { pub fn value(&self) -> u8 { 7 } });\nfn main() { assert_eq!(Example.value(), 7); }\n";
+    checkout.write("src/bin/macro_arg.rs", MACRO);
+    checkout.write("src/bin/opaque.rs", OPAQUE);
+    checkout.commit();
+    let root = checkout.root();
+    let compile_and_run = |path: &str| {
+        let temp = tempfile::tempdir().unwrap();
+        let binary = temp.path().join("trait-boundary-fixture");
+        let built = Command::new("rustc")
+            .args(["--edition", "2021", path, "-o"])
+            .arg(&binary)
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = Command::new(&binary).output().unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        ran.stdout
+    };
+    let expected = compile_and_run("src/main.rs");
+    compile_and_run("src/bin/opaque.rs");
+    for apply in [false, true] {
+        let answer = tool(
+            gateway.addr,
+            &root,
+            "code_extract_trait",
+            serde_json::json!({
+                "path": "src/main.rs", "line": 2, "character": 6,
+                "methods": ["value"], "name": "Value", "apply": apply
+            }),
+        )
+        .await;
+        assert!(!answer.is_error, "{}", text_of(&answer));
+        if !apply {
+            assert_eq!(
+                std::fs::read_to_string(checkout.path("src/main.rs")).unwrap(),
+                UNICODE
+            );
+        }
+        assert_eq!(compile_and_run("src/main.rs"), expected);
+    }
+    assert!(
+        std::fs::read_to_string(checkout.path("src/main.rs"))
+            .unwrap()
+            .contains("impl Value for 名字")
+    );
+    for apply in [false, true] {
+        for force in [false, true] {
+            let error = prod_code_mcp::tools::execute_tool(
+                gateway.addr,
+                &root,
+                "code_extract_trait",
+                serde_json::json!({
+                    "path": "src/bin/opaque.rs", "line": 2, "character": 1,
+                    "methods": ["value"], "name": "OpaqueValue", "apply": apply, "force": force
+                }),
+            )
+            .await
+            .expect_err("opaque return capture must not change even with force");
+            assert!(format!("{error:#}").contains("opaque return"), "{error:#}");
+            assert_eq!(
+                std::fs::read_to_string(checkout.path("src/bin/opaque.rs")).unwrap(),
+                OPAQUE
+            );
+        }
+    }
+    compile_and_run("src/bin/opaque.rs");
+    compile_and_run("src/bin/macro_arg.rs");
+    for apply in [false, true] {
+        let error = prod_code_mcp::tools::execute_tool(
+            gateway.addr,
+            &root,
+            "code_extract_trait",
+            serde_json::json!({
+                "path": "src/bin/macro_arg.rs", "line": 3, "character": 7,
+                "methods": ["value"], "name": "MacroValue", "apply": apply, "force": true
+            }),
+        )
+        .await
+        .expect_err("a macro argument is not rewritten even with force");
+        assert!(format!("{error:#}").contains("inside macros"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(checkout.path("src/bin/macro_arg.rs")).unwrap(),
+            MACRO
+        );
+    }
+    compile_and_run("src/bin/macro_arg.rs");
+}
