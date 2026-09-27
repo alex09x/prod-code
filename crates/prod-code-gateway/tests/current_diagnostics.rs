@@ -88,6 +88,12 @@ impl Gateway {
     /// directory, whose `.local/bin` the gateway puts first on its `PATH`, so the language
     /// servers it starts are found there.
     fn start(home: Option<&Path>) -> Self {
+        Self::start_with_sccache(home, None)
+    }
+
+    /// Starts a source-built gateway with an existing sccache client, when a regression needs
+    /// Cargo in its overlay shadows to use that already-running external daemon.
+    fn start_with_sccache(home: Option<&Path>, sccache: Option<&Path>) -> Self {
         let storage = tempfile::tempdir().expect("storage dir");
         let mut command = Command::new(env!("CARGO_BIN_EXE_prod-code-server"));
         command
@@ -100,6 +106,13 @@ impl Gateway {
             .stderr(Stdio::null());
         if let Some(home) = home {
             command.env("HOME", home);
+        }
+        if let Some(sccache) = sccache {
+            // The gateway, not a hypothesis request, inherits the real sccache executable.
+            // This keeps every overlay invocation on the daemon's client-side path.
+            command
+                .env("RUSTC_WRAPPER", sccache)
+                .env("CARGO_INCREMENTAL", "0");
         }
         let child = command.spawn().expect("the server binary starts");
         // Owned before the address is read, so a gateway that never reports one is stopped.
@@ -166,7 +179,11 @@ fn checkout(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().expect("checkout dir");
     std::fs::write(dir.path().join(".clangd"), "").expect("write .clangd");
     for (rel, text) in files {
-        std::fs::write(dir.path().join(rel), text).expect("write");
+        let path = dir.path().join(rel);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create fixture parent");
+        }
+        std::fs::write(path, text).expect("write");
     }
     let git = |args: &[&str]| {
         let status = Command::new("git")
@@ -413,4 +430,194 @@ async fn an_uncached_unchanged_pull_report_is_not_a_full_clean_report() {
     eprintln!("first uncached unchanged report: {result:?}");
     let error = result.expect_err("an uncached unchanged report cannot establish zero errors");
     assert!(error.contains("no current diagnostics"), "{error}");
+}
+
+/// A compiler-backed public validation keeps linked Rust integration-test proposals isolated:
+/// dependencies are referenced across all three test modules so Rust must load their metadata.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn linked_rust_test_proposals_compile_in_an_overlay_without_writing_the_fixture() {
+    fn snapshot(root: &Path, paths: &[&str]) -> Vec<(String, Vec<u8>)> {
+        paths
+            .iter()
+            .map(|path| {
+                (
+                    (*path).to_string(),
+                    std::fs::read(root.join(path)).expect("fixture source is readable"),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_snapshot(root: &Path, expected: &[(String, Vec<u8>)]) {
+        let paths: Vec<&str> = expected.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(
+            snapshot(root, &paths),
+            expected,
+            "the fixture source changed"
+        );
+    }
+
+    fn require_external_sccache() -> PathBuf {
+        let found = Command::new("sh")
+            .args(["-c", "command -v sccache"])
+            .output()
+            .expect("the Linux regression runner can find sccache");
+        assert!(
+            found.status.success(),
+            "the Linux regression runner provides an external sccache command"
+        );
+        let sccache = PathBuf::from(String::from_utf8_lossy(&found.stdout).trim());
+        // This only asks the already-running daemon for its statistics. The test never starts,
+        // configures, or stops it; the source-built gateway inherits it before the hypothesis.
+        let output = Command::new(&sccache)
+            .arg("--show-stats")
+            .output()
+            .expect("the external sccache command runs");
+        assert!(
+            output.status.success(),
+            "the external sccache daemon is already running: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        sccache
+    }
+
+    if let Some(reason) = prod_code_gateway::shadow::overlay_unavailable() {
+        panic!("this regression requires Linux overlay shadows: {reason}");
+    }
+    let sccache = require_external_sccache();
+
+    let manifest = r#"[package]
+name = "linked-rmeta-regression"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures-core = "0.3"
+memmap2 = "0.9"
+tokio = { version = "1", features = ["rt"] }
+"#;
+    let base_root = r#"#[path = "linked/models.rs"]
+mod models;
+#[path = "linked/runtime.rs"]
+mod runtime;
+
+#[test]
+fn linked_modules_start_from_the_committed_fixture() {
+    runtime::accepts(models::base());
+}
+"#;
+    let base_models = r#"pub struct Base;
+
+pub fn base() -> Base {
+    Base
+}
+"#;
+    let base_runtime = r#"pub fn accepts(_: crate::models::Base) {}
+"#;
+    let (_fixture, root) = checkout(&[
+        ("Cargo.toml", manifest),
+        ("tests/linked.rs", base_root),
+        ("tests/linked/models.rs", base_models),
+        ("tests/linked/runtime.rs", base_runtime),
+    ]);
+    let source_paths = [
+        "Cargo.toml",
+        "tests/linked.rs",
+        "tests/linked/models.rs",
+        "tests/linked/runtime.rs",
+    ];
+    let before = snapshot(&root, &source_paths);
+    let gateway = Gateway::start_with_sccache(None, Some(&sccache));
+
+    let warm_base = tool(gateway.addr, &root, "code_check", serde_json::json!({}))
+        .await
+        .expect("the committed fixture warms cargo check");
+    assert!(
+        warm_base.contains("cargo check --workspace --all-targets"),
+        "the warm base used cargo check: {warm_base}"
+    );
+    assert_snapshot(&root, &before);
+
+    let proposed_root = r#"#[path = "linked/models.rs"]
+mod models;
+#[path = "linked/runtime.rs"]
+mod runtime;
+
+#[test]
+fn external_types_are_linked_across_the_integration_test_modules() {
+    runtime::uses_external_types(models::external_types());
+}
+"#;
+    let proposed_models = r#"pub struct ExternalTypes {
+    pub map: memmap2::MmapOptions,
+    pub runtime: tokio::runtime::Runtime,
+    pub stream: Option<std::pin::Pin<Box<dyn futures_core::Stream<Item = u8>>>>,
+}
+
+pub fn external_types() -> ExternalTypes {
+    ExternalTypes {
+        map: memmap2::MmapOptions::new(),
+        runtime: tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a tiny test runtime"),
+        stream: None,
+    }
+}
+"#;
+    let proposed_runtime = r#"pub fn uses_external_types(types: crate::models::ExternalTypes) {
+    let crate::models::ExternalTypes {
+        map,
+        runtime,
+        stream,
+    } = types;
+    let _ = (map, runtime, stream);
+}
+"#;
+    let proposal = serde_json::json!({
+        "edits": [
+            { "path": "tests/linked.rs", "new_text": proposed_root },
+            { "path": "tests/linked/models.rs", "new_text": proposed_models },
+            { "path": "tests/linked/runtime.rs", "new_text": proposed_runtime }
+        ],
+        "compile": true
+    });
+    let accepted = tool(gateway.addr, &root, "code_validate_edits", proposal)
+        .await
+        .expect("three linked external-dependency proposals compile in the overlay");
+    assert!(
+        accepted.contains("3 file(s) checked together: 0 error(s), 0 warning(s)")
+            && accepted.contains(
+                "compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"
+            ),
+        "the compiler accepted all three linked proposals: {accepted}"
+    );
+    assert_snapshot(&root, &before);
+
+    let compiler_only_refusal = format!(
+        "{proposed_runtime}\npub fn compiler_only_borrow_error() -> &'static str {{\n    let local = String::from(\"borrowed\");\n    &local\n}}\n"
+    );
+    let refused = tool(
+        gateway.addr,
+        &root,
+        "code_validate_edits",
+        serde_json::json!({
+            "edits": [
+                { "path": "tests/linked.rs", "new_text": proposed_root },
+                { "path": "tests/linked/models.rs", "new_text": proposed_models },
+                { "path": "tests/linked/runtime.rs", "new_text": compiler_only_refusal }
+            ],
+            "compile": true
+        }),
+    )
+    .await
+    .expect_err("the compiler-only borrow error is rejected");
+    assert!(
+        refused.starts_with("3 file(s) checked together: 0 error(s), 0 warning(s)")
+            && refused.contains(
+                "compiler: `cargo check --workspace --all-targets --message-format=json`"
+            )
+            && refused.contains("E0515"),
+        "rust-analyzer accepts the borrow but cargo rejects it: {refused}"
+    );
+    assert_snapshot(&root, &before);
 }
