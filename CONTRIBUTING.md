@@ -83,6 +83,12 @@ for progress but cannot establish full test counts. A callback or interrupted cl
 proof that the remote process finished or was canceled. Reuse completed verification when the
 source is unchanged; repeat a check only after a relevant change, failure or unresolved concern.
 
+Test fixtures that spawn child processes own each child immediately after spawn, before any
+readiness wait or output wait. Cleanup must be bounded and target only the exact owned child or
+process group. On failed readiness, timeout, panic or cancellation, reap the child and descendants
+and retire reader tasks. A leader exit does not prove the fixture is gone when descendants can keep
+stdout or stderr open.
+
 A released dependency bump remains a version/lockfile change followed by the consumer's
 existing checks. Do not add tests of the dependency's own algorithms or an extra audit unless
 the requested work includes that scope.
