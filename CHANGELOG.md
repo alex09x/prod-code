@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Incomplete wire frames no longer reserve memory for payload bytes that have not arrived (#621).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
