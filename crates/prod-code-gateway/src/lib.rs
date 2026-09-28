@@ -6968,7 +6968,9 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o755);
         }
-        assert!(workspace::stale_paths(&workspace).is_empty());
+        let mut stale = workspace::stale_paths(&workspace);
+        stale.sort();
+        assert_eq!(stale, vec!["run.sh", "src/a.rs", "src/gone.rs"]);
     }
 
     /// A file that a client sync delivered while the command ran is the checkout's text and is
@@ -7069,7 +7071,7 @@ mod tests {
         );
         assert_eq!(
             workspace::stale_paths(&root),
-            ["src/b.rs".to_string(), "src/big.rs".to_string()]
+            ["src/a.rs".to_string(), "src/b.rs".to_string(), "src/big.rs".to_string()]
         );
 
         // The next sync answers with what it still lacks until the client has sent both.
@@ -7082,11 +7084,18 @@ mod tests {
         let first = apply_sync(
             storage.path(),
             &manager,
-            sync(vec![FileDelta {
-                relative_path: "src/b.rs".to_string(),
-                content: Some(b"bbbb".to_vec()),
-                is_executable: false,
-            }]),
+            sync(vec![
+                FileDelta {
+                    relative_path: "src/a.rs".to_string(),
+                    content: Some(b"aaaa".to_vec()),
+                    is_executable: false,
+                },
+                FileDelta {
+                    relative_path: "src/b.rs".to_string(),
+                    content: Some(b"bbbb".to_vec()),
+                    is_executable: false,
+                },
+            ]),
         )
         .await;
         assert_eq!(first.stale_paths, ["src/big.rs".to_string()]);
