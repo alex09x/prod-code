@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Gateway sync rejects absolute, parent-traversal, and symlink paths that escape the
+  selected workspace (#628).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
