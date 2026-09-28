@@ -1743,6 +1743,131 @@ pub fn parse_meson_test_text(text: &str) -> (u64, u64, Vec<TestFailure>) {
     (passed, failed, failures)
 }
 
+/// Parses Swift compiler and SwiftPM diagnostics from `swift build` and `swift test` output:
+/// standard `file:line:col: (error|warning): message` lines, plus SwiftPM dependency resolution
+/// errors (`GitShellError`, SSH authentication failures, manifest errors).
+pub fn parse_swift_text(text: &str) -> Vec<Diagnostic> {
+    let mut out = parse_colon_diagnostics(text);
+
+    let mut fetching_urls: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut last_fetch_url: Option<String> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(url) = trimmed
+            .strip_prefix("Fetching ")
+            .or_else(|| trimmed.strip_prefix("Cloning "))
+        {
+            let url = url.trim();
+            last_fetch_url = Some(url.to_string());
+            if let Some(name) = url.rsplit('/').next().map(|s| s.trim_end_matches(".git"))
+                && !name.is_empty()
+            {
+                fetching_urls.insert(name.to_string(), url.to_string());
+            }
+            continue;
+        }
+
+        if trimmed.contains("GitShellError") {
+            let pkg = if let Some(part) = trimmed.split("':").next().and_then(|p| p.rsplit('\'').next()) {
+                let p = part.trim();
+                (!p.is_empty()).then_some(p)
+            } else {
+                None
+            };
+
+            let associated_url = pkg
+                .and_then(|p| fetching_urls.get(p))
+                .cloned()
+                .or_else(|| last_fetch_url.clone());
+
+            let is_ssh = associated_url
+                .as_deref()
+                .map(|u| u.starts_with("git@") || u.starts_with("ssh://"))
+                .unwrap_or(false);
+
+            let exit_code = if let Some(code_part) = trimmed.split("exit: terminated(code: ").nth(1) {
+                code_part.split(')').next().and_then(|c| c.parse::<i32>().ok())
+            } else {
+                None
+            };
+
+            let error_output = if let Some(out_part) = trimmed.split("output:").nth(1) {
+                let cleaned = out_part.trim_end_matches([')', '>', ' ']);
+                (!cleaned.is_empty()).then(|| cleaned.to_string())
+            } else {
+                None
+            };
+
+            let pkg_label = pkg
+                .map(|p| format!("dependency '{p}'"))
+                .unwrap_or_else(|| "dependency".to_string());
+            let url_label = associated_url
+                .as_ref()
+                .map(|u| format!(" from {u}"))
+                .unwrap_or_default();
+
+            let reason = if let Some(out) = error_output {
+                format!("Git error: {out}")
+            } else if is_ssh || exit_code == Some(128) {
+                if is_ssh {
+                    "Git SSH authentication failed (exit code 128); verify SSH key access on the build node or repository permissions".to_string()
+                } else {
+                    "Git clone failed (exit code 128); verify repository credentials and access permissions on the build node".to_string()
+                }
+            } else if let Some(code) = exit_code {
+                format!("Git command failed with exit code {code}")
+            } else {
+                "Git clone failed with GitShellError".to_string()
+            };
+
+            out.push(Diagnostic {
+                level: "error".to_string(),
+                code: Some("git-fetch".to_string()),
+                message: format!("failed to fetch {pkg_label}{url_label}: {reason}"),
+                file: Some("Package.swift".to_string()),
+                line: None,
+                column: None,
+            });
+            continue;
+        }
+
+        if let Some(msg) = trimmed.strip_prefix("error: ") {
+            let msg = msg.trim();
+            if !msg.is_empty()
+                && !msg.starts_with("fatalError")
+                && !msg.starts_with("build failed")
+                && !msg.contains("error(s) generated")
+            {
+                out.push(Diagnostic {
+                    level: "error".to_string(),
+                    code: None,
+                    message: msg.to_string(),
+                    file: Some("Package.swift".to_string()),
+                    line: None,
+                    column: None,
+                });
+            }
+        } else if let Some(msg) = trimmed.strip_prefix("warning: ") {
+            let msg = msg.trim();
+            if !msg.is_empty() && !msg.contains("warning(s) generated") {
+                out.push(Diagnostic {
+                    level: "warning".to_string(),
+                    code: None,
+                    message: msg.to_string(),
+                    file: Some("Package.swift".to_string()),
+                    line: None,
+                    column: None,
+                });
+            }
+        }
+    }
+
+    out.dedup();
+    out
+}
+
 /// Parses XCTest (`swift test`) output on macOS and Linux: `Test Case '-[Suite test]' passed
 /// (0.001 seconds)` / `Test Case 'Suite.test' failed`, assertion lines `file:line: error:
 /// -[Suite test] : message`, plus swift-testing `✔ Test "name" passed` / `✘ Test "name" failed`.
@@ -2048,12 +2173,17 @@ pub fn parse_verification_output(
         }
         ("swift", VerifyKind::Test) => {
             let combined = format!("{stdout}\n{stderr}");
-            diagnostics.extend(parse_colon_diagnostics(stderr));
+            diagnostics.extend(parse_swift_text(stderr));
+            diagnostics.extend(parse_swift_text(stdout));
             diagnostics.retain(|d| !d.message.starts_with("-["));
             let (p, f, fails) = parse_xctest_text(&combined);
             tests_passed = p;
             tests_failed = f;
             failures = fails;
+        }
+        ("swift", _) => {
+            diagnostics.extend(parse_swift_text(stderr));
+            diagnostics.extend(parse_swift_text(stdout));
         }
         ("cpp", VerifyKind::Test) => {
             let (p, f, fails) = match tools.cpp {
@@ -2386,6 +2516,54 @@ Test Case 'OtherTests.testOk' passed (0.001 seconds).\n\
             failures[0]
                 .output
                 .contains("SignalTests.swift:6: XCTAssertEqual failed")
+        );
+    }
+
+    #[test]
+    fn parses_swift_output_compiler_and_git_shell_errors() {
+        let output = "\
+/srv/ws/Sources/App/main.swift:10:5: error: cannot find 'foo' in scope\n\
+Fetching git@github.com:apple/swift-argument-parser.git\n\
+error: 'swift-argument-parser': GitShellError(result: <ProcessResult: exit: terminated(code: 128), output:>)\n";
+        let diags = parse_swift_text(output);
+        assert_eq!(diags.len(), 2);
+        assert_eq!(
+            diags[0].file.as_deref(),
+            Some("/srv/ws/Sources/App/main.swift")
+        );
+        assert_eq!(diags[0].line, Some(10));
+        assert_eq!(diags[0].column, Some(5));
+        assert_eq!(diags[0].message, "cannot find 'foo' in scope");
+
+        assert_eq!(diags[1].file.as_deref(), Some("Package.swift"));
+        assert_eq!(diags[1].code.as_deref(), Some("git-fetch"));
+        assert!(diags[1].message.contains("Git SSH authentication failed"));
+        assert!(diags[1]
+            .message
+            .contains("git@github.com:apple/swift-argument-parser.git"));
+    }
+
+    #[test]
+    fn parses_swift_git_shell_error_with_output() {
+        let output = "\
+Fetching https://github.com/foo/bar.git\n\
+error: 'bar': GitShellError(result: <ProcessResult: exit: terminated(code: 128), output:fatal: could not read Username for 'https://github.com': terminal prompts disabled>)\n";
+        let diags = parse_swift_text(output);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("Package.swift"));
+        assert_eq!(diags[0].code.as_deref(), Some("git-fetch"));
+        assert!(diags[0].message.contains("fatal: could not read Username"));
+    }
+
+    #[test]
+    fn parses_swift_spm_package_manifest_error() {
+        let output = "error: 'foo': package 'foo' @ 1.0.0 is using Swift tools version 5.9.0 but the installed toolchain is 5.8.0\n";
+        let diags = parse_swift_text(output);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("Package.swift"));
+        assert_eq!(
+            diags[0].message,
+            "'foo': package 'foo' @ 1.0.0 is using Swift tools version 5.9.0 but the installed toolchain is 5.8.0"
         );
     }
 
