@@ -61,6 +61,11 @@ fn rust_workspace(source: &str) -> Workspace {
     ])
 }
 
+type SyncProbeRecord = (Option<String>, Option<String>, Vec<String>);
+type SyncRequestRecord = (Option<String>, Vec<String>);
+type SyncProbeLog = Arc<std::sync::Mutex<Vec<SyncProbeRecord>>>;
+type SyncRequestLog = Arc<std::sync::Mutex<Vec<SyncRequestRecord>>>;
+
 /// What `code_exec`, `code_check`/`code_lint`/`code_test`, `code_search`, `code_shadow_run`,
 /// `code_status` and `code_source` need beyond the LSP protocol.
 #[derive(Clone)]
@@ -75,8 +80,8 @@ struct Script {
     /// files only in its fix mode. The client writes back only what differs from the checkout,
     /// so changes sent for every command would all land with the first one (#254).
     exec_changes_only_for: Option<&'static str>,
-    sync_probe_requests: Arc<std::sync::Mutex<Vec<(Option<String>, Option<String>, Vec<String>)>>>,
-    sync_requests: Arc<std::sync::Mutex<Vec<(Option<String>, Vec<String>)>>>,
+    sync_probe_requests: SyncProbeLog,
+    sync_requests: SyncRequestLog,
     /// What the command used, as the gateway reports it from `wait4`.
     exec_usage: Option<prod_code_protocol::ExecUsage>,
     /// The node's platform, as the gateway reports it (#140).
