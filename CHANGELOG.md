@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Whole-repository coverage checks fail when an existing Rust source file has no measurement (#622).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts

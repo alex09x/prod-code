@@ -32,6 +32,11 @@ import pathlib
 import subprocess
 import sys
 
+try:
+    import tomllib
+except ImportError:
+    tomllib = None  # type: ignore[assignment]
+
 # Files nothing is expected to cover: generated code, or a binary's entry point that only wires
 # arguments into functions that are tested. Keep this list short and say why.
 # Files nothing is expected to cover. Empty, and worth keeping that way: an exemption is a
@@ -81,6 +86,77 @@ def is_under_root(path: str, root: str) -> bool:
         return candidate != base and candidate.is_relative_to(base)
     except (ValueError, TypeError, OSError, RuntimeError):
         return False
+
+
+def is_test_file(relative: str) -> bool:
+    """Check if relative path is inside an integration test directory."""
+    parts = pathlib.Path(relative).parts
+    return "tests" in parts
+
+
+def find_rust_source_files(root: str) -> set[str]:
+    """Find all Rust source files in the repository/workspace, relative to root."""
+    root_path = pathlib.Path(root).resolve()
+    cargo_toml = root_path / "Cargo.toml"
+
+    search_dirs: list[pathlib.Path] = []
+    excluded_dirs: set[pathlib.Path] = set()
+
+    if cargo_toml.is_file() and tomllib is not None:
+        try:
+            with open(cargo_toml, "rb") as f:
+                manifest: dict[str, object] = tomllib.load(f)
+            workspace = manifest.get("workspace")
+            if isinstance(workspace, dict):
+                excludes: object = workspace.get("exclude", [])
+                if isinstance(excludes, list):
+                    for exc in excludes:
+                        if isinstance(exc, str):
+                            for p in root_path.glob(exc):
+                                excluded_dirs.add(p.resolve())
+                members: object = workspace.get("members", [])
+                if isinstance(members, list) and members:
+                    for member in members:
+                        if isinstance(member, str):
+                            for p in root_path.glob(member):
+                                if p.is_dir() and p.resolve() not in excluded_dirs:
+                                    search_dirs.append(p.resolve())
+        except Exception:
+            search_dirs = []
+
+    if not search_dirs:
+        search_dirs = [root_path]
+    search_dirs = list(dict.fromkeys(search_dirs))
+
+    source_files: set[str] = set()
+    for base_dir in search_dirs:
+        for dirpath, dirnames, filenames in os.walk(base_dir):
+            current_path = pathlib.Path(dirpath).resolve()
+            if any(current_path == exc or current_path.is_relative_to(exc) for exc in excluded_dirs):
+                dirnames.clear()
+                continue
+            dirnames[:] = [
+                d for d in dirnames
+                if not d.startswith(".") and d not in ("target", "tests", "benches", "examples")
+            ]
+            for fname in filenames:
+                if not fname.endswith(".rs"):
+                    continue
+                file_path = (current_path / fname).resolve()
+                if not is_under_root(str(file_path), str(root_path)):
+                    continue
+                try:
+                    rel = os.path.relpath(os.path.abspath(file_path), os.path.abspath(root))
+                    if rel.startswith(".." + os.sep) or rel == "..":
+                        rel = os.path.relpath(os.path.realpath(file_path), os.path.realpath(root))
+                except (ValueError, OSError):
+                    rel = os.path.relpath(os.path.realpath(file_path), os.path.realpath(root))
+                rel = os.path.normpath(rel)
+                if is_test_file(rel):
+                    continue
+                source_files.add(rel)
+
+    return source_files
 
 
 def validate_report(report: dict) -> None:
@@ -180,7 +256,7 @@ def parse_coverage_entries(
             except (ValueError, OSError):
                 relative = os.path.relpath(os.path.realpath(abs_path), os.path.realpath(root))
             relative = os.path.normpath(relative)
-            if "/tests/" in relative or relative.startswith("tests/") or relative.startswith(f"tests{os.sep}"):
+            if is_test_file(relative):
                 continue
             regions = entry.get("summary", {}).get("regions", {})
             total = regions.get("count", 0)
@@ -273,6 +349,14 @@ def main(argv: list[str] | None = None) -> int:
         if not rows and not zero_region_files:
             print("no coverage data for repository files in report", file=sys.stderr)
             return 2
+
+        repo_files = find_rust_source_files(root)
+        report_files = {r[0] for r in rows} | zero_region_files
+        missing = repo_files - report_files
+        if missing:
+            print(f"no coverage data for: {', '.join(sorted(missing))}", file=sys.stderr)
+            return 2
+
         for path in sorted(zero_region_files):
             print(f"  {path}  no code (nothing to cover)")
 
