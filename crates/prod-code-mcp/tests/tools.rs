@@ -593,6 +593,32 @@ async fn code_validate_edits_requires_a_non_empty_edits_list_with_path_and_new_t
 }
 
 #[tokio::test]
+async fn code_validate_edits_refuses_bash_before_lsp() {
+    let ws = workspace();
+    let path = "scripts/deploy-mac-node.sh";
+    write(&ws, path, "#!/usr/bin/env bash\nset -e\n");
+    commit(&ws);
+
+    let diff = format!(
+        "--- a/{path}\n+++ b/{path}\n@@ -1,2 +1,2 @@\n #!/usr/bin/env bash\n-set -e\n+set -euo pipefail\n"
+    );
+    let err = execute_tool(
+        nowhere(),
+        &ws.root(),
+        "code_validate_edits",
+        serde_json::json!({ "diff": diff, "edits": [] }),
+    )
+    .await
+    .expect_err("Bash has no semantic diagnostics engine");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("semantic diagnostics are not supported"),
+        "{message}"
+    );
+    assert!(!message.contains("File not found in VFS"), "{message}");
+}
+
+#[tokio::test]
 async fn code_shadow_run_requires_argv_and_hypotheses() {
     let ws = workspace();
     let err = execute_tool(
