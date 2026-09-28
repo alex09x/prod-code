@@ -26,6 +26,9 @@
   watermarks re-sync them (#646).
 - Swift verification and compile checks now report structured, actionable diagnostics for
   SwiftPM dependency fetch failures and GitShellError (#645).
+- Impact analysis stops traversing upwards from test nodes, bounds high fan-in dispatchers
+  with a fan-in gap, and falls back to full workspace test commands when test selections
+  exceed the selective threshold (#592).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private

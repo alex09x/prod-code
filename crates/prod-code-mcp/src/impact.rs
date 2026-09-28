@@ -71,6 +71,12 @@ pub enum Gap {
     Callers { symbol: Symbol, error: String },
     /// The walk stopped at the depth limit while a function still had callers.
     Depth { symbol: Symbol, depth: usize },
+    /// The callers of a function exceeded the fan-in limit (shared dispatcher / hub).
+    FanIn {
+        symbol: Symbol,
+        callers: usize,
+        limit: usize,
+    },
 }
 
 impl Gap {
@@ -91,6 +97,14 @@ impl Gap {
             ),
             Gap::Depth { symbol, depth } => format!(
                 "the walk stopped at depth {depth} while {} ({}:{}) still had callers",
+                symbol.name, symbol.file, symbol.line
+            ),
+            Gap::FanIn {
+                symbol,
+                callers,
+                limit,
+            } => format!(
+                "{} ({}:{}) has {callers} callers, exceeding the fan-in limit of {limit}; stopped to avoid dispatcher explosion",
                 symbol.name, symbol.file, symbol.line
             ),
         }
@@ -153,6 +167,12 @@ impl ImpactReport {
             return Some(format!(
                 "lines changed outside any function in {}",
                 self.unattributed_files.join(", ")
+            ));
+        }
+        if self.tests.len() > 25 {
+            return Some(format!(
+                "{} affected tests exceed the selective threshold; the whole suite is faster",
+                self.tests.len()
             ));
         }
         None
@@ -1298,6 +1318,12 @@ pub fn test_command(
                     "--".to_string(),
                     leaf_names.remove(0),
                 ]
+            } else if leaf_names.len() > 25 {
+                vec![
+                    "cargo".to_string(),
+                    "test".to_string(),
+                    "--workspace".to_string(),
+                ]
             } else {
                 let mut command = vec![
                     "sh".to_string(),
@@ -1631,6 +1657,9 @@ pub async fn analyze(
     }
     let mut callers: BTreeSet<Symbol> = BTreeSet::new();
     for (origin, origin_is_test) in &origins {
+        if *origin_is_test {
+            continue;
+        }
         let mut seen: HashSet<(String, u32, u32)> = HashSet::from([key(origin)]);
         let mut queue: VecDeque<(Symbol, bool, usize)> =
             VecDeque::from([(origin.clone(), *origin_is_test, 0)]);
@@ -1662,6 +1691,20 @@ pub async fn analyze(
                 }
                 continue;
             }
+
+            const MAX_FAN_IN: usize = 30;
+            if found.len() > MAX_FAN_IN {
+                note(
+                    &mut incomplete,
+                    Gap::FanIn {
+                        symbol: sym.clone(),
+                        callers: found.len(),
+                        limit: MAX_FAN_IN,
+                    },
+                );
+                continue;
+            }
+
             for (caller, caller_is_test) in found {
                 if !seen.insert(key(&caller)) {
                     continue;
@@ -1673,10 +1716,12 @@ pub async fn analyze(
                         changed: origin.clone(),
                         hops: level + 1,
                     });
-                } else if !changed_keys.contains(&key(&caller)) {
-                    callers.insert(caller.clone());
+                } else {
+                    if !changed_keys.contains(&key(&caller)) {
+                        callers.insert(caller.clone());
+                    }
+                    queue.push_back((caller, caller_is_test, level + 1));
                 }
-                queue.push_back((caller, caller_is_test, level + 1));
             }
         }
     }
@@ -2355,5 +2400,57 @@ mod tests {
         );
         assert!(said.ends_with('…'), "{said}");
         assert!(unreadable("m", &serde_json::json!(3)).ends_with(": 3"));
+    }
+
+    #[test]
+    fn fan_in_gap_describes_hub_and_full_suite_fallback() {
+        let gap = Gap::FanIn {
+            symbol: Symbol {
+                name: "execute_tool".to_string(),
+                file: "crates/prod-code-mcp/src/tools.rs".to_string(),
+                line: 1159,
+                col: 14,
+            },
+            callers: 82,
+            limit: 30,
+        };
+        assert!(gap.describe().contains("has 82 callers, exceeding the fan-in limit of 30"));
+
+        let report = ImpactReport {
+            language: "rust".to_string(),
+            base: "HEAD".to_string(),
+            changed_files: vec!["crates/prod-code-mcp/src/remote_fs.rs".to_string()],
+            changed: vec![],
+            callers: vec![],
+            tests: (0..30)
+                .map(|i| Symbol {
+                    name: format!("test_{i}"),
+                    file: "tests/suite.rs".to_string(),
+                    line: i as u32,
+                    col: 1,
+                })
+                .collect(),
+            test_command: Some(vec!["cargo".to_string(), "test".to_string(), "--workspace".to_string()]),
+            unattributed_files: vec![],
+            index: None,
+            reaches: vec![],
+            incomplete: vec![gap],
+        };
+        assert!(report.full_suite_reason().is_some());
+        assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
+    }
+
+    #[test]
+    fn test_command_falls_back_to_workspace_when_exceeding_threshold() {
+        let tests: Vec<Symbol> = (0..26)
+            .map(|i| Symbol {
+                name: format!("test_{i}"),
+                file: "tests/suite.rs".to_string(),
+                line: i as u32,
+                col: 1,
+            })
+            .collect();
+        let cmd = test_command("rust", &crate::verify::ProjectTools::default(), &tests).unwrap();
+        assert_eq!(cmd, vec!["cargo", "test", "--workspace"]);
     }
 }
