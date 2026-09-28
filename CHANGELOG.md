@@ -13,6 +13,8 @@
   before calling the language server (#623).
 - Go test and benchmark verification retain package compile failures and emit them as
   diagnostics even when the compiler produces no test events (#624).
+- MCP code_sync now uses canonical worktree identity and the manifest-based synchronization
+  flow without reading the same checkout twice (#625).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
