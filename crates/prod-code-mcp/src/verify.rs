@@ -1421,35 +1421,64 @@ pub fn parse_go_test_json(text: &str) -> (u64, u64, Vec<TestFailure>) {
     let mut passed = 0;
     let mut failed = 0;
     let mut outputs: std::collections::BTreeMap<String, String> = Default::default();
+    let mut pkg_outputs: std::collections::BTreeMap<String, String> = Default::default();
+    let mut pkg_had_test_failures: std::collections::BTreeSet<String> = Default::default();
     let mut failures = Vec::new();
     for line in text.lines() {
         let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let Some(test) = ev.get("Test").and_then(|t| t.as_str()) else {
-            continue;
-        };
-        let key = format!(
-            "{}.{}",
-            ev.get("Package").and_then(|p| p.as_str()).unwrap_or(""),
-            test
-        );
-        match ev.get("Action").and_then(|a| a.as_str()) {
-            Some("output") => {
-                outputs
-                    .entry(key)
-                    .or_default()
-                    .push_str(ev.get("Output").and_then(|o| o.as_str()).unwrap_or(""));
+        let pkg = ev.get("Package").and_then(|p| p.as_str()).unwrap_or("");
+        if let Some(test) = ev.get("Test").and_then(|t| t.as_str()) {
+            let key = format!("{pkg}.{test}");
+            match ev.get("Action").and_then(|a| a.as_str()) {
+                Some("output") => {
+                    outputs
+                        .entry(key)
+                        .or_default()
+                        .push_str(ev.get("Output").and_then(|o| o.as_str()).unwrap_or(""));
+                }
+                Some("pass") => passed += 1,
+                Some("fail") => {
+                    failed += 1;
+                    pkg_had_test_failures.insert(pkg.to_string());
+                    failures.push(TestFailure {
+                        name: key.clone(),
+                        output: outputs.remove(&key).unwrap_or_default(),
+                    });
+                }
+                _ => {}
             }
-            Some("pass") => passed += 1,
-            Some("fail") => {
-                failed += 1;
-                failures.push(TestFailure {
-                    name: key.clone(),
-                    output: outputs.remove(&key).unwrap_or_default(),
-                });
+        } else {
+            match ev.get("Action").and_then(|a| a.as_str()) {
+                Some("output") => {
+                    pkg_outputs
+                        .entry(pkg.to_string())
+                        .or_default()
+                        .push_str(ev.get("Output").and_then(|o| o.as_str()).unwrap_or(""));
+                }
+                Some("pass") => {
+                    pkg_outputs.remove(pkg);
+                }
+                Some("fail") => {
+                    if !pkg_had_test_failures.contains(pkg) {
+                        failed += 1;
+                        let name = if pkg.is_empty() {
+                            "package".to_string()
+                        } else {
+                            pkg.to_string()
+                        };
+                        failures.push(TestFailure {
+                            name,
+                            output: pkg_outputs.remove(pkg).unwrap_or_default(),
+                        });
+                        pkg_had_test_failures.insert(pkg.to_string());
+                    } else {
+                        pkg_outputs.remove(pkg);
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
     (passed, failed, failures)
@@ -1935,6 +1964,123 @@ pub fn event_of_line(language: &str, kind: VerifyKind, line: &str) -> Option<Run
     }
 }
 
+/// Parses command stdout/stderr into structured diagnostics, fixes, benchmarks, and test results.
+#[allow(clippy::type_complexity)]
+pub fn parse_verification_output(
+    language: &str,
+    kind: VerifyKind,
+    stdout: &str,
+    stderr: &str,
+    tools: &ProjectTools,
+) -> (
+    Vec<Diagnostic>,
+    Vec<crate::fixit::Fix>,
+    Vec<BenchResult>,
+    u64,
+    u64,
+    Vec<TestFailure>,
+) {
+    let mut diagnostics = Vec::new();
+    let mut fixes = Vec::new();
+    let mut benches = Vec::new();
+    let (mut tests_passed, mut tests_failed, mut failures) = (0, 0, Vec::new());
+    match (language, kind) {
+        ("rust", VerifyKind::Check) | ("rust", VerifyKind::Lint) => {
+            diagnostics.extend(stdout.lines().filter_map(parse_cargo_json_line));
+            fixes.extend(stdout.lines().flat_map(crate::fixit::parse_fixes));
+        }
+        ("go", VerifyKind::Bench) => {
+            diagnostics.extend(parse_go_text(stderr));
+            diagnostics.extend(parse_go_text(stdout));
+            benches.extend(parse_bench_text(&format!("{stdout}\n{stderr}")));
+        }
+        (_, VerifyKind::Bench) => {
+            diagnostics.extend(parse_rustc_text(stderr));
+            benches.extend(parse_bench_text(&format!("{stdout}\n{stderr}")));
+        }
+        ("rust", VerifyKind::Test) => {
+            diagnostics.extend(parse_rustc_text(stderr));
+            let (p, f, fails) = parse_cargo_test_text(stdout);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("go", VerifyKind::Test) => {
+            diagnostics.extend(parse_go_text(stderr));
+            let (p, f, fails) = parse_go_test_json(stdout);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("go", _) => {
+            diagnostics.extend(script_notes(stderr));
+            diagnostics.extend(parse_go_text(stderr));
+            diagnostics.extend(parse_go_text(stdout));
+        }
+        ("typescript", VerifyKind::Check) => {
+            diagnostics.extend(parse_tsc_text(stdout));
+            diagnostics.extend(parse_tsc_text(stderr));
+        }
+        ("python", VerifyKind::Check) => {
+            diagnostics.extend(parse_pyright_json(stdout));
+        }
+        ("python", VerifyKind::Test) => {
+            let combined = format!("{stdout}\n{stderr}");
+            let (p, f, fails) = match tools.python_tests {
+                PythonTestRunner::Pytest => parse_pytest_text(stdout),
+                PythonTestRunner::Unittest => parse_unittest_text(&combined),
+            };
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("typescript", VerifyKind::Test) => {
+            let combined = format!("{stdout}\n{stderr}");
+            let (p, f, fails) = match tools.js_tests {
+                JsTestRunner::Vitest => parse_vitest_text(&combined),
+                JsTestRunner::Jest => parse_jest_text(&combined),
+                JsTestRunner::BunTest => parse_bun_test_text(&combined),
+                JsTestRunner::Mocha | JsTestRunner::Script => (0, 0, Vec::new()),
+            };
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("swift", VerifyKind::Test) => {
+            let combined = format!("{stdout}\n{stderr}");
+            diagnostics.extend(parse_colon_diagnostics(stderr));
+            diagnostics.retain(|d| !d.message.starts_with("-["));
+            let (p, f, fails) = parse_xctest_text(&combined);
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        ("cpp", VerifyKind::Test) => {
+            let (p, f, fails) = match tools.cpp {
+                CppBuild::CMake => parse_ctest_text(stdout),
+                CppBuild::Meson => parse_meson_test_text(stdout),
+                CppBuild::Make => (0, 0, Vec::new()),
+            };
+            tests_passed = p;
+            tests_failed = f;
+            failures = fails;
+        }
+        _ => {
+            diagnostics.extend(parse_colon_diagnostics(stderr));
+            diagnostics.extend(parse_colon_diagnostics(stdout));
+        }
+    }
+    diagnostics.dedup();
+    (
+        diagnostics,
+        fixes,
+        benches,
+        tests_passed,
+        tests_failed,
+        failures,
+    )
+}
+
 pub async fn run_verify(
     remote: SocketAddr,
     root: &Path,
@@ -2036,92 +2182,8 @@ pub async fn run_verify_with(
     let stdout = String::from_utf8_lossy(&stdout);
     let stderr = String::from_utf8_lossy(&stderr);
 
-    let mut diagnostics = Vec::new();
-    let mut fixes = Vec::new();
-    let mut benches = Vec::new();
-    let (mut tests_passed, mut tests_failed, mut failures) = (0, 0, Vec::new());
-    match (language, kind) {
-        ("rust", VerifyKind::Check) | ("rust", VerifyKind::Lint) => {
-            diagnostics.extend(stdout.lines().filter_map(parse_cargo_json_line));
-            fixes.extend(stdout.lines().flat_map(crate::fixit::parse_fixes));
-        }
-        (_, VerifyKind::Bench) => {
-            diagnostics.extend(parse_rustc_text(&stderr));
-            benches.extend(parse_bench_text(&format!("{stdout}\n{stderr}")));
-        }
-        ("rust", VerifyKind::Test) => {
-            diagnostics.extend(parse_rustc_text(&stderr));
-            let (p, f, fails) = parse_cargo_test_text(&stdout);
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        ("go", VerifyKind::Test) => {
-            diagnostics.extend(parse_go_text(&stderr));
-            let (p, f, fails) = parse_go_test_json(&stdout);
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        ("go", _) => {
-            diagnostics.extend(script_notes(&stderr));
-            diagnostics.extend(parse_go_text(&stderr));
-            diagnostics.extend(parse_go_text(&stdout));
-        }
-        ("typescript", VerifyKind::Check) => {
-            diagnostics.extend(parse_tsc_text(&stdout));
-            diagnostics.extend(parse_tsc_text(&stderr));
-        }
-        ("python", VerifyKind::Check) => {
-            diagnostics.extend(parse_pyright_json(&stdout));
-        }
-        ("python", VerifyKind::Test) => {
-            let combined = format!("{stdout}\n{stderr}");
-            let (p, f, fails) = match tools.python_tests {
-                PythonTestRunner::Pytest => parse_pytest_text(&stdout),
-                PythonTestRunner::Unittest => parse_unittest_text(&combined),
-            };
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        ("typescript", VerifyKind::Test) => {
-            let combined = format!("{stdout}\n{stderr}");
-            let (p, f, fails) = match tools.js_tests {
-                JsTestRunner::Vitest => parse_vitest_text(&combined),
-                JsTestRunner::Jest => parse_jest_text(&combined),
-                JsTestRunner::BunTest => parse_bun_test_text(&combined),
-                JsTestRunner::Mocha | JsTestRunner::Script => (0, 0, Vec::new()),
-            };
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        ("swift", VerifyKind::Test) => {
-            let combined = format!("{stdout}\n{stderr}");
-            diagnostics.extend(parse_colon_diagnostics(&stderr));
-            diagnostics.retain(|d| !d.message.starts_with("-["));
-            let (p, f, fails) = parse_xctest_text(&combined);
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        ("cpp", VerifyKind::Test) => {
-            let (p, f, fails) = match tools.cpp {
-                CppBuild::CMake => parse_ctest_text(&stdout),
-                CppBuild::Meson => parse_meson_test_text(&stdout),
-                CppBuild::Make => (0, 0, Vec::new()),
-            };
-            tests_passed = p;
-            tests_failed = f;
-            failures = fails;
-        }
-        _ => {
-            diagnostics.extend(parse_colon_diagnostics(&stderr));
-            diagnostics.extend(parse_colon_diagnostics(&stdout));
-        }
-    }
-    diagnostics.dedup();
+    let (mut diagnostics, fixes, benches, tests_passed, tests_failed, mut failures) =
+        parse_verification_output(language, kind, &stdout, &stderr, &tools);
     if let Some(sub) = &subdir {
         let nested = format!(
             "{}/{sub}",
@@ -2415,6 +2477,56 @@ expected 42, got 43\n\
         assert_eq!((p, f), (1, 1));
         assert_eq!(fails[0].name, "p.TestA");
         assert!(fails[0].output.contains("boom"));
+    }
+
+    #[test]
+    fn go_package_level_compilation_failure_without_test_field() {
+        let events = r##"{"Action":"output","Package":"example.com/pkg","Output":"# example.com/pkg\n"}
+{"Action":"output","Package":"example.com/pkg","Output":"pkg/foo.go:10:2: undefined: bar\n"}
+{"Action":"fail","Package":"example.com/pkg","Elapsed":0.005}"##;
+        let (p, f, fails) = parse_go_test_json(events);
+        assert_eq!((p, f), (0, 1));
+        assert_eq!(fails.len(), 1);
+        assert_eq!(fails[0].name, "example.com/pkg");
+        assert!(fails[0].output.contains("undefined: bar"));
+
+        // When a package has individual test failures, the package-level fail
+        // event does not double-count or overwrite the test failure.
+        let with_test_fail = r#"{"Action":"run","Package":"example.com/pkg","Test":"TestX"}
+{"Action":"output","Package":"example.com/pkg","Test":"TestX","Output":"    x_test.go:5: fail\n"}
+{"Action":"fail","Package":"example.com/pkg","Test":"TestX","Elapsed":0}
+{"Action":"fail","Package":"example.com/pkg","Elapsed":0.01}"#;
+        let (p, f, fails) = parse_go_test_json(with_test_fail);
+        assert_eq!((p, f), (0, 1));
+        assert_eq!(fails.len(), 1);
+        assert_eq!(fails[0].name, "example.com/pkg.TestX");
+        assert!(fails[0].output.contains("x_test.go:5: fail"));
+    }
+
+    #[test]
+    fn go_benchmark_compiler_diagnostics() {
+        let tools = ProjectTools::default();
+        let stderr = "# example.com/bench\nbench_test.go:14:2: undefined: nonExistentFunc\n";
+        let (diags, fixes, benches, p, f, fails) =
+            parse_verification_output("go", VerifyKind::Bench, "", stderr, &tools);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("bench_test.go"));
+        assert_eq!(diags[0].line, Some(14));
+        assert_eq!(diags[0].column, Some(2));
+        assert_eq!(diags[0].message, "undefined: nonExistentFunc");
+        assert!(fixes.is_empty());
+        assert!(benches.is_empty());
+        assert_eq!((p, f), (0, 0));
+        assert!(fails.is_empty());
+
+        let stdout = "bench_test.go:20:5: syntax error: unexpected semicolon\n";
+        let (diags, _fixes, _benches, _p, _f, _fails) =
+            parse_verification_output("go", VerifyKind::Bench, stdout, "", &tools);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].file.as_deref(), Some("bench_test.go"));
+        assert_eq!(diags[0].line, Some(20));
+        assert_eq!(diags[0].column, Some(5));
+        assert_eq!(diags[0].message, "syntax error: unexpected semicolon");
     }
 
     #[test]
