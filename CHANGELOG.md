@@ -15,6 +15,7 @@
   diagnostics even when the compiler produces no test events (#624).
 - MCP code_sync now uses canonical worktree identity and the manifest-based synchronization
   flow without reading the same checkout twice (#625).
+- code_definition now renders a single-object LocationLink as well as array responses (#626).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
