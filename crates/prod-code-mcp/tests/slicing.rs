@@ -1036,6 +1036,49 @@ async fn run_verify_runs_go_test_and_reports_pass_fail_counts() {
 
 /// `basedpyright --outputjson` diagnostics are parsed off stdout.
 #[tokio::test]
+async fn run_verify_reports_go_package_compile_failure_without_test_events() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+    ]);
+    let root = ws.root();
+    let stdout = br##"{"Action":"output","Package":"example.com/demo","Output":"# example.com/demo\n"}
+{"Action":"output","Package":"example.com/demo","Output":"./main.go:3:2: undefined: missing\n"}
+{"Action":"fail","Package":"example.com/demo","Elapsed":0.005}"##.to_vec();
+    let addr = exec_gateway(None, move |_req| (stdout.clone(), Vec::new(), Some(1))).await;
+
+    let report = verify::run_verify(addr, &root, None, verify::VerifyKind::Test, None, 30)
+        .await
+        .expect("the verify runs");
+    assert_eq!(report.exit_code, Some(1));
+    assert_eq!((report.tests_passed, report.tests_failed), (0, 1));
+    assert_eq!(report.failures[0].name, "example.com/demo");
+    assert!(report.failures[0].output.contains("undefined: missing"));
+}
+
+#[tokio::test]
+async fn run_verify_parses_go_benchmark_compiler_diagnostics_as_go() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+    ]);
+    let root = ws.root();
+    let stderr = b"# example.com/demo\nbench_test.go:14:2: undefined: missingBenchmark\n".to_vec();
+    let addr = exec_gateway(None, move |_req| (Vec::new(), stderr.clone(), Some(1))).await;
+
+    let report = verify::run_verify(addr, &root, None, verify::VerifyKind::Bench, None, 30)
+        .await
+        .expect("the verify runs");
+    assert_eq!(report.exit_code, Some(1));
+    assert_eq!(report.language, "go");
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].file.as_deref(), Some("bench_test.go"));
+    assert_eq!(report.diagnostics[0].line, Some(14));
+    assert_eq!(report.diagnostics[0].column, Some(2));
+    assert_eq!(report.diagnostics[0].message, "undefined: missingBenchmark");
+}
+
+#[tokio::test]
 async fn run_verify_runs_python_check_with_pyright_json() {
     let ws = Workspace::new(&[
         ("pyproject.toml", "[tool.pytest.ini_options]\n"),

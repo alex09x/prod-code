@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Go test and benchmark verification retain package compile failures and emit them as
+  diagnostics even when the compiler produces no test events (#624).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
