@@ -115,6 +115,9 @@
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.
+- The prod-code source command reads checkout-local workspace files from the active
+  checkout, retains gateway reads for external SDK and dependency sources, and refuses
+  paths that escape the checkout. Local reads stop at 2 MiB (#619).
 - Editor pre-save synchronization reads the decoded top-level JSON-RPC method (#579).
   Reordered fields and escaped method keys/values still push the checkout before save or
   watched-file notifications; nested `method` fields do not trigger an unrelated sync.

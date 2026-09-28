@@ -4,6 +4,7 @@
 use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, ReadFileRequest, WireMessage};
+use std::io::Read;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tokio_util::codec::Framed;
@@ -57,11 +58,8 @@ pub async fn read_source(
     let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
 
     if p.is_absolute() {
-        let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        let is_inside =
-            p.starts_with(root) || p.starts_with(&root_canon) || p_canon.starts_with(&root_canon);
-        if is_inside {
-            read_local_source_file(p)
+        if let Some(local_path) = absolute_checkout_source_path(root, &root_canon, p)? {
+            read_local_source_file(&local_path)
         } else {
             read_remote_file(remote, &path, 0).await
         }
@@ -71,14 +69,73 @@ pub async fn read_source(
     }
 }
 
+fn absolute_checkout_source_path(
+    root: &Path,
+    root_canon: &Path,
+    path: &Path,
+) -> Result<Option<PathBuf>> {
+    let claims_checkout = path.starts_with(root) || path.starts_with(root_canon);
+    if claims_checkout
+        && path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("{} is outside the workspace", path.display());
+    }
+
+    match std::fs::canonicalize(path) {
+        Ok(canonical) if canonical.starts_with(root_canon) => Ok(Some(canonical)),
+        Ok(_) if claims_checkout => {
+            anyhow::bail!("{} is outside the workspace", path.display())
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && claims_checkout => {
+            let ancestor = canonical_existing_ancestor(path)?;
+            if !ancestor.starts_with(root_canon) {
+                anyhow::bail!("{} is outside the workspace", path.display());
+            }
+            Err(error).with_context(|| format!("reading {}", path.display()))
+        }
+        Err(error) if claims_checkout => {
+            Err(error).with_context(|| format!("resolving {}", path.display()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn canonical_existing_ancestor(path: &Path) -> Result<PathBuf> {
+    let mut ancestor = path;
+    loop {
+        match std::fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                return std::fs::canonicalize(ancestor)
+                    .with_context(|| format!("resolving {}", ancestor.display()));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor
+                    .parent()
+                    .context("source path has no existing ancestor")?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("resolving {}", ancestor.display()));
+            }
+        }
+    }
+}
+
 fn read_local_source_file(path: &Path) -> Result<(Vec<u8>, bool)> {
-    let mut bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let truncated = if bytes.len() as u64 > MAX_SOURCE_BYTES {
-        bytes.truncate(MAX_SOURCE_BYTES as usize);
-        true
-    } else {
-        false
-    };
+    let file = std::fs::File::open(path).with_context(|| format!("reading {}", path.display()))?;
+    read_limited_source(file).with_context(|| format!("reading {}", path.display()))
+}
+
+fn read_limited_source(reader: impl Read) -> Result<(Vec<u8>, bool)> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .context("reading source content")?;
+    let truncated = bytes.len() as u64 > MAX_SOURCE_BYTES;
+    bytes.truncate(MAX_SOURCE_BYTES as usize);
     Ok((bytes, truncated))
 }
 
@@ -254,5 +311,73 @@ mod tests {
 
         let err = read_source(addr, root, "../../etc/passwd").await.unwrap_err();
         assert!(format!("{err:#}").contains("outside the workspace"));
+    }
+
+    #[tokio::test]
+    async fn read_source_refuses_absolute_parent_and_symlink_escapes() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let outside = parent.path().join("private.rs");
+        std::fs::write(&outside, "private").unwrap();
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let traversal = root.join("../private.rs");
+        let err = read_source(addr, &root, &traversal.to_string_lossy())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("outside the workspace"),
+            "{err:#}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let external = parent.path().join("external");
+            std::fs::create_dir(&external).unwrap();
+            std::fs::write(external.join("private.py"), "private").unwrap();
+            symlink(&external, root.join("linked")).unwrap();
+            let linked = root.join("linked/private.py");
+            let err = read_source(addr, &root, &linked.to_string_lossy())
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("outside the workspace"),
+                "{err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn bounded_source_reader_stops_after_one_truncation_byte() {
+        use std::cell::Cell;
+
+        struct CountingReader<'a> {
+            bytes: &'a [u8],
+            read: &'a Cell<usize>,
+        }
+
+        impl std::io::Read for CountingReader<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                let count = output.len().min(self.bytes.len());
+                output[..count].copy_from_slice(&self.bytes[..count]);
+                self.bytes = &self.bytes[count..];
+                self.read.set(self.read.get() + count);
+                Ok(count)
+            }
+        }
+
+        let data = vec![b'x'; MAX_SOURCE_BYTES as usize + 4096];
+        let read = Cell::new(0);
+        let reader = CountingReader {
+            bytes: &data,
+            read: &read,
+        };
+        let (bytes, truncated) = read_limited_source(reader).unwrap();
+        assert!(truncated);
+        assert_eq!(bytes.len(), MAX_SOURCE_BYTES as usize);
+        assert_eq!(read.get() as u64, MAX_SOURCE_BYTES + 1);
     }
 }
