@@ -483,6 +483,48 @@ fn edit_for(occurrence: &Occurrence, variant: &Variant) -> serde_json::Value {
     })
 }
 
+/// The LSP position for a scanned occurrence. `scan` deliberately counts Unicode scalar
+/// values, which makes textual edits straightforward; LSP character offsets are UTF-16 code
+/// units, so convert only at the analyzer boundary.
+fn lsp_position(text: &str, occurrence: &Occurrence) -> (u32, u32) {
+    let character = text
+        .lines()
+        .nth(occurrence.line.saturating_sub(1) as usize)
+        .map(|line| {
+            line.chars()
+                .take(occurrence.col.saturating_sub(1) as usize)
+                .map(|c| c.len_utf16() as u32)
+                .sum()
+        })
+        .unwrap_or_default();
+    (occurrence.line.saturating_sub(1), character)
+}
+
+/// Whether phase two may replace this occurrence directly.
+///
+/// Only schemas and queries without an analyzer own bare text. Other text files are evidence:
+/// keep their hits in `left` so a README, shell command, configuration value, or plain prose
+/// cannot turn a schema rename into a broad find-and-replace.
+fn text_rewrite_decision(
+    kind: Kind,
+    schema: Option<Schema>,
+    text: &str,
+    occurrence: &Occurrence,
+) -> (bool, &'static str) {
+    match (kind, schema) {
+        (Kind::Text(_), Some(schema)) => (
+            is_structural(schema, text, occurrence),
+            match schema {
+                Schema::OpenApi => " (prose in the OpenAPI document, not the field)",
+                Schema::GraphQl => " (a GraphQL comment or description)",
+            },
+        ),
+        (Kind::Text("protobuf" | "sql"), None) => (true, ""),
+        (Kind::Code(_), None) => (occurrence.in_string, ""),
+        _ => (false, " (unsupported text evidence)"),
+    }
+}
+
 fn display(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -577,7 +619,11 @@ pub async fn rename(
         };
         tried.push((o.file.clone(), o.line, o.col));
         let new_name = &variants[o.variant].to;
-        let edit = match rename_symbol(remote, root, &o.file, o.line, o.col, new_name).await {
+        let (line, character) = originals
+            .get(&o.file)
+            .map(|text| lsp_position(text, &o))
+            .unwrap_or((o.line.saturating_sub(1), o.col.saturating_sub(1)));
+        let edit = match rename_symbol(remote, root, &o.file, line, character, new_name).await {
             Ok(edit) => edit,
             Err(err) => {
                 notes.push(format!(
@@ -688,17 +734,7 @@ pub async fn rename(
             let Some(language) = language else {
                 continue;
             };
-            let (ours, why) = match (kind, schema) {
-                (Kind::Text(_), Some(schema)) => (
-                    is_structural(schema, text, o),
-                    match schema {
-                        Schema::OpenApi => " (prose in the OpenAPI document, not the field)",
-                        Schema::GraphQl => " (a GraphQL comment or description)",
-                    },
-                ),
-                (Kind::Text(_), None) => (true, ""),
-                _ => (o.in_string, ""),
-            };
+            let (ours, why) = text_rewrite_decision(kind, schema, text, o);
             if ours {
                 *as_text.entry(language).or_default() += 1;
                 edits.push(edit_for(o, &variants[o.variant]));
@@ -1118,7 +1154,7 @@ async fn rename_symbol(
     root: &Path,
     file: &Path,
     line: u32,
-    col: u32,
+    character: u32,
     new_name: &str,
 ) -> Result<serde_json::Value> {
     let uri = url::Url::from_file_path(file)
@@ -1131,7 +1167,7 @@ async fn rename_symbol(
         "textDocument/rename",
         serde_json::json!({
             "textDocument": { "uri": uri },
-            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) },
+            "position": { "line": line, "character": character },
             "newName": new_name,
         }),
     )
@@ -1390,5 +1426,44 @@ let order_id = 1;
         assert_eq!(edit["range"]["start"]["character"], 2);
         assert_eq!(edit["range"]["end"]["character"], 10);
         assert_eq!(edit["newText"], "trade_id");
+    }
+
+    #[test]
+    fn unsupported_prose_is_left_as_evidence_not_rewritten() {
+        let variants = variants("order_id", "trade_id");
+        for (path, text) in [
+            ("README.md", "The order_id is documented here.\n"),
+            ("deploy.sh", "echo order_id\n"),
+            ("settings.toml", "note = 'order_id'\n"),
+            ("evidence.env", "NOTE=order_id\n"),
+            ("notes.txt", "The order_id is plain prose.\n"),
+        ] {
+            let path = Path::new(path);
+            let hits = scan(text, &variants, path);
+            assert!(!hits.is_empty(), "{path:?} is retained as evidence");
+            let edits: Vec<_> = hits
+                .iter()
+                .filter(|o| text_rewrite_decision(kind_of(path), schema_of(path, text), text, o).0)
+                .map(|o| edit_for(o, &variants[o.variant]))
+                .collect();
+            assert!(edits.is_empty());
+            let after = crate::refactor::apply_scalar_text_edits(text, &edits).unwrap();
+            assert_eq!(after, text, "{path:?} is unchanged");
+        }
+    }
+
+    #[test]
+    fn semantic_rename_position_uses_utf16_after_non_bmp_text() {
+        let variants = variants("order_id", "trade_id");
+        let text = "let label = \"😀\"; let order_id = 1;\n";
+        let occurrence = scan(text, &variants, Path::new("src/lib.rs"))
+            .into_iter()
+            .find(|o| variants[o.variant].from == "order_id")
+            .expect("the code identifier");
+
+        // `order_id` is scalar column 22; the emoji before it occupies two UTF-16 units, so
+        // its 0-based LSP character is 22 rather than the scalar-based 21.
+        assert_eq!(occurrence.col, 22);
+        assert_eq!(lsp_position(text, &occurrence), (0, 22));
     }
 }

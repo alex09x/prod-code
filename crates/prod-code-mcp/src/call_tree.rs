@@ -96,10 +96,7 @@ impl CallTree {
 
 /// The range to use for an LSP hierarchy item. Keep the legacy range fallback only when
 /// selectionRange is absent; a present but malformed selection range must be rejected.
-fn hierarchy_range<'a>(
-    value: &'a serde_json::Value,
-    range: &str,
-) -> Option<&'a serde_json::Value> {
+fn hierarchy_range<'a>(value: &'a serde_json::Value, range: &str) -> Option<&'a serde_json::Value> {
     match value.get(range) {
         Some(range) => Some(range),
         None if range == "selectionRange" => value.get("range"),
@@ -155,8 +152,7 @@ fn validate_call_hierarchy_item(item: &serde_json::Value) -> Result<()> {
         item.get("uri").and_then(|u| u.as_str()).is_some(),
         "call hierarchy item has no valid 'uri': {item}"
     );
-    let has_valid_range =
-        hierarchy_range(item, "selectionRange").is_some_and(valid_lsp_range);
+    let has_valid_range = hierarchy_range(item, "selectionRange").is_some_and(valid_lsp_range);
     anyhow::ensure!(
         has_valid_range,
         "call hierarchy item has no valid 'selectionRange' or 'range': {item}"
@@ -231,7 +227,9 @@ impl Walk<'_> {
             let edges_array = match &edges {
                 serde_json::Value::Null => return Ok(Vec::new()),
                 serde_json::Value::Array(a) => a,
-                other => anyhow::bail!("the analyzer's {method} answer is not an array or null: {other}"),
+                other => {
+                    anyhow::bail!("the analyzer's {method} answer is not an array or null: {other}")
+                }
             };
             let mut nodes = Vec::new();
             for edge in edges_array {
@@ -244,7 +242,9 @@ impl Walk<'_> {
                 };
                 validate_call_hierarchy_item(other)?;
                 let Some(ranges) = edge.get("fromRanges").and_then(|v| v.as_array()) else {
-                    anyhow::bail!("call hierarchy edge in {method} has no valid 'fromRanges' array: {edge}");
+                    anyhow::bail!(
+                        "call hierarchy edge in {method} has no valid 'fromRanges' array: {edge}"
+                    );
                 };
                 for range in ranges {
                     anyhow::ensure!(
@@ -299,7 +299,9 @@ pub async fn call_tree(
     let items_array = match &items {
         serde_json::Value::Null => return Ok(None),
         serde_json::Value::Array(a) => a,
-        other => anyhow::bail!("the analyzer's prepareCallHierarchy answer is not an array or null: {other}"),
+        other => anyhow::bail!(
+            "the analyzer's prepareCallHierarchy answer is not an array or null: {other}"
+        ),
     };
     if items_array.is_empty() {
         return Ok(None);

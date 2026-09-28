@@ -101,7 +101,10 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on missing position, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on missing position, got: {err:?}"
+    );
 
     // LSP coordinates outside the range this client can represent are malformed.
     let invalid_uri = format!("file://{}", lib.display());
@@ -124,7 +127,10 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on out-of-range coordinate, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on out-of-range coordinate, got: {err:?}"
+    );
 
     // A present but malformed selectionRange must not fall back to range.
     let invalid_uri = format!("file://{}", lib.display());
@@ -148,7 +154,10 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on invalid selectionRange, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on invalid selectionRange, got: {err:?}"
+    );
 
     // A call edge without the required fromRanges field is malformed, not a call with no sites.
     let leaf = valid_leaf.clone();
@@ -172,7 +181,10 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on missing fromRanges, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on missing fromRanges, got: {err:?}"
+    );
 
     // 5. Valid empty control: null
     let remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -188,7 +200,11 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
     )
     .await
     .expect("null prepareCallHierarchy succeeds");
-    assert!(text_of(&res).contains("No function at"), "expected 'No function at', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("No function at"),
+        "expected 'No function at', got: {}",
+        text_of(&res)
+    );
 
     // 6. Valid empty control: []
     let remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -204,7 +220,11 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
     )
     .await
     .expect("empty array prepareCallHierarchy succeeds");
-    assert!(text_of(&res).contains("No function at"), "expected 'No function at', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("No function at"),
+        "expected 'No function at', got: {}",
+        text_of(&res)
+    );
 }
 
 #[tokio::test]
@@ -251,7 +271,10 @@ async fn incoming_calls_expansion_rejects_errors_and_malformations_and_preserves
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on non-array incomingCalls, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on non-array incomingCalls, got: {err:?}"
+    );
 
     // 3. Malformed edge: empty object
     let leaf = valid_leaf.clone();
@@ -268,7 +291,10 @@ async fn incoming_calls_expansion_rejects_errors_and_malformations_and_preserves
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on malformed edge, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on malformed edge, got: {err:?}"
+    );
 
     // 4. Malformed edge: invalid 'from' item
     let leaf = valid_leaf.clone();
@@ -285,7 +311,10 @@ async fn incoming_calls_expansion_rejects_errors_and_malformations_and_preserves
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on malformed from item, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on malformed from item, got: {err:?}"
+    );
 
     // 5. Valid empty control: null
     let leaf = valid_leaf.clone();
@@ -303,7 +332,11 @@ async fn incoming_calls_expansion_rejects_errors_and_malformations_and_preserves
     )
     .await
     .expect("null incomingCalls succeeds");
-    assert!(text_of(&res).contains("0 caller(s) — no callers found"), "expected 0 callers, got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("0 caller(s) — no callers found"),
+        "expected 0 callers, got: {}",
+        text_of(&res)
+    );
 
     // 6. Valid empty control: []
     let leaf = valid_leaf.clone();
@@ -321,7 +354,11 @@ async fn incoming_calls_expansion_rejects_errors_and_malformations_and_preserves
     )
     .await
     .expect("empty incomingCalls succeeds");
-    assert!(text_of(&res).contains("0 caller(s) — no callers found"), "expected 0 callers, got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("0 caller(s) — no callers found"),
+        "expected 0 callers, got: {}",
+        text_of(&res)
+    );
 }
 
 #[tokio::test]
@@ -368,7 +405,10 @@ async fn outgoing_calls_expansion_rejects_errors_and_malformations_and_preserves
         json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on non-array outgoingCalls, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on non-array outgoingCalls, got: {err:?}"
+    );
 
     // 3. Malformed edge: missing 'to'
     let caller = valid_caller.clone();
@@ -403,7 +443,11 @@ async fn outgoing_calls_expansion_rejects_errors_and_malformations_and_preserves
     )
     .await
     .expect("null outgoingCalls succeeds");
-    assert!(text_of(&res).contains("0 callee(s) — no callees found"), "expected 0 callees, got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("0 callee(s) — no callees found"),
+        "expected 0 callees, got: {}",
+        text_of(&res)
+    );
 
     // 5. Valid empty control: []
     let caller = valid_caller.clone();
@@ -421,11 +465,16 @@ async fn outgoing_calls_expansion_rejects_errors_and_malformations_and_preserves
     )
     .await
     .expect("empty outgoingCalls succeeds");
-    assert!(text_of(&res).contains("0 callee(s) — no callees found"), "expected 0 callees, got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("0 callee(s) — no callees found"),
+        "expected 0 callees, got: {}",
+        text_of(&res)
+    );
 }
 
 #[tokio::test]
-async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_preserves_empty_controls() {
+async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_preserves_empty_controls()
+ {
     let ws = Workspace::empty();
     let go = ws.write("shape.go", "package shape\n\ntype Square struct{}\n");
     ws.commit();
@@ -472,7 +521,10 @@ async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_pr
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on non-array prepareTypeHierarchy, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on non-array prepareTypeHierarchy, got: {err:?}"
+    );
 
     // 3. Malformed item: missing position
     let remote = scripted_gateway(Arc::new(move |method, _| match method {
@@ -487,7 +539,10 @@ async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_pr
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on malformed item, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on malformed item, got: {err:?}"
+    );
 
     // 4. A malformed explicit selectionRange must not fall back to range.
     let malformed = json!({
@@ -514,7 +569,10 @@ async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_pr
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on invalid supertype selectionRange, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on invalid supertype selectionRange, got: {err:?}"
+    );
 
     // 4. Valid empty control: null -> normal "answered none"
     let remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -530,7 +588,11 @@ async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_pr
     )
     .await
     .expect("null prepareTypeHierarchy succeeds");
-    assert!(text_of(&res).contains("the language server answered none"), "expected 'answered none', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("the language server answered none"),
+        "expected 'answered none', got: {}",
+        text_of(&res)
+    );
 
     // 5. Valid empty control: [] -> normal "answered none"
     let remote = scripted_gateway(Arc::new(|method, _| match method {
@@ -546,7 +608,11 @@ async fn non_rust_prepare_type_hierarchy_rejects_errors_and_malformations_and_pr
     )
     .await
     .expect("empty array prepareTypeHierarchy succeeds");
-    assert!(text_of(&res).contains("the language server answered none"), "expected 'answered none', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("the language server answered none"),
+        "expected 'answered none', got: {}",
+        text_of(&res)
+    );
 }
 
 #[tokio::test]
@@ -595,7 +661,10 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on non-array supertypes, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on non-array supertypes, got: {err:?}"
+    );
 
     // 3. Malformed item in supertypes array
     let it = item.clone();
@@ -612,7 +681,10 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on malformed supertype item, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on malformed supertype item, got: {err:?}"
+    );
 
     // A malformed line that would overflow when rendered 1-based is refused before conversion.
     let it = item.clone();
@@ -637,7 +709,10 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
         json!({ "path": "shape.go", "line": 3, "character": 6 }),
     )
     .await;
-    assert!(err.is_err(), "expected error on overflowing hierarchy position, got: {err:?}");
+    assert!(
+        err.is_err(),
+        "expected error on overflowing hierarchy position, got: {err:?}"
+    );
 
     // 4. Valid empty control: null -> "`Square` has no supertype."
     let it = item.clone();
@@ -655,7 +730,11 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
     )
     .await
     .expect("null supertypes succeeds");
-    assert!(text_of(&res).contains("`Square` has no supertype"), "expected 'has no supertype', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("`Square` has no supertype"),
+        "expected 'has no supertype', got: {}",
+        text_of(&res)
+    );
 
     // 5. Valid empty control: [] -> "`Square` has no supertype."
     let it = item.clone();
@@ -673,7 +752,11 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
     )
     .await
     .expect("empty array supertypes succeeds");
-    assert!(text_of(&res).contains("`Square` has no supertype"), "expected 'has no supertype', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("`Square` has no supertype"),
+        "expected 'has no supertype', got: {}",
+        text_of(&res)
+    );
 
     // 6. Valid populated control: [Shape] -> "`Square` has 1 supertype(s):\n  • Shape  shape.go:10:6"
     let it = item.clone();
@@ -698,6 +781,14 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
     )
     .await
     .expect("valid supertypes succeeds");
-    assert!(text_of(&res).contains("`Square` has 1 supertype(s)"), "expected 'has 1 supertype(s)', got: {}", text_of(&res));
-    assert!(text_of(&res).contains("• Shape  shape.go:10:6"), "expected '• Shape  shape.go:10:6', got: {}", text_of(&res));
+    assert!(
+        text_of(&res).contains("`Square` has 1 supertype(s)"),
+        "expected 'has 1 supertype(s)', got: {}",
+        text_of(&res)
+    );
+    assert!(
+        text_of(&res).contains("• Shape  shape.go:10:6"),
+        "expected '• Shape  shape.go:10:6', got: {}",
+        text_of(&res)
+    );
 }

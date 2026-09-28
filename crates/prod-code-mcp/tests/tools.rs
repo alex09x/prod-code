@@ -61,6 +61,11 @@ fn rust_workspace(source: &str) -> Workspace {
     ])
 }
 
+type SyncProbeRecord = (Option<String>, Option<String>, Vec<String>);
+type SyncRequestRecord = (Option<String>, Vec<String>);
+type SyncProbeLog = Arc<std::sync::Mutex<Vec<SyncProbeRecord>>>;
+type SyncRequestLog = Arc<std::sync::Mutex<Vec<SyncRequestRecord>>>;
+
 /// What `code_exec`, `code_check`/`code_lint`/`code_test`, `code_search`, `code_shadow_run`,
 /// `code_status` and `code_source` need beyond the LSP protocol.
 #[derive(Clone)]
@@ -75,6 +80,8 @@ struct Script {
     /// files only in its fix mode. The client writes back only what differs from the checkout,
     /// so changes sent for every command would all land with the first one (#254).
     exec_changes_only_for: Option<&'static str>,
+    sync_probe_requests: SyncProbeLog,
+    sync_requests: SyncRequestLog,
     /// What the command used, as the gateway reports it from `wait4`.
     exec_usage: Option<prod_code_protocol::ExecUsage>,
     /// The node's platform, as the gateway reports it (#140).
@@ -95,6 +102,8 @@ impl Default for Script {
             exec_exit: Some(0),
             exec_changes: Vec::new(),
             exec_changes_only_for: None,
+            sync_probe_requests: Arc::default(),
+            sync_requests: Arc::default(),
             exec_usage: None,
             exec_platform: None,
             exec_env: Arc::default(),
@@ -127,22 +136,54 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
     while let Some(msg) = framed.next().await {
         match msg? {
             WireMessage::SyncProbeRequest(req) => {
+                let missing: Vec<String> = req
+                    .files
+                    .iter()
+                    .map(|file| file.relative_path.clone())
+                    .collect();
+                script.sync_probe_requests.lock().unwrap().push((
+                    req.base_workspace_name.clone(),
+                    req.seed_from.clone(),
+                    missing.clone(),
+                ));
+                let server_workspace_root = format!(
+                    "/gateway/{}",
+                    req.base_workspace_name.as_deref().unwrap_or("unnamed")
+                );
                 framed
                     .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
-                        server_workspace_root: req.client_workspace_root,
+                        server_workspace_root,
                         seeded: false,
                         files_deleted: 0,
-                        missing: Vec::new(),
+                        missing,
                     }))
                     .await?;
             }
             WireMessage::SyncRequest(req) => {
+                let files_updated = req.files.len();
+                let bytes_transferred = req
+                    .files
+                    .iter()
+                    .filter_map(|file| file.content.as_ref())
+                    .map(Vec::len)
+                    .sum();
+                script.sync_requests.lock().unwrap().push((
+                    req.base_workspace_name.clone(),
+                    req.files
+                        .iter()
+                        .map(|file| file.relative_path.clone())
+                        .collect(),
+                ));
+                let server_workspace_root = format!(
+                    "/gateway/{}",
+                    req.base_workspace_name.as_deref().unwrap_or("unnamed")
+                );
                 framed
                     .send(WireMessage::SyncResponse(SyncResponse {
-                        server_workspace_root: req.client_workspace_root,
-                        files_updated: 0,
+                        server_workspace_root,
+                        files_updated,
                         files_deleted: 0,
-                        bytes_transferred: 0,
+                        bytes_transferred,
                         duration_ms: 1,
                         workspace_was_fresh: false,
                         stale_paths: Vec::new(),
@@ -723,6 +764,56 @@ async fn code_definition_reports_locations_or_says_there_are_none() {
     .await
     .expect("the query runs");
     assert_eq!(text_of(&none), "No definition found.");
+}
+
+#[tokio::test]
+async fn code_definition_reads_location_links_as_arrays_and_single_objects() {
+    let ws = rust_workspace("pub fn target() {}\n");
+    let lib = ws.path("src/lib.rs");
+    let target_uri = format!("file://{}", lib.display());
+    let array_uri = target_uri.clone();
+    let array_remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/definition" => serde_json::json!([{
+            "targetUri": array_uri,
+            "targetSelectionRange": {
+                "start": { "line": 6, "character": 10 },
+                "end": { "line": 6, "character": 16 }
+            }
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let array = execute_tool(
+        array_remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("an array LocationLink is rendered");
+    assert!(text_of(&array).contains(&format!("{target_uri}:7:11")));
+
+    let single_uri = target_uri.clone();
+    let single_remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/definition" => serde_json::json!({
+            "targetUri": single_uri,
+            "targetSelectionRange": {
+                "start": { "line": 9, "character": 12 },
+                "end": { "line": 9, "character": 18 }
+            }
+        }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let single = execute_tool(
+        single_remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("a single LocationLink is rendered");
+    assert!(text_of(&single).contains(&format!("{target_uri}:10:13")));
 }
 
 #[tokio::test]
@@ -4035,16 +4126,92 @@ async fn code_status_reports_health() {
 }
 
 #[tokio::test]
-async fn code_sync_reports_the_delta() {
-    let ws = rust_workspace("pub fn a() {}\n");
-    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
-    let result = execute_tool(remote, &ws.root(), "code_sync", serde_json::json!({}))
+async fn code_sync_uses_worktree_identity_and_remote_workspace() {
+    let temp = tempfile::tempdir().expect("temporary repository");
+    let origin = temp.path().join("origin-repository");
+    std::fs::create_dir_all(origin.join("src")).expect("source directory");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&origin)
+            .status()
+            .expect("initialize origin")
+            .success()
+    );
+    for (key, value) in [("user.name", "Test"), ("user.email", "test@example.com")] {
+        assert!(
+            std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(&origin)
+                .status()
+                .expect("configure origin")
+                .success()
+        );
+    }
+    std::fs::write(
+        origin.join("Cargo.toml"),
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write manifest");
+    std::fs::write(origin.join("src/lib.rs"), "pub fn a() {}\n").expect("write source");
+    for args in [&["add", "."][..], &["commit", "-qm", "initial"][..]] {
+        assert!(
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&origin)
+                .status()
+                .expect("commit origin")
+                .success()
+        );
+    }
+    let worktree = temp.path().join("worktrees/task/attempt-0");
+    std::fs::create_dir_all(worktree.parent().expect("worktree parent"))
+        .expect("create worktree parent");
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "sync-task",
+                worktree.to_str().expect("UTF-8 worktree path"),
+            ])
+            .current_dir(&origin)
+            .status()
+            .expect("create linked worktree")
+            .success()
+    );
+    let identity = prod_code_mcp::sync::workspace_identity(&worktree);
+    assert!(identity.name.starts_with("origin-repository--wt-"));
+    assert_eq!(identity.base.as_deref(), Some("origin-repository"));
+
+    let script = Script::default();
+    let probes = script.sync_probe_requests.clone();
+    let syncs = script.sync_requests.clone();
+    let remote = mock_gateway(script).await;
+    let result = execute_tool(remote, &worktree, "code_sync", serde_json::json!({}))
         .await
         .expect("sync runs");
+    let probe_requests = probes.lock().unwrap();
+    assert_eq!(probe_requests.len(), 1);
+    assert_eq!(probe_requests[0].0.as_deref(), Some(identity.name.as_str()));
+    assert_eq!(probe_requests[0].1.as_deref(), Some("origin-repository"));
+    assert!(probe_requests[0].2.contains(&"Cargo.toml".to_string()));
+    assert!(probe_requests[0].2.contains(&"src/lib.rs".to_string()));
+    drop(probe_requests);
+    let sync_requests = syncs.lock().unwrap();
+    assert_eq!(sync_requests.len(), 1);
+    assert_eq!(sync_requests[0].0.as_deref(), Some(identity.name.as_str()));
+    assert!(sync_requests[0].1.contains(&"src/lib.rs".to_string()));
+    drop(sync_requests);
+    let text = text_of(&result);
+    assert!(text.contains("Fast-Sync Completed"), "{text}");
+    assert!(text.contains("Files planned: 2"), "{text}");
+    assert!(text.contains("Files updated: 2"), "{text}");
     assert!(
-        text_of(&result).contains("Fast-Sync Completed"),
-        "{}",
-        text_of(&result)
+        text.contains(&format!("Remote workspace: /gateway/{}", identity.name)),
+        "{text}"
     );
 }
 

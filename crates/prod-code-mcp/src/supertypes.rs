@@ -399,7 +399,9 @@ pub async fn supertypes(
             });
         }
         serde_json::Value::Array(a) => a,
-        other => anyhow::bail!("the analyzer's prepareTypeHierarchy answer is not an array or null: {other}"),
+        other => anyhow::bail!(
+            "the analyzer's prepareTypeHierarchy answer is not an array or null: {other}"
+        ),
     };
     if prepared_array.is_empty() {
         return Ok(Supertypes {
@@ -425,18 +427,22 @@ pub async fn supertypes(
     )
     .await?;
     let supers_array = match &supers {
-        serde_json::Value::Null => return Ok(Supertypes {
-            of: item
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("?")
-                .to_string(),
-            kind: Kind::Other,
-            list: Vec::new(),
-            unsupported: None,
-        }),
+        serde_json::Value::Null => {
+            return Ok(Supertypes {
+                of: item
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                kind: Kind::Other,
+                list: Vec::new(),
+                unsupported: None,
+            });
+        }
         serde_json::Value::Array(a) => a,
-        other => anyhow::bail!("the analyzer's typeHierarchy/supertypes answer is not an array or null: {other}"),
+        other => anyhow::bail!(
+            "the analyzer's typeHierarchy/supertypes answer is not an array or null: {other}"
+        ),
     };
     let mut list = Vec::with_capacity(supers_array.len());
     for s in supers_array {
