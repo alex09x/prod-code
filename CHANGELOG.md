@@ -96,6 +96,10 @@
   files and functions marked only with `#[cfg(test)]` no longer enter Cargo test filters. A
   conditional `cfg_attr` test marker whose active Cargo configuration cannot be proved triggers a
   whole-suite fallback.
+- Rust `validate --compile` recovers from missing cached dependency `.rmeta` files in
+  fresh worktrees: a normal workspace `cargo check` warms metadata, then the proposed
+  text is checked again in the shadow. Other compiler errors still reject the proposal
+  (#607).
 - Shared gateway sessions bound output queues and socket writes (#598). A connected peer
   that stops reading cannot hold its session handler indefinitely; cancellation retires
   the exact writer, and other sessions continue answering.
