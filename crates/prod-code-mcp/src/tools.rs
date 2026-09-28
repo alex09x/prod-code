@@ -1382,7 +1382,7 @@ pub async fn execute_tool(
                 McpToolCallResult::error(text)
             })
         }
-        "code_source" => handle_source(remote, &args).await,
+        "code_source" => handle_source(remote, workspace_root, &args).await,
         "code_references" => handle_references(remote, workspace_root, &args).await,
 
         "code_outline" => handle_outline(remote, workspace_root, &args).await,
@@ -2535,15 +2535,19 @@ fn definition_is(found: &serde_json::Value, path: &str, line: u32) -> bool {
     })
 }
 
-async fn handle_source(remote: SocketAddr, args: &serde_json::Value) -> Result<McpToolCallResult> {
+async fn handle_source(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
     let path = args
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let path = crate::remote_fs::uri_to_path(path);
     let line = args.get("line").and_then(|v| v.as_u64()).map(|l| l as u32);
     let context = args.get("context").and_then(|v| v.as_u64()).unwrap_or(30) as u32;
-    let (bytes, truncated) = crate::remote_fs::read_remote_file(remote, &path, 0).await?;
+    let (bytes, truncated) =
+        crate::remote_fs::read_source(remote, workspace_root, path).await?;
     let text = String::from_utf8_lossy(&bytes);
     let mut out = match line {
         Some(line) => crate::remote_fs::snippet(&text, line, context),
