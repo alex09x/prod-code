@@ -970,7 +970,10 @@ async fn cli_reads_workspace_source_file_relative_and_absolute() {
     assert!(out.status.success(), "stderr: {}", stderr_of(&out));
     let stdout = stdout_of(&out);
     assert!(stdout.contains("cli_source_marker"), "stdout: {stdout}");
-    assert!(!stdout.contains("mocked_remote_source"), "should not be mocked remote source: {stdout}");
+    assert!(
+        !stdout.contains("mocked_remote_source"),
+        "should not be mocked remote source: {stdout}"
+    );
 
     // Local absolute path:
     let abs = ws.path("crates/prod-code-mcp/src/tools.rs");
@@ -989,7 +992,10 @@ async fn cli_reads_workspace_source_file_relative_and_absolute() {
     .await;
     assert!(out_abs.status.success(), "stderr: {}", stderr_of(&out_abs));
     let stdout_abs = stdout_of(&out_abs);
-    assert!(stdout_abs.contains("cli_source_marker"), "stdout: {stdout_abs}");
+    assert!(
+        stdout_abs.contains("cli_source_marker"),
+        "stdout: {stdout_abs}"
+    );
 
     // Existing workspace file src/lib.rs:
     let out_lib = run_cli(
@@ -1003,12 +1009,7 @@ async fn cli_reads_workspace_source_file_relative_and_absolute() {
     assert!(stdout_lib.contains("calculate"), "stdout: {stdout_lib}");
 
     // Relative path outside workspace:
-    let out_bad = run_cli(
-        &ws,
-        gw.addr,
-        &["source", "../../etc/passwd"],
-    )
-    .await;
+    let out_bad = run_cli(&ws, gw.addr, &["source", "../../etc/passwd"]).await;
     assert!(!out_bad.status.success());
     assert!(stderr_of(&out_bad).contains("outside the workspace"));
 }

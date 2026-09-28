@@ -28,7 +28,10 @@ async fn code_validate_edit_validates_absent_python_file_without_writing_to_disk
             "[package]\nname = \"workspace_559\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         ),
         ("src/lib.rs", "pub fn root_code() {}\n"),
-        ("scripts/coverage.py", "def existing_coverage():\n    return 42\n"),
+        (
+            "scripts/coverage.py",
+            "def existing_coverage():\n    return 42\n",
+        ),
     ]);
 
     let diagnostics_count = Arc::new(AtomicUsize::new(0));
@@ -47,7 +50,10 @@ async fn code_validate_edit_validates_absent_python_file_without_writing_to_disk
     let root = ws.root();
     let absent_rel = "scripts/__validation_probe_559.py";
     let absent_abs = root.join(absent_rel);
-    assert!(!absent_abs.exists(), "target absent file must not exist before test");
+    assert!(
+        !absent_abs.exists(),
+        "target absent file must not exist before test"
+    );
 
     // 1. Validate absent Python file via public MCP tool `code_validate_edit`
     let result = execute_tool(
@@ -62,7 +68,11 @@ async fn code_validate_edit_validates_absent_python_file_without_writing_to_disk
     .await
     .expect("validation runs successfully");
 
-    assert!(!result.is_error, "validation must not error: {}", text_of(&result));
+    assert!(
+        !result.is_error,
+        "validation must not error: {}",
+        text_of(&result)
+    );
     let text = text_of(&result);
     assert!(
         text.contains("0 error(s), 0 warning(s)"),
@@ -90,7 +100,11 @@ async fn code_validate_edit_validates_absent_python_file_without_writing_to_disk
     .await
     .expect("control validation runs");
 
-    assert!(!control_result.is_error, "control validation must not error: {}", text_of(&control_result));
+    assert!(
+        !control_result.is_error,
+        "control validation must not error: {}",
+        text_of(&control_result)
+    );
     let control_text = text_of(&control_result);
     assert!(
         control_text.contains("0 error(s), 0 warning(s)"),
@@ -120,7 +134,11 @@ async fn code_validate_edit_validates_absent_python_file_without_writing_to_disk
     .await
     .expect("code_validate_edits runs successfully");
 
-    assert!(!edits_result.is_error, "code_validate_edits must not error: {}", text_of(&edits_result));
+    assert!(
+        !edits_result.is_error,
+        "code_validate_edits must not error: {}",
+        text_of(&edits_result)
+    );
     let edits_text = text_of(&edits_result);
     assert!(
         edits_text.contains("0 error(s), 0 warning(s)"),

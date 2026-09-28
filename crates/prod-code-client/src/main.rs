@@ -3213,8 +3213,7 @@ async fn run_source(
     let root = root
         .map(Path::to_path_buf)
         .unwrap_or_else(|| find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone()));
-    let (bytes, truncated) =
-        prod_code_mcp::remote_fs::read_source(remote, &root, path).await?;
+    let (bytes, truncated) = prod_code_mcp::remote_fs::read_source(remote, &root, path).await?;
     let text = String::from_utf8_lossy(&bytes);
     match line {
         Some(line) => print!(

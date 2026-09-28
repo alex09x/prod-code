@@ -3285,49 +3285,69 @@ async fn basedpyright_reports_diagnostics_for_a_new_python_file() {
     let gateway = Gateway::start();
     let checkout = Checkout::new();
     let root = checkout.root();
-    checkout.write("scripts/existing.py", "def existing() -> int:\n    return 1\n");
+    checkout.write(
+        "scripts/existing.py",
+        "def existing() -> int:\n    return 1\n",
+    );
     checkout.commit();
 
     let new_file = root.join("scripts/new_probe_559.py");
-    assert!(!new_file.exists(), "new file must not exist before validation");
+    assert!(
+        !new_file.exists(),
+        "new file must not exist before validation"
+    );
 
     let clean_text = "def answer(x: int) -> int:\n    return x + 1\n";
-    let clean = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, clean_text)
-        .await
-        .expect("clean new file validation");
+    let clean =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, clean_text)
+            .await
+            .expect("clean new file validation");
     assert_eq!(clean.errors, 0, "{}", clean.render());
-    assert!(!new_file.exists(), "proposed file must stay absent after clean validation");
+    assert!(
+        !new_file.exists(),
+        "proposed file must stay absent after clean validation"
+    );
 
     let broken_text = "def answer(x: int) -> int:\n    return \"invalid\"\n";
-    let broken = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, broken_text)
-        .await
-        .expect("broken new file validation");
+    let broken =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, broken_text)
+            .await
+            .expect("broken new file validation");
     assert!(
         broken.errors > 0
             && broken
                 .items
                 .iter()
-                .any(|item| item.source.as_deref() == Some("basedpyright") && item.severity == "error"),
+                .any(|item| item.source.as_deref() == Some("basedpyright")
+                    && item.severity == "error"),
         "expected basedpyright error, got: {}",
         broken.render()
     );
-    assert!(!new_file.exists(), "proposed file must stay absent after broken validation");
+    assert!(
+        !new_file.exists(),
+        "proposed file must stay absent after broken validation"
+    );
 
     // The retained-document generation must not be poisoned by closing a new document.
-    let subsequent = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, clean_text)
-        .await
-        .expect("subsequent validation on same engine");
+    let subsequent =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, &new_file, clean_text)
+            .await
+            .expect("subsequent validation on same engine");
     assert_eq!(subsequent.errors, 0, "{}", subsequent.render());
     assert!(!new_file.exists(), "proposed file must stay absent on disk");
 
     // Relative path also selects the Python engine and diagnoses without writing.
     let rel_path = Path::new("scripts/another_new.py");
     assert!(!root.join(rel_path).exists());
-    let rel_report = prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, rel_path, clean_text)
-        .await
-        .expect("relative path validation");
+    let rel_report =
+        prod_code_mcp::diagnostics::validate_text(gateway.addr, &root, rel_path, clean_text)
+            .await
+            .expect("relative path validation");
     assert_eq!(rel_report.errors, 0, "{}", rel_report.render());
-    assert!(!root.join(rel_path).exists(), "relative proposed file must stay absent on disk");
+    assert!(
+        !root.join(rel_path).exists(),
+        "relative proposed file must stay absent on disk"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
