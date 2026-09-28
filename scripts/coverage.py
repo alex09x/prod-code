@@ -107,6 +107,8 @@ def find_rust_source_files(root: str) -> set[str]:
             with open(cargo_toml, "rb") as f:
                 manifest: dict[str, object] = tomllib.load(f)
             workspace = manifest.get("workspace")
+            if isinstance(manifest.get("package"), dict):
+                search_dirs.append(root_path)
             if isinstance(workspace, dict):
                 excludes: object = workspace.get("exclude", [])
                 if isinstance(excludes, list):

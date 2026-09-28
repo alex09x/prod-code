@@ -677,6 +677,43 @@ class TestRepositoryWideCoverageGate(unittest.TestCase):
                 self.assertIn("src/a.rs", out)
                 self.assertIn("every file is at or above 80% of regions", out)
 
+    def test_workspace_root_package_source_is_also_required(self) -> None:
+        """A workspace root package is measured alongside its explicit member crates."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            root_src = os.path.join(repo_dir, "src")
+            member_src = os.path.join(repo_dir, "crates", "member", "src")
+            os.makedirs(root_src, exist_ok=True)
+            os.makedirs(member_src, exist_ok=True)
+            with open(os.path.join(repo_dir, "Cargo.toml"), "w", encoding="utf-8") as f:
+                _ = f.write("""[package]
+name = "root"
+version = "0.1.0"
+[workspace]
+members = ["crates/member"]
+""")
+            root_file = os.path.join(root_src, "lib.rs")
+            member_file = os.path.join(member_src, "lib.rs")
+            with open(root_file, "w", encoding="utf-8") as f:
+                _ = f.write("pub fn root() {}\n")
+            with open(member_file, "w", encoding="utf-8") as f:
+                _ = f.write("pub fn member() {}\n")
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": member_file,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, _, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 2)
+                self.assertIn("no coverage data for: src/lib.rs", err)
+
 
 if __name__ == "__main__":
     unittest.main()
