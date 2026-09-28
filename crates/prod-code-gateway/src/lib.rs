@@ -1930,6 +1930,7 @@ fn restore_tree(
                 };
                 #[cfg(not(unix))]
                 let is_executable = false;
+                restored.stale.push(rel.clone());
                 restored.files.push(FileDelta {
                     relative_path: rel.clone(),
                     content: Some(kept.bytes.clone()),
@@ -1976,15 +1977,16 @@ async fn restore_after_lost_client(
     })
     .await
     .unwrap_or_default();
-    if !restored.stale.is_empty() {
+    let unkept = restored.files.iter().filter(|f| f.content.is_none()).count();
+    if unkept > 0 {
         tracing::warn!(
             workspace = %workspace.display(),
-            stale = restored.stale.len(),
+            stale = unkept,
             "🛠️ [EXEC] files a command changed were too large to keep; removed until the client sends them"
         );
     }
     refresh_engines(workspace_manager, workspace, &restored.files).await;
-    restored.files.len() - restored.stale.len()
+    restored.files.iter().filter(|f| f.content.is_some()).count()
 }
 
 /// Files that differ between `before` and the tree now: new/changed ones with content,
@@ -7005,7 +7007,10 @@ mod tests {
             "the client's\n"
         );
         assert!(!root.join("both.txt").exists());
-        assert_eq!(restored.stale, vec!["both.txt".to_string()]);
+        assert_eq!(
+            restored.stale,
+            vec!["both.txt".to_string(), "cmd.txt".to_string()]
+        );
         let mut files: Vec<&str> = restored
             .files
             .iter()

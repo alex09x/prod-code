@@ -56,7 +56,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 6;
+pub const RELEVANCE_VERSION: u32 = 7;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
