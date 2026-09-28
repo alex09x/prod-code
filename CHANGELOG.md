@@ -88,6 +88,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Python proposals now route to basedpyright before the file or its parent directory exists (#559).
+  New-file routing stays inside the checkout and refuses symlink parents, `..` escapes and
+  directories named with a source suffix.
 - Shared gateway sessions bound output queues and socket writes (#598). A connected peer
   that stops reading cannot hold its session handler indefinitely; cancellation retires
   the exact writer, and other sessions continue answering.

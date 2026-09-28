@@ -69,6 +69,45 @@ pub struct WorkspaceIdentity {
     pub base: Option<String>,
 }
 
+/// Whether a missing path stays inside the checkout without traversing symlinks.
+fn missing_path_is_confined_to(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    if relative
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return false;
+    }
+
+    let mut ancestor = path.parent();
+    while let Some(candidate) = ancestor {
+        match std::fs::symlink_metadata(candidate) {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                    return false;
+                }
+                let Ok(resolved) = std::fs::canonicalize(candidate) else {
+                    return false;
+                };
+                if !resolved.starts_with(root) {
+                    return false;
+                }
+                if candidate == root {
+                    return true;
+                }
+                ancestor = candidate.parent();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = candidate.parent();
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 /// Engine the gateway is expected to pick for `root` from its manifest, or `None` when the
 /// checkout carries no manifest the gateway keys on. Mirrors the gateway's detection order.
 /// The project a path belongs to inside a checkout: the nearest ancestor of `hint` (up to
@@ -87,8 +126,17 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
         canonical_root.join(hint)
     };
     let mut dir = std::fs::canonicalize(&hint).unwrap_or(hint);
-    let file = dir.is_file().then(|| dir.clone());
-    if dir.is_file() {
+    let missing_path = matches!(
+        std::fs::symlink_metadata(&dir),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    if missing_path && !missing_path_is_confined_to(&canonical_root, &dir) {
+        return (None, root_engine);
+    }
+    let existing_file = dir.is_file();
+    let proposed_file = missing_path && engine_for_file(&dir).is_some();
+    let file = (existing_file || proposed_file).then(|| dir.clone());
+    if file.is_some() {
         dir = dir.parent().map(Path::to_path_buf).unwrap_or(dir);
     }
     let file_dir = dir.clone();
@@ -2098,6 +2146,59 @@ mod tests {
         assert_eq!(
             names(&sync_batches(vec![deleted], 10)),
             vec![vec!["gone.rs"]]
+        );
+    }
+
+    /// A proposed source file can be routed before either it or its parent exists.
+    #[test]
+    fn a_new_python_file_is_routed_even_when_its_parent_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let relative = Path::new("spikes/python-overlay-ab/replay.py");
+        let expected = (Some("spikes/python-overlay-ab".to_string()), Some("python"));
+        assert_eq!(engine_project(root, relative), expected);
+        assert_eq!(engine_project(root, &root.join(relative)), expected);
+        assert!(!root.join(relative).exists());
+        assert!(!root.join("spikes").exists());
+    }
+    /// Escapes and symlink parents must not be mistaken for proposed checkout sources.
+    #[test]
+    fn missing_python_paths_outside_the_checkout_are_not_routed_as_loose_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"x\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let root_engine = (None, Some("rust"));
+
+        assert_eq!(
+            engine_project(root, Path::new("../outside.py")),
+            root_engine
+        );
+        assert_eq!(
+            engine_project(root, &root.join("../outside.py")),
+            root_engine
+        );
+
+        #[cfg(unix)]
+        {
+            let outside = tempfile::tempdir().unwrap();
+            let link = root.join("linked");
+            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            assert_eq!(engine_project(root, &link.join("proposed.py")), root_engine);
+        }
+
+        std::fs::create_dir(root.join("directory.py")).unwrap();
+        assert_eq!(
+            engine_project(root, &root.join("directory.py")),
+            root_engine
         );
     }
 
