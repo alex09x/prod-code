@@ -18,6 +18,8 @@
 - code_definition now renders a single-object LocationLink as well as array responses (#626).
 - Call and type hierarchy tools now return errors for malformed LSP replies instead of
   presenting them as empty results (#627).
+- Gateway sync rejects absolute, parent-traversal, and symlink paths that escape the
+  selected workspace (#628).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
