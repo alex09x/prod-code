@@ -4023,6 +4023,77 @@ async fn code_source_reads_a_file_from_the_gateway_host() {
 }
 
 #[tokio::test]
+async fn code_source_reads_workspace_file_relative_and_absolute() {
+    let ws = workspace();
+    write(
+        &ws,
+        "crates/prod-code-mcp/src/tools.rs",
+        "// tools reproduction\npub fn sample() -> i32 {\n    42\n}\n",
+    );
+    let remote = mock_gateway(Script::default()).await;
+
+    // Relative path (issue #619 documented reproduction path):
+    let result_rel = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({
+            "path": "crates/prod-code-mcp/src/tools.rs",
+            "line": 3,
+            "context": 1,
+        }),
+    )
+    .await
+    .expect("workspace-relative source read succeeds");
+    let text_rel = text_of(&result_rel);
+    assert!(text_rel.contains("42"), "{text_rel}");
+    assert!(text_rel.contains(">3 |     42"), "{text_rel}");
+
+    // Local absolute path:
+    let abs_path = ws.path("crates/prod-code-mcp/src/tools.rs");
+    let result_abs = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({
+            "path": abs_path.to_string_lossy(),
+            "line": 3,
+            "context": 1,
+        }),
+    )
+    .await
+    .expect("local absolute source read succeeds");
+    let text_abs = text_of(&result_abs);
+    assert!(text_abs.contains("42"), "{text_abs}");
+
+    // Local file:// URI:
+    let uri = format!("file://{}", abs_path.to_string_lossy());
+    let result_uri = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({
+            "path": uri,
+        }),
+    )
+    .await
+    .expect("local file URI source read succeeds");
+    let text_uri = text_of(&result_uri);
+    assert!(text_uri.contains("sample"), "{text_uri}");
+
+    // Relative path outside workspace is refused:
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_source",
+        serde_json::json!({ "path": "../../etc/passwd" }),
+    )
+    .await
+    .expect_err("path outside workspace is refused");
+    assert!(format!("{err:#}").contains("outside the workspace"), "{err:#}");
+}
+
+#[tokio::test]
 async fn code_status_reports_health() {
     let ws = workspace();
     let remote = mock_gateway(Script::default()).await;

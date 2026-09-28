@@ -5,8 +5,11 @@ use anyhow::{Context, Result, anyhow};
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{ProdCodeCodec, ReadFileRequest, WireMessage};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio_util::codec::Framed;
+
+/// Maximum bytes read from a local source file before truncating (matches gateway ReadFile limit).
+pub const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Reads `path` on the gateway `remote`. Returns the bytes and whether they were truncated.
 pub async fn read_remote_file(
@@ -39,11 +42,109 @@ pub async fn read_remote_file(
     }
 }
 
+/// Reads a source file. If `path_str` is relative or a local absolute path inside `root`,
+/// it is read directly from disk in the local checkout (capped at 2 MiB).
+/// If `path_str` is an external absolute path (e.g. stdlib, dependency cache, SDK headers),
+/// it is fetched from the remote gateway via `read_remote_file`.
+/// Relative paths that attempt to escape `root` are refused.
+pub async fn read_source(
+    remote: SocketAddr,
+    root: &Path,
+    path_str: &str,
+) -> Result<(Vec<u8>, bool)> {
+    let path = uri_to_path(path_str);
+    let p = Path::new(&path);
+    let root_canon = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+
+    if p.is_absolute() {
+        let p_canon = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let is_inside =
+            p.starts_with(root) || p.starts_with(&root_canon) || p_canon.starts_with(&root_canon);
+        if is_inside {
+            read_local_source_file(p)
+        } else {
+            read_remote_file(remote, &path, 0).await
+        }
+    } else {
+        let local_path = resolve_relative_checkout_path(root, &root_canon, p)?;
+        read_local_source_file(&local_path)
+    }
+}
+
+fn read_local_source_file(path: &Path) -> Result<(Vec<u8>, bool)> {
+    let mut bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let truncated = if bytes.len() as u64 > MAX_SOURCE_BYTES {
+        bytes.truncate(MAX_SOURCE_BYTES as usize);
+        true
+    } else {
+        false
+    };
+    Ok((bytes, truncated))
+}
+
+fn resolve_relative_checkout_path(root: &Path, root_canon: &Path, p: &Path) -> Result<PathBuf> {
+    let mut norm = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !norm.pop() {
+                    anyhow::bail!("{} is outside the workspace", p.display());
+                }
+            }
+            std::path::Component::Normal(c) => norm.push(c),
+            _ => anyhow::bail!("{} is outside the workspace", p.display()),
+        }
+    }
+
+    let candidate = if let Ok(cwd) = std::env::current_dir() {
+        let cwd_canon = std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone());
+        if cwd_canon.starts_with(root_canon) && cwd.join(&norm).exists() {
+            cwd.join(&norm)
+        } else {
+            root.join(&norm)
+        }
+    } else {
+        root.join(&norm)
+    };
+
+    let resolved = if candidate.exists() {
+        std::fs::canonicalize(&candidate)
+            .with_context(|| format!("reading {}", candidate.display()))?
+    } else {
+        let mut cur = candidate.as_path();
+        while !cur.exists() {
+            if let Some(parent) = cur.parent() {
+                cur = parent;
+            } else {
+                break;
+            }
+        }
+        if let Ok(cur_canon) = std::fs::canonicalize(cur) {
+            if !cur_canon.starts_with(root) && !cur_canon.starts_with(root_canon) {
+                anyhow::bail!("{} is outside the workspace", candidate.display());
+            }
+        }
+        candidate.clone()
+    };
+
+    if !resolved.starts_with(root) && !resolved.starts_with(root_canon) {
+        anyhow::bail!("{} is outside the workspace", candidate.display());
+    }
+
+    Ok(candidate)
+}
+
 /// Whether a location's file lies outside the checkout at `root` (a path the client cannot
 /// open itself).
 pub fn is_external(root: &Path, file_path: &str) -> bool {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    !Path::new(file_path).starts_with(&root)
+    let path = Path::new(file_path);
+    if !path.is_absolute() {
+        return false;
+    }
+    let path_canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    !path.starts_with(&root) && !path_canon.starts_with(&root)
 }
 
 /// `file://` URI or plain path to a plain path. Only a URI is percent-decoded: a plain path is
@@ -129,5 +230,29 @@ mod tests {
         let root = std::fs::canonicalize(std::env::temp_dir()).unwrap();
         let inside = root.join("src").join("lib.rs");
         assert!(!is_external(&root, &inside.to_string_lossy()));
+        assert!(!is_external(&root, "src/lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn read_source_reads_local_file_and_refuses_escaping_relative_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let src = root.join("crates").join("my-crate");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn test_local() {}\n").unwrap();
+
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+        let (bytes, truncated) = read_source(addr, root, "crates/my-crate/lib.rs").await.unwrap();
+        assert!(!truncated);
+        assert_eq!(String::from_utf8(bytes).unwrap(), "pub fn test_local() {}\n");
+
+        let (bytes_abs, _) = read_source(addr, root, &src.join("lib.rs").to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8(bytes_abs).unwrap(), "pub fn test_local() {}\n");
+
+        let err = read_source(addr, root, "../../etc/passwd").await.unwrap_err();
+        assert!(format!("{err:#}").contains("outside the workspace"));
     }
 }
