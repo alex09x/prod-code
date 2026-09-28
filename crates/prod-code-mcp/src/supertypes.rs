@@ -313,6 +313,50 @@ fn locations(value: &serde_json::Value) -> Vec<(PathBuf, u32, u32)> {
     }
 }
 
+fn hierarchy_range(item: &serde_json::Value) -> Option<&serde_json::Value> {
+    match item.get("selectionRange") {
+        Some(range) => Some(range),
+        None => item.get("range"),
+    }
+}
+
+fn hierarchy_start(item: &serde_json::Value) -> Option<&serde_json::Value> {
+    hierarchy_range(item).and_then(|range| range.get("start"))
+}
+
+fn valid_lsp_position(position: Option<&serde_json::Value>) -> bool {
+    position.and_then(|p| p.get("line")).and_then(|v| v.as_u64()).is_some()
+        && position
+            .and_then(|p| p.get("character"))
+            .and_then(|v| v.as_u64())
+            .is_some()
+}
+
+fn valid_lsp_range(range: &serde_json::Value) -> bool {
+    valid_lsp_position(range.get("start")) && valid_lsp_position(range.get("end"))
+}
+
+fn validate_type_hierarchy_item(item: &serde_json::Value) -> Result<()> {
+    anyhow::ensure!(
+        item.is_object(),
+        "type hierarchy item is not an object: {item}"
+    );
+    anyhow::ensure!(
+        item.get("name").and_then(|n| n.as_str()).is_some(),
+        "type hierarchy item has no valid 'name': {item}"
+    );
+    anyhow::ensure!(
+        item.get("uri").and_then(|u| u.as_str()).is_some(),
+        "type hierarchy item has no valid 'uri': {item}"
+    );
+    let has_valid_range = hierarchy_range(item).is_some_and(valid_lsp_range);
+    anyhow::ensure!(
+        has_valid_range,
+        "type hierarchy item has no valid 'selectionRange' or 'range': {item}"
+    );
+    Ok(())
+}
+
 /// The supertypes of the type or trait at the 1-based `line`:`character` of `file`.
 pub async fn supertypes(
     remote: SocketAddr,
@@ -338,10 +382,23 @@ pub async fn supertypes(
         "textDocument/prepareTypeHierarchy",
         position,
     )
-    .await
-    .ok()
-    .and_then(|v| v.as_array().and_then(|a| a.first()).cloned());
-    let Some(item) = prepared else {
+    .await?;
+    let prepared_array = match &prepared {
+        serde_json::Value::Null => {
+            return Ok(Supertypes {
+                of: format!("{}:{line}:{character}", file.display()),
+                kind: Kind::Other,
+                list: Vec::new(),
+                unsupported: Some(format!(
+                    "No type hierarchy at {}:{line}:{character}: the language server answered none (not every server has one).",
+                    file.display()
+                )),
+            });
+        }
+        serde_json::Value::Array(a) => a,
+        other => anyhow::bail!("the analyzer's prepareTypeHierarchy answer is not an array or null: {other}"),
+    };
+    if prepared_array.is_empty() {
         return Ok(Supertypes {
             of: format!("{}:{line}:{character}", file.display()),
             kind: Kind::Other,
@@ -351,7 +408,11 @@ pub async fn supertypes(
                 file.display()
             )),
         });
-    };
+    }
+    for item in prepared_array {
+        validate_type_hierarchy_item(item)?;
+    }
+    let item = &prepared_array[0];
     let supers = execute_lsp_query(
         remote,
         root,
@@ -360,33 +421,34 @@ pub async fn supertypes(
         serde_json::json!({ "item": item }),
     )
     .await?;
-    let list = supers
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(|s| Supertype {
-            name: s
+    let supers_array = match &supers {
+        serde_json::Value::Null => return Ok(Supertypes {
+            of: item
                 .get("name")
                 .and_then(|n| n.as_str())
                 .unwrap_or("?")
                 .to_string(),
+            kind: Kind::Other,
+            list: Vec::new(),
+            unsupported: None,
+        }),
+        serde_json::Value::Array(a) => a,
+        other => anyhow::bail!("the analyzer's typeHierarchy/supertypes answer is not an array or null: {other}"),
+    };
+    let mut list = Vec::with_capacity(supers_array.len());
+    for s in supers_array {
+        validate_type_hierarchy_item(s)?;
+        let name = s.get("name").and_then(|n| n.as_str()).unwrap().to_string();
+        let uri = s.get("uri").and_then(|u| u.as_str()).unwrap();
+        let start = hierarchy_start(s).unwrap();
+        let line = start.get("line").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
+        let col = start.get("character").and_then(|v| v.as_u64()).unwrap() as u32 + 1;
+        list.push(Supertype {
+            name,
             derived: false,
-            at: s.get("uri").and_then(|u| u.as_str()).map(|uri| {
-                let at = |k: &str| {
-                    s.pointer(&format!("/selectionRange/start/{k}"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as u32
-                        + 1
-                };
-                (
-                    PathBuf::from(crate::remote_fs::uri_to_path(uri)),
-                    at("line"),
-                    at("character"),
-                )
-            }),
-        })
-        .collect();
+            at: Some((PathBuf::from(crate::remote_fs::uri_to_path(uri)), line, col)),
+        });
+    }
     Ok(Supertypes {
         of: item
             .get("name")

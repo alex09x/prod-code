@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Call and type hierarchy tools now return errors for malformed LSP replies instead of
+  presenting them as empty results (#627).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts

@@ -94,9 +94,22 @@ impl CallTree {
     }
 }
 
+/// The range to use for an LSP hierarchy item. Keep the legacy range fallback only when
+/// selectionRange is absent; a present but malformed selection range must be rejected.
+fn hierarchy_range<'a>(
+    value: &'a serde_json::Value,
+    range: &str,
+) -> Option<&'a serde_json::Value> {
+    match value.get(range) {
+        Some(range) => Some(range),
+        None if range == "selectionRange" => value.get("range"),
+        None => None,
+    }
+}
+
 /// The 1-based start of a range in an LSP item.
 fn start_of(value: &serde_json::Value, range: &str) -> (u64, u64) {
-    let start = value.get(range).and_then(|r| r.get("start"));
+    let start = hierarchy_range(value, range).and_then(|r| r.get("start"));
     let at = |key: &str| {
         start
             .and_then(|s| s.get(key))
@@ -112,6 +125,40 @@ fn key_of(item: &serde_json::Value) -> (String, u64, u64) {
     let (line, col) = start_of(item, "selectionRange");
     let uri = item.get("uri").and_then(|u| u.as_str()).unwrap_or("");
     (uri.to_string(), line, col)
+}
+
+fn valid_lsp_position(position: Option<&serde_json::Value>) -> bool {
+    position.and_then(|p| p.get("line")).and_then(|v| v.as_u64()).is_some()
+        && position
+            .and_then(|p| p.get("character"))
+            .and_then(|v| v.as_u64())
+            .is_some()
+}
+
+fn valid_lsp_range(range: &serde_json::Value) -> bool {
+    valid_lsp_position(range.get("start")) && valid_lsp_position(range.get("end"))
+}
+
+fn validate_call_hierarchy_item(item: &serde_json::Value) -> Result<()> {
+    anyhow::ensure!(
+        item.is_object(),
+        "call hierarchy item is not an object: {item}"
+    );
+    anyhow::ensure!(
+        item.get("name").and_then(|n| n.as_str()).is_some(),
+        "call hierarchy item has no valid 'name': {item}"
+    );
+    anyhow::ensure!(
+        item.get("uri").and_then(|u| u.as_str()).is_some(),
+        "call hierarchy item has no valid 'uri': {item}"
+    );
+    let has_valid_range =
+        hierarchy_range(item, "selectionRange").is_some_and(valid_lsp_range);
+    anyhow::ensure!(
+        has_valid_range,
+        "call hierarchy item has no valid 'selectionRange' or 'range': {item}"
+    );
+    Ok(())
 }
 
 /// The node an edge of the hierarchy stands for, without its children yet.
@@ -178,19 +225,40 @@ impl Walk<'_> {
                 serde_json::json!({ "item": item }),
             )
             .await?;
+            let edges_array = match &edges {
+                serde_json::Value::Null => return Ok(Vec::new()),
+                serde_json::Value::Array(a) => a,
+                other => anyhow::bail!("the analyzer's {method} answer is not an array or null: {other}"),
+            };
             let mut nodes = Vec::new();
-            for edge in edges.as_array().cloned().unwrap_or_default() {
+            for edge in edges_array {
+                anyhow::ensure!(
+                    edge.is_object(),
+                    "call hierarchy edge in {method} is not an object: {edge}"
+                );
+                let Some(other) = edge.get(side) else {
+                    anyhow::bail!("call hierarchy edge in {method} is missing '{side}': {edge}");
+                };
+                validate_call_hierarchy_item(other)?;
+                let Some(ranges) = edge.get("fromRanges").and_then(|v| v.as_array()) else {
+                    anyhow::bail!("call hierarchy edge in {method} has no valid 'fromRanges' array: {edge}");
+                };
+                for range in ranges {
+                    anyhow::ensure!(
+                        valid_lsp_range(range),
+                        "call hierarchy edge 'fromRanges' entry in {method} is not a valid range: {range}"
+                    );
+                }
                 if self.shown >= MAX_NODES {
                     self.truncated = true;
                     break;
                 }
                 self.shown += 1;
-                let other = edge.get(side).cloned().unwrap_or_default();
-                let mut node = node_of(&edge, &other);
-                if !self.seen.insert(key_of(&other)) {
+                let mut node = node_of(edge, other);
+                if !self.seen.insert(key_of(other)) {
                     node.repeated = true;
                 } else if level < self.depth {
-                    node.children = self.expand(other, level + 1).await?;
+                    node.children = self.expand(other.clone(), level + 1).await?;
                 }
                 nodes.push(node);
             }
@@ -225,9 +293,18 @@ pub async fn call_tree(
         }),
     )
     .await?;
-    let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-        return Ok(None);
+    let items_array = match &items {
+        serde_json::Value::Null => return Ok(None),
+        serde_json::Value::Array(a) => a,
+        other => anyhow::bail!("the analyzer's prepareCallHierarchy answer is not an array or null: {other}"),
     };
+    if items_array.is_empty() {
+        return Ok(None);
+    }
+    for item in items_array {
+        validate_call_hierarchy_item(item)?;
+    }
+    let item = items_array[0].clone();
     let depth = depth.clamp(1, MAX_DEPTH);
     let mut walk = Walk {
         remote,
