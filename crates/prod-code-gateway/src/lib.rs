@@ -926,10 +926,7 @@ async fn send_busy_note(resp: &mut serde_json::Value, out_tx: &SharedOutputSende
 /// Writes a file a client synced so that a failed write, such as on a full disk, leaves the old
 /// content: the text goes to a temporary file next to it, which then replaces it. `fs::write`
 /// truncated the file first, and a full disk left it empty (#385).
-async fn safe_sync_target(
-    server_workspace: &Path,
-    relative: &str,
-) -> std::io::Result<PathBuf> {
+async fn safe_sync_target(server_workspace: &Path, relative: &str) -> std::io::Result<PathBuf> {
     let invalid_path = || {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,

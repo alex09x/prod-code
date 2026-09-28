@@ -643,6 +643,7 @@ struct DocumentLifecycle {
 struct DocumentState {
     version: i64,
     owners: HashMap<DocumentOwner, OwnedText>,
+    existed_on_disk: bool,
 }
 
 struct OwnedText {
@@ -1754,6 +1755,7 @@ impl GenericLspEngine {
                     .and_then(|text| text.as_str())
                     .context("textDocument/didOpen has no text")?
                     .to_string();
+                let on_disk = self.disk_text(&uri).is_some();
                 if let Some(current_version) = documents
                     .documents
                     .get(&uri)
@@ -1771,6 +1773,9 @@ impl GenericLspEngine {
                             order,
                         },
                     );
+                    if on_disk {
+                        document.existed_on_disk = true;
+                    }
                     sent_method = "textDocument/didChange";
                     params = changed(&uri, version, text);
                 } else {
@@ -1785,6 +1790,7 @@ impl GenericLspEngine {
                         DocumentState {
                             version,
                             owners: HashMap::from([(owner, OwnedText { text, order })]),
+                            existed_on_disk: on_disk,
                         },
                     );
                 }
@@ -1799,6 +1805,7 @@ impl GenericLspEngine {
                 // Ranges belong to this owner's text, even while another owner's overlay is
                 // visible. Compose every change before committing state or sending a frame.
                 let text = apply_content_changes(base, &params)?;
+                let on_disk = self.disk_text(&uri).is_some();
                 if let Some(current_version) = documents
                     .documents
                     .get(&uri)
@@ -1816,6 +1823,9 @@ impl GenericLspEngine {
                             order,
                         },
                     );
+                    if on_disk {
+                        document.existed_on_disk = true;
+                    }
                     params = changed(&uri, version, text);
                 } else {
                     let version = params
@@ -1835,6 +1845,7 @@ impl GenericLspEngine {
                                     order,
                                 },
                             )]),
+                            existed_on_disk: on_disk,
                         },
                     );
                     params = changed(&uri, version, text);
@@ -1851,6 +1862,7 @@ impl GenericLspEngine {
                 if !document.owners.contains_key(&owner) {
                     return Ok(());
                 }
+                let existed_on_disk = document.existed_on_disk;
                 let replacement = was_visible
                     .then(|| {
                         document
@@ -1899,7 +1911,7 @@ impl GenericLspEngine {
                     self.retire_full_generation(&documents);
                 } else {
                     documents.documents.remove(&uri);
-                    if self.config.retain_open_documents {
+                    if self.config.retain_open_documents && existed_on_disk {
                         self.accepts_documents.store(false, Ordering::Relaxed);
                     }
                 }

@@ -9,6 +9,7 @@ Verifies:
 - Proper root containment preventing sibling directory pollution.
 - Validation of finite threshold in [0, 100].
 - Preserving actual low coverage reporting and gate failure exit codes.
+- Repository-wide gate failure when existing Rust source files are omitted from reports.
 """
 
 from __future__ import annotations
@@ -477,6 +478,241 @@ class TestActualCoverageReporting(unittest.TestCase):
                 self.assertIn("TOTAL", out)
                 self.assertNotIn("every file is at or above", out)
                 self.assertNotIn("under", out)
+
+
+class TestRepositoryWideCoverageGate(unittest.TestCase):
+    def test_omitted_source_file_fails_repository_wide_gate(self) -> None:
+        """A source file existing in the repository but omitted from the report fails the gate."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            os.makedirs(src_dir, exist_ok=True)
+
+            measured_file = os.path.join(src_dir, "measured.rs")
+            unmeasured_file = os.path.join(src_dir, "unmeasured.rs")
+            with open(measured_file, "w", encoding="utf-8") as f:
+                f.write("fn measured() -> bool { true }\n")
+            with open(unmeasured_file, "w", encoding="utf-8") as f:
+                f.write("fn unmeasured() -> bool { false }\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": measured_file,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 2)
+                self.assertIn("no coverage data for: src/unmeasured.rs", err)
+                self.assertNotIn("every file is at or above", out)
+
+    def test_omitted_source_file_fails_report_only_mode(self) -> None:
+        """Report-only mode (no --min) still fails when an existing source file is omitted."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            os.makedirs(src_dir, exist_ok=True)
+
+            measured_file = os.path.join(src_dir, "measured.rs")
+            unmeasured_file = os.path.join(src_dir, "unmeasured.rs")
+            with open(measured_file, "w", encoding="utf-8") as f:
+                f.write("fn measured() {}\n")
+            with open(unmeasured_file, "w", encoding="utf-8") as f:
+                f.write("fn unmeasured() {}\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": measured_file,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path])
+                self.assertEqual(code, 2)
+                self.assertIn("no coverage data for: src/unmeasured.rs", err)
+
+    def test_multiple_omitted_source_files_alphabetically_listed(self) -> None:
+        """Multiple omitted files are sorted in the error output."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            os.makedirs(src_dir, exist_ok=True)
+
+            measured = os.path.join(src_dir, "m.rs")
+            omitted_b = os.path.join(src_dir, "b.rs")
+            omitted_a = os.path.join(src_dir, "a.rs")
+            with open(measured, "w", encoding="utf-8") as f:
+                f.write("fn m() {}\n")
+            with open(omitted_b, "w", encoding="utf-8") as f:
+                f.write("fn b() {}\n")
+            with open(omitted_a, "w", encoding="utf-8") as f:
+                f.write("fn a() {}\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": measured,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 2)
+                self.assertIn("no coverage data for: src/a.rs, src/b.rs", err)
+
+    def test_explicitly_measured_zero_region_file_preserves_pass(self) -> None:
+        """Explicitly measured 0-region file passes the repo-wide gate as 'no code'."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            os.makedirs(src_dir, exist_ok=True)
+
+            file_a = os.path.join(src_dir, "a.rs")
+            zero_file = os.path.join(src_dir, "lib.rs")
+            with open(file_a, "w", encoding="utf-8") as f:
+                f.write("fn a() {}\n")
+            with open(zero_file, "w", encoding="utf-8") as f:
+                f.write("pub mod a;\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [
+                            {
+                                "filename": file_a,
+                                "summary": {"regions": {"count": 10, "covered": 10}},
+                            },
+                            {
+                                "filename": zero_file,
+                                "summary": {"regions": {"count": 0, "covered": 0}},
+                            },
+                        ]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 0)
+                self.assertIn("src/lib.rs  no code (nothing to cover)", out)
+                self.assertIn("src/a.rs", out)
+                self.assertIn("every file is at or above 80% of regions", out)
+
+    def test_path_scoped_preserves_behavior_when_unrequested_source_omitted(self) -> None:
+        """Path-scoped check succeeds for requested file even if unrequested repo file is omitted."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            os.makedirs(src_dir, exist_ok=True)
+
+            file_a = os.path.join(src_dir, "a.rs")
+            omitted = os.path.join(src_dir, "omitted.rs")
+            with open(file_a, "w", encoding="utf-8") as f:
+                f.write("fn a() {}\n")
+            with open(omitted, "w", encoding="utf-8") as f:
+                f.write("fn omitted() {}\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": file_a,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path, "--min", "80", "src/a.rs"])
+                self.assertEqual(code, 0)
+                self.assertIn("src/a.rs", out)
+                self.assertIn("every file is at or above 80% of regions", out)
+
+    def test_integration_tests_directory_not_required_in_report(self) -> None:
+        """Integration test files under tests/ are not considered source files to be gated."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            src_dir = os.path.join(repo_dir, "src")
+            tests_dir = os.path.join(repo_dir, "tests")
+            os.makedirs(src_dir, exist_ok=True)
+            os.makedirs(tests_dir, exist_ok=True)
+
+            file_a = os.path.join(src_dir, "a.rs")
+            test_file = os.path.join(tests_dir, "integration_test.rs")
+            with open(file_a, "w", encoding="utf-8") as f:
+                f.write("fn a() {}\n")
+            with open(test_file, "w", encoding="utf-8") as f:
+                f.write("fn integration_test() {}\n")
+
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": file_a,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, out, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 0)
+                self.assertIn("src/a.rs", out)
+                self.assertIn("every file is at or above 80% of regions", out)
+
+    def test_workspace_root_package_source_is_also_required(self) -> None:
+        """A workspace root package is measured alongside its explicit member crates."""
+        with tempfile.TemporaryDirectory() as td:
+            repo_dir = os.path.join(td, "repo")
+            root_src = os.path.join(repo_dir, "src")
+            member_src = os.path.join(repo_dir, "crates", "member", "src")
+            os.makedirs(root_src, exist_ok=True)
+            os.makedirs(member_src, exist_ok=True)
+            with open(os.path.join(repo_dir, "Cargo.toml"), "w", encoding="utf-8") as f:
+                _ = f.write("""[package]
+name = "root"
+version = "0.1.0"
+[workspace]
+members = ["crates/member"]
+""")
+            root_file = os.path.join(root_src, "lib.rs")
+            member_file = os.path.join(member_src, "lib.rs")
+            with open(root_file, "w", encoding="utf-8") as f:
+                _ = f.write("pub fn root() {}\n")
+            with open(member_file, "w", encoding="utf-8") as f:
+                _ = f.write("pub fn member() {}\n")
+            report_path = os.path.join(td, "report.json")
+            with open(report_path, "w", encoding="utf-8") as f:
+                json.dump({
+                    "data": [{
+                        "files": [{
+                            "filename": member_file,
+                            "summary": {"regions": {"count": 10, "covered": 10}},
+                        }]
+                    }]
+                }, f)
+
+            with mock.patch("coverage.repo_root", return_value=repo_dir):
+                code, _, err = run_coverage(["--report", report_path, "--min", "80"])
+                self.assertEqual(code, 2)
+                self.assertIn("no coverage data for: src/lib.rs", err)
 
 
 if __name__ == "__main__":
