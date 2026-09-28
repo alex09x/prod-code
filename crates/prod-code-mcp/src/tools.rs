@@ -4688,16 +4688,19 @@ async fn handle_definition(
             }
         }
     } else if let Some(obj) = res.as_object() {
-        let uri = obj.get("uri").and_then(|u| u.as_str()).unwrap_or("");
-        let start_line = obj
-            .get("range")
+        let uri = obj
+            .get("uri")
+            .or_else(|| obj.get("targetUri"))
+            .and_then(|u| u.as_str())
+            .unwrap_or("");
+        let range = obj.get("range").or_else(|| obj.get("targetSelectionRange"));
+        let start_line = range
             .and_then(|r| r.get("start"))
             .and_then(|s| s.get("line"))
             .and_then(|l| l.as_u64())
             .unwrap_or(0)
             + 1;
-        let start_col = obj
-            .get("range")
+        let start_col = range
             .and_then(|r| r.get("start"))
             .and_then(|s| s.get("character"))
             .and_then(|c| c.as_u64())

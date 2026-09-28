@@ -726,6 +726,56 @@ async fn code_definition_reports_locations_or_says_there_are_none() {
 }
 
 #[tokio::test]
+async fn code_definition_reads_location_links_as_arrays_and_single_objects() {
+    let ws = rust_workspace("pub fn target() {}\n");
+    let lib = ws.path("src/lib.rs");
+    let target_uri = format!("file://{}", lib.display());
+    let array_uri = target_uri.clone();
+    let array_remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/definition" => serde_json::json!([{
+            "targetUri": array_uri,
+            "targetSelectionRange": {
+                "start": { "line": 6, "character": 10 },
+                "end": { "line": 6, "character": 16 }
+            }
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let array = execute_tool(
+        array_remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("an array LocationLink is rendered");
+    assert!(text_of(&array).contains(&format!("{target_uri}:7:11")));
+
+    let single_uri = target_uri.clone();
+    let single_remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/definition" => serde_json::json!({
+            "targetUri": single_uri,
+            "targetSelectionRange": {
+                "start": { "line": 9, "character": 12 },
+                "end": { "line": 9, "character": 18 }
+            }
+        }),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let single = execute_tool(
+        single_remote,
+        &ws.root(),
+        "code_definition",
+        serde_json::json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await
+    .expect("a single LocationLink is rendered");
+    assert!(text_of(&single).contains(&format!("{target_uri}:10:13")));
+}
+
+#[tokio::test]
 async fn code_references_counts_hits_and_says_when_there_are_none() {
     let ws = workspace();
     let lib = write(&ws, "src/lib.rs", "pub fn a() {}\n");

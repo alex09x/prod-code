@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- code_definition now renders a single-object LocationLink as well as array responses (#626).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
