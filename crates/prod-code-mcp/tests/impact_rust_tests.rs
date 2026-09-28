@@ -578,6 +578,37 @@ async fn native_rust_analyzer_selects_and_executes_real_tests_through_helpers() 
         report.tests
     );
 
+    let mcp_response = prod_code_mcp::handle_mcp_request(
+        gateway.addr,
+        &root,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "code_impact",
+                "arguments": { "depth": 6 }
+            }
+        }),
+    )
+    .await
+    .expect("the MCP request runs")
+    .expect("the MCP request has a response");
+    let mcp_report = mcp_response
+        .pointer("/result/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .expect("code_impact returns report text");
+    assert!(mcp_report.contains("affected tests:"), "{mcp_report}");
+    let mcp_command = mcp_report
+        .lines()
+        .find_map(|line| line.strip_prefix("run: "))
+        .expect("code_impact returns its test command");
+    for name in ["direct_case", "nested_case"] {
+        assert!(mcp_command.contains(name), "{mcp_command}");
+    }
+    for helper in ["edited_bridge", "local_bridge"] {
+        assert!(!mcp_command.contains(helper), "{mcp_command}");
+    }
     let generated = report.test_command.expect("selected tests have a command");
     for name in ["direct_case", "nested_case"] {
         assert!(generated.iter().any(|arg| arg == name), "{generated:?}");
