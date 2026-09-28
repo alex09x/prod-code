@@ -20,6 +20,8 @@
   presenting them as empty results (#627).
 - Gateway sync rejects absolute, parent-traversal, and symlink paths that escape the
   selected workspace (#628).
+- The remote mac node build now preserves cargo's failure status through its log-filtering
+  pipeline (#629).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
