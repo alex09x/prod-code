@@ -88,6 +88,18 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Python proposals now route to basedpyright before the file or its parent directory exists (#559).
+  New-file routing stays inside the checkout and refuses symlink parents, `..` escapes and
+  directories named with a source suffix.
+- Rust impact analysis now requires a recognized source test attribute before a Rust caller is
+  selected as runnable, even when the analyzer flags it as test context (#612). Helpers in test
+  files and functions marked only with `#[cfg(test)]` no longer enter Cargo test filters. A
+  conditional `cfg_attr` test marker whose active Cargo configuration cannot be proved triggers a
+  whole-suite fallback.
+- Rust `validate --compile` recovers from missing cached dependency `.rmeta` files in
+  fresh worktrees: a normal workspace `cargo check` warms metadata, then the proposed
+  text is checked again in the shadow. Other compiler errors still reject the proposal
+  (#607).
 - Shared gateway sessions bound output queues and socket writes (#598). A connected peer
   that stops reading cannot hold its session handler indefinitely; cancellation retires
   the exact writer, and other sessions continue answering.

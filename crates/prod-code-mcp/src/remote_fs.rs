@@ -178,7 +178,8 @@ fn resolve_relative_checkout_path(root: &Path, root_canon: &Path, p: &Path) -> R
             }
         }
         if let Ok(cur_canon) = std::fs::canonicalize(cur) {
-            if !cur_canon.starts_with(root) && !cur_canon.starts_with(root_canon) {
+            let outside = !cur_canon.starts_with(root) && !cur_canon.starts_with(root_canon);
+            if outside {
                 anyhow::bail!("{} is outside the workspace", candidate.display());
             }
         }
@@ -300,16 +301,26 @@ mod tests {
 
         let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
 
-        let (bytes, truncated) = read_source(addr, root, "crates/my-crate/lib.rs").await.unwrap();
+        let (bytes, truncated) = read_source(addr, root, "crates/my-crate/lib.rs")
+            .await
+            .unwrap();
         assert!(!truncated);
-        assert_eq!(String::from_utf8(bytes).unwrap(), "pub fn test_local() {}\n");
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "pub fn test_local() {}\n"
+        );
 
         let (bytes_abs, _) = read_source(addr, root, &src.join("lib.rs").to_string_lossy())
             .await
             .unwrap();
-        assert_eq!(String::from_utf8(bytes_abs).unwrap(), "pub fn test_local() {}\n");
+        assert_eq!(
+            String::from_utf8(bytes_abs).unwrap(),
+            "pub fn test_local() {}\n"
+        );
 
-        let err = read_source(addr, root, "../../etc/passwd").await.unwrap_err();
+        let err = read_source(addr, root, "../../etc/passwd")
+            .await
+            .unwrap_err();
         assert!(format!("{err:#}").contains("outside the workspace"));
     }
 
