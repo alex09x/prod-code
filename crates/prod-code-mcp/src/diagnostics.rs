@@ -894,11 +894,18 @@ pub async fn validate_text(
     // The file as it is on disk, read on the validation engine: it has no overlay for this
     // session, and it is the engine the gateway warms. The main engine is cold for the file's
     // diagnostics after a restart, and asking it cost 21 s of a 24 s validation (#235).
-    let before = {
+    let abs = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let before = if abs.is_file() {
         let mut checkout = LspSession::open_for_validation(remote, root, Some(file)).await?;
         let before = on_disk(&mut checkout, root, file, &shown).await;
         checkout.close().await;
         before
+    } else {
+        None
     };
     let mut session = LspSession::open_for_validation(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
@@ -986,8 +993,42 @@ pub async fn validate_texts(
     // What every file says as it is on disk: an error the checkout already has is not the
     // edit's, and a report that counts it refuses every edit to that file.
     let mut baselines: HashMap<String, (DiagnosticsReport, String)> = HashMap::new();
+    let mut order: Vec<usize> = (0..edits.len()).collect();
+    order.sort_by_key(|&i| !crate::lang::is_header(&edits[i].0));
+
+    // Rust discovers module contents through their parent file. Open nested source files first
+    // so a newly added child exists in the overlay before its parent re-export is analyzed.
+    let mut rust_order: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|&i| edits[i].0.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+        .collect();
+    rust_order.sort_by_key(|&i| {
+        let file = &edits[i].0;
+        let is_module_root = matches!(
+            file.file_name().and_then(|name| name.to_str()),
+            Some("lib.rs" | "main.rs" | "mod.rs")
+        );
+        std::cmp::Reverse(file.components().count().saturating_sub(if is_module_root {
+            1
+        } else {
+            0
+        }))
+    });
+    let mut rust_order = rust_order.into_iter();
+    for i in &mut order {
+        if edits[*i].0.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            *i = rust_order
+                .next()
+                .expect("one Rust edit per Rust order slot");
+        }
+    }
+
+    // Capture the pre-edit symbols against the checkout, on the validation engine's unchanged
+    // view. This has to finish before opening any proposal, since a new child module can change
+    // what documentSymbol reports for its parent.
+    let mut before_symbols = Vec::with_capacity(order.len());
     {
-        // On the validation engine, which is warm, as in `validate_text` (#235).
         let mut checkout = LspSession::open_for_validation(remote, root, hint).await?;
         for file in edits.iter().map(|(f, _)| f).chain(also_check) {
             let shown = display(root, file);
@@ -995,36 +1036,50 @@ pub async fn validate_texts(
                 baselines.insert(shown, before);
             }
         }
+        for &i in &order {
+            let file = &edits[i].0;
+            if root.join(file).is_file() || file.is_file() {
+                let uri = checkout.uri_for(file)?;
+                before_symbols.push(
+                    checkout
+                        .query(
+                            file,
+                            "textDocument/documentSymbol",
+                            serde_json::json!({ "textDocument": { "uri": uri } }),
+                        )
+                        .await
+                        .map(|r| symbol_names(&r))
+                        .unwrap_or_default(),
+                );
+            } else {
+                before_symbols.push(BTreeSet::new());
+            }
+        }
         checkout.close().await;
     }
+
     let mut session = LspSession::open_for_validation(remote, root, hint).await?;
-    let mut uris = Vec::with_capacity(edits.len());
-    // Symbols that the proposed texts remove or rename, with the file they vanish from: an
-    // error on a line that still uses one of them gets an explaining note, because the
-    // analyzer itself reports such a call as "type annotations needed" or "cannot find".
-    let mut missing: Vec<(String, String)> = Vec::new();
     let mut sources: HashMap<String, String> = HashMap::new();
-    // clangd builds a source against the header text that is open when the source is built,
-    // and a source is built as soon as it is asked about below; one built before its header's
-    // proposed text is open keeps the old header's errors. So the headers of a C or C++ change
-    // are opened first (#292); the reports still come in the order of `edits`.
-    let mut order: Vec<usize> = (0..edits.len()).collect();
-    order.sort_by_key(|&i| !crate::lang::is_header(&edits[i].0));
-    for (file, text) in order.iter().map(|&i| &edits[i]) {
-        let uri = session.uri_for(file)?;
-        let symbols_params = serde_json::json!({ "textDocument": { "uri": uri } });
-        let before = if root.join(file).is_file() || file.is_file() {
-            session
-                .query(file, "textDocument/documentSymbol", symbols_params.clone())
-                .await
-                .map(|r| symbol_names(&r))
-                .unwrap_or_default()
-        } else {
-            BTreeSet::new()
-        };
+    // clangd builds a source against the header text that is open when the source is built.
+    // Open headers first so every source sees its proposed header (#292); then open every file
+    // before asking for any after-set so new nested modules are visible to their parents.
+    let mut proposed = Vec::with_capacity(order.len());
+    for &i in &order {
+        let (file, text) = &edits[i];
         let uri = session.open_text(file, text).await?;
+        sources.insert(display(root, file), text.clone());
+        proposed.push((i, file.clone(), uri));
+    }
+
+    // Compare only after the complete proposal is open. A re-export from a proposed child file
+    // must not look removed just because that child was not open when the parent was queried.
+    let mut missing: Vec<(String, String)> = Vec::new();
+    for ((_, file, uri), before) in proposed.iter().zip(before_symbols) {
         let after = session
-            .request("textDocument/documentSymbol", symbols_params)
+            .request(
+                "textDocument/documentSymbol",
+                serde_json::json!({ "textDocument": { "uri": uri } }),
+            )
             .await
             .map(|r| symbol_names(&r))
             .unwrap_or_default();
@@ -1032,15 +1087,13 @@ pub async fn validate_texts(
         for name in before.difference(&after) {
             missing.push((name.clone(), shown.clone()));
         }
-        sources.insert(shown, text.clone());
-        uris.push((file.clone(), uri));
     }
-    let mut opened: Vec<(usize, (std::path::PathBuf, String))> =
-        order.into_iter().zip(uris).collect();
-    opened.sort_by_key(|(i, _)| *i);
-    let uris: Vec<_> = opened.into_iter().map(|(_, u)| u).collect();
+
+    // The proposal was opened in dependency order; reports keep the caller's edit order.
+    let mut diagnostic_order: Vec<_> = proposed.iter().collect();
+    diagnostic_order.sort_by_key(|(i, _, _)| *i);
     let mut reports = Vec::with_capacity(edits.len() + also_check.len());
-    for (file, uri) in &uris {
+    for (i, file, uri) in diagnostic_order {
         let result = session
             .request(
                 "textDocument/diagnostic",
@@ -1058,6 +1111,7 @@ pub async fn validate_texts(
             set_aside_derive_expansions(&mut report, text);
         }
         refuse_unchecked(&mut report);
+        debug_assert_eq!(reports.len(), *i);
         reports.push(report);
     }
     for (file, text) in also_check.iter().zip(also_texts) {
@@ -1079,10 +1133,161 @@ pub async fn validate_texts(
         sources.insert(shown.clone(), text);
         reports.push(report);
     }
+    suppress_used_public_reexport_warnings(&mut session, root, edits.len(), &mut reports, &sources)
+        .await;
     let resolved = resolved_rust_tokens(&mut session, root, &reports, &sources, &missing).await;
     session.close().await;
     annotate_missing_symbols(&mut reports, &sources, &missing, &resolved);
     Ok(reports)
+}
+
+/// A re-export reference in a checked caller proves that a public `pub use` is used, even
+/// when rust-analyzer tags the import as unused. Suppress only when the references request at the
+/// re-export token returns a location in an unchanged checked caller; unresolved or unreferenced
+/// imports remain diagnostics.
+async fn suppress_used_public_reexport_warnings(
+    session: &mut LspSession,
+    root: &Path,
+    edit_count: usize,
+    reports: &mut [DiagnosticsReport],
+    sources: &HashMap<String, String>,
+) {
+    let mut suppress = BTreeSet::new();
+    let candidates: Vec<_> = reports
+        .iter()
+        .take(edit_count)
+        .enumerate()
+        .flat_map(|(report_index, report)| {
+            let Some(text) = sources.get(&report.file) else {
+                return Vec::new();
+            };
+            report
+                .items
+                .iter()
+                .enumerate()
+                .filter_map(move |(item_index, item)| {
+                    if item.severity != "warning"
+                        || item.source.as_deref() != Some("rust-analyzer")
+                        || item.code.as_deref() != Some("unused_imports")
+                    {
+                        return None;
+                    }
+                    let col = public_reexport_token(text, item)?;
+                    Some((
+                        report_index,
+                        item_index,
+                        report.file.clone(),
+                        item.line,
+                        col,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    for (report_index, item_index, file, line, col) in candidates {
+        let Ok(uri) = session.uri_for(&root.join(&file)) else {
+            continue;
+        };
+        let caller_uris: Vec<String> = reports
+            .iter()
+            .skip(edit_count)
+            .filter(|caller| caller.file.ends_with(".rs") && caller.file != file)
+            .filter_map(|caller| session.uri_for(&root.join(&caller.file)).ok())
+            .collect();
+        if caller_uris.is_empty() {
+            continue;
+        }
+        let references = session
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line - 1, "character": col - 1 },
+                    "context": { "includeDeclaration": false }
+                }),
+            )
+            .await;
+        let used = references
+            .as_ref()
+            .ok()
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|locations| {
+                locations.iter().any(|location| {
+                    let Some(uri) = location.get("uri").and_then(serde_json::Value::as_str) else {
+                        return false;
+                    };
+                    let valid_range = location
+                        .get("range")
+                        .and_then(|range| range.get("start"))
+                        .is_some_and(|start| {
+                            start
+                                .get("line")
+                                .and_then(serde_json::Value::as_u64)
+                                .is_some()
+                                && start
+                                    .get("character")
+                                    .and_then(serde_json::Value::as_u64)
+                                    .is_some()
+                        });
+                    valid_range && caller_uris.iter().any(|caller| caller == uri)
+                })
+            });
+        if used {
+            suppress.insert((report_index, item_index));
+        }
+    }
+
+    for (report_index, report) in reports.iter_mut().enumerate() {
+        if !suppress.iter().any(|(index, _)| *index == report_index) {
+            continue;
+        }
+        let items = std::mem::take(&mut report.items);
+        report.items = items
+            .into_iter()
+            .enumerate()
+            .filter_map(|(item_index, item)| {
+                (!suppress.contains(&(report_index, item_index))).then_some(item)
+            })
+            .collect();
+        report.errors = report
+            .items
+            .iter()
+            .filter(|item| item.severity == "error")
+            .count();
+        report.warnings = report
+            .items
+            .iter()
+            .filter(|item| item.severity == "warning")
+            .count();
+    }
+}
+
+fn public_reexport_token(text: &str, diagnostic: &DocDiagnostic) -> Option<u32> {
+    let line_number = diagnostic.line;
+    let line = text.lines().nth(line_number.checked_sub(1)? as usize)?;
+    let statement = line
+        .trim_start()
+        .strip_prefix("pub use ")?
+        .split(';')
+        .next()?
+        .trim();
+    if statement.chars().any(|ch| matches!(ch, '{' | '}' | '*')) {
+        return None;
+    }
+    let local_name = statement
+        .rsplit_once(" as ")
+        .map(|(_, alias)| alias.trim())
+        .unwrap_or_else(|| statement.rsplit("::").next().unwrap_or(statement).trim());
+    let name = local_name.strip_prefix("r#").unwrap_or(local_name);
+    let token = rust_code_identifiers(text)
+        .into_iter()
+        .filter(|token| token.line == line_number && token.name == name)
+        .max_by_key(|token| token.col)?;
+    let token_position = (token.line, token.col);
+    let diagnostic_start = (diagnostic.line, diagnostic.col);
+    let diagnostic_end = diagnostic.end?;
+    (diagnostic_start <= token_position && token_position < diagnostic_end).then_some(token.col)
 }
 
 /// A declaration removed from one file may still resolve in the complete proposal: a move,

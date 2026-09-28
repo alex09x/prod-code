@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Fixed
+- Rust multi-file validation snapshots symbols before edits and compares them after the complete
+  proposal is open. A rust-analyzer unused-import warning on a public re-export is filtered only
+  when an unchanged checked caller references the same definition (#616).
+- `prod-code validate --compile` now reports when its remote compiler check is running (#620).
+- Incomplete wire frames no longer reserve memory for payload bytes that have not arrived (#621).
+- Whole-repository coverage checks fail when an existing Rust source file has no measurement (#622).
+- Schema rename no longer edits arbitrary prose and converts the requested column to UTF-16
+  before calling the language server (#623).
 - Go test and benchmark verification retain package compile failures and emit them as
   diagnostics even when the compiler produces no test events (#624).
 
@@ -92,6 +100,18 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Python proposals now route to basedpyright before the file or its parent directory exists (#559).
+  New-file routing stays inside the checkout and refuses symlink parents, `..` escapes and
+  directories named with a source suffix.
+- Rust impact analysis now requires a recognized source test attribute before a Rust caller is
+  selected as runnable, even when the analyzer flags it as test context (#612). Helpers in test
+  files and functions marked only with `#[cfg(test)]` no longer enter Cargo test filters. A
+  conditional `cfg_attr` test marker whose active Cargo configuration cannot be proved triggers a
+  whole-suite fallback.
+- Rust `validate --compile` recovers from missing cached dependency `.rmeta` files in
+  fresh worktrees: a normal workspace `cargo check` warms metadata, then the proposed
+  text is checked again in the shadow. Other compiler errors still reject the proposal
+  (#607).
 - Shared gateway sessions bound output queues and socket writes (#598). A connected peer
   that stops reading cannot hold its session handler indefinitely; cancellation retires
   the exact writer, and other sessions continue answering.
@@ -119,6 +139,9 @@
 - Diff-validation help names the current on-disk files as the patch base (#578).
   Submit a proposed patch before applying it; validate already-written edits using
   their complete current contents.
+- The prod-code source command reads checkout-local workspace files from the active
+  checkout, retains gateway reads for external SDK and dependency sources, and refuses
+  paths that escape the checkout. Local reads stop at 2 MiB (#619).
 - Editor pre-save synchronization reads the decoded top-level JSON-RPC method (#579).
   Reordered fields and escaped method keys/values still push the checkout before save or
   watched-file notifications; nested `method` fields do not trigger an unrelated sync.

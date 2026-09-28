@@ -14,6 +14,9 @@ use std::net::SocketAddr;
 use std::path::Path;
 use tokio_util::codec::Framed;
 
+mod retry;
+pub use retry::run_shadow;
+
 /// One proposed file of a hypothesis; `text: None` deletes the file.
 #[derive(Debug, Clone)]
 pub struct HypothesisEdit {
@@ -159,9 +162,9 @@ pub fn parse_specs(
     Ok(specs)
 }
 
-/// Sends the hypotheses, waits for the gateway to run them all, ranks the outcomes.
+/// Performs one shadow request and builds its local report.
 #[allow(clippy::too_many_arguments)]
-pub async fn run_shadow(
+pub(crate) async fn run_shadow_once(
     remote: SocketAddr,
     root: &Path,
     subdir: Option<&str>,
