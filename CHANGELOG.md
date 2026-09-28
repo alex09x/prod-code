@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+### Fixed
 - Rust multi-file validation snapshots symbols before edits and compares them after the complete
   proposal is open. A rust-analyzer unused-import warning on a public re-export is filtered only
   when an unchanged checked caller references the same definition (#616).
 - `prod-code validate --compile` now reports when its remote compiler check is running (#620).
+- Incomplete wire frames no longer reserve memory for payload bytes that have not arrived (#621).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
