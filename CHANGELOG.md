@@ -91,6 +91,11 @@
 - Python proposals now route to basedpyright before the file or its parent directory exists (#559).
   New-file routing stays inside the checkout and refuses symlink parents, `..` escapes and
   directories named with a source suffix.
+- Rust impact analysis now requires a recognized source test attribute before a Rust caller is
+  selected as runnable, even when the analyzer flags it as test context (#612). Helpers in test
+  files and functions marked only with `#[cfg(test)]` no longer enter Cargo test filters. A
+  conditional `cfg_attr` test marker whose active Cargo configuration cannot be proved triggers a
+  whole-suite fallback.
 - Shared gateway sessions bound output queues and socket writes (#598). A connected peer
   that stops reading cannot hold its session handler indefinitely; cancellation retires
   the exact writer, and other sessions continue answering.

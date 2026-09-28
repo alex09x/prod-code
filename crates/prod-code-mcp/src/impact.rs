@@ -904,24 +904,101 @@ fn rust_identifier(text: &str, at: usize, end: usize) -> Option<(&str, usize, bo
 }
 
 fn rust_test_attribute(text: &str, lex: &RustLex, open: usize, close: usize) -> bool {
-    let mut i = rust_skip_trivia(lex, open + 1, close);
-    let Some((mut last, end, _)) = rust_identifier(text, i, close) else {
+    rust_test_meta_attribute(text, lex, open + 1, close, false)
+}
+
+/// The test marker inside cfg_attr is conditional; without resolving Cargo's active cfg state,
+/// selecting it could treat a test-context helper as runnable.
+fn rust_test_attribute_is_conditional(
+    text: &str,
+    lex: &RustLex,
+    open: usize,
+    close: usize,
+) -> bool {
+    let start = open + 1;
+    rust_test_meta_attribute(text, lex, start, close, true)
+        && !rust_test_meta_attribute(text, lex, start, close, false)
+}
+
+/// Recognizes direct test attributes and optionally searches cfg_attr's attributes for tests.
+fn rust_test_meta_attribute(
+    text: &str,
+    lex: &RustLex,
+    start: usize,
+    end: usize,
+    allow_cfg_attr: bool,
+) -> bool {
+    let mut i = rust_skip_trivia(lex, start, end);
+    let Some((mut last, mut cursor, _)) = rust_identifier(text, i, end) else {
         return false;
     };
-    i = end;
     loop {
-        i = rust_skip_trivia(lex, i, close);
+        i = rust_skip_trivia(lex, cursor, end);
         if text.as_bytes().get(i..i + 2) != Some(b"::") {
             break;
         }
-        i = rust_skip_trivia(lex, i + 2, close);
-        let Some((segment, end, _)) = rust_identifier(text, i, close) else {
+        i = rust_skip_trivia(lex, i + 2, end);
+        let Some((segment, next, _)) = rust_identifier(text, i, end) else {
             return false;
         };
         last = segment;
-        i = end;
+        cursor = next;
     }
-    matches!(last, "test" | "rstest" | "test_case")
+    if matches!(last, "test" | "rstest" | "test_case") {
+        return true;
+    }
+    if !allow_cfg_attr || last != "cfg_attr" {
+        return false;
+    }
+    let args_open = rust_skip_trivia(lex, cursor, end);
+    if text.as_bytes().get(args_open) != Some(&b'(')
+        || !lex.code.get(args_open).copied().unwrap_or(false)
+    {
+        return false;
+    }
+    rust_cfg_attr_contains_test_attribute(text, lex, args_open, end)
+}
+
+/// cfg_attr has one condition followed by one or more attributes. Search the latter for a test
+/// marker without assuming the condition is active for this build.
+fn rust_cfg_attr_contains_test_attribute(
+    text: &str,
+    lex: &RustLex,
+    open: usize,
+    end: usize,
+) -> bool {
+    let mut depth = 1usize;
+    let mut condition_seen = false;
+    let mut attribute_start = None;
+    let mut i = open + 1;
+    while i < end {
+        if lex.code[i] {
+            match text.as_bytes()[i] {
+                b'(' => depth += 1,
+                b')' if depth == 1 => {
+                    return attribute_start
+                        .is_some_and(|start| rust_test_meta_attribute(text, lex, start, i, true));
+                }
+                b')' => depth -= 1,
+                b',' if depth == 1 => {
+                    if !condition_seen {
+                        condition_seen = true;
+                        attribute_start = Some(i + 1);
+                    } else {
+                        if attribute_start.is_some_and(|start| {
+                            rust_test_meta_attribute(text, lex, start, i, true)
+                        }) {
+                            return true;
+                        }
+                        attribute_start = Some(i + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Option<()>, String> {
@@ -1034,6 +1111,7 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
             "the Rust delimiters before {name} at line {line} do not balance"
         ));
     }
+    let mut conditional_test = false;
     let mut i = starts[braces];
     while i + 1 < declaration {
         if lex.code[i] && text.as_bytes()[i] == b'#' {
@@ -1062,10 +1140,18 @@ fn rust_test_marker(text: &str, line: u32, name: &str) -> std::result::Result<Op
             if rust_test_attribute(text, &lex, open, j - 1) {
                 return Ok(Some(()));
             }
+            if rust_test_attribute_is_conditional(text, &lex, open, j - 1) {
+                conditional_test = true;
+            }
             i = j;
         } else {
             i += 1;
         }
+    }
+    if conditional_test {
+        return Err(format!(
+            "the Rust test attribute for {name} at line {line} is conditional and cannot be proven active"
+        ));
     }
     Ok(None)
 }
@@ -1631,9 +1717,9 @@ pub(crate) fn unreadable(method: &str, answer: &serde_json::Value) -> String {
 
 /// The name a test runner selects the function `name` declared at `line` of `file` by, when it
 /// is a test: flagged by the analyzer, named or placed like one, or marked as one in its source.
-/// Rust deliberately accepts only the flag or a source attribute: a helper in `tests/` is not a
-/// libtest entry. An unreadable or structurally unclassifiable Rust declaration is a gap, not
-/// evidence that no test reaches the change.
+/// Rust deliberately accepts only a source attribute: an analyzer flag can describe a helper in
+/// test context that is not itself a libtest entry. An unreadable or structurally unclassifiable
+/// Rust declaration is a gap, not evidence that no test reaches the change.
 fn test_name(
     root: &Path,
     language: &str,
@@ -1642,9 +1728,6 @@ fn test_name(
     line: u32,
     flagged: bool,
 ) -> std::result::Result<Option<String>, String> {
-    if flagged {
-        return Ok(Some(name.to_string()));
-    }
     if language == "rust" {
         let text = std::fs::read_to_string(root.join(file)).map_err(|e| {
             format!(
@@ -1652,6 +1735,9 @@ fn test_name(
             )
         })?;
         return rust_test_marker(&text, line, name).map(|marked| marked.map(|_| name.to_string()));
+    }
+    if flagged {
+        return Ok(Some(name.to_string()));
     }
     if looks_like_test(language, name, file) {
         return Ok(Some(name.to_string()));
@@ -1845,6 +1931,100 @@ pub fn suspects_for(reaches: &[Reach], name: &str) -> Vec<(Symbol, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_test_selection_requires_runnable_attributes_even_when_flagged() {
+        let root = tempfile::tempdir().unwrap();
+        let file = "tests/impact.rs";
+        std::fs::create_dir_all(root.path().join("tests")).unwrap();
+        std::fs::write(
+            root.path().join(file),
+            "#[test]\nfn unit() {}\n#[tokio::test]\nasync fn asynchronous() {}\n#[cfg(test)]\nfn cfg_helper() {}\nfn test_named_helper() {}\n",
+        )
+        .unwrap();
+        let classify = |name, line, flagged| {
+            test_name(root.path(), "rust", name, file, line, flagged).unwrap()
+        };
+
+        assert_eq!(classify("unit", 2, false).as_deref(), Some("unit"));
+        assert_eq!(classify("unit", 2, true).as_deref(), Some("unit"));
+        assert_eq!(
+            classify("asynchronous", 4, false).as_deref(),
+            Some("asynchronous")
+        );
+        assert_eq!(
+            classify("asynchronous", 4, true).as_deref(),
+            Some("asynchronous")
+        );
+        assert_eq!(classify("cfg_helper", 6, false), None);
+        assert_eq!(classify("cfg_helper", 6, true), None);
+        assert_eq!(classify("test_named_helper", 7, false), None);
+        assert_eq!(classify("test_named_helper", 7, true), None);
+
+        let tests: Vec<Symbol> = [
+            ("unit", 2, true),
+            ("asynchronous", 4, false),
+            ("cfg_helper", 6, true),
+            ("test_named_helper", 7, true),
+        ]
+        .into_iter()
+        .filter_map(|(name, line, flagged)| {
+            classify(name, line, flagged).map(|name| Symbol {
+                name,
+                file: file.into(),
+                line,
+                col: 1,
+            })
+        })
+        .collect();
+        let command = test_command("rust", &crate::verify::ProjectTools::default(), &tests)
+            .unwrap()
+            .join(" ");
+        assert!(!command.contains("helper"), "{command}");
+    }
+
+    #[test]
+    fn rust_conditional_test_attributes_force_whole_suite() {
+        let root = tempfile::tempdir().unwrap();
+        let file = "tests/conditional.rs";
+        std::fs::create_dir_all(root.path().join("tests")).unwrap();
+        std::fs::write(
+            root.path().join(file),
+            "#[cfg_attr(unix, test)]\nfn conditional() {}\n#[cfg_attr(unix, cfg_attr(feature = \"tests\", tokio::test))]\nasync fn conditional_async() {}\n#[cfg_attr(unix, inline)]\nfn flagged_helper() {}\n#[r#test]\nfn raw_named_test() {}\n#[cfg_attr(unix, r#test)]\nfn raw_conditional() {}\n#[cfg_attr(target_os = \"macos\", test)]\n#[test]\nfn direct_test_with_inactive_conditional() {}\n",
+        )
+        .unwrap();
+        assert!(
+            test_name(root.path(), "rust", "conditional", file, 2, true).is_err(),
+            "conditional test status must not be inferred from the broad analyzer flag"
+        );
+        assert!(test_name(root.path(), "rust", "conditional", file, 2, false).is_err());
+        assert!(test_name(root.path(), "rust", "conditional_async", file, 4, true).is_err());
+        assert_eq!(
+            test_name(root.path(), "rust", "flagged_helper", file, 6, true).unwrap(),
+            None
+        );
+        assert_eq!(
+            test_name(root.path(), "rust", "raw_named_test", file, 8, false)
+                .unwrap()
+                .as_deref(),
+            Some("raw_named_test")
+        );
+        assert!(test_name(root.path(), "rust", "raw_conditional", file, 10, true).is_err());
+        assert!(test_name(root.path(), "rust", "raw_conditional", file, 10, false).is_err());
+        assert_eq!(
+            test_name(
+                root.path(),
+                "rust",
+                "direct_test_with_inactive_conditional",
+                file,
+                13,
+                false
+            )
+            .unwrap()
+            .as_deref(),
+            Some("direct_test_with_inactive_conditional")
+        );
+    }
 
     #[test]
     fn test_conventions_per_language() {
