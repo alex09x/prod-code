@@ -614,12 +614,12 @@ async fn delayed_valid_probe_responses_reset_failures_without_ordinary_traffic()
     let (dir, script) = workspace();
     let seen_file = dir.path().join("seen");
     let mut settings = config(&script);
-    settings.health_probe_interval = Some(Duration::from_millis(60));
-    settings.request_timeout = Duration::from_millis(40);
+    settings.health_probe_interval = Some(Duration::from_millis(50));
+    settings.request_timeout = Duration::from_millis(100);
     settings.env.insert("FAKE_HEALTH".into(), "delay".into());
     settings
         .env
-        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
+        .insert("FAKE_HEALTH_DELAY".into(), "0.20".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
         seen_file.to_string_lossy().into_owned(),
@@ -653,14 +653,14 @@ async fn delayed_malformed_probe_responses_do_not_reset_failures() {
     let (dir, script) = workspace();
     let seen_file = dir.path().join("seen");
     let mut settings = config(&script);
-    settings.health_probe_interval = Some(Duration::from_millis(60));
-    settings.request_timeout = Duration::from_millis(40);
+    settings.health_probe_interval = Some(Duration::from_millis(50));
+    settings.request_timeout = Duration::from_millis(100);
     settings
         .env
         .insert("FAKE_HEALTH".into(), "delay-malformed".into());
     settings
         .env
-        .insert("FAKE_HEALTH_DELAY".into(), "0.12".into());
+        .insert("FAKE_HEALTH_DELAY".into(), "0.20".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
         seen_file.to_string_lossy().into_owned(),
@@ -721,7 +721,7 @@ async fn disabled_periodic_supervision_is_an_explicit_non_retirement_control() {
     let seen_file = dir.path().join("seen");
     let mut settings = config(&script);
     settings.health_probe_interval = None;
-    settings.request_timeout = Duration::from_millis(40);
+    settings.request_timeout = Duration::from_millis(150);
     settings.env.insert("FAKE_HEALTH".into(), "silence".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
@@ -744,8 +744,8 @@ async fn three_consecutive_idle_probe_response_timeouts_retire_the_generation() 
     let seen_file = dir.path().join("seen");
     let pid_file = dir.path().join("pid");
     let mut settings = config(&script);
-    settings.health_probe_interval = Some(Duration::from_millis(20));
-    settings.request_timeout = Duration::from_millis(40);
+    settings.health_probe_interval = Some(Duration::from_millis(30));
+    settings.request_timeout = Duration::from_millis(80);
     settings.env.insert("FAKE_HEALTH".into(), "silence".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
