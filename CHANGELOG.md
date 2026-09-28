@@ -8,6 +8,7 @@
   when an unchanged checked caller references the same definition (#616).
 - `prod-code validate --compile` now reports when its remote compiler check is running (#620).
 - Incomplete wire frames no longer reserve memory for payload bytes that have not arrived (#621).
+- Whole-repository coverage checks fail when an existing Rust source file has no measurement (#622).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
