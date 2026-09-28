@@ -926,6 +926,47 @@ async fn send_busy_note(resp: &mut serde_json::Value, out_tx: &SharedOutputSende
 /// Writes a file a client synced so that a failed write, such as on a full disk, leaves the old
 /// content: the text goes to a temporary file next to it, which then replaces it. `fs::write`
 /// truncated the file first, and a full disk left it empty (#385).
+async fn safe_sync_target(server_workspace: &Path, relative: &str) -> std::io::Result<PathBuf> {
+    let invalid_path = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("unsafe sync path: {relative:?}"),
+        )
+    };
+    let relative_path = Path::new(relative);
+    if relative.is_empty() || relative.contains('\\') || relative_path.is_absolute() {
+        return Err(invalid_path());
+    }
+    let components: Vec<&str> = relative.split('/').collect();
+    if components
+        .iter()
+        .any(|component| component.is_empty() || *component == "." || *component == "..")
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(invalid_path());
+    }
+
+    let mut current = server_workspace.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        current.push(*component);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) => {
+                if metadata.file_type().is_symlink()
+                    || (index + 1 < components.len() && !metadata.is_dir())
+                {
+                    return Err(invalid_path());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
+    }
+
+    Ok(server_workspace.join(relative_path))
+}
+
 async fn write_synced_file(
     target: &std::path::Path,
     content: &[u8],
@@ -2512,7 +2553,14 @@ pub async fn apply_sync_with_metrics(
     // client sends them again (#385).
     let mut failed: Vec<String> = Vec::new();
     for delta in req.files {
-        let target_path = server_workspace.join(&delta.relative_path);
+        let target_path = match safe_sync_target(&server_workspace, &delta.relative_path).await {
+            Ok(path) => path,
+            Err(error) => {
+                tracing::warn!(error = %error, file = %delta.relative_path, "sync rejected unsafe path");
+                failed.push(delta.relative_path);
+                continue;
+            }
+        };
         project_config_changed |= is_project_config_file(&delta.relative_path);
         match delta.content {
             Some(content_bytes) => {
@@ -7324,6 +7372,76 @@ mod tests {
         assert_eq!(del_resp.files_deleted, 1);
         assert!(!app_dir.join("README.md").exists());
         assert!(app_dir.join("src/lib.rs").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sync_rejects_absolute_parent_and_symlink_paths() {
+        use std::os::unix::fs::symlink;
+
+        let storage = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let manager = WorkspaceManager::new();
+        let root = storage.path().join("ws");
+        std::fs::create_dir_all(&root).unwrap();
+        symlink(outside.path(), root.join("linked")).unwrap();
+
+        let victim = outside.path().join("victim.txt");
+        std::fs::write(&victim, b"keep").unwrap();
+        let absolute_write = outside.path().join("absolute-escape.txt");
+        let parent_write = outside.path().join("parent-escape.txt");
+        let symlink_write = outside.path().join("symlink-escape.txt");
+        let response = apply_sync(
+            storage.path(),
+            &manager,
+            SyncRequest {
+                client_workspace_root: "/tmp/ws".to_string(),
+                files: vec![
+                    FileDelta {
+                        relative_path: "../parent-escape.txt".to_string(),
+                        content: Some(b"parent".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: absolute_write.to_string_lossy().into_owned(),
+                        content: Some(b"absolute".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: "linked/symlink-escape.txt".to_string(),
+                        content: Some(b"symlink".to_vec()),
+                        is_executable: false,
+                    },
+                    FileDelta {
+                        relative_path: "../victim.txt".to_string(),
+                        content: None,
+                        is_executable: false,
+                    },
+                ],
+                clean_others: false,
+                base_workspace_name: Some("ws".to_string()),
+            },
+        )
+        .await;
+
+        assert_eq!(response.files_updated, 0);
+        assert_eq!(response.files_deleted, 0);
+        for rejected in [
+            "../parent-escape.txt",
+            absolute_write.to_str().unwrap(),
+            "linked/symlink-escape.txt",
+            "../victim.txt",
+        ] {
+            assert!(
+                response.stale_paths.iter().any(|path| path == rejected),
+                "invalid path should be retried: {rejected:?}; stale paths: {:?}",
+                response.stale_paths
+            );
+        }
+        assert!(!parent_write.exists());
+        assert!(!absolute_write.exists());
+        assert!(!symlink_write.exists());
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
     }
 
     /// Both halves of the engine cache, in one test because the cache is process-global and

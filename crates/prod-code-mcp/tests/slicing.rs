@@ -14,7 +14,7 @@ use prod_code_mcp::{cluster, fixture, shadow, slice, verify};
 use prod_code_protocol::{
     ClusterResponse, ExecChunk, ExecExit, ExecRequest, MetricsResponse, PeerInfo, PlaceResponse,
     ProdCodeCodec, ShadowHypothesisResult, ShadowRunRequest, ShadowRunResponse, StatusResponse,
-    SyncProbeResponse, WireMessage,
+    SyncProbeResponse, SyncResponse, WireMessage,
 };
 use prod_code_testkit::{ScriptedGateway, Workspace, answers};
 use std::net::SocketAddr;
@@ -1036,6 +1036,51 @@ async fn run_verify_runs_go_test_and_reports_pass_fail_counts() {
 
 /// `basedpyright --outputjson` diagnostics are parsed off stdout.
 #[tokio::test]
+async fn run_verify_reports_go_package_compile_failure_without_test_events() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+    ]);
+    let root = ws.root();
+    let stdout =
+        br##"{"Action":"output","Package":"example.com/demo","Output":"# example.com/demo\n"}
+{"Action":"output","Package":"example.com/demo","Output":"./main.go:3:2: undefined: missing\n"}
+{"Action":"fail","Package":"example.com/demo","Elapsed":0.005}"##
+            .to_vec();
+    let addr = exec_gateway(None, move |_req| (stdout.clone(), Vec::new(), Some(1))).await;
+
+    let report = verify::run_verify(addr, &root, None, verify::VerifyKind::Test, None, 30)
+        .await
+        .expect("the verify runs");
+    assert_eq!(report.exit_code, Some(1));
+    assert_eq!((report.tests_passed, report.tests_failed), (0, 1));
+    assert_eq!(report.failures[0].name, "example.com/demo");
+    assert!(report.failures[0].output.contains("undefined: missing"));
+}
+
+#[tokio::test]
+async fn run_verify_parses_go_benchmark_compiler_diagnostics_as_go() {
+    let ws = Workspace::new(&[
+        ("go.mod", "module example.com/demo\n\ngo 1.22\n"),
+        ("main.go", "package main\n\nfunc main() {}\n"),
+    ]);
+    let root = ws.root();
+    let stderr = b"# example.com/demo\nbench_test.go:14:2: undefined: missingBenchmark\n".to_vec();
+    let addr = exec_gateway(None, move |_req| (Vec::new(), stderr.clone(), Some(1))).await;
+
+    let report = verify::run_verify(addr, &root, None, verify::VerifyKind::Bench, None, 30)
+        .await
+        .expect("the verify runs");
+    assert_eq!(report.exit_code, Some(1));
+    assert_eq!(report.language, "go");
+    assert_eq!(report.diagnostics.len(), 1);
+    assert_eq!(report.diagnostics[0].file.as_deref(), Some("bench_test.go"));
+    assert_eq!(report.diagnostics[0].line, Some(14));
+    assert_eq!(report.diagnostics[0].column, Some(2));
+    assert_eq!(report.diagnostics[0].message, "undefined: missingBenchmark");
+}
+
+#[tokio::test]
 async fn run_verify_runs_python_check_with_pyright_json() {
     let ws = Workspace::new(&[
         ("pyproject.toml", "[tool.pytest.ini_options]\n"),
@@ -1375,4 +1420,177 @@ async fn the_compiler_is_asked_in_a_shadow_and_its_errors_are_read_back() {
     );
     assert_eq!(verdict.duration_ms, 2100);
     assert!(verdict.render().contains("the compiler rejects the result"));
+}
+
+async fn validate_compile_metadata_warmup_case(
+    warmup_exit_code: Option<i32>,
+    warmup_timed_out: bool,
+    warmup_error: Option<&'static str>,
+    expected_error: Option<&'static str>,
+) {
+    let ws = Workspace::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"metadata-retry-fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        ("src/lib.rs", "pub fn value() -> u32 { 1 }\n"),
+    ]);
+    let root = ws.root();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let expected_attempts = if expected_error.is_some() { 2 } else { 3 };
+    let server = tokio::spawn(async move {
+        for attempt in 0..expected_attempts {
+            let (socket, _) = listener.accept().await.expect("the client connects");
+            let mut framed = Framed::new(socket, ProdCodeCodec::new());
+            let server_workspace_root = if attempt == 0 {
+                let Some(Ok(WireMessage::SyncProbeRequest(probe))) = framed.next().await else {
+                    panic!("the first request starts with a workspace probe");
+                };
+                let server_workspace_root = probe.client_workspace_root;
+                framed
+                    .send(WireMessage::SyncProbeResponse(SyncProbeResponse {
+                        server_workspace_root: server_workspace_root.clone(),
+                        seeded: false,
+                        files_deleted: 0,
+                        missing: Vec::new(),
+                    }))
+                    .await
+                    .expect("the workspace probe is answered");
+                server_workspace_root
+            } else {
+                let Some(Ok(WireMessage::SyncRequest(request))) = framed.next().await else {
+                    panic!("later requests send the workspace delta");
+                };
+                let server_workspace_root = request.client_workspace_root;
+                framed
+                    .send(WireMessage::SyncResponse(SyncResponse {
+                        server_workspace_root: server_workspace_root.clone(),
+                        files_updated: 0,
+                        files_deleted: 0,
+                        bytes_transferred: 0,
+                        duration_ms: 0,
+                        workspace_was_fresh: false,
+                        stale_paths: Vec::new(),
+                    }))
+                    .await
+                    .expect("the workspace delta is acknowledged");
+                server_workspace_root
+            };
+
+            if attempt == 1 {
+                let Some(Ok(WireMessage::ExecRequest(request))) = framed.next().await else {
+                    panic!("the metadata warm-up uses a plain remote exec");
+                };
+                assert_eq!(
+                    request.command,
+                    vec![
+                        "cargo",
+                        "check",
+                        "--workspace",
+                        "--all-targets",
+                        "--message-format=json"
+                    ]
+                );
+                assert!(!request.pull_changes);
+                framed
+                    .send(WireMessage::ExecExit(ExecExit {
+                        exit_code: warmup_exit_code,
+                        duration_ms: 700,
+                        server_workspace_root,
+                        timed_out: warmup_timed_out,
+                        error: warmup_error.map(str::to_string),
+                        usage: None,
+                        platform: None,
+                    }))
+                    .await
+                    .expect("the warm-up result is sent");
+            } else {
+                let Some(Ok(WireMessage::ShadowRunRequest(request))) = framed.next().await else {
+                    panic!("the proposed compilation runs in an overlay shadow");
+                };
+                assert_eq!(request.hypotheses.len(), 1);
+                assert_eq!(
+                    request.command,
+                    vec![
+                        "cargo",
+                        "check",
+                        "--workspace",
+                        "--all-targets",
+                        "--message-format=json"
+                    ]
+                );
+                let (exit_code, duration_ms, output) = if attempt == 0 {
+                    (
+                        Some(101),
+                        500,
+                        b"error: extern location for serde does not exist: target/debug/deps/libserde-abc.rmeta\n".to_vec(),
+                    )
+                } else {
+                    (Some(0), 2100, b"Finished dev profile\n".to_vec())
+                };
+                framed
+                    .send(WireMessage::ShadowRunResponse(ShadowRunResponse {
+                        server_workspace_root,
+                        mode: "overlay".to_string(),
+                        error: None,
+                        results: vec![ShadowHypothesisResult {
+                            name: "proposed".to_string(),
+                            exit_code,
+                            duration_ms,
+                            timed_out: false,
+                            error: None,
+                            output_len: output.len() as u64,
+                            output_tail: Some(output),
+                        }],
+                    }))
+                    .await
+                    .expect("the shadow result is sent");
+            }
+            let _ = framed.next().await;
+        }
+    });
+
+    let files = vec![(
+        root.join("src/lib.rs"),
+        "pub fn value() -> u32 { 2 }\n".to_string(),
+    )];
+    let result = prod_code_mcp::tools::compile_check(addr, &root, &files).await;
+    match expected_error {
+        None => {
+            let (errors, report) = result.expect("the validator's compiler check runs");
+            assert_eq!(errors, 0, "{report}");
+            assert!(report.contains(
+                "compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"
+            ));
+        }
+        Some(expected) => {
+            let error = result.expect_err("the metadata warm-up failure is reported");
+            assert!(error.to_string().contains(expected), "{error:#}");
+        }
+    }
+    server.await.expect("all gateway requests are handled");
+}
+
+#[tokio::test]
+async fn validate_compile_warms_missing_rmeta_then_retries_the_proposed_shadow() {
+    // Cargo may still warm useful artifacts before reporting unrelated errors in the base tree.
+    validate_compile_metadata_warmup_case(Some(101), false, None, None).await;
+}
+
+#[tokio::test]
+async fn validate_compile_reports_metadata_warmup_start_errors() {
+    validate_compile_metadata_warmup_case(
+        None,
+        false,
+        Some("remote command failed"),
+        Some("could not start"),
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn validate_compile_reports_metadata_warmup_timeouts() {
+    validate_compile_metadata_warmup_case(None, true, None, Some("timed out")).await;
 }
