@@ -128,11 +128,14 @@ fn key_of(item: &serde_json::Value) -> (String, u64, u64) {
 }
 
 fn valid_lsp_position(position: Option<&serde_json::Value>) -> bool {
-    position.and_then(|p| p.get("line")).and_then(|v| v.as_u64()).is_some()
+    position
+        .and_then(|p| p.get("line"))
+        .and_then(|v| v.as_u64())
+        .is_some_and(|value| value < u64::from(u32::MAX))
         && position
             .and_then(|p| p.get("character"))
             .and_then(|v| v.as_u64())
-            .is_some()
+            .is_some_and(|value| value < u64::from(u32::MAX))
 }
 
 fn valid_lsp_range(range: &serde_json::Value) -> bool {

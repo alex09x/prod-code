@@ -103,6 +103,29 @@ async fn prepare_call_hierarchy_rejects_errors_and_malformations_and_preserves_e
     .await;
     assert!(err.is_err(), "expected error on missing position, got: {err:?}");
 
+    // LSP coordinates outside the range this client can represent are malformed.
+    let invalid_uri = format!("file://{}", lib.display());
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/prepareCallHierarchy" => json!([{
+            "name": "leaf",
+            "uri": invalid_uri,
+            "selectionRange": {
+                "start": { "line": 4294967295u64, "character": 0 },
+                "end": { "line": 4294967295u64, "character": 11 }
+            }
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_callers",
+        json!({ "path": "src/lib.rs", "line": 1, "character": 8 }),
+    )
+    .await;
+    assert!(err.is_err(), "expected error on out-of-range coordinate, got: {err:?}");
+
     // A present but malformed selectionRange must not fall back to range.
     let invalid_uri = format!("file://{}", lib.display());
     let remote = scripted_gateway(Arc::new(move |method, _| match method {
@@ -590,6 +613,31 @@ async fn non_rust_supertypes_rejects_errors_and_malformations_and_preserves_empt
     )
     .await;
     assert!(err.is_err(), "expected error on malformed supertype item, got: {err:?}");
+
+    // A malformed line that would overflow when rendered 1-based is refused before conversion.
+    let it = item.clone();
+    let super_uri = uri.clone();
+    let remote = scripted_gateway(Arc::new(move |method, _| match method {
+        "textDocument/prepareTypeHierarchy" => json!([it]),
+        "typeHierarchy/supertypes" => json!([{
+            "name": "Shape",
+            "uri": super_uri,
+            "selectionRange": {
+                "start": { "line": 4294967295u64, "character": 5 },
+                "end": { "line": 4294967295u64, "character": 10 }
+            }
+        }]),
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let err = execute_tool(
+        remote,
+        &ws.root(),
+        "code_supertypes",
+        json!({ "path": "shape.go", "line": 3, "character": 6 }),
+    )
+    .await;
+    assert!(err.is_err(), "expected error on overflowing hierarchy position, got: {err:?}");
 
     // 4. Valid empty control: null -> "`Square` has no supertype."
     let it = item.clone();
