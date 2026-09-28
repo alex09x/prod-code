@@ -2060,6 +2060,11 @@ async fn cli_validate_compile_runs_the_check_command_on_the_proposal() {
         &["validate", "src/lib.rs", "--from", &proposal, "--compile"],
     )
     .await;
+    assert!(
+        stderr_of(&out).contains("Running the remote compiler check for the proposed changes..."),
+        "{}",
+        stderr_of(&out)
+    );
     let text = stdout_of(&out);
     assert!(out.status.success(), "{text}{}", stderr_of(&out));
     assert!(

@@ -3094,6 +3094,7 @@ async fn run_validate_compiled(
             "new_text": new_text,
         }));
     }
+    eprintln!("Running the remote compiler check for the proposed changes...");
     run_tool(
         remote,
         "code_validate_edits",
