@@ -488,6 +488,23 @@ enum LoadState {
     Ready(Arc<SharedWorkspace>),
 }
 
+/// Default bound on concurrent cold engine loads (#408).
+/// On high-core nodes (e.g. 128 cores), loading 16 engines simultaneously starves CPU and I/O caches
+/// and drives first-query response times past timeouts. Limiting in-flight loads ensures the first
+/// workspaces load quickly and answer within their budget.
+pub fn default_max_concurrent_engine_loads() -> usize {
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    if cpus >= 32 {
+        8
+    } else if cpus >= 8 {
+        4
+    } else {
+        2
+    }
+}
+
 /// Thread-safe manager coordinating workspace lifecycle and leader-follower loading.
 pub struct WorkspaceManager {
     workspaces: RwLock<HashMap<WorkspaceKey, LoadState>>,
@@ -497,6 +514,7 @@ pub struct WorkspaceManager {
     /// Whether the host has memory for another engine (#433).
     admission: Arc<crate::admission::Admission>,
     rust_loader: RustLoader,
+    load_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// How long an engine must have been without a session before a load that finds no memory may
@@ -518,13 +536,32 @@ impl WorkspaceManager {
     }
 
     pub fn with_admission(admission: Arc<crate::admission::Admission>) -> Self {
+        Self::with_admission_and_concurrency(admission, default_max_concurrent_engine_loads())
+    }
+
+    pub fn with_admission_and_concurrency(
+        admission: Arc<crate::admission::Admission>,
+        max_concurrent_loads: usize,
+    ) -> Self {
+        let max_concurrent_loads = if max_concurrent_loads == 0 {
+            default_max_concurrent_engine_loads()
+        } else {
+            max_concurrent_loads
+        };
         Self {
             workspaces: RwLock::new(HashMap::new()),
             worktree_owners: Arc::new(std::sync::Mutex::new(HashMap::new())),
             editor_servers: crate::editor_proxy::EditorServers::default(),
             admission,
             rust_loader: Arc::new(prod_code_engine_rust::RustEngine::load),
+            load_semaphore: Arc::new(tokio::sync::Semaphore::new(max_concurrent_loads)),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_max_concurrent_loads(mut self, max: usize) -> Self {
+        self.load_semaphore = Arc::new(tokio::sync::Semaphore::new(max));
+        self
     }
 
     #[cfg(test)]
@@ -883,6 +920,13 @@ impl WorkspaceManager {
                 tracing::warn!(workspace = ?workspace_root, engine, %refused, "🚫 [CAPACITY] refused to load a new engine");
                 anyhow::Error::new(refused)
             })?;
+
+        // Limit concurrent in-flight engine loads so parallel worktrees do not starve CPU/IO caches (#408).
+        let _load_permit = self
+            .load_semaphore
+            .acquire()
+            .await
+            .map_err(|e| anyhow::anyhow!("engine load semaphore closed: {e}"))?;
 
         tracing::info!(workspace = ?workspace_root, engine, "Leader starting workspace load");
         let mut rust_engine = None;
@@ -2055,6 +2099,61 @@ while True:
             "returned once the load ended"
         );
         assert!(manager.get_loaded(&root).await.is_some());
+    }
+
+    /// Concurrent cold engine loads across distinct workspaces are bounded by the semaphore (#408):
+    /// when the bound is 2, only 2 out of 4 concurrent loads start compilation, and the remaining 2
+    /// wait on the semaphore until permits are released.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_engine_loads_are_bounded_by_semaphore() {
+        let SlowLoader {
+            load,
+            mut started,
+            gate,
+            loads,
+        } = slow_loader();
+        let manager = Arc::new(
+            WorkspaceManager::with_admission(roomy_admission())
+                .with_max_concurrent_loads(2)
+                .with_rust_loader(load),
+        );
+
+        let mut tasks = Vec::new();
+        for i in 1..=4 {
+            let manager = Arc::clone(&manager);
+            let root = PathBuf::from(format!("/srv/ws/bounded-{i}"));
+            tasks.push(tokio::spawn(async move {
+                manager.get_or_load(&root, "rust").await
+            }));
+        }
+
+        // Exactly 2 loads acquire the semaphore and start compilation.
+        started.recv().await.expect("first load started");
+        started.recv().await.expect("second load started");
+
+        // The third and fourth loads are queued and blocked on the semaphore.
+        let timeout = tokio::time::timeout(Duration::from_millis(50), started.recv()).await;
+        assert!(timeout.is_err(), "third load must wait on semaphore");
+        assert_eq!(loads.load(Ordering::SeqCst), 2);
+
+        // Release one permit: third load starts.
+        gate.send(()).unwrap();
+        started.recv().await.expect("third load started");
+        assert_eq!(loads.load(Ordering::SeqCst), 3);
+
+        // Release another permit: fourth load starts.
+        gate.send(()).unwrap();
+        started.recv().await.expect("fourth load started");
+        assert_eq!(loads.load(Ordering::SeqCst), 4);
+
+        // Release the remaining two permits.
+        gate.send(()).unwrap();
+        gate.send(()).unwrap();
+
+        for task in tasks {
+            let res = task.await.unwrap();
+            assert!(res.is_ok());
+        }
     }
 
     /// An unloaded in-flight engine cannot replace a later load of the same path.
