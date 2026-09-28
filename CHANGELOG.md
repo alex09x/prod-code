@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Fixed
+- Rust multi-file validation snapshots symbols before edits and compares them after the complete
+  proposal is open. A rust-analyzer unused-import warning on a public re-export is filtered only
+  when an unchanged checked caller references the same definition (#616).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
