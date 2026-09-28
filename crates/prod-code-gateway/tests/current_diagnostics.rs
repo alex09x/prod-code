@@ -438,6 +438,103 @@ async fn linked_rust_test_proposals_compile_in_an_overlay_without_writing_the_fi
     check_linked_rust_test_proposals(true).await;
 }
 
+/// #607: a newly seeded linked worktree must rebuild missing dependency metadata before its
+/// first shadow compiler validation. The origin's sccache-backed check leaves the seed cache in
+/// the state that used to make the proposed integration test's extern `.rmeta` files disappear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seeded_linked_rust_test_proposal_compiles_after_missing_metadata_is_warmed() {
+    let sccache = {
+        let found = Command::new("sh")
+            .args(["-c", "command -v sccache"])
+            .output()
+            .expect("the Linux regression runner can find sccache");
+        assert!(
+            found.status.success(),
+            "the regression runner provides sccache"
+        );
+        PathBuf::from(String::from_utf8_lossy(&found.stdout).trim())
+    };
+    let manifest = r#"[package]
+name = "seeded-linked-rmeta-regression"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytes = "1"
+serde = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt"] }
+tokio-util = "0.7"
+url = "2"
+"#;
+    let base_test = "#[test]\nfn committed_test_stays_simple() {}\n";
+    let (_origin_checkout, origin) =
+        checkout(&[("Cargo.toml", manifest), ("tests/proposed.rs", base_test)]);
+    let gateway = Gateway::start_with_sccache(None, Some(&sccache));
+    let warm = tool(gateway.addr, &origin, "code_check", serde_json::json!({}))
+        .await
+        .expect("the origin check warms the cache that a worktree receives");
+    assert!(
+        warm.contains("cargo check --workspace --all-targets"),
+        "{warm}"
+    );
+
+    let linked_checkout = tempfile::tempdir().expect("linked worktree parent");
+    let linked = linked_checkout.path().join("linked");
+    let status = Command::new("git")
+        .args(["worktree", "add", "--detach"])
+        .arg(&linked)
+        .arg("HEAD")
+        .current_dir(&origin)
+        .status()
+        .expect("git creates a linked worktree");
+    assert!(status.success(), "git creates the linked worktree");
+    let linked = std::fs::canonicalize(linked).expect("canonical linked worktree");
+    assert!(
+        prod_code_mcp::sync::workspace_identity(&linked)
+            .base
+            .is_some(),
+        "the proposed test is validated from an actual linked worktree"
+    );
+
+    let proposed = r#"use bytes::Bytes;
+
+#[test]
+fn proposed_integration_test_uses_the_seeded_dependencies() {
+    fn encode<T: serde::Serialize>(value: &T) -> Vec<u8> {
+        serde_json::to_vec(value).expect("serializable test value")
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("test runtime");
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let parsed = url::Url::parse("https://example.invalid/seeded").expect("test URL");
+    let encoded = encode(&serde_json::json!({ "path": parsed.path() }));
+    let bytes = Bytes::from(encoded);
+    runtime.block_on(async move { cancellation.cancel(); });
+    assert!(!bytes.is_empty());
+}
+"#;
+    let accepted = tool(
+        gateway.addr,
+        &linked,
+        "code_validate_edit",
+        serde_json::json!({
+            "path": "tests/proposed.rs",
+            "new_text": proposed,
+            "compile": true
+        }),
+    )
+    .await
+    .expect("the newly seeded linked worktree compiles the complete proposed integration test");
+    assert!(
+        accepted.contains("0 error(s), 0 warning(s)")
+            && accepted.contains("compiler: `cargo check --workspace --all-targets --message-format=json` on the proposed text: 0 error(s)"),
+        "{accepted}"
+    );
+}
+
 /// #482: first compiler validation must build dependency metadata inside its private shadow.
 /// A preliminary code_check would mask missing metadata produced outside the shadow by sccache.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -945,6 +945,75 @@ async fn cli_reads_remote_source_file_with_line_context() {
 }
 
 #[tokio::test]
+async fn cli_reads_workspace_source_file_relative_and_absolute() {
+    let ws = make_workspace();
+    ws.write(
+        "crates/prod-code-mcp/src/tools.rs",
+        "// tools test\npub fn cli_source_marker() -> bool {\n    true\n}\n",
+    );
+    let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
+
+    // Documented relative path reproduction from issue #619:
+    let out = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "source",
+            "crates/prod-code-mcp/src/tools.rs",
+            "--line",
+            "2",
+            "--context",
+            "1",
+        ],
+    )
+    .await;
+    assert!(out.status.success(), "stderr: {}", stderr_of(&out));
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("cli_source_marker"), "stdout: {stdout}");
+    assert!(!stdout.contains("mocked_remote_source"), "should not be mocked remote source: {stdout}");
+
+    // Local absolute path:
+    let abs = ws.path("crates/prod-code-mcp/src/tools.rs");
+    let out_abs = run_cli(
+        &ws,
+        gw.addr,
+        &[
+            "source",
+            &abs.to_string_lossy(),
+            "--line",
+            "2",
+            "--context",
+            "1",
+        ],
+    )
+    .await;
+    assert!(out_abs.status.success(), "stderr: {}", stderr_of(&out_abs));
+    let stdout_abs = stdout_of(&out_abs);
+    assert!(stdout_abs.contains("cli_source_marker"), "stdout: {stdout_abs}");
+
+    // Existing workspace file src/lib.rs:
+    let out_lib = run_cli(
+        &ws,
+        gw.addr,
+        &["source", "src/lib.rs", "--line", "5", "--context", "1"],
+    )
+    .await;
+    assert!(out_lib.status.success(), "stderr: {}", stderr_of(&out_lib));
+    let stdout_lib = stdout_of(&out_lib);
+    assert!(stdout_lib.contains("calculate"), "stdout: {stdout_lib}");
+
+    // Relative path outside workspace:
+    let out_bad = run_cli(
+        &ws,
+        gw.addr,
+        &["source", "../../etc/passwd"],
+    )
+    .await;
+    assert!(!out_bad.status.success());
+    assert!(stderr_of(&out_bad).contains("outside the workspace"));
+}
+
+#[tokio::test]
 async fn cli_lists_assists_and_applies_assist_with_edits() {
     let ws = make_workspace();
     let path = ws.path("src/lib.rs");

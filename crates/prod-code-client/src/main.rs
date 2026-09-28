@@ -1501,7 +1501,7 @@ async fn main() -> Result<()> {
             path,
             line,
             context,
-        } => run_source(remote, &path, line, context).await,
+        } => run_source(remote, cwd_root.as_deref(), &path, line, context).await,
         Commands::Impact {
             base,
             depth,
@@ -3201,11 +3201,20 @@ async fn run_dead_code(
     Ok(())
 }
 
-/// Prints a source file that lives on the gateway host (toolchain sources, dependency caches,
-/// SDK headers), optionally a window around one line.
-async fn run_source(remote: SocketAddr, path: &str, line: Option<u32>, context: u32) -> Result<()> {
-    let path = prod_code_mcp::remote_fs::uri_to_path(path);
-    let (bytes, truncated) = prod_code_mcp::remote_fs::read_remote_file(remote, &path, 0).await?;
+/// Prints a source file from the workspace or gateway host, optionally a window around one line.
+async fn run_source(
+    remote: SocketAddr,
+    root: Option<&Path>,
+    path: &str,
+    line: Option<u32>,
+    context: u32,
+) -> Result<()> {
+    let cwd = env::current_dir().context("Failed to get current working directory")?;
+    let root = root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone()));
+    let (bytes, truncated) =
+        prod_code_mcp::remote_fs::read_source(remote, &root, path).await?;
     let text = String::from_utf8_lossy(&bytes);
     match line {
         Some(line) => print!(
