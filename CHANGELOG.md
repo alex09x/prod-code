@@ -11,6 +11,8 @@
 - Whole-repository coverage checks fail when an existing Rust source file has no measurement (#622).
 - Schema rename no longer edits arbitrary prose and converts the requested column to UTF-16
   before calling the language server (#623).
+- Go test and benchmark verification retain package compile failures and emit them as
+  diagnostics even when the compiler produces no test events (#624).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
