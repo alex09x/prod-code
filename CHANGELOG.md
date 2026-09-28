@@ -88,6 +88,9 @@
   now syncs and loads its origin first and names it as the seed for isolated copies.
 
 ### Fixed
+- Python proposals now route to basedpyright before the file or its parent directory exists (#559).
+  New-file routing stays inside the checkout and refuses symlink parents, `..` escapes and
+  directories named with a source suffix.
 - Rust impact analysis now requires a recognized source test attribute before a Rust caller is
   selected as runnable, even when the analyzer flags it as test context (#612). Helpers in test
   files and functions marked only with `#[cfg(test)]` no longer enter Cargo test filters. A
