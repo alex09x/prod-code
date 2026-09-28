@@ -398,6 +398,7 @@ async fn rust_impact_selects_the_attributed_test_and_executes_it_not_test_helper
         "callHierarchy/incomingCalls" => {
             match params.pointer("/item/_id").and_then(|id| id.as_str()) {
                 Some("callee") => serde_json::json!([{
+                    "isTest": true,
                     "from": {
                         "name": "test_helper",
                         "uri": test_uri,

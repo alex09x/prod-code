@@ -1631,9 +1631,9 @@ pub(crate) fn unreadable(method: &str, answer: &serde_json::Value) -> String {
 
 /// The name a test runner selects the function `name` declared at `line` of `file` by, when it
 /// is a test: flagged by the analyzer, named or placed like one, or marked as one in its source.
-/// Rust deliberately accepts only the flag or a source attribute: a helper in `tests/` is not a
-/// libtest entry. An unreadable or structurally unclassifiable Rust declaration is a gap, not
-/// evidence that no test reaches the change.
+/// Rust deliberately accepts only a source attribute: an analyzer flag can describe a helper in
+/// test context that is not itself a libtest entry. An unreadable or structurally unclassifiable
+/// Rust declaration is a gap, not evidence that no test reaches the change.
 fn test_name(
     root: &Path,
     language: &str,
@@ -1642,9 +1642,6 @@ fn test_name(
     line: u32,
     flagged: bool,
 ) -> std::result::Result<Option<String>, String> {
-    if flagged {
-        return Ok(Some(name.to_string()));
-    }
     if language == "rust" {
         let text = std::fs::read_to_string(root.join(file)).map_err(|e| {
             format!(
@@ -1652,6 +1649,9 @@ fn test_name(
             )
         })?;
         return rust_test_marker(&text, line, name).map(|marked| marked.map(|_| name.to_string()));
+    }
+    if flagged {
+        return Ok(Some(name.to_string()));
     }
     if looks_like_test(language, name, file) {
         return Ok(Some(name.to_string()));
@@ -1845,6 +1845,57 @@ pub fn suspects_for(reaches: &[Reach], name: &str) -> Vec<(Symbol, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_test_selection_requires_runnable_attributes_even_when_flagged() {
+        let root = tempfile::tempdir().unwrap();
+        let file = "tests/impact.rs";
+        std::fs::create_dir_all(root.path().join("tests")).unwrap();
+        std::fs::write(
+            root.path().join(file),
+            "#[test]\nfn unit() {}\n#[tokio::test]\nasync fn asynchronous() {}\n#[cfg(test)]\nfn cfg_helper() {}\nfn test_named_helper() {}\n",
+        )
+        .unwrap();
+        let classify = |name, line, flagged| {
+            test_name(root.path(), "rust", name, file, line, flagged).unwrap()
+        };
+
+        assert_eq!(classify("unit", 2, false).as_deref(), Some("unit"));
+        assert_eq!(classify("unit", 2, true).as_deref(), Some("unit"));
+        assert_eq!(
+            classify("asynchronous", 4, false).as_deref(),
+            Some("asynchronous")
+        );
+        assert_eq!(
+            classify("asynchronous", 4, true).as_deref(),
+            Some("asynchronous")
+        );
+        assert_eq!(classify("cfg_helper", 6, false), None);
+        assert_eq!(classify("cfg_helper", 6, true), None);
+        assert_eq!(classify("test_named_helper", 7, false), None);
+        assert_eq!(classify("test_named_helper", 7, true), None);
+
+        let tests: Vec<Symbol> = [
+            ("unit", 2, true),
+            ("asynchronous", 4, false),
+            ("cfg_helper", 6, true),
+            ("test_named_helper", 7, true),
+        ]
+        .into_iter()
+        .filter_map(|(name, line, flagged)| {
+            classify(name, line, flagged).map(|name| Symbol {
+                name,
+                file: file.into(),
+                line,
+                col: 1,
+            })
+        })
+        .collect();
+        let command = test_command("rust", &crate::verify::ProjectTools::default(), &tests)
+            .unwrap()
+            .join(" ");
+        assert!(!command.contains("helper"), "{command}");
+    }
 
     #[test]
     fn test_conventions_per_language() {
