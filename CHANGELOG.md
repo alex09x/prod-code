@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- The remote mac node build now preserves cargo's failure status through its log-filtering
+  pipeline (#629).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
