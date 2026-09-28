@@ -31,6 +31,10 @@
   exceed the selective threshold (#592).
 
 ### Added
+- In-flight cold engine loads are bounded by a configurable semaphore (`--max-concurrent-engine-loads`
+  and `PROD_CODE_MAX_CONCURRENT_ENGINE_LOADS`, defaulting to 8 on >=32 cores, 4 on >=8 cores, 2 otherwise)
+  so that parallel worktree connections do not exhaust CPU and disk I/O caches and can answer initial
+  queries within their response budget (#408).
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
   retire the owned worker. Controlled failures and a real gopls run verify replies before

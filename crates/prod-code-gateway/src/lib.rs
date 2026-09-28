@@ -141,6 +141,16 @@ pub struct ServerCli {
     #[arg(long, env = "PROD_CODE_ENGINE_RESERVE_MIB", default_value_t = 0)]
     pub engine_reserve_mib: u64,
 
+    /// Maximum concurrent cold engine loads permitted simultaneously (0: automatic based on CPU count).
+    /// Bounding concurrent cold engine loads prevents CPU and thread contention when multiple
+    /// worktrees initialize at once (#408).
+    #[arg(
+        long,
+        env = "PROD_CODE_MAX_CONCURRENT_ENGINE_LOADS",
+        default_value_t = 0
+    )]
+    pub max_concurrent_engine_loads: usize,
+
     /// Delete `<repo>--wt-*` workspace directories unused for this many days (0 disables).
     #[arg(long, env = "PROD_CODE_PRUNE_WORKTREE_DAYS", default_value_t = 7)]
     pub prune_worktree_days: u64,
@@ -1977,7 +1987,11 @@ async fn restore_after_lost_client(
     })
     .await
     .unwrap_or_default();
-    let unkept = restored.files.iter().filter(|f| f.content.is_none()).count();
+    let unkept = restored
+        .files
+        .iter()
+        .filter(|f| f.content.is_none())
+        .count();
     if unkept > 0 {
         tracing::warn!(
             workspace = %workspace.display(),
@@ -1986,7 +2000,11 @@ async fn restore_after_lost_client(
         );
     }
     refresh_engines(workspace_manager, workspace, &restored.files).await;
-    restored.files.iter().filter(|f| f.content.is_some()).count()
+    restored
+        .files
+        .iter()
+        .filter(|f| f.content.is_some())
+        .count()
 }
 
 /// Files that differ between `before` and the tree now: new/changed ones with content,
@@ -5760,9 +5778,10 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     );
 
     let mut state = ServerState::new(cli.storage);
-    state.workspace_manager = Arc::new(WorkspaceManager::with_admission(Arc::new(
-        admission::Admission::host(cli.engine_reserve_mib),
-    )));
+    state.workspace_manager = Arc::new(WorkspaceManager::with_admission_and_concurrency(
+        Arc::new(admission::Admission::host(cli.engine_reserve_mib)),
+        cli.max_concurrent_engine_loads,
+    ));
     state.engine_allowlist = cli
         .engines
         .iter()
@@ -5936,8 +5955,15 @@ mod tests {
         );
 
         drop(session_state);
-        shadow::ShadowRootOwner::acquire(&root)
-            .expect("the final state release must release ownership");
+        let mut acquired = shadow::ShadowRootOwner::acquire(&root);
+        for _ in 0..20 {
+            if acquired.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            acquired = shadow::ShadowRootOwner::acquire(&root);
+        }
+        acquired.expect("the final state release must release ownership");
     }
 
     #[tokio::test]
@@ -7071,7 +7097,11 @@ mod tests {
         );
         assert_eq!(
             workspace::stale_paths(&root),
-            ["src/a.rs".to_string(), "src/b.rs".to_string(), "src/big.rs".to_string()]
+            [
+                "src/a.rs".to_string(),
+                "src/b.rs".to_string(),
+                "src/big.rs".to_string()
+            ]
         );
 
         // The next sync answers with what it still lacks until the client has sent both.
