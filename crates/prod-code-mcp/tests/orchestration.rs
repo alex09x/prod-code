@@ -549,11 +549,10 @@ async fn schema_rename_keeps_unstructured_prose_as_evidence() {
     commit(&ws);
 
     let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
-    let done = prod_code_mcp::schema::rename(
-        remote, &root, "order_id", "trade_id", true, false, None,
-    )
-    .await
-    .expect("the rename runs");
+    let done =
+        prod_code_mcp::schema::rename(remote, &root, "order_id", "trade_id", true, false, None)
+            .await
+            .expect("the rename runs");
     assert!(done.applied);
     for (path, original) in prose {
         assert_eq!(
@@ -603,11 +602,10 @@ async fn schema_rename_uses_utf16_position_after_non_bmp_text() {
     }))
     .await;
 
-    let _done = prod_code_mcp::schema::rename(
-        remote, &root, "order_id", "trade_id", false, false, None,
-    )
-    .await
-    .expect("the rename runs");
+    let _done =
+        prod_code_mcp::schema::rename(remote, &root, "order_id", "trade_id", false, false, None)
+            .await
+            .expect("the rename runs");
     assert_eq!(*positions.lock().unwrap(), vec![(1, 26)]);
 }
 

@@ -86,10 +86,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Direct dependency on upstream `ra_ap_ide::AnalysisHost`, `ra_ap_project_model`, and `ra_ap_vfs`.
   - Zero build-time AST patching hacks: clean usage of public APIs and structured input mutation.
   - Persistent base database: Cargo metadata and crate graphs loaded and cached in server RAM once per workspace.
-- [x] **2.2. Single-Owner Direct-Edit Fast Path**
-  - Detect dedicated worktree sessions (single session per worktree path).
-  - Apply unsaved document edits (`didChange`) directly into base Salsa file inputs.
-  - Bypass overlay crate cones and global database invalidation locks for unshared workspaces.
+- [~] **2.2. Single-Owner Direct-Edit Fast Path**
+  - [x] Detect dedicated worktree sessions and benchmark divergent worktree query isolation.
+  - [ ] Apply unsaved document edits (`didOpen` / `didChange`) directly into base Salsa file inputs; today these remain session overlays.
+  - [ ] Bypass overlay crate cones and global database invalidation locks for unshared workspaces.
   - Target: Maintain sub-15s p95 query latency under 15 concurrent agent worktrees.
   - Measured 2026-09-26 with `divergent-bench --worktrees 16` (#406): 16 diverged worktrees of a 1,284-file Rust repository, 64 persistent workers, 1,280 hovers, on one 128-core node.
     - First run, twelve of the copies new: p50 8.4 ms, p95 614 ms, p99 27.7 s, and 32 first hovers past the bench's 30 s limit. The copies loaded all at once, the new ones in about 2 min 25 s (#408).
@@ -256,7 +256,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Embedded lightweight DNS / mDNS resolver mapping projects to designated server nodes (e.g. `shop.code.internal` -> `192.0.2.10:9400`, `billing.code.internal` -> `192.0.2.11:9400`).
   - Allows zero-config CLI and MCP usage (`prod-code -r auto ...` or `PROD_CODE_CLUSTER=10G`), eliminating hardcoded IP addresses.
   - Dynamic SRV record publication for active daemon instances across the LAN.
-- [x] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing** — 2026-09-20: every gateway heartbeats its peers every 5 s (`Gossip`: load average, CPU count, RSS, engines, loaded workspaces with session counts, known peers); a peer silent for 30 s counts as stale. Placement answers move an idle workspace (0 sessions) off a node above 1.0 load/CPU to a node below half that; active sessions are never moved. `prod-code cluster` prints the gossip view of the whole cluster from one node.
+- [~] **5.3. Cluster Capacity Gossip & Dynamic Workload Rebalancing** — 2026-09-20: every gateway heartbeats its peers every 5 s (`Gossip`: load average, CPU count, RSS, engines, loaded workspaces with session counts, known peers); a peer silent for 30 s counts as stale. Placement answers move an idle workspace (0 sessions) off a node above 1.0 load/CPU to a node below half that; active-session migration remains unimplemented. `prod-code cluster` prints the gossip view of the whole cluster from one node.
   - Background gossip heartbeat between daemon nodes reporting CPU load, available RAM, active engine count, and in-flight builds.
   - Automatic load shedding: when a node approaches memory limits (e.g. > 85% RSS) or runs heavy test suites, new projects are assigned to quieter nodes (e.g. a 128-core node with 250 GB RAM).
   - Status (audited 2026-09-26): heavy test suites show in the load average, which placement already used. Memory and disk followed on 2026-09-26 (#396): the status and gossip carry each host's available memory and free disk share. A node past 85% of its memory or under 10% of its disk gets no new workspace while a capable node with room is alive, and it gives up an idle workspace it holds. The client's own fallback choice follows the same rule.
@@ -287,14 +287,14 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 ### Engineering Milestones
 
-- [x] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — basic `ExecRequest` / streamed `ExecChunk` / `ExecExit` shipped 2026-09-19 (argv, env, timeout). `ExecExit.usage` added 2026-09-23 (#180): CPU user/sys time and peak RSS of the command and its children, read with `wait4`. Typed runs done 2026-09-23 (#214): `check`/`lint`/`test`/`benchmarks` take `--env` (MCP `env`); `--events` streams each diagnostic (cargo JSON) and test result (`cargo test`, `go test -json`) as a JSON line as it arrives, then the report; the report carries `usage`. vitest and pytest results come in the final report, not as events.
-  - Define `RemoteExecRequest`:
+- [~] **6.1. Polyglot Remote Execution Wire Protocol (`crates/prod-code-protocol`)** — the generic `ExecRequest` (argv, env, timeout), streamed `ExecChunk` and `ExecExit` with CPU/RSS usage are shipped. Language-aware commands and some structured event parsing live in the CLI/MCP layer (#180, #214); the wire schema still lacks the planned typed per-language request, event and result contracts.
+  - [ ] Define `RemoteExecRequest`:
     - `language`: `rust`, `go`, `cpp`, `typescript`, `python`, `swift`.
     - `command`: `check`, `test`, `lint`, `bench`, or custom runner command.
     - `args`: Command arguments and test filters (e.g. `["--lib", "test_order_manager"]` or `["-k", "test_auth"]`).
     - `env`: Explicit environment variables (e.g. `RUST_BACKTRACE=1`, `NODE_ENV=test`).
     - `format`: `raw` streaming or structured `json` (parsing Cargo `--message-format=json`, `go test -json`, `vitest --reporter=json`, `pytest --json-report`).
-  - Define `RemoteExecStream` and `RemoteExecResult`:
+  - [ ] Define `RemoteExecStream` and `RemoteExecResult`:
     - Real-time streaming of stdout/stderr chunks over 10G TCP with sub-millisecond latency.
     - Structured compiler and test diagnostic events (spans, error codes, failed assertion diffs, stack traces) streamed directly to client/agent.
     - Final execution summary: exit code, wall-clock duration, server CPU user/sys time, peak memory RSS.
@@ -522,11 +522,11 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 ### Engineering Milestones
 
-- [x] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)** — shipped 2026-09-20 as `prod-code impact [--base REF] [--depth N] [--run] [--json]` and MCP `code_impact`: the diff's line ranges are mapped onto document symbols to find the changed functions, the call hierarchy is walked upwards (default 4 levels) and callers that follow the language's test conventions become the affected tests, with the command that runs only them (one Cargo filter per selected Rust test, `go test -run '^(A|B)$'`, `pytest -k`, `vitest|jest -t`, `swift test --filter`). Changes outside functions (module-level code, manifests) are reported as needing the full suite. Verified on Go and Rust fixtures. Beyond naming conventions since 2026-09-23 (#201): a caller is a test by its attribute (`#[test]`, `#[tokio::test]`, `#[rstest]`, `@Test`), by the registration it sits in (gtest `TEST`/`TEST_F`/`TEST_P`, Catch2 `TEST_CASE`, selected by `ctest -R` under its registered name), or as a `test*` method of a `unittest.TestCase` (its file is passed to pytest, which would not collect it by name). `prod-code impact --ci` runs the selection, or the whole suite when the selection cannot be trusted (lines changed outside functions, no index), says which and why, writes a Markdown summary to `$GITHUB_STEP_SUMMARY`, and exits with the tests' status.
+- [~] **8.1. Selective Test Execution & Blast Radius (`code_impact_analysis`)** — shipped 2026-09-20 as `prod-code impact [--base REF] [--depth N] [--run] [--json]` and MCP `code_impact`: the diff's line ranges are mapped onto document symbols to find the changed functions, the call hierarchy is walked upwards (default 4 levels) and callers that follow the language's test conventions become the affected tests, with the command that runs only them (one Cargo filter per selected Rust test, `go test -run '^(A|B)$'`, `pytest -k`, `vitest|jest -t`, `swift test --filter`). Changes outside functions (module-level code, manifests) are reported as needing the full suite. Verified on Go and Rust fixtures. Beyond naming conventions since 2026-09-23 (#201): a caller is a test by its attribute (`#[test]`, `#[tokio::test]`, `#[rstest]`, `@Test`), by the registration it sits in (gtest `TEST`/`TEST_F`/`TEST_P`, Catch2 `TEST_CASE`, selected by `ctest -R` under its registered name), or as a `test*` method of a `unittest.TestCase` (its file is passed to pytest, which would not collect it by name). `prod-code impact --ci` runs the selection, or the whole suite when the selection cannot be trusted (lines changed outside functions, no index), says which and why, writes a Markdown summary to `$GITHUB_STEP_SUMMARY`, and exits with the tests' status.
   - Compare working tree uncommitted edits against base commit via call graph and AST dependency trees.
   - Calculate a bounded call-graph impact estimate, with conservative full-suite fallback for incomplete analysis. Exact blast-radius claims require more evidence; missing cases are tracked in #434.
   - Selectively run only the affected tests (e.g. runs 3 relevant tests in 200 ms instead of 800 tests in 5 minutes).
-  - Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
+  - [ ] Proactively warn agents if an updated signature left unadjusted call sites in sibling files before full compilation is attempted.
 
   - Impact selection fails closed on deleted/binary files, unreadable diff or analyzer replies, unattributed hunks and truncated call walks (#434). Directly edited tests are selected, all call-hierarchy items are traversed, and quoted Git paths are decoded.
   - Rust helpers in test files remain traversal nodes, not runnable tests (#560). Attribute
@@ -540,7 +540,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     `{ failing_test, panic_line, expression, runtime_values, suspect_recent_changes }`.
   - Enables agents to diagnose and fix regressions in a single turn without reading extraneous files or burning reasoning tokens.
 
-- [x] **8.3. External Dependency & Vendor Source Navigation (`code_definition_external`)** — shipped 2026-09-20: a definition outside the checkout (Rust std via rust-src, cargo registry/git caches, GOROOT and the Go module cache, `/usr/include`, Homebrew, Xcode SDKs, npm/bun installs, uv pythons) is read from the gateway host through `ReadFileRequest`; `prod-code def` prints the lines around it, `prod-code source <path> [--line N --context K]` shows any such file, MCP `code_definition` embeds the snippet and `code_source` reads the file. The gateway serves only those roots plus its workspace copies. Verified: clangd → `/usr/include/time.h`, rust-analyzer → `core/src/iter/traits/iterator.rs`, gopls → `fmt/print.go`. Hover on external symbols already worked. Nothing is open.
+- [~] **8.3. External Dependency & Vendor Source Navigation (`code_definition_external`)** — shipped 2026-09-20: a definition outside the checkout (Rust std via rust-src, cargo registry/git caches, GOROOT and the Go module cache, `/usr/include`, Homebrew, Xcode SDKs, npm/bun installs, uv pythons) is read from the gateway host through `ReadFileRequest`; `prod-code def` prints the lines around it, `prod-code source <path> [--line N --context K]` shows any such file, MCP `code_definition` embeds the snippet and `code_source` reads the file. The gateway serves only those roots plus its workspace copies. Verified: clangd → `/usr/include/time.h`, rust-analyzer → `core/src/iter/traits/iterator.rs`, gopls → `fmt/print.go`. Live examples cover clangd, rust-analyzer and gopls; the full advertised SDK and language toolchain matrix has not been exercised.
   - Transparent jump-to-definition into third-party libraries (`~/.cargo/registry`, `node_modules`, `GOPATH/pkg/mod`, Python virtualenv wheels, system C++ headers).
   - Returns exact type signatures, trait definitions, and docstrings directly from the server's pre-warmed dependency cache into agent context.
   - Prevents agents from hallucinating method names or argument orders of external crates and packages.
@@ -561,7 +561,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 - [~] **8.6. Dead Code & Orphan Pruning (`code_prune_orphans`)** — scan shipped 2026-09-20: `prod-code dead-code [--include-exported] [--max-files N] [--json]` and MCP `code_dead_code` check every function, method and type of the checkout for references through the analyzer over one persistent session (522 symbols of prod-code in 1.5 s). Tests (test modules via symbol containers, test files by convention) and entry points are skipped; exported/public symbols are counted separately; trait-impl methods (Rust) and methods in interface languages go to a "may be reached through a trait / interface" bucket. Known false positives: items referenced only from attributes (`#[serde(with = ...)]`). Automatic pruning shipped 2026-09-23 (#162) as `code_prune_orphans` / `prod-code prune [--apply]`. Every item on the scan's `dead` list is removed with the analyzer's safe delete. Exported symbols and trait-reachable methods stay. Each answer is reduced to the lines it changes, and the answers are merged into one edit. A deletion that overlaps another waits for the next run. The whole result is type-checked in one overlay before anything is written. What the removals orphan is found by the next run: the scratch crate needed two runs to remove `leftover`, `Unused` and then `helper`, and a third found nothing.
   - Remaining: whole-program graph reachability from entry points (`main`, `lib`, public APIs, route handlers); the current scan counts references. Query failures must not be counted as no references (#435).
   - Detects unreachable functions, dead types, and orphaned imports left behind by large refactors.
-  - Emits an atomic single-commit cleanup patch.
+  - Applies a validated `WorkspaceEdit` to the working tree; it does not create a Git commit or commit patch.
 
 
   - Failed or malformed symbol/reference replies are recorded as unverified (#435). They make the scan incomplete and are kept by pruning; only a successful reference answer can establish a candidate.

@@ -44,8 +44,9 @@ impl Decoder for ProdCodeCodec {
         }
 
         if src.len() < 4 + frame_len {
-            // Need more data
-            src.reserve(4 + frame_len - src.len());
+            // Need more data. Do not reserve the declared frame size here: a peer can advertise
+            // a valid maximum-sized frame and then never send its body. The surrounding framed
+            // reader will grow its buffer incrementally as bytes actually arrive.
             return Ok(None);
         }
 
@@ -125,6 +126,18 @@ mod tests {
             .expect("should decode message");
         assert_eq!(decoded, original);
         assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_incomplete_maximum_sized_frame_does_not_reserve_payload() {
+        let mut codec = ProdCodeCodec::new();
+        let mut buf = BytesMut::with_capacity(8);
+        buf.put_u32(MAX_FRAME_SIZE as u32);
+        let capacity_before_decode = buf.capacity();
+
+        assert_eq!(codec.decode(&mut buf).unwrap(), None);
+        assert_eq!(buf.capacity(), capacity_before_decode);
+        assert_eq!(buf.len(), 4);
     }
 
     #[test]
