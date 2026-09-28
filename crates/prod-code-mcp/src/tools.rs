@@ -1,9 +1,9 @@
 use crate::protocol::{McpTool, McpToolCallResult};
 use crate::report::ReportRequest;
-use crate::sync::scan_workspace_files;
+use crate::sync::{push_workspace_sync, workspace_identity};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{ProdCodeCodec, SyncRequest, WireMessage};
+use prod_code_protocol::{ProdCodeCodec, WireMessage};
 use std::net::SocketAddr;
 use std::path::Path;
 use tokio_util::codec::Framed;
@@ -1454,46 +1454,28 @@ async fn handle_sync(
     args: serde_json::Value,
 ) -> Result<McpToolCallResult> {
     let subpath = args.get("path").and_then(|v| v.as_str()).map(Path::new);
-    let deltas = scan_workspace_files(workspace_root, subpath)?;
-    let file_count = deltas.len();
+    let identity = workspace_identity(workspace_root);
     let stream = prod_code_protocol::transport::connect(remote)
         .await
         .with_context(|| format!("Failed to connect to gateway at {remote}"))?;
     let mut framed = Framed::new(stream, ProdCodeCodec::new());
-    let req = SyncRequest {
-        client_workspace_root: workspace_root.to_string_lossy().to_string(),
-        files: deltas,
-        clean_others: false,
-        base_workspace_name: None,
-    };
-    framed.send(WireMessage::SyncRequest(req)).await?;
-    if let Some(msg_res) = framed.next().await {
-        match msg_res? {
-            WireMessage::SyncResponse(resp) => {
-                let kb = (resp.bytes_transferred as f64) / 1024.0;
-                let info = format!(
-                    "⚡ Fast-Sync Completed in {}ms\n\
-                             • Files scanned: {file_count}\n\
-                             • Files updated: {}\n\
-                             • Files deleted: {}\n\
-                             • Data transferred: {kb:.1} KB\n\
-                             • Remote workspace: {}",
-                    resp.duration_ms,
-                    resp.files_updated,
-                    resp.files_deleted,
-                    resp.server_workspace_root
-                );
-                Ok(McpToolCallResult::text(info))
-            }
-            other => Ok(McpToolCallResult::error(format!(
-                "Unexpected response: {other:?}"
-            ))),
-        }
+    let outcome = push_workspace_sync(&mut framed, workspace_root, &identity, subpath).await?;
+    let kb = (outcome.bytes_transferred as f64) / 1024.0;
+    let remote_root = if outcome.server_workspace_root.is_empty() {
+        "(not reported)"
     } else {
-        Ok(McpToolCallResult::error(
-            "Gateway closed connection without sync response",
-        ))
-    }
+        &outcome.server_workspace_root
+    };
+    let info = format!(
+        "⚡ Fast-Sync Completed\n\
+                 • Files planned: {}\n\
+                 • Files updated: {}\n\
+                 • Files deleted: {}\n\
+                 • Data transferred: {kb:.1} KB\n\
+                 • Remote workspace: {remote_root}",
+        outcome.planned, outcome.files_updated, outcome.files_deleted
+    );
+    Ok(McpToolCallResult::text(info))
 }
 
 async fn handle_status(remote: SocketAddr) -> Result<McpToolCallResult> {

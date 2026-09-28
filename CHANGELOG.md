@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- MCP code_sync now uses canonical worktree identity and the manifest-based synchronization
+  flow without reading the same checkout twice (#625).
+
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
   probe IDs cannot swallow an ordinary JSON-RPC reply; three consecutive idle timeouts
