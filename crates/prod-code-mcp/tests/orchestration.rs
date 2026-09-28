@@ -533,6 +533,85 @@ async fn openapi_and_graphql_rewrite_the_field_and_list_the_prose() {
 /// written together. When the second cannot be written, the first is put back, and a
 /// repository the field is not in is named.
 #[tokio::test]
+async fn schema_rename_keeps_unstructured_prose_as_evidence() {
+    let ws = Workspace::empty();
+    let root = ws.root();
+    let prose = [
+        ("README.md", "The order_id is documented here.\n"),
+        ("deploy.sh", "echo order_id\n"),
+        ("settings.toml", "note = 'order_id'\n"),
+        ("service.env", "NOTE=order_id\n"),
+        ("notes.txt", "The order_id is plain prose.\n"),
+    ];
+    for (path, text) in prose {
+        write(&ws, path, text);
+    }
+    commit(&ws);
+
+    let remote = scripted_gateway(Arc::new(|_, _| serde_json::Value::Null)).await;
+    let done = prod_code_mcp::schema::rename(
+        remote, &root, "order_id", "trade_id", true, false, None,
+    )
+    .await
+    .expect("the rename runs");
+    assert!(done.applied);
+    for (path, original) in prose {
+        assert_eq!(
+            std::fs::read_to_string(root.join(path)).unwrap(),
+            original,
+            "{path} is evidence and stays unchanged"
+        );
+        assert!(
+            done.left.iter().any(|entry| entry.starts_with(path)),
+            "{path} must remain in the evidence report: {:?}",
+            done.left
+        );
+    }
+}
+
+#[tokio::test]
+async fn schema_rename_uses_utf16_position_after_non_bmp_text() {
+    let ws = Workspace::empty();
+    let root = ws.root();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"rename_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    write(
+        &ws,
+        "src/lib.rs",
+        "fn f() {\n    let label = \"😀\"; let order_id = 1;\n}\n",
+    );
+    commit(&ws);
+
+    let positions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let observed = Arc::clone(&positions);
+    let remote = scripted_gateway(Arc::new(move |method, params| {
+        if method == "textDocument/rename" {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(u64::MAX);
+            let character = params
+                .pointer("/position/character")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(u64::MAX);
+            observed.lock().unwrap().push((line, character));
+        }
+        serde_json::Value::Null
+    }))
+    .await;
+
+    let _done = prod_code_mcp::schema::rename(
+        remote, &root, "order_id", "trade_id", false, false, None,
+    )
+    .await
+    .expect("the rename runs");
+    assert_eq!(*positions.lock().unwrap(), vec![(1, 26)]);
+}
+
+#[tokio::test]
 async fn a_rename_across_repositories_is_written_in_all_or_none() {
     let backend = workspace();
     let frontend = workspace();
