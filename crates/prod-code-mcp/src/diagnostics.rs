@@ -894,11 +894,18 @@ pub async fn validate_text(
     // The file as it is on disk, read on the validation engine: it has no overlay for this
     // session, and it is the engine the gateway warms. The main engine is cold for the file's
     // diagnostics after a restart, and asking it cost 21 s of a 24 s validation (#235).
-    let before = {
+    let abs = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        root.join(file)
+    };
+    let before = if abs.is_file() {
         let mut checkout = LspSession::open_for_validation(remote, root, Some(file)).await?;
         let before = on_disk(&mut checkout, root, file, &shown).await;
         checkout.close().await;
         before
+    } else {
+        None
     };
     let mut session = LspSession::open_for_validation(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
