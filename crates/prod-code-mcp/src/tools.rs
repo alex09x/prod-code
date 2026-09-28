@@ -4321,6 +4321,7 @@ fn compile_diagnostics(language: &str, output: &str) -> Vec<crate::verify::Diagn
         "go" => crate::verify::parse_go_text(output),
         "typescript" => crate::verify::parse_tsc_text(output),
         "python" => crate::verify::parse_pyright_json(output),
+        "swift" => crate::verify::parse_swift_text(output),
         _ => crate::verify::parse_colon_diagnostics(output),
     }
 }

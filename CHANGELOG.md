@@ -24,6 +24,8 @@
   pipeline (#629).
 - Gateway execution state restoration now reports restored kept files in stale paths so client
   watermarks re-sync them (#646).
+- Swift verification and compile checks now report structured, actionable diagnostics for
+  SwiftPM dependency fetch failures and GitShellError (#645).
 
 ### Added
 - Fallback language-server workers also probe initialized idle dispatch (#600). Private
