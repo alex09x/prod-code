@@ -20,7 +20,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 REMOTE_BUILD=$(cat <<'RB'
-set -e
+set -euo pipefail
 export PATH=$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH
 cd ~/prod-code 2>/dev/null || cd ~/Documents/workspace/prod-code
 if [ "$PROFILE" = release ]; then
