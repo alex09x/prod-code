@@ -63,11 +63,18 @@ async fn scripted_gateway() -> SocketAddr {
     let lib_has_covers = Arc::new(AtomicBool::new(true));
     let covers_flag = Arc::clone(&lib_has_covers);
     ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
-        "textDocument/didChange" => {
+        "textDocument/didOpen" | "textDocument/didChange" => {
             let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
+            let text = if method == "textDocument/didOpen" {
+                params["textDocument"]["text"].as_str()
+            } else {
+                params["contentChanges"]
+                    .as_array()
+                    .and_then(|changes| changes.first())
+                    .and_then(|change| change["text"].as_str())
+            };
             if uri.contains("lib.rs")
-                && let Some(changes) = params["contentChanges"].as_array()
-                && let Some(text) = changes.first().and_then(|c| c["text"].as_str())
+                && let Some(text) = text
             {
                 covers_flag.store(text.contains("covers"), Ordering::SeqCst);
             }
@@ -372,8 +379,13 @@ async fn relocated_definition_is_not_a_stale_caller_but_broken_use_still_is() {
     let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| {
         let uri = params["textDocument"]["uri"].as_str().unwrap_or("");
         match method {
-            "textDocument/didChange" if uri.ends_with("/src/lib.rs") => {
-                state.store(params["contentChanges"][0]["text"].as_str().unwrap_or("").contains("fn covers"), Ordering::SeqCst);
+            "textDocument/didOpen" | "textDocument/didChange" if uri.ends_with("/src/lib.rs") => {
+                let text = if method == "textDocument/didOpen" {
+                    params["textDocument"]["text"].as_str()
+                } else {
+                    params["contentChanges"][0]["text"].as_str()
+                };
+                state.store(text.unwrap_or("").contains("fn covers"), Ordering::SeqCst);
                 Value::Null
             }
             "textDocument/documentSymbol" if uri.ends_with("/src/lib.rs") && state.load(Ordering::SeqCst) => json!([{"name":"covers","kind":12}]),
