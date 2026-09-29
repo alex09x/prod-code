@@ -102,6 +102,8 @@ pub struct SliceGap {
 pub struct SliceReport {
     pub seed: String,
     pub items: Vec<SliceItem>,
+    /// Optional intra-function data-flow and control-dependency slice of the seed.
+    pub dataflow_slice: Option<crate::dataflow::DataFlowSlice>,
     /// Bytes of the files the slice draws from.
     pub source_bytes: usize,
     /// Names that resolved outside the workspace (std, crates.io) and were not followed.
@@ -124,6 +126,28 @@ pub struct SliceReport {
     pub seed_over_budget: bool,
     /// Queued items left out because the budget ran out; their dependencies were not looked up.
     pub truncated: usize,
+}
+
+/// Configuration options for program slicing.
+#[derive(Debug, Clone)]
+pub struct SliceOptions {
+    pub depth: u32,
+    pub max_bytes: usize,
+    pub dataflow: bool,
+    pub target_line: Option<u32>,
+    pub target_var: Option<String>,
+}
+
+impl Default for SliceOptions {
+    fn default() -> Self {
+        Self {
+            depth: DEFAULT_DEPTH,
+            max_bytes: DEFAULT_MAX_BYTES,
+            dataflow: false,
+            target_line: None,
+            target_var: None,
+        }
+    }
 }
 
 impl SliceReport {
@@ -240,6 +264,11 @@ impl SliceReport {
                 out.push_str(&format!("  - and {} more\n", self.gaps.len() - GAPS_SHOWN));
             }
         }
+        if let Some(ref df) = self.dataflow_slice {
+            out.push('\n');
+            out.push_str(&df.formatted_slice);
+            out.push('\n');
+        }
         let mut by_file: BTreeMap<&str, Vec<&SliceItem>> = BTreeMap::new();
         for item in &self.items {
             by_file.entry(item.file.as_str()).or_default().push(item);
@@ -249,6 +278,7 @@ impl SliceReport {
             out.push_str(&format!("\n=== {file}\n"));
             for item in items {
                 let why = match (&item.because, item.depth) {
+                    (_, 0) if self.dataflow_slice.is_some() => " (the seed, data-flow sliced)".to_string(),
                     (_, 0) => " (the seed)".to_string(),
                     (Some(from), d) => format!(" (depth {d}, used by {from})"),
                     (None, d) => format!(" (depth {d})"),
@@ -862,6 +892,32 @@ pub async fn slice(
     depth: u32,
     max_bytes: usize,
 ) -> Result<SliceReport> {
+    slice_with_options(
+        remote,
+        root,
+        seed_file,
+        seed_line,
+        seed_col,
+        SliceOptions {
+            depth,
+            max_bytes,
+            dataflow: false,
+            target_line: None,
+            target_var: None,
+        },
+    )
+    .await
+}
+
+/// Builds the slice with customized slicing options (including intra-function data-flow).
+pub async fn slice_with_options(
+    remote: SocketAddr,
+    root: &Path,
+    seed_file: &Path,
+    seed_line: u32,
+    seed_col: u32,
+    options: SliceOptions,
+) -> Result<SliceReport> {
     let mut session = LspSession::open(remote, root, Some(seed_file)).await?;
     let result = slice_with(
         &mut session,
@@ -869,8 +925,7 @@ pub async fn slice(
         seed_file,
         seed_line,
         seed_col,
-        depth,
-        max_bytes,
+        options,
     )
     .await;
     session.close().await;
@@ -886,8 +941,7 @@ async fn slice_with(
     seed_file: &Path,
     seed_line: u32,
     seed_col: u32,
-    depth: u32,
-    max_bytes: usize,
+    options: SliceOptions,
 ) -> Result<SliceReport> {
     let (Some(line), Some(character)) = (seed_line.checked_sub(1), seed_col.checked_sub(1)) else {
         anyhow::bail!(
@@ -920,8 +974,8 @@ async fn slice_with(
 
     let mut report = SliceReport {
         seed: seed_decl.name.clone(),
-        depth_limit: depth,
-        max_bytes,
+        depth_limit: options.depth,
+        max_bytes: options.max_bytes,
         ..Default::default()
     };
     // Files that could not be read or listed, with why, so each is tried once.
@@ -948,7 +1002,31 @@ async fn slice_with(
                 )
             })?
         };
-        if bytes.saturating_add(text.len()) > max_bytes {
+        let rel = relative(root, &file);
+
+        let (display_text, names_source_text) = if options.dataflow && item_depth == 0 {
+            let target_line = options.target_line.or(if seed_line >= decl.start_line() && seed_line <= decl.end_line() {
+                Some(seed_line)
+            } else {
+                None
+            });
+            let df = crate::dataflow::slice_intra_function(
+                &facts[&file].text,
+                decl.start_line(),
+                decl.end_line(),
+                &decl.name,
+                &rel,
+                target_line,
+                options.target_var.as_deref(),
+            );
+            let formatted = df.formatted_slice.clone();
+            report.dataflow_slice = Some(df);
+            (formatted.clone(), formatted)
+        } else {
+            (text.clone(), text.clone())
+        };
+
+        if bytes.saturating_add(display_text.len()) > options.max_bytes {
             if report.items.is_empty() {
                 report.seed_over_budget = true;
             } else {
@@ -956,8 +1034,7 @@ async fn slice_with(
                 break;
             }
         }
-        bytes = bytes.saturating_add(text.len());
-        let rel = relative(root, &file);
+        bytes = bytes.saturating_add(display_text.len());
         report.items.push(SliceItem {
             file: rel.clone(),
             name: decl.name.clone(),
@@ -966,14 +1043,14 @@ async fn slice_with(
             end_line: decl.end_line(),
             depth: item_depth,
             because,
-            text: text.clone(),
+            text: display_text,
         });
-        if item_depth >= depth {
+        if item_depth >= options.depth {
             report.unexpanded += 1;
             continue;
         }
 
-        let names = candidate_names(&text, decl.start_line());
+        let names = candidate_names(&names_source_text, decl.start_line());
         if names.len() > MAX_NAMES_PER_ITEM {
             report.gaps.push(SliceGap {
                 kind: GapKind::NameLimit,
@@ -1600,4 +1677,33 @@ mod tests {
             assert!(text.contains(label), "{label}: {text}");
         }
     }
+
+    #[test]
+    fn test_render_with_dataflow_slice() {
+        let code = r#"fn compute(x: i32) -> i32 {
+    let a = x + 1;
+    let unused = 99;
+    let b = a * 2;
+    b
+}"#;
+        let df = crate::dataflow::slice_intra_function(code, 1, 6, "compute", "src/lib.rs", Some(5), Some("b"));
+        let report = SliceReport {
+            seed: "compute".into(),
+            dataflow_slice: Some(df),
+            items: vec![
+                item("compute", 0, "fn compute(x: i32) -> i32 { ... }"),
+                item("DepType", 1, "struct DepType;"),
+            ],
+            source_bytes: 200,
+            ..Default::default()
+        };
+        let text = report.render();
+        assert!(text.contains("INTRA-FUNCTION DATA-FLOW SLICE: `compute`"));
+        assert!(text.contains("Completeness: COMPLETE"));
+        assert!(text.contains("let a = x + 1;"));
+        assert!(text.contains("let b = a * 2;"));
+        assert!(!text.contains("unused"));
+        assert!(text.contains("(the seed, data-flow sliced)"));
+    }
 }
+

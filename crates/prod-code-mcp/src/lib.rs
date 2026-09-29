@@ -3,6 +3,7 @@
 pub mod call_tree;
 pub mod cluster;
 pub mod compile_check;
+pub mod dataflow;
 pub mod dead_code;
 pub mod diagnostics;
 pub mod dossier;

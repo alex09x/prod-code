@@ -1109,6 +1109,15 @@ enum Commands {
         /// Stop once the slice reaches this many bytes.
         #[arg(long, default_value_t = 24576)]
         max_bytes: usize,
+        /// Perform intra-function backward data-flow and control-dependency slicing inside function body.
+        #[arg(long, default_value_t = false)]
+        dataflow: bool,
+        /// Target line for intra-function data-flow slicing criterion (1-based line).
+        #[arg(long)]
+        target_line: Option<u32>,
+        /// Target variable name for intra-function data-flow slicing criterion.
+        #[arg(long)]
+        target_var: Option<String>,
     },
     /// Try several hypotheses (sets of proposed file contents) against a command, each in a
     /// private shadow of the server workspace; print every outcome and the winner's diff.
@@ -2242,7 +2251,19 @@ async fn main() -> Result<()> {
             character,
             depth,
             max_bytes,
-        } => run_slice(remote, target, line, character, depth, max_bytes).await,
+            dataflow,
+            target_line,
+            target_var,
+        } => {
+            let options = prod_code_mcp::slice::SliceOptions {
+                depth,
+                max_bytes,
+                dataflow,
+                target_line,
+                target_var,
+            };
+            run_slice(remote, target, line, character, options).await
+        }
         Commands::ShadowRun {
             spec,
             timeout_secs,
@@ -4624,8 +4645,7 @@ async fn run_slice(
     target: String,
     line: Option<u32>,
     character: u32,
-    depth: u32,
-    max_bytes: usize,
+    options: prod_code_mcp::slice::SliceOptions,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
@@ -4656,7 +4676,7 @@ async fn run_slice(
         }
     };
     let report =
-        prod_code_mcp::slice::slice(remote, &root, &file, line, col, depth, max_bytes).await?;
+        prod_code_mcp::slice::slice_with_options(remote, &root, &file, line, col, options).await?;
     println!("{}", report.render());
     Ok(())
 }
