@@ -445,12 +445,15 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
       - Flips conditional branches to early returns (`guard clauses`), reducing nested block indentation depth from 5+ levels to 1.
     - [x] `refactor.replace_conditional_with_polymorphism(path, range)` — shipped 2026-09-29 (#696) as `code_replace_conditional_with_polymorphism` / `prod-code replace-conditional <file> --line N --col C --base NAME --method NAME [--param P] [--return TYPE] [--target-var VAR]`: transforms `switch`, `match`, and `if-else` cascades on type tags into polymorphic class/struct/trait dispatch across Python (base class & subclasses), TypeScript/JavaScript (interface & implementing classes), C++ (abstract base class & derived classes), Swift (protocol & conforming structs), and Rust (trait & implementors). Features transactional in-memory overlay pre-validation and compiler verification (`verify: compile`).
       - Replaces large `match`/`switch`/`if-else` cascades on enum/type tags with polymorphic trait/interface method dispatch.
-    - [~] `refactor.loop_to_iterator(path, range)` — the analyzer offers `convert_for_loop_with_for_each` and `convert_for_loop_to_while_let` at a loop. Both keep the mutable accumulator. Accumulator loops shipped 2026-09-23 (#164) as `code_loop_to_iterator` / `prod-code loop-to-iterator <file> <line> <col>`, in three shapes, each optionally under one `if`:
-      - a sum from zero, into `.map(..).sum()`;
-      - a count into a `usize`, into `.filter(..).count()`;
-      - a `Vec` built with `push`, into `.collect()`.
-
-      A name that holds a reference is iterated with `.iter()`, as the analyzer's hover shows. `mut` stays only when the analyzer asks for it. `break`, `continue`, `return`, `?`, `.await`, a second use of the accumulator and a non-identity start are refused. The result is type-checked before writing.
+    - [x] `refactor.loop_to_iterator(path, range)` — accumulator loops shipped 2026-09-23 (#164) as `code_loop_to_iterator` / `prod-code loop-to-iterator <file> <line> <col>` for Rust in three shapes (sum, count into `usize`, `Vec` with `push`). Polyglot expansion and Rust general loop conversion shipped 2026-09-29 (#716) as `code_loop_to_iterator` and CLI `prod-code loop-to-iterator`:
+      - Rust: general loop conversion adding Find (`.find(..)` / `.find_map(..)`), Any (`.any(..)`), and All (`.all(..)`) with single-break pattern recognition while refusing unhandled breaks.
+      - TypeScript / JavaScript: transforms `for...of` loops into `.reduce(...)` (sum), `.filter(...).length` (count), `.filter(...).map(...)` (collect), `.find(...)` (find), `.some(...)` (any), and `.every(...)` (all).
+      - Python: transforms `for ... in ...` loops into `sum(...)` (sum), `sum(1 for ... if ...)` (count), `[... for ...]` (collect), `next((... for ... if ...), None)` (find), `any(...)` (any), and `all(...)` (all).
+      - Swift: transforms `for ... in ...` loops into `.reduce(...)` (sum), `.filter { ... }.count` (count), `.filter { ... }.map { ... }` (collect), `.first(where: ...)` (find), `.contains(where: ...)` (any), and `.allSatisfy { ... }` (all).
+      - C++: transforms range-for loops into `std::accumulate` (sum), `std::count_if` (count), `std::any_of` (any), and `std::all_of` (all).
+      - Go: transforms `for ... := range` loops into pure functional immediately invoked closures (IIFE) isolating mutable accumulation into immutable results.
+      - Addressable by either `symbol` (function or accumulator name) or `line`/`character` coordinates.
+      - Validated via analyzer overlays before write with optional remote compiler check.
       - Converts imperative `for`/`while` loops with mutable accumulators into idiomatic functional iterator chains (`.map().filter().fold()`).
     - [x] `refactor.structural_replace(path_pattern, search_template, replace_template)` — shipped 2026-09-21 as `code_codemod` / `prod-code codemod` (roadmap 8.7), on rust-analyzer's SSR. Listed here as well because the catalog was written before it existed.
       - Structural Search and Replace (SSR) engine: AST pattern templates with typed meta-variables (e.g. `$expr$.then($cb$)` -> `await $expr$`), transforming code across thousands of files irrespective of whitespace or variable naming.

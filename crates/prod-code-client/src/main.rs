@@ -739,14 +739,17 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Turn a loop that only builds up an accumulator into a sum / count / collect chain.
+    /// Turn a loop that only builds up an accumulator into an iterator chain or functional expression across polyglot languages.
     LoopToIterator {
         /// The file that holds the loop.
         file: PathBuf,
         /// 1-based line of the `for`.
-        line: u32,
+        line: Option<u32>,
         /// 1-based column on that line.
-        col: u32,
+        col: Option<u32>,
+        /// Symbol or function/accumulator name identifying the loop.
+        #[arg(long)]
+        symbol: Option<String>,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -2258,22 +2261,26 @@ async fn main() -> Result<()> {
             file,
             line,
             col,
+            symbol,
             apply,
             force,
         } => {
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                remote,
-                "code_loop_to_iterator",
-                serde_json::json!({
-                    "path": abs.to_string_lossy(),
-                    "line": line,
-                    "character": col,
-                    "apply": apply,
-                    "force": force,
-                }),
-            )
-            .await
+            let mut payload = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(l) = line {
+                payload["line"] = serde_json::json!(l);
+            }
+            if let Some(c) = col {
+                payload["character"] = serde_json::json!(c);
+            }
+            if let Some(s) = symbol {
+                payload["symbol"] = serde_json::json!(s);
+            }
+            run_tool(remote, "code_loop_to_iterator", payload).await
         }
         Commands::ExtractFunction {
             file,
