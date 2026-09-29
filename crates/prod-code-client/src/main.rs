@@ -569,7 +569,7 @@ enum Commands {
         #[arg(long)]
         param: String,
         /// The trait bound, such as `AsRef<[u32]>`.
-        #[arg(long)]
+        #[arg(long, default_value = "")]
         bound: String,
         /// The new type parameter's name.
         #[arg(long = "as", default_value = "T")]
@@ -580,6 +580,12 @@ enum Commands {
         /// 1-based column of the function's name, with `--line`.
         #[arg(long, default_value_t = 1)]
         character: u32,
+        /// Optional explicit file path.
+        #[arg(long)]
+        path: Option<String>,
+        /// Optional explicit function name.
+        #[arg(long)]
+        function: Option<String>,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -2042,6 +2048,8 @@ async fn main() -> Result<()> {
             type_param,
             line,
             character,
+            path,
+            function,
             apply,
             force,
         } => {
@@ -2052,13 +2060,26 @@ async fn main() -> Result<()> {
                 "apply": apply,
                 "force": force,
             });
-            match line {
-                Some(line) => {
-                    args["path"] = serde_json::Value::String(symbol);
-                    args["line"] = serde_json::Value::from(line);
-                    args["character"] = serde_json::Value::from(character);
+            if let Some(p) = path {
+                args["path"] = serde_json::Value::String(p);
+                args["symbol"] = serde_json::Value::String(function.unwrap_or(symbol));
+            } else if let Some(line) = line {
+                args["path"] = serde_json::Value::String(symbol);
+                args["line"] = serde_json::Value::from(line);
+                args["character"] = serde_json::Value::from(character);
+                if let Some(f) = function {
+                    args["symbol"] = serde_json::Value::String(f);
                 }
-                None => args["symbol"] = serde_json::Value::String(symbol),
+            } else {
+                let p = Path::new(&symbol);
+                if p.extension().is_some() {
+                    args["path"] = serde_json::Value::String(symbol);
+                    if let Some(f) = function {
+                        args["symbol"] = serde_json::Value::String(f);
+                    }
+                } else {
+                    args["symbol"] = serde_json::Value::String(symbol);
+                }
             }
             run_tool(remote, "code_generify", args).await
         }
