@@ -339,15 +339,18 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_make_static".to_string(),
-            description: "Turn a method that never uses `self` into an associated function, with every call site. Give the method's name position (or `symbol`). The receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)` and `Type::method(value, args)` loses its first argument. A receiver that does something when it is evaluated — a call, `?`, `.await`, a macro or an index, as in `load()?.method()` — cannot be dropped silently, so that call site is reported and nothing is written while one remains, unless `force`. A method whose body mentions `self` is refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. An associated function (no `self`) moves with `to_type` instead: into that type's `impl`, with `Self` spelled out and every `Old::f` path, called or used as a value, naming the new type. Rust only."
+            description: "Turn a method that never accesses instance state into a static / associated function, with every call site. Give the method's name position, or `symbol` (`Type::method`, `Type.method`), or `path` with `method` and optional `class_name`. In Rust, the receiver (`&self`, `&mut self`, `self`) leaves the declaration; `value.method(args)` becomes `Type::method(args)`. In TypeScript/JavaScript, `static` is added; in Python, `@staticmethod` is added and `self` removed; in C++, `static` is added and trailing `const` removed; in Swift, `func` becomes `static func`; in Go, the receiver clause is removed. A receiver that does something when it is evaluated cannot be dropped silently without `force`. Rust, TypeScript, JavaScript, Python, C++, Swift, Go."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File that declares the method" },
+                    "symbol": { "type": "string", "description": "The method by name (`Type::method`, `Type.method`), or a file with line" },
+                    "method": { "type": "string", "description": "Name of the method to make static" },
+                    "class_name": { "type": "string", "description": "Optional class or struct name declaring the method" },
                     "line": { "type": "integer", "description": "1-based line of the method's name" },
                     "character": { "type": "integer", "description": "1-based column of the method's name" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when a receiver with effects would be dropped or the result does not compile" }
                 }
@@ -355,15 +358,18 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_convert_to_method".to_string(),
-            description: "Turn an associated function into a method, with every call site: the other direction of `code_make_static`. Give the function's name position (or `symbol`). Its first parameter, whose type must be the `impl`'s own type (`T`, `&T`, `&mut T` or `Self`), becomes the receiver (`self`, `&self`, `&mut self`); the parameter's uses in the body become `self`, as the analyzer resolves them; and `Type::f(first, rest)` becomes `first.f(rest)`, with a leading `&` or `&mut` dropped because method syntax borrows by itself. Nothing is dropped or reordered — the receiver is evaluated first, as the first argument was. The function used as a value (`Type::f`) and a call inside the function itself are left as they are: a method is still reachable by its path. A function in a trait `impl` and a free function are refused. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+            description: "Turn a static or associated function into an instance method, with every call site: the inverse of `code_make_static`. Give the function's name position, or `symbol` (`Type::method`, `Type.method`), or `path` with `method` and optional `class_name`. Its first parameter (of the target type) becomes the receiver (`self`, `this`, `*this`, or Go receiver). In TypeScript/JavaScript/C++/Swift, `static` is removed and the first parameter is dropped. In Python, `@staticmethod` is removed and first parameter becomes `self`. In Go, the free function gets a receiver `(r *Type)`. Call sites rewrite from `Type.method(inst, args)` to `inst.method(args)`. Rust, TypeScript, JavaScript, Python, C++, Swift, Go."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File that declares the function" },
+                    "symbol": { "type": "string", "description": "The function by name (`Type::function`, `Type.function`), or a file with line" },
+                    "method": { "type": "string", "description": "Name of the function to convert to method" },
+                    "class_name": { "type": "string", "description": "Optional class or struct name declaring the function" },
                     "line": { "type": "integer", "description": "1-based line of the function's name" },
                     "character": { "type": "integer", "description": "1-based column of the function's name" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 }
@@ -3416,26 +3422,68 @@ async fn handle_make_static(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument (or `symbol`)")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
-    };
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::make_static::make_static(
-        remote,
-        workspace_root,
-        &file_path,
-        num("line")?,
-        num("character")?,
-        apply && !verify,
-        force,
-    )
-    .await?;
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        let l = line.context("Missing 'line' argument for Rust make_static")?;
+        let c = character.unwrap_or(1);
+        crate::make_static::make_static(
+            remote,
+            workspace_root,
+            &file_path,
+            l,
+            c,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        let symbol = args.get("symbol").and_then(|v| v.as_str());
+        let method_arg = args
+            .get("method")
+            .or_else(|| args.get("method_name"))
+            .and_then(|v| v.as_str());
+        let class_arg = args
+            .get("class_name")
+            .or_else(|| args.get("struct_name"))
+            .and_then(|v| v.as_str());
+
+        let (resolved_class, resolved_method) = if let Some(m) = method_arg {
+            (class_arg.map(str::to_string), m.to_string())
+        } else if let Some(s) = symbol {
+            if let Some((cls, mth)) = s.split_once("::").or_else(|| s.split_once('.')) {
+                (Some(cls.to_string()), mth.to_string())
+            } else {
+                (class_arg.map(str::to_string), s.to_string())
+            }
+        } else if let Some(l) = line {
+            let text = std::fs::read_to_string(&file_path)?;
+            let (mth, cls) = crate::make_static::find_method_at_line(&text, l)
+                .context("Could not find method at given line")?;
+            (class_arg.map(str::to_string).or(cls), mth)
+        } else {
+            anyhow::bail!("Missing 'method', 'symbol', or line position");
+        };
+
+        crate::make_static::make_static_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            resolved_class.as_deref(),
+            &resolved_method,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
+
     refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
@@ -3479,28 +3527,70 @@ async fn handle_convert_to_method(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument (or `symbol`)")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
-    };
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::to_method::convert_to_method(
-        remote,
-        workspace_root,
-        &file_path,
-        num("line")?,
-        num("character")?,
-        apply && !verify,
-        force,
-    )
-    .await?;
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        let l = line.context("Missing 'line' argument for Rust convert_to_method")?;
+        let c = character.unwrap_or(1);
+        crate::to_method::convert_to_method(
+            remote,
+            workspace_root,
+            &file_path,
+            l,
+            c,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        let symbol = args.get("symbol").and_then(|v| v.as_str());
+        let method_arg = args
+            .get("method")
+            .or_else(|| args.get("method_name"))
+            .and_then(|v| v.as_str());
+        let class_arg = args
+            .get("class_name")
+            .or_else(|| args.get("struct_name"))
+            .and_then(|v| v.as_str());
+
+        let (resolved_class, resolved_method) = if let Some(m) = method_arg {
+            (class_arg.map(str::to_string), m.to_string())
+        } else if let Some(s) = symbol {
+            if let Some((cls, mth)) = s.split_once("::").or_else(|| s.split_once('.')) {
+                (Some(cls.to_string()), mth.to_string())
+            } else {
+                (class_arg.map(str::to_string), s.to_string())
+            }
+        } else if let Some(l) = line {
+            let text = std::fs::read_to_string(&file_path)?;
+            let (mth, cls) = crate::make_static::find_method_at_line(&text, l)
+                .context("Could not find method at given line")?;
+            (class_arg.map(str::to_string).or(cls), mth)
+        } else {
+            anyhow::bail!("Missing 'method', 'symbol', or line position");
+        };
+
+        crate::to_method::convert_to_method_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            resolved_class.as_deref(),
+            &resolved_method,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
+
     refuse_incomplete(apply, &done.unmatched)?;
-    let gate = if verify {
+    let gate = if verify && force {
         let files = done.rewritten.clone();
         Some(
             compile_gate(
