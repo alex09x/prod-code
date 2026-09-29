@@ -636,6 +636,30 @@ fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
             let class_start = text[..at].rfind("class").unwrap_or(at);
             let fields = parse_python_fields(&text[at..]);
             let (line, col) = crate::signature::position_at(text, at)?;
+            let lines: Vec<&str> = text.lines().collect();
+            let mut class_indent = 0;
+            let mut class_line_idx = 0;
+            for (idx, l) in lines.iter().enumerate() {
+                let trimmed = l.trim_start();
+                if trimmed.starts_with("class ") && trimmed.contains(type_name) {
+                    class_indent = l.len() - trimmed.len();
+                    class_line_idx = idx;
+                    break;
+                }
+            }
+            let mut end_offset = text.len();
+            for l in lines.iter().skip(class_line_idx + 1) {
+                let trimmed = l.trim_start();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    let indent = l.len() - trimmed.len();
+                    if indent <= class_indent {
+                        let l_ptr = l.as_ptr() as usize;
+                        let text_ptr = text.as_ptr() as usize;
+                        end_offset = l_ptr - text_ptr;
+                        break;
+                    }
+                }
+            }
             return Ok(StructDecl {
                 name: type_name.to_string(),
                 language: "python".to_string(),
@@ -643,7 +667,7 @@ fn parse_python_struct_decl(text: &str, type_name: &str) -> Result<StructDecl> {
                 generics: None,
                 is_pub: !type_name.starts_with('_'),
                 decl_start: class_start,
-                decl_end: text.len(),
+                decl_end: end_offset,
                 line,
                 col,
             });

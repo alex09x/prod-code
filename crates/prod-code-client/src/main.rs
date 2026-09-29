@@ -621,7 +621,16 @@ enum Commands {
         /// 1-based column of the function's name, with `--line`.
         #[arg(long, default_value_t = 1)]
         character: u32,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Name of the function to convert to method.
+        #[arg(long)]
+        method: Option<String>,
+        /// Optional class or struct name declaring the function.
+        #[arg(long)]
+        class: Option<String>,
+        /// `compile`: also run compiler check on the result in a shadow of the workspace.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting.
@@ -779,7 +788,16 @@ enum Commands {
         /// 1-based column of the method's name, with `--line`.
         #[arg(long, default_value_t = 1)]
         character: u32,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        /// The file that declares it, when the name is ambiguous.
+        #[arg(long)]
+        path: Option<String>,
+        /// Name of the method to make static.
+        #[arg(long)]
+        method: Option<String>,
+        /// Optional class or struct name declaring the method.
+        #[arg(long)]
+        class: Option<String>,
+        /// `compile`: also run compiler check on the result in a shadow of the workspace.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting.
@@ -2035,18 +2053,38 @@ async fn main() -> Result<()> {
             symbol,
             line,
             character,
+            path,
+            method,
+            class,
             verify,
             apply,
             force,
         } => {
             let mut args = serde_json::json!({ "apply": apply, "force": force });
-            match line {
-                Some(line) => {
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            if let Some(line) = line {
+                args["path"] = serde_json::Value::String(symbol);
+                args["line"] = serde_json::Value::from(line);
+                args["character"] = serde_json::Value::from(character);
+            } else if is_file_path {
+                args["path"] = serde_json::Value::String(symbol);
+            } else if method.is_some() {
+                if path.is_some() {
+                    args["class_name"] = serde_json::Value::String(symbol);
+                } else {
                     args["path"] = serde_json::Value::String(symbol);
-                    args["line"] = serde_json::Value::from(line);
-                    args["character"] = serde_json::Value::from(character);
                 }
-                None => args["symbol"] = serde_json::Value::String(symbol),
+            } else {
+                args["symbol"] = serde_json::Value::String(symbol);
+            }
+            if let Some(path) = path {
+                args["path"] = serde_json::Value::String(path);
+            }
+            if let Some(method) = method {
+                args["method"] = serde_json::Value::String(method);
+            }
+            if let Some(class) = class {
+                args["class_name"] = serde_json::Value::String(class);
             }
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
@@ -2219,18 +2257,38 @@ async fn main() -> Result<()> {
             symbol,
             line,
             character,
+            path,
+            method,
+            class,
             verify,
             apply,
             force,
         } => {
             let mut args = serde_json::json!({ "apply": apply, "force": force });
-            match line {
-                Some(line) => {
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            if let Some(line) = line {
+                args["path"] = serde_json::Value::String(symbol);
+                args["line"] = serde_json::Value::from(line);
+                args["character"] = serde_json::Value::from(character);
+            } else if is_file_path {
+                args["path"] = serde_json::Value::String(symbol);
+            } else if method.is_some() {
+                if path.is_some() {
+                    args["class_name"] = serde_json::Value::String(symbol);
+                } else {
                     args["path"] = serde_json::Value::String(symbol);
-                    args["line"] = serde_json::Value::from(line);
-                    args["character"] = serde_json::Value::from(character);
                 }
-                None => args["symbol"] = serde_json::Value::String(symbol),
+            } else {
+                args["symbol"] = serde_json::Value::String(symbol);
+            }
+            if let Some(path) = path {
+                args["path"] = serde_json::Value::String(path);
+            }
+            if let Some(method) = method {
+                args["method"] = serde_json::Value::String(method);
+            }
+            if let Some(class) = class {
+                args["class_name"] = serde_json::Value::String(class);
             }
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);

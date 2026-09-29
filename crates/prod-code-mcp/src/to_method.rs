@@ -39,11 +39,43 @@ pub struct MadeMethod {
 
 impl MadeMethod {
     pub fn render(&self, diff_budget: usize) -> String {
+        let sep = if self.file.ends_with(".ts")
+            || self.file.ends_with(".tsx")
+            || self.file.ends_with(".js")
+            || self.file.ends_with(".jsx")
+            || self.file.ends_with(".py")
+            || self.file.ends_with(".swift")
+        {
+            "."
+        } else if self.file.ends_with(".go") {
+            if self.owner.is_empty() { "" } else { "." }
+        } else {
+            "::"
+        };
+        let call_target = if self.owner.is_empty() {
+            self.method.clone()
+        } else {
+            format!("{}{sep}{}", self.owner, self.method)
+        };
+        let receiver_desc = if self.file.ends_with(".ts")
+            || self.file.ends_with(".tsx")
+            || self.file.ends_with(".js")
+            || self.file.ends_with(".jsx")
+            || self.file.ends_with(".cpp")
+            || self.file.ends_with(".cc")
+            || self.file.ends_with(".cxx")
+            || self.file.ends_with(".h")
+            || self.file.ends_with(".hpp")
+        {
+            "this"
+        } else if self.file.ends_with(".go") {
+            &self.receiver
+        } else {
+            "self"
+        };
         let mut out = format!(
-            "`{}::{}` ({})\n\n- the parameter `{}` becomes the receiver `{}`; {} use(s) of it in \
-             the body are now `self`\n- {} call site(s) now call it as a method\n\n",
-            self.owner,
-            self.method,
+            "`{call_target}` ({})\n\n- the parameter `{}` becomes the receiver `{}`; {} use(s) of it in \
+             the body are now `{receiver_desc}`\n- {} call site(s) now call it as a method\n\n",
             self.file,
             self.parameter,
             self.receiver,
@@ -479,6 +511,939 @@ pub async fn convert_to_method(
     })
 }
 
+use crate::make_static::Language;
+
+pub fn split_call_arguments(args_str: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth_p = 0i32;
+    let mut depth_b = 0i32;
+    let mut depth_c = 0i32;
+    let mut in_quote: Option<char> = None;
+    let mut escaped = false;
+
+    for c in args_str.chars() {
+        if let Some(q) = in_quote {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                in_quote = None;
+            }
+            current.push(c);
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' => {
+                in_quote = Some(c);
+                current.push(c);
+            }
+            '(' => {
+                depth_p += 1;
+                current.push(c);
+            }
+            ')' => {
+                depth_p -= 1;
+                current.push(c);
+            }
+            '[' => {
+                depth_b += 1;
+                current.push(c);
+            }
+            ']' => {
+                depth_b -= 1;
+                current.push(c);
+            }
+            '{' => {
+                depth_c += 1;
+                current.push(c);
+            }
+            '}' => {
+                depth_c -= 1;
+                current.push(c);
+            }
+            ',' if depth_p == 0 && depth_b == 0 && depth_c == 0 => {
+                args.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    if !current.trim().is_empty() {
+        args.push(current.trim().to_string());
+    }
+    args
+}
+
+pub fn to_method_ts(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, String, String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("export class ") || trimmed.starts_with("export default class ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if *w == "class" && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches('{').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in TypeScript/JavaScript file")?;
+    let c_end = class_end.context("Could not find closing brace of class")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(paren_pos) = trimmed.find('(') {
+            let before_paren = trimmed[..paren_pos].trim();
+            let words: Vec<&str> = before_paren.split_whitespace().collect();
+            if words.last() == Some(&target_method) {
+                method_line_idx = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if !m_line.contains("static ") {
+        anyhow::bail!("`{target_method}` is already an instance method");
+    }
+
+    let trimmed = m_line.trim_start();
+    let indent = &m_line[..m_line.len() - trimmed.len()];
+    let open_p = trimmed.find('(').context("Missing parameter list")?;
+    let close_p = trimmed.find(')').context("Parameter list does not close on declaration line")?;
+    let params_str = &trimmed[open_p + 1..close_p];
+    let params = split_call_arguments(params_str);
+    let first_param = params.first().context("Method takes no parameters; nothing can become `this`")?.clone();
+    let param_name = first_param.split(':').next().unwrap_or(&first_param).trim().to_string();
+
+    let remaining_params = if params.len() > 1 {
+        params[1..].join(", ")
+    } else {
+        String::new()
+    };
+
+    let without_static = trimmed.replace("static ", "");
+    let new_m_trimmed = if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
+        format!("{}{remaining_params}{}", &without_static[..op + 1], &without_static[cp..])
+    } else {
+        without_static
+    };
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let needle_param_dot = format!("{param_name}.");
+    let mut renamed_uses = 0;
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            new_lines.push(format!("{indent}{new_m_trimmed}"));
+        } else if idx > m_idx && idx <= m_body_end {
+            let mut cur = line.to_string();
+            let mut search_idx = 0;
+            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
+                let pos = search_idx + rel;
+                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
+                    search_idx = pos + needle_param_dot.len();
+                    continue;
+                }
+                cur.replace_range(pos..pos + needle_param_dot.len(), "this.");
+                renamed_uses += 1;
+                search_idx = pos + "this.".len();
+            }
+            new_lines.push(cur);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::TypeScript,
+    );
+
+    Ok((class_name, target_method.to_string(), first_param, "this".to_string(), final_code, renamed_uses, rewritten_calls))
+}
+
+pub fn to_method_py(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, String, String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut class_indent = 0;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(after_class_raw) = trimmed.strip_prefix("class ") {
+            let indent = line.len() - trimmed.len();
+            let after_class = after_class_raw.trim_start();
+            let name = after_class
+                .split(['(', ':'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                class_indent = indent;
+            }
+        }
+        if class_start.is_some() && idx > class_start.unwrap() && class_end.is_none() {
+            let indent = line.len() - trimmed.len();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= class_indent {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in Python file")?;
+    let c_end = class_end.unwrap_or(lines.len());
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let def_needle = format!("def {target_method}(");
+        let async_def_needle = format!("async def {target_method}(");
+        if trimmed.starts_with(&def_needle) || trimmed.starts_with(&async_def_needle) {
+            method_line_idx = Some(idx);
+            break;
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    let m_trimmed = lines[m_idx].trim_start();
+    let open_p = m_trimmed.find('(').context("Missing parameter list")?;
+    let close_p = m_trimmed.find(')').context("Parameter list does not close")?;
+    let params_str = &m_trimmed[open_p + 1..close_p];
+    let params = split_call_arguments(params_str);
+    let first_param = params.first().context("Method takes no parameters; nothing can become `self`")?.clone();
+    if first_param == "self" {
+        anyhow::bail!("`{target_method}` already takes `self`");
+    }
+    let param_name = first_param.split(':').next().unwrap_or(&first_param).trim().to_string();
+
+    let remaining_params = if params.len() > 1 {
+        format!("self, {}", params[1..].join(", "))
+    } else {
+        "self".to_string()
+    };
+
+    let before_p = &m_trimmed[..open_p + 1];
+    let after_p = &m_trimmed[close_p..];
+    let indent_str = &lines[m_idx][..lines[m_idx].len() - m_trimmed.len()];
+    let new_m_line = format!("{indent_str}{before_p}{remaining_params}{after_p}");
+
+    let m_line = lines[m_idx];
+    let m_indent = m_line.len() - m_line.trim_start().len();
+    let mut m_body_end = m_idx;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent <= m_indent {
+            break;
+        }
+        m_body_end = idx;
+    }
+
+    let needle_param_dot = format!("{param_name}.");
+    let mut renamed_uses = 0;
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if m_idx > 0 && idx == m_idx - 1 && line.trim() == "@staticmethod" {
+            continue;
+        }
+        if idx == m_idx {
+            new_lines.push(new_m_line.clone());
+        } else if idx > m_idx && idx <= m_body_end {
+            let mut cur = line.to_string();
+            let mut search_idx = 0;
+            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
+                let pos = search_idx + rel;
+                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
+                    search_idx = pos + needle_param_dot.len();
+                    continue;
+                }
+                cur.replace_range(pos..pos + needle_param_dot.len(), "self.");
+                renamed_uses += 1;
+                search_idx = pos + "self.".len();
+            }
+            new_lines.push(cur);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Python,
+    );
+
+    Ok((class_name, target_method.to_string(), first_param, "self".to_string(), final_code, renamed_uses, rewritten_calls))
+}
+
+pub fn to_method_cpp(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, String, String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class/struct in C++ file")?;
+    let c_end = class_end.context("Could not find closing brace of C++ class")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(paren_pos) = trimmed.find('(') {
+            let before_paren = trimmed[..paren_pos].trim();
+            let words: Vec<&str> = before_paren.split_whitespace().collect();
+            if let Some(&last_word) = words.last() {
+                let clean_name = last_word.trim_start_matches('*').trim_start_matches('&');
+                if clean_name == target_method {
+                    method_line_idx = Some(idx);
+                    break;
+                }
+            }
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if !m_line.contains("static ") {
+        anyhow::bail!("`{target_method}` is already an instance method");
+    }
+
+    let trimmed = m_line.trim_start();
+    let indent = &m_line[..m_line.len() - trimmed.len()];
+    let open_p = trimmed.find('(').context("Missing parameter list")?;
+    let close_p = trimmed.find(')').context("Parameter list does not close")?;
+    let params_str = &trimmed[open_p + 1..close_p];
+    let params = split_call_arguments(params_str);
+    let first_param = params.first().context("Method takes no parameters; nothing can become receiver")?.clone();
+    let is_const = first_param.starts_with("const ");
+    let param_words: Vec<&str> = first_param.split_whitespace().collect();
+    let param_name = param_words.last().unwrap_or(&"").trim_matches(|c| c == '&' || c == '*');
+
+    let remaining_params = if params.len() > 1 {
+        params[1..].join(", ")
+    } else {
+        String::new()
+    };
+
+    let without_static = trimmed.replace("static ", "");
+    let const_suffix = if is_const && !without_static.contains(") const") { " const" } else { "" };
+    let new_m_trimmed = if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
+        let after_cp = &without_static[cp + 1..];
+        format!("{}{remaining_params}){const_suffix}{after_cp}", &without_static[..op + 1])
+    } else {
+        without_static
+    };
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let needle_param_dot = format!("{param_name}.");
+    let needle_param_arrow = format!("{param_name}->");
+    let mut renamed_uses = 0;
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            new_lines.push(format!("{indent}{new_m_trimmed}"));
+        } else if idx > m_idx && idx <= m_body_end {
+            let mut cur = line.to_string();
+            let mut search_idx = 0;
+            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
+                let pos = search_idx + rel;
+                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
+                    search_idx = pos + needle_param_dot.len();
+                    continue;
+                }
+                cur.replace_range(pos..pos + needle_param_dot.len(), "this->");
+                renamed_uses += 1;
+                search_idx = pos + "this->".len();
+            }
+            search_idx = 0;
+            while let Some(rel) = cur[search_idx..].find(&needle_param_arrow) {
+                let pos = search_idx + rel;
+                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
+                    search_idx = pos + needle_param_arrow.len();
+                    continue;
+                }
+                cur.replace_range(pos..pos + needle_param_arrow.len(), "this->");
+                renamed_uses += 1;
+                search_idx = pos + "this->".len();
+            }
+            new_lines.push(cur);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Cpp,
+    );
+
+    Ok((class_name, target_method.to_string(), first_param, "*this".to_string(), final_code, renamed_uses, rewritten_calls))
+}
+
+pub fn to_method_swift(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, String, String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") || trimmed.starts_with("actor ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct" || *w == "actor") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class/struct in Swift file")?;
+    let c_end = class_end.context("Could not find closing brace in Swift type")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        let needle = format!("func {target_method}(");
+        if trimmed.contains(&needle) {
+            method_line_idx = Some(idx);
+            break;
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if !m_line.contains("static func ") && !m_line.contains("class func ") {
+        anyhow::bail!("`{target_method}` is already an instance method");
+    }
+
+    let trimmed = m_line.trim_start();
+    let indent = &m_line[..m_line.len() - trimmed.len()];
+    let open_p = trimmed.find('(').context("Missing parameter list")?;
+    let close_p = trimmed.find(')').context("Parameter list does not close")?;
+    let params_str = &trimmed[open_p + 1..close_p];
+    let params = split_call_arguments(params_str);
+    let first_param = params.first().context("Method takes no parameters; nothing can become `self`")?.clone();
+    let param_name = first_param.split(':').next().unwrap_or(&first_param).trim().to_string();
+
+    let remaining_params = if params.len() > 1 {
+        params[1..].join(", ")
+    } else {
+        String::new()
+    };
+
+    let without_static = trimmed.replace("static func ", "func ")
+        .replace("class func ", "func ");
+    let new_m_trimmed = if let (Some(op), Some(cp)) = (without_static.find('('), without_static.find(')')) {
+        format!("{}{remaining_params}{}", &without_static[..op + 1], &without_static[cp..])
+    } else {
+        without_static
+    };
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let needle_param_dot = format!("{param_name}.");
+    let mut renamed_uses = 0;
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            new_lines.push(format!("{indent}{new_m_trimmed}"));
+        } else if idx > m_idx && idx <= m_body_end {
+            let mut cur = line.to_string();
+            let mut search_idx = 0;
+            while let Some(rel) = cur[search_idx..].find(&needle_param_dot) {
+                let pos = search_idx + rel;
+                if pos > 0 && is_ident(cur[..pos].chars().next_back().unwrap()) {
+                    search_idx = pos + needle_param_dot.len();
+                    continue;
+                }
+                cur.replace_range(pos..pos + needle_param_dot.len(), "self.");
+                renamed_uses += 1;
+                search_idx = pos + "self.".len();
+            }
+            new_lines.push(cur);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Swift,
+    );
+
+    Ok((class_name, target_method.to_string(), first_param, "self".to_string(), final_code, renamed_uses, rewritten_calls))
+}
+
+pub fn to_method_go(
+    code: &str,
+    target_struct: Option<&str>,
+    target_func: &str,
+) -> Result<(String, String, String, String, String, usize, usize)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut func_line_idx = None;
+    let needle_func = format!("func {target_func}(");
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with(&needle_func) {
+            func_line_idx = Some(idx);
+            break;
+        }
+    }
+
+    let f_idx = func_line_idx.with_context(|| {
+        format!("Function `{target_func}` not found in Go file")
+    })?;
+
+    let f_line = lines[f_idx];
+    let trimmed = f_line.trim_start();
+    let indent = &f_line[..f_line.len() - trimmed.len()];
+    let open_p = trimmed.find('(').context("Missing parameter list")?;
+    let close_p = trimmed.find(')').context("Parameter list does not close")?;
+    let params_str = &trimmed[open_p + 1..close_p];
+    let params = split_call_arguments(params_str);
+    let first_param = params.first().context("Function takes no parameters; nothing can become receiver")?.clone();
+
+    let param_words: Vec<&str> = first_param.split_whitespace().collect();
+    if param_words.len() < 2 {
+        anyhow::bail!("First parameter `{first_param}` has no type");
+    }
+    let s_type = param_words[1];
+    let s_name = s_type.trim_start_matches('*');
+    if let Some(target) = target_struct
+        && target != s_name {
+            anyhow::bail!("First parameter type `{s_name}` does not match target struct `{target}`");
+        }
+
+    let remaining_params = if params.len() > 1 {
+        params[1..].join(", ")
+    } else {
+        String::new()
+    };
+
+    let after_cp = &trimmed[close_p + 1..];
+    let new_f_line = format!("{indent}func ({first_param}) {target_func}({remaining_params}){after_cp}");
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == f_idx {
+            new_lines.push(new_f_line.clone());
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let (final_code, rewritten_calls) = rewrite_static_calls_in_code(
+        &intermediate,
+        target_func,
+        s_name,
+        Language::Go,
+    );
+
+    Ok((s_name.to_string(), target_func.to_string(), first_param.clone(), format!("({first_param})"), final_code, 0, rewritten_calls))
+}
+
+pub fn rewrite_static_calls_in_code(
+    code: &str,
+    target_method: &str,
+    owner_class: &str,
+    lang: Language,
+) -> (String, usize) {
+    let mut out = String::new();
+    let mut rewritten = 0;
+    let target_prefix = match lang {
+        Language::TypeScript | Language::Python | Language::Swift => {
+            format!("{owner_class}.{target_method}(")
+        }
+        Language::Cpp => {
+            format!("{owner_class}::{target_method}(")
+        }
+        Language::Go => {
+            format!("{target_method}(")
+        }
+    };
+
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        let comment_prefix = match lang {
+            Language::Python => "#",
+            _ => "//",
+        };
+        if trimmed.starts_with(comment_prefix) || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        if !line.contains(&target_prefix) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        let mut current_line = line.to_string();
+        let mut search_start = 0;
+        while let Some(rel_pos) = current_line[search_start..].find(&target_prefix) {
+            let pos = search_start + rel_pos;
+            if pos > 0 {
+                let prev_char = current_line[..pos].chars().next_back().unwrap();
+                if is_ident(prev_char) || (lang == Language::Go && prev_char == '.') {
+                    search_start = pos + target_prefix.len();
+                    continue;
+                }
+            }
+            if lang == Language::Go
+                && current_line[..pos].trim_start().starts_with("func ")
+                && !current_line[..pos].contains('{')
+            {
+                search_start = pos + target_prefix.len();
+                continue;
+            }
+
+            let after_open = pos + target_prefix.len();
+            let rest = &current_line[after_open..];
+            let mut depth = 1i32;
+            let mut close_pos = None;
+            for (i, c) in rest.char_indices() {
+                if c == '(' {
+                    depth += 1;
+                } else if c == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        close_pos = Some(after_open + i);
+                        break;
+                    }
+                }
+            }
+
+            let Some(cp) = close_pos else {
+                search_start = pos + target_prefix.len();
+                continue;
+            };
+
+            let args_str = &current_line[after_open..cp];
+            let args = split_call_arguments(args_str);
+            if args.is_empty() {
+                search_start = pos + target_prefix.len();
+                continue;
+            }
+
+            let raw_recv = args[0].trim();
+            let recv = raw_recv
+                .split_once(':')
+                .or_else(|| raw_recv.split_once('='))
+                .map(|(_, val)| val.trim())
+                .unwrap_or(raw_recv);
+            let rest_args = if args.len() > 1 {
+                args[1..].join(", ")
+            } else {
+                String::new()
+            };
+
+            let op = if lang == Language::Cpp && (recv.starts_with('*') || recv.ends_with("->")) {
+                "->"
+            } else {
+                "."
+            };
+
+            let formatted_recv = if recv.contains(' ') && !recv.starts_with('(') {
+                format!("({recv})")
+            } else {
+                recv.to_string()
+            };
+
+            let call_replacement = format!("{formatted_recv}{op}{target_method}({rest_args})");
+            current_line.replace_range(pos..=cp, &call_replacement);
+            rewritten += 1;
+            search_start = pos + call_replacement.len();
+        }
+
+        out.push_str(&current_line);
+        out.push('\n');
+    }
+
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, rewritten)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn convert_to_method_polyglot(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file_path: &Path,
+    class_name: Option<&str>,
+    method_name: &str,
+    apply: bool,
+    force: bool,
+) -> Result<MadeMethod> {
+    let content = std::fs::read_to_string(file_path)
+        .with_context(|| format!("Cannot read {}", file_path.display()))?;
+    let lang = Language::from_path(file_path)
+        .with_context(|| format!("Unsupported language for file: {}", file_path.display()))?;
+
+    let (owner, method, parameter, receiver, new_content, renamed_uses, file_rewritten) = match lang {
+        Language::TypeScript => to_method_ts(&content, class_name, method_name)?,
+        Language::Python => to_method_py(&content, class_name, method_name)?,
+        Language::Cpp => to_method_cpp(&content, class_name, method_name)?,
+        Language::Swift => to_method_swift(&content, class_name, method_name)?,
+        Language::Go => to_method_go(&content, class_name, method_name)?,
+    };
+
+    let mut rewritten = vec![(file_path.to_string_lossy().to_string(), new_content)];
+    let mut total_rewritten_calls = file_rewritten;
+
+    for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+        let path = entry.path();
+        if path.is_file() && path != file_path && lang.matches_extension(path)
+            && let Ok(other_content) = std::fs::read_to_string(path)
+                && other_content.contains(method_name) {
+                    let (new_other, calls) = rewrite_static_calls_in_code(
+                        &other_content,
+                        method_name,
+                        &owner,
+                        lang,
+                    );
+                    if new_other != other_content {
+                        rewritten.push((path.to_string_lossy().to_string(), new_other));
+                        total_rewritten_calls += calls;
+                    }
+                }
+    }
+
+    let to_check: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (PathBuf::from(p), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &to_check, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.source
+                    .as_deref()
+                    .map(|s| format!("[{s}] "))
+                    .unwrap_or_default(),
+                d.message,
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. Pass `force: true` to write it anyway:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let rewritten_map: BTreeMap<PathBuf, String> = rewritten
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        let edit = crate::signature::whole_file_edit(&rewritten_map);
+        crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    }
+
+    let rel_file = display(workspace_root, file_path);
+    Ok(MadeMethod {
+        owner,
+        method,
+        root: workspace_root.to_path_buf(),
+        file: rel_file,
+        parameter,
+        receiver,
+        renamed_uses,
+        rewritten_calls: total_rewritten_calls,
+        unchanged: vec![],
+        unmatched: vec![],
+        rewritten,
+        diagnostics,
+        applied: apply,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -549,5 +1514,138 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("nothing was written"), "{text}");
+    }
+
+    #[test]
+    fn to_method_ts_transforms_declaration_and_calls() {
+        let ts_code = r#"class Calculator {
+    static add(c: Calculator, x: number): number {
+        return c.val + x;
+    }
+}
+
+function test() {
+    const calc = new Calculator();
+    const res = Calculator.add(calc, 5);
+}
+"#;
+        let (owner, method, param, recv, transformed, renamed, calls) =
+            to_method_ts(ts_code, Some("Calculator"), "add").unwrap();
+        assert_eq!(owner, "Calculator");
+        assert_eq!(method, "add");
+        assert_eq!(param, "c: Calculator");
+        assert_eq!(recv, "this");
+        assert_eq!(renamed, 1);
+        assert_eq!(calls, 1);
+        assert!(transformed.contains("add(x: number): number {"));
+        assert!(transformed.contains("return this.val + x;"));
+        assert!(transformed.contains("calc.add(5)"));
+    }
+
+    #[test]
+    fn to_method_py_transforms_declaration_and_calls() {
+        let py_code = r#"class MathUtil:
+    @staticmethod
+    def multiply(u: MathUtil, y: int) -> int:
+        return u.factor * y
+
+def run():
+    util = MathUtil()
+    result = MathUtil.multiply(util, 6)
+"#;
+        let (owner, method, param, recv, transformed, renamed, calls) =
+            to_method_py(py_code, Some("MathUtil"), "multiply").unwrap();
+        assert_eq!(owner, "MathUtil");
+        assert_eq!(method, "multiply");
+        assert_eq!(param, "u: MathUtil");
+        assert_eq!(recv, "self");
+        assert_eq!(renamed, 1);
+        assert_eq!(calls, 1);
+        assert!(!transformed.contains("@staticmethod"));
+        assert!(transformed.contains("def multiply(self, y: int) -> int:"));
+        assert!(transformed.contains("return self.factor * y"));
+        assert!(transformed.contains("util.multiply(6)"));
+    }
+
+    #[test]
+    fn to_method_cpp_transforms_declaration_and_calls() {
+        let cpp_code = r#"class Counter {
+public:
+    static int increment(Counter& c, int step) {
+        return c.val + step;
+    }
+};
+
+void run() {
+    Counter cnt;
+    int res = Counter::increment(cnt, 2);
+}
+"#;
+        let (owner, method, param, recv, transformed, renamed, calls) =
+            to_method_cpp(cpp_code, Some("Counter"), "increment").unwrap();
+        assert_eq!(owner, "Counter");
+        assert_eq!(method, "increment");
+        assert_eq!(param, "Counter& c");
+        assert_eq!(recv, "*this");
+        assert_eq!(renamed, 1);
+        assert_eq!(calls, 1);
+        assert!(transformed.contains("int increment(int step) {"));
+        assert!(transformed.contains("return this->val + step;"));
+        assert!(transformed.contains("cnt.increment(2)"));
+    }
+
+    #[test]
+    fn to_method_swift_transforms_declaration_and_calls() {
+        let swift_code = r#"class Greeter {
+    static func greet(g: Greeter, name: String) -> String {
+        return g.prefix + name
+    }
+}
+
+func test() {
+    let grt = Greeter()
+    let msg = Greeter.greet(grt, name: "Alice")
+}
+"#;
+        let (owner, method, param, recv, transformed, renamed, calls) =
+            to_method_swift(swift_code, Some("Greeter"), "greet").unwrap();
+        assert_eq!(owner, "Greeter");
+        assert_eq!(method, "greet");
+        assert_eq!(param, "g: Greeter");
+        assert_eq!(recv, "self");
+        assert_eq!(renamed, 1);
+        assert_eq!(calls, 1);
+        assert!(transformed.contains("func greet(name: String) -> String {"));
+        assert!(transformed.contains("return self.prefix + name"));
+        assert!(transformed.contains("grt.greet(name: \"Alice\")"));
+    }
+
+    #[test]
+    fn to_method_go_transforms_declaration_and_calls() {
+        let go_code = r#"package main
+
+type Service struct {
+    tag string
+}
+
+func Process(s *Service, data string) string {
+    return s.tag + ":" + data
+}
+
+func main() {
+    svc := &Service{tag: "svc"}
+    res := Process(svc, "test")
+}
+"#;
+        let (owner, method, param, recv, transformed, renamed, calls) =
+            to_method_go(go_code, Some("Service"), "Process").unwrap();
+        assert_eq!(owner, "Service");
+        assert_eq!(method, "Process");
+        assert_eq!(param, "s *Service");
+        assert_eq!(recv, "(s *Service)");
+        assert_eq!(renamed, 0);
+        assert_eq!(calls, 1);
+        assert!(transformed.contains("func (s *Service) Process(data string) string {"));
+        assert!(transformed.contains("svc.Process(\"test\")"));
     }
 }

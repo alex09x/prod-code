@@ -31,16 +31,30 @@ pub struct MadeStatic {
 
 impl MadeStatic {
     pub fn render(&self, diff_budget: usize) -> String {
+        let sep = if self.file.ends_with(".ts")
+            || self.file.ends_with(".tsx")
+            || self.file.ends_with(".js")
+            || self.file.ends_with(".jsx")
+            || self.file.ends_with(".py")
+            || self.file.ends_with(".swift")
+        {
+            "."
+        } else if self.file.ends_with(".go") {
+            if self.owner.is_empty() { "" } else { "." }
+        } else {
+            "::"
+        };
+        let call_target = if self.owner.is_empty() {
+            self.method.clone()
+        } else {
+            format!("{}{sep}{}", self.owner, self.method)
+        };
         let mut out = format!(
-            "`{}::{}` ({})\n\n- the receiver `{}` is removed: it was never used\n- {} call site(s) \
-             now call `{}::{}`\n\n",
-            self.owner,
-            self.method,
+            "`{call_target}` ({})\n\n- the receiver `{}` is removed: it was never used\n- {} call site(s) \
+             now call `{call_target}`\n\n",
             self.file,
             self.receiver,
             self.rewritten_calls,
-            self.owner,
-            self.method
         );
         let mut body = String::new();
         let mut changed_lines = 0usize;
@@ -373,6 +387,955 @@ pub async fn make_static(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    TypeScript,
+    Python,
+    Cpp,
+    Swift,
+    Go,
+}
+
+impl Language {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("ts" | "tsx" | "js" | "jsx") => Some(Self::TypeScript),
+            Some("py") => Some(Self::Python),
+            Some("cpp" | "cc" | "cxx" | "h" | "hpp") => Some(Self::Cpp),
+            Some("swift") => Some(Self::Swift),
+            Some("go") => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    pub fn matches_extension(&self, path: &Path) -> bool {
+        Self::from_path(path) == Some(*self)
+    }
+}
+
+pub fn extract_receiver(before: &str) -> Option<&str> {
+    let trimmed = before.trim_end();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut i = bytes.len();
+    let mut depth_paren = 0i32;
+    let mut depth_bracket = 0i32;
+
+    while i > 0 {
+        let b = bytes[i - 1];
+        match b {
+            b')' => depth_paren += 1,
+            b'(' => {
+                if depth_paren > 0 {
+                    depth_paren -= 1;
+                } else {
+                    break;
+                }
+            }
+            b']' => depth_bracket += 1,
+            b'[' => {
+                if depth_bracket > 0 {
+                    depth_bracket -= 1;
+                } else {
+                    break;
+                }
+            }
+            _ => {
+                if depth_paren == 0 && depth_bracket == 0 {
+                    let c = b as char;
+                    if !(is_ident(c) || c == '.' || c == '?' || c == '!' || c == '>' || c == '-') {
+                        break;
+                    }
+                }
+            }
+        }
+        i -= 1;
+    }
+    let recv = trimmed[i..].trim_start_matches("return ").trim_start();
+    if recv.is_empty() {
+        None
+    } else {
+        Some(recv)
+    }
+}
+
+pub fn find_method_at_line(code: &str, line_1based: u32) -> Option<(String, Option<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    if line_1based == 0 || line_1based as usize > lines.len() {
+        return None;
+    }
+    let target_idx = (line_1based - 1) as usize;
+    let start_idx = target_idx.saturating_sub(2);
+    let end_idx = std::cmp::min(target_idx + 2, lines.len().saturating_sub(1));
+
+    for line in lines.iter().take(end_idx + 1).skip(start_idx) {
+        let trimmed = line.trim();
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            let rest = trimmed.strip_prefix("async ").unwrap_or(trimmed);
+            if let Some(after_def) = rest.strip_prefix("def ")
+                && let Some(paren) = after_def.find('(') {
+                    let name = after_def[..paren].trim();
+                    return Some((name.to_string(), None));
+                }
+        }
+        if let Some(after_func) = trimmed.strip_prefix("func ") {
+            if after_func.starts_with('(') {
+                if let Some(close_recv) = after_func.find(')') {
+                    let recv_part = &after_func[1..close_recv];
+                    let type_name = recv_part
+                        .split_whitespace()
+                        .last()
+                        .map(|t| t.trim_start_matches('*'))
+                        .unwrap_or("");
+                    let after_recv = after_func[close_recv + 1..].trim_start();
+                    if let Some(paren) = after_recv.find('(') {
+                        let name = after_recv[..paren].trim();
+                        return Some((name.to_string(), Some(type_name.to_string())));
+                    }
+                }
+            } else if let Some(paren) = after_func.find('(') {
+                let name = after_func[..paren].trim();
+                return Some((name.to_string(), None));
+            }
+        }
+        if let Some(pos) = trimmed.find("func ") {
+            let after = &trimmed[pos + 5..];
+            if let Some(paren) = after.find('(') {
+                let name = after[..paren].trim();
+                return Some((name.to_string(), None));
+            }
+        }
+        if let Some(paren) = trimmed.find('(') {
+            let before = trimmed[..paren].trim();
+            if let Some(name) = before.split_whitespace().last() {
+                let clean = name.trim_start_matches('*').trim_start_matches('&');
+                if !clean.is_empty()
+                    && clean.chars().all(is_ident)
+                    && clean != "if"
+                    && clean != "while"
+                    && clean != "for"
+                    && clean != "switch"
+                    && clean != "catch"
+                {
+                    return Some((clean.to_string(), None));
+                }
+            }
+        }
+    }
+    None
+}
+
+pub fn rewrite_calls_in_code(
+    code: &str,
+    target_method: &str,
+    owner_class: &str,
+    lang: Language,
+    file_rel: &str,
+    blocked: &mut Vec<String>,
+) -> (String, usize) {
+    let mut out = String::new();
+    let mut rewritten = 0;
+    let needle_dot = format!(".{target_method}(");
+    let needle_arrow = format!("->{target_method}(");
+
+    for (line_idx, line) in code.lines().enumerate() {
+        let trimmed = line.trim_start();
+        let comment_prefix = match lang {
+            Language::Python => "#",
+            _ => "//",
+        };
+        if trimmed.starts_with(comment_prefix) || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        let has_needle = line.contains(&needle_dot) || (lang == Language::Cpp && line.contains(&needle_arrow));
+        if !has_needle {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        let mut current_line = line.to_string();
+        while let Some(pos) = current_line.find(&needle_dot).or_else(|| {
+            if lang == Language::Cpp {
+                current_line.find(&needle_arrow)
+            } else {
+                None
+            }
+        }) {
+            let is_arrow = current_line[pos..].starts_with("->");
+            let op_len = if is_arrow { 2 } else { 1 };
+            let before = &current_line[..pos];
+            let after = &current_line[pos + op_len + target_method.len() + 1..];
+
+            if let Some(recv) = extract_receiver(before) {
+                if recv == owner_class {
+                    break;
+                }
+                let site = format!("{file_rel}:{}:{}", line_idx + 1, pos + 1);
+                if receiver_has_effects(recv) {
+                    blocked.push(format!("{site} `{recv}` is evaluated for what it does"));
+                }
+                let target_call = match lang {
+                    Language::TypeScript | Language::Python | Language::Swift => {
+                        format!("{owner_class}.{target_method}(")
+                    }
+                    Language::Cpp => {
+                        format!("{owner_class}::{target_method}(")
+                    }
+                    Language::Go => {
+                        format!("{target_method}(")
+                    }
+                };
+                let recv_start = pos - recv.len();
+                current_line = format!("{}{target_call}{after}", &current_line[..recv_start]);
+                rewritten += 1;
+            } else {
+                break;
+            }
+        }
+        out.push_str(&current_line);
+        out.push('\n');
+    }
+
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, rewritten)
+}
+
+pub fn make_static_ts(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, usize, Vec<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("export class ") || trimmed.starts_with("export default class ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if *w == "class" && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches('{').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in TypeScript/JavaScript file")?;
+    let c_end = class_end.context("Could not find closing brace of class")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(paren_pos) = trimmed.find('(') {
+            let before_paren = trimmed[..paren_pos].trim();
+            let words: Vec<&str> = before_paren.split_whitespace().collect();
+            if words.last() == Some(&target_method) {
+                method_line_idx = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if m_line.contains("static ") {
+        anyhow::bail!("`{target_method}` is already a static method");
+    }
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let body_text = lines[m_idx..=m_body_end].join("\n");
+    if mentions(&body_text, "this") {
+        anyhow::bail!(
+            "`{target_method}` uses `this`; only a method that never accesses instance state can be made static"
+        );
+    }
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let new_line = if let Some(rest) = trimmed.strip_prefix("public ") {
+                format!("{indent}public static {rest}")
+            } else if let Some(rest) = trimmed.strip_prefix("private ") {
+                format!("{indent}private static {rest}")
+            } else if let Some(rest) = trimmed.strip_prefix("protected ") {
+                format!("{indent}protected static {rest}")
+            } else {
+                format!("{indent}static {trimmed}")
+            };
+            new_lines.push(new_line);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let mut blocked = Vec::new();
+    let (final_code, rewritten_calls) = rewrite_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::TypeScript,
+        "",
+        &mut blocked,
+    );
+
+    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+}
+
+pub fn make_static_py(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, usize, Vec<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut class_indent = 0;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(after_class_raw) = trimmed.strip_prefix("class ") {
+            let indent = line.len() - trimmed.len();
+            let after_class = after_class_raw.trim_start();
+            let name = after_class
+                .split(['(', ':'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                class_indent = indent;
+            }
+        }
+        if class_start.is_some() && idx > class_start.unwrap() && class_end.is_none() {
+            let indent = line.len() - trimmed.len();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= class_indent {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in Python file")?;
+    let c_end = class_end.unwrap_or(lines.len());
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        let def_needle = format!("def {target_method}(");
+        let async_def_needle = format!("async def {target_method}(");
+        if trimmed.starts_with(&def_needle) || trimmed.starts_with(&async_def_needle) {
+            method_line_idx = Some(idx);
+            break;
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    if m_idx > 0 && lines[m_idx - 1].trim() == "@staticmethod" {
+        anyhow::bail!("`{target_method}` is already a static method");
+    }
+
+    let m_line = lines[m_idx];
+    let m_indent = m_line.len() - m_line.trim_start().len();
+    let mut m_body_end = m_idx;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent <= m_indent {
+            break;
+        }
+        m_body_end = idx;
+    }
+
+    let body_text = lines[m_idx + 1..=m_body_end].join("\n");
+    if mentions(&body_text, "self") {
+        anyhow::bail!(
+            "`{target_method}` uses `self`; only a method that never accesses instance state can be made static"
+        );
+    }
+
+    let m_trimmed = lines[m_idx].trim_start();
+    let indent_str = &lines[m_idx][..lines[m_idx].len() - m_trimmed.len()];
+
+    let modified_m_line = if let Some(open_p) = m_trimmed.find('(') {
+        if let Some(close_p) = m_trimmed.find(')') {
+            let before_p = &m_trimmed[..open_p + 1];
+            let params = &m_trimmed[open_p + 1..close_p];
+            let after_p = &m_trimmed[close_p..];
+            let stripped_params = if let Some(rest) = params.trim().strip_prefix("self,") {
+                rest.trim_start()
+            } else if params.trim() == "self" {
+                ""
+            } else if let Some(rest) = params.trim().strip_prefix("self: ") {
+                if let Some(comma) = rest.find(',') {
+                    rest[comma + 1..].trim_start()
+                } else {
+                    ""
+                }
+            } else {
+                params
+            };
+            format!("{indent_str}{before_p}{stripped_params}{after_p}")
+        } else {
+            lines[m_idx].to_string()
+        }
+    } else {
+        lines[m_idx].to_string()
+    };
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            new_lines.push(format!("{indent_str}@staticmethod"));
+            new_lines.push(modified_m_line.clone());
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let mut blocked = Vec::new();
+    let (final_code, rewritten_calls) = rewrite_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Python,
+        "",
+        &mut blocked,
+    );
+
+    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+}
+
+pub fn make_static_cpp(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, usize, Vec<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class/struct in C++ file")?;
+    let c_end = class_end.context("Could not find closing brace of C++ class")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(paren_pos) = trimmed.find('(') {
+            let before_paren = trimmed[..paren_pos].trim();
+            let words: Vec<&str> = before_paren.split_whitespace().collect();
+            if let Some(&last_word) = words.last() {
+                let clean_name = last_word.trim_start_matches('*').trim_start_matches('&');
+                if clean_name == target_method {
+                    method_line_idx = Some(idx);
+                    break;
+                }
+            }
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in class `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if m_line.trim_start().starts_with("static ") {
+        anyhow::bail!("`{target_method}` is already static");
+    }
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let body_text = lines[m_idx..=m_body_end].join("\n");
+    if mentions(&body_text, "this") {
+        anyhow::bail!(
+            "`{target_method}` uses `this`; only a method that never accesses instance state can be made static"
+        );
+    }
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let without_const = if let Some(pos) = trimmed.find(") const") {
+                let before = &trimmed[..pos + 1];
+                let after = &trimmed[pos + 7..];
+                format!("{before}{after}")
+            } else {
+                trimmed.to_string()
+            };
+            new_lines.push(format!("{indent}static {without_const}"));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let mut blocked = Vec::new();
+    let (final_code, rewritten_calls) = rewrite_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Cpp,
+        "",
+        &mut blocked,
+    );
+
+    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+}
+
+pub fn make_static_swift(
+    code: &str,
+    target_class: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, usize, Vec<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") || trimmed.starts_with("actor ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct" || *w == "actor") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class/struct in Swift file")?;
+    let c_end = class_end.context("Could not find closing brace in Swift type")?;
+
+    let mut method_line_idx = None;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        let needle = format!("func {target_method}(");
+        if trimmed.contains(&needle) {
+            method_line_idx = Some(idx);
+            break;
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` not found in `{class_name}`")
+    })?;
+
+    let m_line = lines[m_idx];
+    if m_line.contains("static func ") || m_line.contains("class func ") {
+        anyhow::bail!("`{target_method}` is already a static method");
+    }
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let body_text = lines[m_idx..=m_body_end].join("\n");
+    if mentions(&body_text, "self") {
+        anyhow::bail!(
+            "`{target_method}` uses `self`; only a method that never accesses instance state can be made static"
+        );
+    }
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            let replaced = line.replace("mutating func ", "static func ")
+                .replace("func ", "static func ");
+            new_lines.push(replaced);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let mut blocked = Vec::new();
+    let (final_code, rewritten_calls) = rewrite_calls_in_code(
+        &intermediate,
+        target_method,
+        &class_name,
+        Language::Swift,
+        "",
+        &mut blocked,
+    );
+
+    Ok((class_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+}
+
+pub fn make_static_go(
+    code: &str,
+    target_struct: Option<&str>,
+    target_method: &str,
+) -> Result<(String, String, String, usize, Vec<String>)> {
+    let lines: Vec<&str> = code.lines().collect();
+    let mut method_line_idx = None;
+    let mut receiver_name = String::new();
+    let mut struct_name = String::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("func (") {
+            continue;
+        }
+        let after_func = &trimmed["func (".len()..];
+        let Some(close_recv) = after_func.find(')') else {
+            continue;
+        };
+        let recv_part = after_func[..close_recv].trim();
+        let after_recv = after_func[close_recv + 1..].trim_start();
+        let Some(open_p) = after_recv.find('(') else {
+            continue;
+        };
+        let m_name = after_recv[..open_p].trim();
+        if m_name == target_method {
+            let recv_words: Vec<&str> = recv_part.split_whitespace().collect();
+            if recv_words.len() >= 2 {
+                let r_name = recv_words[0];
+                let s_name = recv_words[1].trim_start_matches('*');
+                if target_struct.is_none() || target_struct == Some(s_name) {
+                    method_line_idx = Some(idx);
+                    receiver_name = r_name.to_string();
+                    struct_name = s_name.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    let m_idx = method_line_idx.with_context(|| {
+        format!("Method `{target_method}` with receiver not found in Go file")
+    })?;
+
+    let mut m_body_end = m_idx;
+    let mut m_depth = 0i32;
+    let mut started = false;
+    for (idx, line) in lines.iter().enumerate().skip(m_idx) {
+        let opens = line.chars().filter(|&c| c == '{').count() as i32;
+        let closes = line.chars().filter(|&c| c == '}').count() as i32;
+        if opens > 0 {
+            started = true;
+        }
+        m_depth += opens;
+        m_depth -= closes;
+        if started && m_depth == 0 {
+            m_body_end = idx;
+            break;
+        }
+    }
+
+    let mut body_parts = Vec::new();
+    if let Some(pos) = lines[m_idx].find('{') {
+        let after_brace = &lines[m_idx][pos + 1..];
+        if !after_brace.trim().is_empty() {
+            body_parts.push(after_brace);
+        }
+    }
+    if m_body_end > m_idx {
+        for line in &lines[m_idx + 1..m_body_end] {
+            body_parts.push(*line);
+        }
+        if let Some(pos) = lines[m_body_end].rfind('}') {
+            let before_brace = &lines[m_body_end][..pos];
+            if !before_brace.trim().is_empty() {
+                body_parts.push(before_brace);
+            }
+        } else {
+            body_parts.push(lines[m_body_end]);
+        }
+    }
+    let body_text = body_parts.join("\n");
+    if mentions(&body_text, &receiver_name) {
+        anyhow::bail!(
+            "`{target_method}` uses receiver `{receiver_name}`; only a method that never accesses its receiver can be made static"
+        );
+    }
+
+    let mut new_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == m_idx {
+            let trimmed = line.trim_start();
+            let indent = &line[..line.len() - trimmed.len()];
+            let after_func = &trimmed["func (".len()..];
+            let close_recv = after_func.find(')').unwrap();
+            let after_recv = after_func[close_recv + 1..].trim_start();
+            new_lines.push(format!("{indent}func {after_recv}"));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = new_lines.join("\n");
+    let mut blocked = Vec::new();
+    let (final_code, rewritten_calls) = rewrite_calls_in_code(
+        &intermediate,
+        target_method,
+        &struct_name,
+        Language::Go,
+        "",
+        &mut blocked,
+    );
+
+    Ok((struct_name, target_method.to_string(), final_code, rewritten_calls, blocked))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn make_static_polyglot(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file_path: &Path,
+    class_name: Option<&str>,
+    method_name: &str,
+    apply: bool,
+    force: bool,
+) -> Result<MadeStatic> {
+    let content = std::fs::read_to_string(file_path)
+        .with_context(|| format!("Cannot read {}", file_path.display()))?;
+    let lang = Language::from_path(file_path)
+        .with_context(|| format!("Unsupported language for file: {}", file_path.display()))?;
+
+    let (owner, method, new_content, file_rewritten, mut blocked) = match lang {
+        Language::TypeScript => make_static_ts(&content, class_name, method_name)?,
+        Language::Python => make_static_py(&content, class_name, method_name)?,
+        Language::Cpp => make_static_cpp(&content, class_name, method_name)?,
+        Language::Swift => make_static_swift(&content, class_name, method_name)?,
+        Language::Go => make_static_go(&content, class_name, method_name)?,
+    };
+
+    let receiver = match lang {
+        Language::TypeScript => "this".to_string(),
+        Language::Python => "self".to_string(),
+        Language::Cpp => "*this".to_string(),
+        Language::Swift => "self".to_string(),
+        Language::Go => format!("(*{owner})"),
+    };
+
+    let mut rewritten = vec![(file_path.to_string_lossy().to_string(), new_content)];
+    let mut total_rewritten_calls = file_rewritten;
+
+    for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+        let path = entry.path();
+        if path.is_file() && path != file_path && lang.matches_extension(path)
+            && let Ok(other_content) = std::fs::read_to_string(path)
+                && other_content.contains(method_name) {
+                    let rel = display(workspace_root, path);
+                    let (new_other, calls) = rewrite_calls_in_code(
+                        &other_content,
+                        method_name,
+                        &owner,
+                        lang,
+                        &rel,
+                        &mut blocked,
+                    );
+                    if new_other != other_content {
+                        rewritten.push((path.to_string_lossy().to_string(), new_other));
+                        total_rewritten_calls += calls;
+                    }
+                }
+    }
+
+    let to_check: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (PathBuf::from(p), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &to_check, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.source
+                    .as_deref()
+                    .map(|s| format!("[{s}] "))
+                    .unwrap_or_default(),
+                d.message,
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    if apply {
+        anyhow::ensure!(
+            blocked.is_empty() || force,
+            "{} call site(s) would drop a receiver that does something; nothing was written:\n  {}",
+            blocked.len(),
+            blocked.join("\n  ")
+        );
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. Pass `force: true` to write it anyway:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let rewritten_map: BTreeMap<PathBuf, String> = rewritten
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        let edit = crate::signature::whole_file_edit(&rewritten_map);
+        crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    }
+
+    let rel_file = display(workspace_root, file_path);
+    Ok(MadeStatic {
+        owner,
+        method: method.to_string(),
+        root: workspace_root.to_path_buf(),
+        file: rel_file,
+        receiver,
+        rewritten_calls: total_rewritten_calls,
+        blocked,
+        unmatched: vec![],
+        rewritten,
+        diagnostics,
+        applied: apply,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,5 +1434,148 @@ mod tests {
                 && text.contains("diff truncated"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn make_static_ts_transforms_declaration_and_calls() {
+        let ts_code = r#"class Calculator {
+    add(a: number, b: number): number {
+        return a + b;
+    }
+}
+
+function test() {
+    const calc = new Calculator();
+    const sum = calc.add(10, 20);
+}
+"#;
+        let (owner, method, transformed, calls, blocked) =
+            make_static_ts(ts_code, Some("Calculator"), "add").unwrap();
+        assert_eq!(owner, "Calculator");
+        assert_eq!(method, "add");
+        assert_eq!(calls, 1);
+        assert!(blocked.is_empty());
+        assert!(transformed.contains("static add(a: number, b: number): number {"));
+        assert!(transformed.contains("Calculator.add(10, 20)"));
+    }
+
+    #[test]
+    fn make_static_ts_rejects_this_access() {
+        let ts_code = r#"class Counter {
+    val: number = 0;
+    bump(): void {
+        this.val += 1;
+    }
+}
+"#;
+        let err = make_static_ts(ts_code, Some("Counter"), "bump").unwrap_err();
+        assert!(err.to_string().contains("uses `this`"));
+    }
+
+    #[test]
+    fn make_static_py_transforms_declaration_and_calls() {
+        let py_code = r#"class MathUtil:
+    def multiply(self, x: int, y: int) -> int:
+        return x * y
+
+def run():
+    util = MathUtil()
+    result = util.multiply(5, 6)
+"#;
+        let (owner, method, transformed, calls, blocked) =
+            make_static_py(py_code, Some("MathUtil"), "multiply").unwrap();
+        assert_eq!(owner, "MathUtil");
+        assert_eq!(method, "multiply");
+        assert_eq!(calls, 1);
+        assert!(blocked.is_empty());
+        assert!(transformed.contains("@staticmethod\n    def multiply(x: int, y: int) -> int:"));
+        assert!(transformed.contains("MathUtil.multiply(5, 6)"));
+    }
+
+    #[test]
+    fn make_static_cpp_transforms_declaration_and_calls() {
+        let cpp_code = r#"class Util {
+public:
+    int sum(int a, int b) const {
+        return a + b;
+    }
+};
+
+void run() {
+    Util u;
+    int s = u.sum(3, 4);
+}
+"#;
+        let (owner, method, transformed, calls, blocked) =
+            make_static_cpp(cpp_code, Some("Util"), "sum").unwrap();
+        assert_eq!(owner, "Util");
+        assert_eq!(method, "sum");
+        assert_eq!(calls, 1);
+        assert!(blocked.is_empty());
+        assert!(transformed.contains("static int sum(int a, int b) {"));
+        assert!(transformed.contains("Util::sum(3, 4)"));
+    }
+
+    #[test]
+    fn make_static_swift_transforms_declaration_and_calls() {
+        let swift_code = r#"class Greeter {
+    func greet(name: String) -> String {
+        return "Hello " + name
+    }
+}
+
+func test() {
+    let g = Greeter()
+    let msg = g.greet(name: "World")
+}
+"#;
+        let (owner, method, transformed, calls, blocked) =
+            make_static_swift(swift_code, Some("Greeter"), "greet").unwrap();
+        assert_eq!(owner, "Greeter");
+        assert_eq!(method, "greet");
+        assert_eq!(calls, 1);
+        assert!(blocked.is_empty());
+        assert!(transformed.contains("static func greet(name: String) -> String {"));
+        assert!(transformed.contains("Greeter.greet(name: \"World\")"));
+    }
+
+    #[test]
+    fn make_static_go_transforms_declaration_and_calls() {
+        let go_code = r#"package main
+
+type Service struct{}
+
+func (s *Service) Process(data string) string {
+    return "processed:" + data
+}
+
+func main() {
+    svc := &Service{}
+    res := svc.Process("test")
+}
+"#;
+        let (owner, method, transformed, calls, blocked) =
+            make_static_go(go_code, Some("Service"), "Process").unwrap();
+        assert_eq!(owner, "Service");
+        assert_eq!(method, "Process");
+        assert_eq!(calls, 1);
+        assert!(blocked.is_empty());
+        assert!(transformed.contains("func Process(data string) string {"));
+        assert!(transformed.contains("Process(\"test\")"));
+    }
+
+    #[test]
+    fn make_static_catches_effectful_receiver() {
+        let ts_code = r#"class Worker {
+    run(): void {}
+}
+
+function test() {
+    getWorker()?.run();
+}
+"#;
+        let (_, _, _, _, blocked) = make_static_ts(ts_code, Some("Worker"), "run").unwrap();
+        assert_eq!(blocked.len(), 1);
+        assert!(blocked[0].contains("is evaluated for what it does"));
     }
 }
