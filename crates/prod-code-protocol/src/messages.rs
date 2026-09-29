@@ -115,6 +115,13 @@ pub enum EngineKind {
     Julia,
     Shell,
     R,
+    Erlang,
+    Fsharp,
+    Perl,
+    Solidity,
+    Nim,
+    D,
+    Fortran,
     Generic,
 }
 
@@ -143,6 +150,13 @@ impl EngineKind {
             EngineKind::Julia => "julia",
             EngineKind::Shell => "shell",
             EngineKind::R => "r",
+            EngineKind::Erlang => "erlang",
+            EngineKind::Fsharp => "fsharp",
+            EngineKind::Perl => "perl",
+            EngineKind::Solidity => "solidity",
+            EngineKind::Nim => "nim",
+            EngineKind::D => "d",
+            EngineKind::Fortran => "fortran",
             EngineKind::Generic => "generic",
         }
     }
@@ -180,6 +194,13 @@ impl std::str::FromStr for EngineKind {
             "julia" | "jl" => EngineKind::Julia,
             "shell" | "sh" | "bash" | "zsh" => EngineKind::Shell,
             "r" | "rstats" => EngineKind::R,
+            "erlang" | "erl" => EngineKind::Erlang,
+            "fsharp" | "fs" | "f#" => EngineKind::Fsharp,
+            "perl" | "pl" | "pm" => EngineKind::Perl,
+            "solidity" | "sol" => EngineKind::Solidity,
+            "nim" => EngineKind::Nim,
+            "d" | "dlang" => EngineKind::D,
+            "fortran" | "f90" | "f95" => EngineKind::Fortran,
             _ => EngineKind::Generic,
         })
     }
@@ -1213,6 +1234,13 @@ mod wire_tests {
             ("julia", EngineKind::Julia),
             ("shell", EngineKind::Shell),
             ("r", EngineKind::R),
+            ("erlang", EngineKind::Erlang),
+            ("fsharp", EngineKind::Fsharp),
+            ("perl", EngineKind::Perl),
+            ("solidity", EngineKind::Solidity),
+            ("nim", EngineKind::Nim),
+            ("d", EngineKind::D),
+            ("fortran", EngineKind::Fortran),
         ];
         for (name, kind) in languages {
             assert_eq!(kind.as_str(), name);

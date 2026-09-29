@@ -1079,6 +1079,20 @@ fn plan_command_basic(
         ("shell", VerifyKind::Test) => vec!["bats", "test"],
         ("r", VerifyKind::Check) => vec!["R", "CMD", "check", "."],
         ("r", VerifyKind::Test) => vec!["R", "-e", "testthat::test_dir('tests')"],
+        ("erlang", VerifyKind::Check) => vec!["rebar3", "compile"],
+        ("erlang", VerifyKind::Test) => vec!["rebar3", "eunit"],
+        ("fsharp", VerifyKind::Check) => vec!["dotnet", "build"],
+        ("fsharp", VerifyKind::Test) => vec!["dotnet", "test"],
+        ("perl", VerifyKind::Check) => vec!["perl", "-c"],
+        ("perl", VerifyKind::Test) => vec!["prove", "-l"],
+        ("solidity", VerifyKind::Check) => vec!["forge", "build"],
+        ("solidity", VerifyKind::Test) => vec!["forge", "test"],
+        ("nim", VerifyKind::Check) => vec!["nim", "check"],
+        ("nim", VerifyKind::Test) => vec!["nimble", "test"],
+        ("d", VerifyKind::Check) => vec!["dub", "build"],
+        ("d", VerifyKind::Test) => vec!["dub", "test"],
+        ("fortran", VerifyKind::Check) => vec!["fpm", "build"],
+        ("fortran", VerifyKind::Test) => vec!["fpm", "test"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1146,6 +1160,28 @@ fn plan_command_basic(
             }
             ("r", VerifyKind::Test) => {
                 cmd.push(format!("-filter={}", filter));
+            }
+            ("erlang", VerifyKind::Test) => {
+                cmd.push(format!("--module={}", filter));
+            }
+            ("fsharp", VerifyKind::Test) => {
+                cmd.push("--filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("perl", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("solidity", VerifyKind::Test) => {
+                cmd.push("--match-test".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("d", VerifyKind::Test) => {
+                cmd.push("--".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("fortran", VerifyKind::Test) => {
+                cmd.push("--target".to_string());
+                cmd.push(filter.to_string());
             }
             ("rust", VerifyKind::Bench) => cmd.push(filter.to_string()),
             _ => {}
@@ -3145,6 +3181,62 @@ expected 42, got 43\n\
         assert_eq!(
             plan_command("r", VerifyKind::Check, None).unwrap(),
             ["R", "CMD", "check", "."]
+        );
+        assert_eq!(
+            plan_command("erlang", VerifyKind::Check, None).unwrap(),
+            ["rebar3", "compile"]
+        );
+        assert_eq!(
+            plan_command("erlang", VerifyKind::Test, Some("my_mod")).unwrap(),
+            ["rebar3", "eunit", "--module=my_mod"]
+        );
+        assert_eq!(
+            plan_command("fsharp", VerifyKind::Check, None).unwrap(),
+            ["dotnet", "build"]
+        );
+        assert_eq!(
+            plan_command("fsharp", VerifyKind::Test, Some("MyTest")).unwrap(),
+            ["dotnet", "test", "--filter", "MyTest"]
+        );
+        assert_eq!(
+            plan_command("perl", VerifyKind::Check, None).unwrap(),
+            ["perl", "-c"]
+        );
+        assert_eq!(
+            plan_command("perl", VerifyKind::Test, Some("t/foo.t")).unwrap(),
+            ["prove", "-l", "t/foo.t"]
+        );
+        assert_eq!(
+            plan_command("solidity", VerifyKind::Check, None).unwrap(),
+            ["forge", "build"]
+        );
+        assert_eq!(
+            plan_command("solidity", VerifyKind::Test, Some("testTransfer")).unwrap(),
+            ["forge", "test", "--match-test", "testTransfer"]
+        );
+        assert_eq!(
+            plan_command("nim", VerifyKind::Check, None).unwrap(),
+            ["nim", "check"]
+        );
+        assert_eq!(
+            plan_command("nim", VerifyKind::Test, None).unwrap(),
+            ["nimble", "test"]
+        );
+        assert_eq!(
+            plan_command("d", VerifyKind::Check, None).unwrap(),
+            ["dub", "build"]
+        );
+        assert_eq!(
+            plan_command("d", VerifyKind::Test, Some("unit")).unwrap(),
+            ["dub", "test", "--", "unit"]
+        );
+        assert_eq!(
+            plan_command("fortran", VerifyKind::Check, None).unwrap(),
+            ["fpm", "build"]
+        );
+        assert_eq!(
+            plan_command("fortran", VerifyKind::Test, Some("my_test")).unwrap(),
+            ["fpm", "test", "--target", "my_test"]
         );
     }
 }

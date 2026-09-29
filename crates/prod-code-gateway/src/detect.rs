@@ -47,6 +47,18 @@ const CLOJURE_MARKERS: &[&str] = &["project.clj", "deps.edn"];
 const JULIA_MARKERS: &[&str] = &["JuliaProject.toml"];
 const SHELL_MARKERS: &[&str] = &[".shellcheckrc"];
 const R_MARKERS: &[&str] = &["DESCRIPTION", "NAMESPACE"];
+const ERLANG_MARKERS: &[&str] = &["rebar.config", "rebar.lock", "erlang.mk"];
+const PERL_MARKERS: &[&str] = &["cpanfile", "Makefile.PL", "Build.PL", "dist.ini"];
+const SOLIDITY_MARKERS: &[&str] = &[
+    "foundry.toml",
+    "hardhat.config.js",
+    "hardhat.config.ts",
+    "hardhat.config.cjs",
+    "truffle-config.js",
+];
+const NIM_MARKERS: &[&str] = &["nim.cfg"];
+const D_MARKERS: &[&str] = &["dub.json", "dub.sdl"];
+const FORTRAN_MARKERS: &[&str] = &["fpm.toml"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -200,6 +212,56 @@ pub fn has_r_project(root: &Path) -> bool {
     R_MARKERS.iter().any(|m| root.join(m).exists())
 }
 
+/// An Erlang project (rebar.config, rebar.lock, erlang.mk) at the root.
+pub fn has_erlang_project(root: &Path) -> bool {
+    ERLANG_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
+/// An F# project (*.fsproj) at the root.
+pub fn has_fsharp_project(root: &Path) -> bool {
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".fsproj")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Perl project (cpanfile, Makefile.PL, Build.PL, dist.ini) at the root.
+pub fn has_perl_project(root: &Path) -> bool {
+    PERL_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
+/// A Solidity project (foundry.toml, hardhat.config.*) at the root.
+pub fn has_solidity_project(root: &Path) -> bool {
+    SOLIDITY_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
+/// A Nim project (*.nimble, nim.cfg) at the root.
+pub fn has_nim_project(root: &Path) -> bool {
+    if NIM_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".nimble")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A D project (dub.json, dub.sdl) at the root.
+pub fn has_d_project(root: &Path) -> bool {
+    D_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
+/// A Fortran project (fpm.toml) at the root.
+pub fn has_fortran_project(root: &Path) -> bool {
+    FORTRAN_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
 /// Detect the primary engine kind for the specified workspace path.
 ///
 /// Priority order:
@@ -302,6 +364,27 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_r_project(root) {
         return EngineKind::R;
     }
+    if has_erlang_project(root) {
+        return EngineKind::Erlang;
+    }
+    if has_fsharp_project(root) {
+        return EngineKind::Fsharp;
+    }
+    if has_perl_project(root) {
+        return EngineKind::Perl;
+    }
+    if has_solidity_project(root) {
+        return EngineKind::Solidity;
+    }
+    if has_nim_project(root) {
+        return EngineKind::Nim;
+    }
+    if has_d_project(root) {
+        return EngineKind::D;
+    }
+    if has_fortran_project(root) {
+        return EngineKind::Fortran;
+    }
     EngineKind::Generic
 }
 
@@ -374,6 +457,27 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_r_project(root) {
         engines.push(EngineKind::R);
+    }
+    if has_erlang_project(root) {
+        engines.push(EngineKind::Erlang);
+    }
+    if has_fsharp_project(root) {
+        engines.push(EngineKind::Fsharp);
+    }
+    if has_perl_project(root) {
+        engines.push(EngineKind::Perl);
+    }
+    if has_solidity_project(root) {
+        engines.push(EngineKind::Solidity);
+    }
+    if has_nim_project(root) {
+        engines.push(EngineKind::Nim);
+    }
+    if has_d_project(root) {
+        engines.push(EngineKind::D);
+    }
+    if has_fortran_project(root) {
+        engines.push(EngineKind::Fortran);
     }
 
     if engines.is_empty() {
@@ -630,5 +734,40 @@ mod tests {
         std::fs::write(dir_r.path().join("DESCRIPTION"), "Package: pkg").unwrap();
         assert_eq!(detect_engine(dir_r.path()), EngineKind::R);
         assert_eq!(detect_all_engines(dir_r.path()), vec![EngineKind::R]);
+
+        let dir_erl = tempdir().unwrap();
+        std::fs::write(dir_erl.path().join("rebar.config"), "{erl_opts, []}.").unwrap();
+        assert_eq!(detect_engine(dir_erl.path()), EngineKind::Erlang);
+        assert_eq!(detect_all_engines(dir_erl.path()), vec![EngineKind::Erlang]);
+
+        let dir_fs = tempdir().unwrap();
+        std::fs::write(dir_fs.path().join("App.fsproj"), "<Project></Project>").unwrap();
+        assert_eq!(detect_engine(dir_fs.path()), EngineKind::Fsharp);
+        assert_eq!(detect_all_engines(dir_fs.path()), vec![EngineKind::Fsharp]);
+
+        let dir_pl = tempdir().unwrap();
+        std::fs::write(dir_pl.path().join("cpanfile"), "requires 'Mojolicious';").unwrap();
+        assert_eq!(detect_engine(dir_pl.path()), EngineKind::Perl);
+        assert_eq!(detect_all_engines(dir_pl.path()), vec![EngineKind::Perl]);
+
+        let dir_sol = tempdir().unwrap();
+        std::fs::write(dir_sol.path().join("foundry.toml"), "[profile.default]").unwrap();
+        assert_eq!(detect_engine(dir_sol.path()), EngineKind::Solidity);
+        assert_eq!(detect_all_engines(dir_sol.path()), vec![EngineKind::Solidity]);
+
+        let dir_nim = tempdir().unwrap();
+        std::fs::write(dir_nim.path().join("pkg.nimble"), "version = \"0.1.0\"").unwrap();
+        assert_eq!(detect_engine(dir_nim.path()), EngineKind::Nim);
+        assert_eq!(detect_all_engines(dir_nim.path()), vec![EngineKind::Nim]);
+
+        let dir_d = tempdir().unwrap();
+        std::fs::write(dir_d.path().join("dub.json"), "{\"name\": \"pkg\"}").unwrap();
+        assert_eq!(detect_engine(dir_d.path()), EngineKind::D);
+        assert_eq!(detect_all_engines(dir_d.path()), vec![EngineKind::D]);
+
+        let dir_f = tempdir().unwrap();
+        std::fs::write(dir_f.path().join("fpm.toml"), "name = \"pkg\"").unwrap();
+        assert_eq!(detect_engine(dir_f.path()), EngineKind::Fortran);
+        assert_eq!(detect_all_engines(dir_f.path()), vec![EngineKind::Fortran]);
     }
 }

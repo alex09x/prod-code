@@ -93,6 +93,11 @@ impl TailBuffer {
 /// aliases of one storage directory choose the same namespace, while sibling storage roots do
 /// not share one.
 pub fn default_root(storage_root: &Path) -> PathBuf {
+    if let Ok(custom_root) = std::env::var("PROD_CODE_SHADOW_ROOT")
+        && !custom_root.trim().is_empty()
+    {
+        return PathBuf::from(custom_root.trim());
+    }
     let identity = storage_identity(storage_root);
     let label: String = identity
         .file_name()
@@ -115,6 +120,14 @@ pub fn default_root(storage_root: &Path) -> PathBuf {
         .fold(0xcbf29ce484222325u64, |hash, byte| {
             (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
         });
+    if let Ok(ram_env) = std::env::var("PROD_CODE_SHADOW_RAM")
+        && (ram_env == "1" || ram_env.eq_ignore_ascii_case("true"))
+    {
+        let shm = Path::new("/dev/shm");
+        if shm.is_dir() {
+            return shm.join(format!(".prod-code-shadow-ram-{label}-{hash:016x}"));
+        }
+    }
     identity
         .parent()
         .map(|parent| parent.join(format!(".prod-code-shadow-{label}-{hash:016x}")))
@@ -3519,5 +3532,22 @@ mod tests {
             "cleanup deleted an outside directory through the replaced parent"
         );
         assert_eq!(sentinel(&outside).as_deref(), Some("keep\n"));
+    }
+
+    #[test]
+    fn test_shadow_default_root_configuration() {
+        let storage = Path::new("/srv/workspaces/storage");
+        let default = default_root(storage);
+        assert!(default.to_string_lossy().contains(".prod-code-shadow-storage-"));
+
+        // Custom shadow root override via PROD_CODE_SHADOW_ROOT
+        unsafe {
+            std::env::set_var("PROD_CODE_SHADOW_ROOT", "/tmp/custom_shadow");
+        }
+        let custom = default_root(storage);
+        assert_eq!(custom, PathBuf::from("/tmp/custom_shadow"));
+        unsafe {
+            std::env::remove_var("PROD_CODE_SHADOW_ROOT");
+        }
     }
 }

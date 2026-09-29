@@ -142,6 +142,13 @@ impl GenericLspConfig {
             "julia" => Self::for_julia(),
             "shell" => Self::for_shell(),
             "r" => Self::for_r(),
+            "erlang" => Self::for_erlang(),
+            "fsharp" => Self::for_fsharp(),
+            "perl" => Self::for_perl(),
+            "solidity" => Self::for_solidity(),
+            "nim" => Self::for_nim(),
+            "d" => Self::for_d(),
+            "fortran" => Self::for_fortran(),
             _ => return None,
         };
         let command = Path::new(&config.command);
@@ -652,6 +659,135 @@ impl GenericLspConfig {
         Self {
             command: cmd,
             args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Erlang language servers (erlang_ls).
+    pub fn for_erlang() -> Self {
+        Self {
+            command: "erlang_ls".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for F# language servers (fsautocomplete).
+    pub fn for_fsharp() -> Self {
+        Self {
+            command: "fsautocomplete".to_string(),
+            args: vec!["--adaptive-lsp-server-enabled".to_string()],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Perl language servers (pls).
+    pub fn for_perl() -> Self {
+        let (cmd, args) = if which_bin("pls").is_ok() {
+            ("pls".to_string(), vec![])
+        } else {
+            ("perl-language-server".to_string(), vec![])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Solidity language servers.
+    pub fn for_solidity() -> Self {
+        let (cmd, args) = if which_bin("nomicfoundation-solidity-language-server").is_ok() {
+            ("nomicfoundation-solidity-language-server".to_string(), vec!["--stdio".to_string()])
+        } else {
+            ("solidity-language-server".to_string(), vec!["--stdio".to_string()])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Nim language servers (nimlsp).
+    pub fn for_nim() -> Self {
+        Self {
+            command: "nimlsp".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for D language servers (serve-d).
+    pub fn for_d() -> Self {
+        Self {
+            command: "serve-d".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Fortran language servers (fortls).
+    pub fn for_fortran() -> Self {
+        Self {
+            command: "fortls".to_string(),
+            args: vec![],
             env: HashMap::new(),
             working_dir: None,
             initialization_options: None,
