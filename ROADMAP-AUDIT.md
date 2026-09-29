@@ -117,6 +117,7 @@ evidence remain above; the original mechanism or required scope remains open.
   local impls in block expressions, while preserving macro and trait-impl refusals.
 - **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
   the promised general `for`/`while` iterator/fold transformation.
+- **7.3**: declaration-level slicing extended with intra-function backward data-flow and control-dependency slicing inside function bodies and explicit completeness contract (Complete, Bounded, Incomplete) in #680.
 - **7.4**: overlayfs shadows live beside storage by default and may fall back in place; RAM-backed shadow mechanism implemented via `PROD_CODE_SHADOW_RAM=1` and `/dev/shm` tmpfs in #664.
 - **7.5**: `code_dead_code` reference counting extended with whole-program entry-point reachability analysis, unreachable circular dead cycle detection and cluster grouping in #675.
 - **7.6**: planning and direct all-or-rollback writes are not an atomic multi-repository
@@ -135,8 +136,8 @@ interface extraction, delegation, encapsulation, receiver conversion, type migra
 inversion, generics and return wrapping. Server assists expose only what that server supports.
 
 Even Rust does not implement every stronger original requirement: whole-program transitive type
-migration, custom return envelopes, general factory/builder generation and data-flow slicing
-remain distinct work. Inheritance operations apply to languages with inheritance, rather than
+migration, custom return envelopes, and general factory/builder generation remain distinct work
+(intra-function data-flow slicing delivered in #680). Inheritance operations apply to languages with inheritance, rather than
 being complete merely because they do not apply to Rust.
 
 Infrastructure requirements still open include shared clangd/PCH and Swift module caches,

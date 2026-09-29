@@ -806,7 +806,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_slice".to_string(),
-            description: "Return only the code a symbol depends on, instead of the files it lives in. Starting from the symbol, the analyzer's own edges are followed: the functions it calls, and the types, constants and traits its body mentions, each returned as its whole declaration with its file and line range. `depth` bounds how far the walk goes (default 2), `max_bytes` bounds the result. Use it to read an unfamiliar function without opening four files, and to hand a model the relevant tenth of a codebase rather than the whole of it. Names that resolve outside the workspace (std, dependencies) are listed, not expanded."
+            description: "Return only the code a symbol depends on, instead of the files it lives in. Starting from the symbol, the analyzer's own edges are followed: the functions it calls, and the types, constants and traits its body mentions, each returned as its whole declaration with its file and line range. Supports intra-function backward data-flow and control-dependency slicing inside function bodies (Roadmap 7.3) with explicit completeness contract (Complete, Bounded, Incomplete) via `dataflow: true`. `depth` bounds how far the walk goes (default 2), `max_bytes` bounds the result. Use it to read an unfamiliar function without opening four files, and to hand a model the relevant tenth of a codebase rather than the whole of it. Names that resolve outside the workspace (std, dependencies) are listed, not expanded."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -816,7 +816,10 @@ pub fn list_tools() -> Vec<McpTool> {
                     "line": { "type": "integer", "description": "1-based line of the symbol" },
                     "character": { "type": "integer", "description": "1-based column of the symbol" },
                     "depth": { "type": "integer", "description": "How many edges to follow from the seed (default 2, 0 returns the seed alone)" },
-                    "max_bytes": { "type": "integer", "description": "Stop once the slice reaches this many bytes (default 24576)" }
+                    "max_bytes": { "type": "integer", "description": "Stop once the slice reaches this many bytes (default 24576)" },
+                    "dataflow": { "type": "boolean", "description": "When true, perform intra-function backward data-flow and control-dependency slicing inside the function body (Roadmap 7.3)" },
+                    "target_line": { "type": "integer", "description": "Target line for intra-function data-flow slicing criterion (1-based, defaults to cursor line or return statement)" },
+                    "target_var": { "type": "string", "description": "Target variable name for intra-function data-flow slicing criterion" }
                 },
                 "required": []
             }),
@@ -4016,15 +4019,23 @@ async fn handle_slice(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
-    let path_str = args
-        .get("path")
-        .and_then(|v| v.as_str())
-        .context("Missing 'path' argument (or pass 'symbol')")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument (or pass 'symbol')")? as u32;
-    let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let (file_path, line, character) = if let Some(sym) = args.get("symbol").and_then(|v| v.as_str()) {
+        let hint = args.get("path").and_then(|v| v.as_str()).map(Path::new);
+        let hit = resolve_symbol(remote, workspace_root, sym, hint).await?;
+        (hit.path, hit.line, hit.col)
+    } else {
+        let path_str = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .context("Missing 'path' argument (or pass 'symbol')")?;
+        let line = args
+            .get("line")
+            .and_then(|v| v.as_u64())
+            .context("Missing 'line' argument (or pass 'symbol')")? as u32;
+        let character = args.get("character").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+        (resolve_file_path(workspace_root, path_str), line, character)
+    };
+
     let depth = args
         .get("depth")
         .and_then(|v| v.as_u64())
@@ -4033,15 +4044,33 @@ async fn handle_slice(
         .get("max_bytes")
         .and_then(|v| v.as_u64())
         .unwrap_or(crate::slice::DEFAULT_MAX_BYTES as u64) as usize;
-    let file_path = resolve_file_path(workspace_root, path_str);
-    let report = crate::slice::slice(
+    let dataflow = args
+        .get("dataflow")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let target_line = args
+        .get("target_line")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let target_var = args
+        .get("target_var")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let options = crate::slice::SliceOptions {
+        depth,
+        max_bytes,
+        dataflow,
+        target_line,
+        target_var,
+    };
+    let report = crate::slice::slice_with_options(
         remote,
         workspace_root,
         &file_path,
         line,
         character,
-        depth,
-        max_bytes,
+        options,
     )
     .await?;
     Ok(McpToolCallResult::text(report.render()))
