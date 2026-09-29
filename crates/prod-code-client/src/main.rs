@@ -959,6 +959,42 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Replace conditional logic (switch/match/if-else) with polymorphism.
+    #[command(alias = "replace-conditional")]
+    ReplaceConditionalWithPolymorphism {
+        /// File that holds the conditional statement
+        file: PathBuf,
+        /// 1-based line of the switch/match/if statement
+        #[arg(long, default_value_t = 0)]
+        line: u32,
+        /// 1-based column of the switch/match/if statement
+        #[arg(long, default_value_t = 0)]
+        character: u32,
+        /// Name of the base class, interface, protocol, or trait
+        #[arg(long = "base-name", visible_alias = "base")]
+        base_name: String,
+        /// Name of the polymorphic method to generate
+        #[arg(long = "method-name", visible_alias = "method")]
+        method_name: String,
+        /// Optional method parameters (comma-separated, e.g. "amount: number")
+        #[arg(long, value_delimiter = ',')]
+        params: Vec<String>,
+        /// Optional return type of the method
+        #[arg(long = "return-type")]
+        return_type: Option<String>,
+        /// Optional target variable to invoke method on
+        #[arg(long = "target-var")]
+        target_var: Option<String>,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if warnings or non-fatal diagnostics occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a method into a field of its type, initialised wherever the
     /// type is built.
     ExtractField {
@@ -2387,6 +2423,56 @@ async fn main() -> Result<()> {
             }
             let result =
                 prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_inheritance_with_delegation", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::ReplaceConditionalWithPolymorphism {
+            file,
+            line,
+            character,
+            base_name,
+            method_name,
+            params,
+            return_type,
+            target_var,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "base_name": base_name,
+                "method_name": method_name,
+                "line": line,
+                "character": character,
+                "apply": apply,
+                "force": force,
+            });
+            if !params.is_empty() {
+                args["params"] = serde_json::Value::Array(
+                    params.into_iter().map(serde_json::Value::String).collect(),
+                );
+            }
+            if let Some(r) = return_type {
+                args["return_type"] = serde_json::Value::String(r);
+            }
+            if let Some(t) = target_var {
+                args["target_var"] = serde_json::Value::String(t);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_conditional_with_polymorphism", args)
                     .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;

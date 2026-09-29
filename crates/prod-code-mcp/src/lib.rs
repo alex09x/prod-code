@@ -40,6 +40,7 @@ pub mod refactor;
 pub mod remote_fs;
 pub mod rename_accessors;
 pub mod rename_mentions;
+pub mod replace_conditional;
 pub mod replace_constructor;
 pub mod replace_inheritance;
 pub mod report;

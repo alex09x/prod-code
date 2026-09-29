@@ -529,6 +529,29 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_replace_conditional_with_polymorphism".to_string(),
+            description: "Replace conditional logic (switch/match statements or if-elif-else cascades) with polymorphic dispatch across Python, TypeScript/JavaScript, C++, Swift, and Rust (Roadmap 7.1.5). Generates base class, interface, protocol, or trait hierarchy with polymorphic method and replaces conditional block with dynamic dispatch. Type-checked via analyzer overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the conditional statement" },
+                    "line": { "type": "integer", "description": "1-based line of the switch/match/if statement" },
+                    "character": { "type": "integer", "description": "1-based column of the switch/match/if statement" },
+                    "symbol": { "type": "string", "description": "Optional function or method name containing the conditional" },
+                    "base_name": { "type": "string", "description": "Name of the base class, interface, protocol, or trait (e.g. `Bird`, `Employee`, `Shape`)" },
+                    "method_name": { "type": "string", "description": "Name of the polymorphic method to generate (e.g. `get_speed`, `calculate_pay`, `area`)" },
+                    "params": { "type": "array", "items": { "type": "string" }, "description": "Optional method parameter definitions (e.g. `[\"amount: number\"]`)" },
+                    "return_type": { "type": "string", "description": "Optional return type of the method (e.g. `number`, `float`, `f64`)" },
+                    "target_var": { "type": "string", "description": "Optional target variable to invoke method on (defaults to discriminator expression)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["base_name", "method_name"]
+            }),
+        },
+        McpTool {
             name: "code_extract_function".to_string(),
             description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
                 .to_string(),
@@ -1419,6 +1442,9 @@ pub async fn execute_tool(
         "code_push_down" => handle_push_down(remote, workspace_root, &args).await,
         "code_replace_inheritance_with_delegation" | "code_replace_inheritance" => {
             handle_replace_inheritance_with_delegation(remote, workspace_root, &args).await
+        }
+        "code_replace_conditional_with_polymorphism" | "code_replace_conditional" => {
+            handle_replace_conditional_with_polymorphism(remote, workspace_root, &args).await
         }
         "code_extract_delegate" => {
             let path_str = args
@@ -3771,6 +3797,62 @@ async fn handle_replace_inheritance_with_delegation(
         base_type,
         field_name,
         methods.as_deref(),
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_replace_conditional_with_polymorphism(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let base_name = args
+        .get("base_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'base_name' argument")?;
+    let method_name = args
+        .get("method_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'method_name' argument")?;
+    let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let col = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let params: Vec<String> = args
+        .get("params")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let return_type = args.get("return_type").and_then(|v| v.as_str());
+    let target_var = args.get("target_var").and_then(|v| v.as_str());
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+
+    let done = crate::replace_conditional::replace_conditional_impl(
+        remote,
+        workspace_root,
+        &file_path,
+        line,
+        col,
+        base_name,
+        method_name,
+        &params,
+        return_type,
+        target_var,
         apply,
         force,
         verify,
@@ -6339,6 +6421,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_pull_up",
     "code_push_down",
     "code_replace_inheritance_with_delegation",
+    "code_replace_conditional_with_polymorphism",
 ];
 
 /// One `workspace/symbol` hit, positioned on the symbol's name (1-based).
