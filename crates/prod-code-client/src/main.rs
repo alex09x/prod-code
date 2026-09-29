@@ -829,6 +829,12 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// Name of the field to encapsulate, when symbol is a class or file.
+        #[arg(long)]
+        field: Option<String>,
+        /// Optional class or struct name declaring the field.
+        #[arg(long)]
+        class: Option<String>,
         /// Return the field by value (`true`, it must be `Copy`) or by reference (`false`).
         #[arg(long)]
         by_value: Option<bool>,
@@ -996,7 +1002,6 @@ enum Commands {
         force: bool,
     },
     /// Extract an interface, protocol, or abstract class from a class or struct.
-    #[command(alias = "extract-interface")]
     ExtractInterface {
         /// File that declares the class or struct
         file: PathBuf,
@@ -2265,13 +2270,15 @@ async fn main() -> Result<()> {
             line,
             character,
             path,
+            field,
+            class,
             by_value,
             verify,
             apply,
             force,
         } => {
             run_encapsulate_field_cli(
-                remote, symbol, line, character, path, by_value, verify, apply, force,
+                remote, symbol, line, character, path, field, class, by_value, verify, apply, force,
             )
             .await
         }
@@ -4901,6 +4908,8 @@ async fn run_encapsulate_field_cli(
     line: Option<u32>,
     character: u32,
     path: Option<String>,
+    field: Option<String>,
+    class: Option<String>,
     by_value: Option<bool>,
     verify: Option<String>,
     apply: bool,
@@ -4909,17 +4918,31 @@ async fn run_encapsulate_field_cli(
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let mut args = serde_json::json!({ "apply": apply, "force": force });
-    match line {
+    let is_file_path = std::path::Path::new(&symbol).extension().is_some() || cwd.join(&symbol).exists();
+    if let Some(line) = line {
         // A position: the first argument is the file, not a name to resolve.
-        Some(line) => {
+        args["path"] = serde_json::Value::String(symbol);
+        args["line"] = serde_json::Value::from(line);
+        args["character"] = serde_json::Value::from(character);
+    } else if is_file_path {
+        args["path"] = serde_json::Value::String(symbol);
+    } else if field.is_some() {
+        if path.is_some() {
+            args["class_name"] = serde_json::Value::String(symbol);
+        } else {
             args["path"] = serde_json::Value::String(symbol);
-            args["line"] = serde_json::Value::from(line);
-            args["character"] = serde_json::Value::from(character);
         }
-        None => args["symbol"] = serde_json::Value::String(symbol),
+    } else {
+        args["symbol"] = serde_json::Value::String(symbol);
     }
     if let Some(path) = path {
         args["path"] = serde_json::Value::String(path);
+    }
+    if let Some(field) = field {
+        args["field"] = serde_json::Value::String(field);
+    }
+    if let Some(class) = class {
+        args["class_name"] = serde_json::Value::String(class);
     }
     if let Some(by_value) = by_value {
         args["by_value"] = serde_json::Value::Bool(by_value);

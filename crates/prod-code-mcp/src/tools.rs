@@ -241,18 +241,21 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_encapsulate_field".to_string(),
-            description: "Make a public field private and turn every access to it outside its declaring file into a method call: reads become `x.field()`, plain writes become `x.set_field(v)`. Give the field's position in its struct (or `symbol`). The getter returns the value for a primitive `Copy` type, a shared reference otherwise (override with `by_value`); the setter is generated only when something writes the field. Both go into the struct's first inherent `impl` in that file, or a new one after the struct, with the field's old visibility. Accesses inside the declaring file stay direct, because a private field is still visible there. A use that cannot become a method call — a struct literal or pattern outside the file, a compound assignment, `&mut x.field` — is reported with its source line, and nothing is written while one remains. The whole change is type-checked in one overlay before anything is written; the analyzer does not check borrows, so where a read goes on to call a method on the field, ask for `verify: \"compile\"`. Rust only."
+            description: "Make a public field private and turn every access to it outside its declaring file into a method call: reads become `x.field()` (or `x.getField()`), plain writes become `x.set_field(v)` (or `x.setField(v)`). Supports Rust, TypeScript/JavaScript, Python, C++, Swift, and Go. Generates idiomatic getters and setters, updates internal references, rewrites external reads and writes across the workspace, and validates in-memory analyzer overlays before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File that declares the struct" },
+                    "path": { "type": "string", "description": "File that declares the struct or class" },
+                    "symbol": { "type": "string", "description": "Field by name (`Class::field` or `field`), or class name when `field` is given" },
+                    "field": { "type": "string", "description": "Name of the field to encapsulate" },
+                    "class_name": { "type": "string", "description": "Optional name of the class or struct declaring the field" },
                     "line": { "type": "integer", "description": "1-based line of the field's name" },
                     "character": { "type": "integer", "description": "1-based column of the field's name" },
-                    "by_value": { "type": "boolean", "description": "Return the field by value (it must be `Copy`) or by shared reference; default: by value for primitive `Copy` types only" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a borrow the getter no longer allows" },
+                    "by_value": { "type": "boolean", "description": "Return the field by value (Rust `Copy`, C++ primitive) or by reference" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
-                    "force": { "type": "boolean", "description": "Write even when a use cannot become a method call or the result does not compile; a reference that is not read as a use still blocks the write" }
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings occur" }
                 }
             }),
         },
@@ -4262,30 +4265,70 @@ async fn handle_encapsulate_field(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument (or `symbol`)")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument (or `symbol`)")? as u32;
-    let character = args
-        .get("character")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument (or `symbol`)")? as u32;
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
     let by_value = args.get("by_value").and_then(|v| v.as_bool());
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::encapsulate_field::encapsulate(
-        remote,
-        workspace_root,
-        &file_path,
-        line,
-        character,
-        by_value,
-        apply && !verify,
-        force,
-    )
-    .await?;
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        let l = line.context("Missing 'line' argument for Rust field encapsulation")?;
+        let c = character.unwrap_or(1);
+        crate::encapsulate_field::encapsulate(
+            remote,
+            workspace_root,
+            &file_path,
+            l,
+            c,
+            by_value,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        let symbol = args.get("symbol").and_then(|v| v.as_str());
+        let field_arg = args
+            .get("field")
+            .or_else(|| args.get("field_name"))
+            .and_then(|v| v.as_str());
+        let class_arg = args
+            .get("class_name")
+            .or_else(|| args.get("struct_name"))
+            .and_then(|v| v.as_str());
+
+        let (resolved_class, resolved_field) = if let Some(f) = field_arg {
+            (class_arg, f.to_string())
+        } else if let Some(s) = symbol {
+            if let Some((cls, fld)) = s.split_once("::").or_else(|| s.split_once('.')) {
+                (Some(cls), fld.to_string())
+            } else {
+                (class_arg, s.to_string())
+            }
+        } else if let Some(l) = line {
+            let text = std::fs::read_to_string(&file_path)?;
+            let fld = crate::encapsulate_field::field_at_line_col(&text, l, character.unwrap_or(1))
+                .context("Could not find field at given line/character")?;
+            (class_arg, fld)
+        } else {
+            anyhow::bail!("Missing 'field', 'symbol', or line/character position");
+        };
+
+        crate::encapsulate_field::encapsulate_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            resolved_class,
+            &resolved_field,
+            by_value,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
     refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
