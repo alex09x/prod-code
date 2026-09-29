@@ -10,7 +10,7 @@ unfinished languages or sub-items remains partial. The acceptance contract is in
 separate from implementation and verification. The full item-by-item review and outstanding
 requirements are in [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md).
 
-**Where it stands** (v0.3.18, 2026-09-26): 56 MCP tools, a cluster of three Linux nodes and a
+**Where it stands** (v0.3.19, 2026-09-29): 63 MCP tools, a cluster of three Linux nodes and a
 macOS node for Swift and macOS-only Go. The historical coverage run recorded 910 tests and
 at least 80% of regions per file; those figures are evidence for that revision, not a guarantee
 for subsequent changes. Missing or malformed coverage reports are rejected since #431.
