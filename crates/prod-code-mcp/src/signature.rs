@@ -252,6 +252,24 @@ pub fn parse_param(spec: &str) -> Result<Param> {
     anyhow::ensure!(!spec.is_empty(), "empty parameter");
     match split_at_top_level(spec, ':') {
         None => {
+            if let Some((lhs, val)) = split_at_top_level(spec, '=') {
+                let lhs = lhs.trim();
+                let val = val.trim();
+                let parts: Vec<&str> = lhs.split_whitespace().collect();
+                if parts.len() == 2 && is_ident(parts[0]) && is_ident(parts[1]) {
+                    return Ok(Param::Add {
+                        name: parts[1].to_string(),
+                        ty: parts[0].to_string(),
+                        value: val.to_string(),
+                    });
+                } else if parts.len() == 1 && is_ident(parts[0]) {
+                    return Ok(Param::Add {
+                        name: parts[0].to_string(),
+                        ty: String::new(),
+                        value: val.to_string(),
+                    });
+                }
+            }
             anyhow::ensure!(
                 is_ident(spec),
                 "`{spec}` is neither a parameter name nor a new parameter; a new one is written \
@@ -1140,6 +1158,16 @@ pub async fn change_with(
 ) -> Result<SignatureChange> {
     if file.extension().is_some_and(|e| e == "go") {
         return crate::signature_go::change_with(
+            remote, root, file, line, col, request, modifiers, apply, force,
+        )
+        .await;
+    }
+    let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if matches!(
+        ext,
+        "ts" | "tsx" | "js" | "jsx" | "py" | "cpp" | "cc" | "cxx" | "c" | "h" | "hpp" | "hxx" | "swift"
+    ) {
+        return crate::signature_polyglot::change_with(
             remote, root, file, line, col, request, modifiers, apply, force,
         )
         .await;

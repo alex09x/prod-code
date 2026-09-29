@@ -53,6 +53,7 @@ pub mod session;
 pub mod shadow;
 pub mod signature;
 pub mod signature_go;
+pub mod signature_polyglot;
 pub mod slice;
 pub mod supertypes;
 pub mod sync;
