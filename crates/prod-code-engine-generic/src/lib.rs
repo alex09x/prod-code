@@ -2308,17 +2308,19 @@ impl GenericLspEngine {
             self.pull_unsupported.store(true, Ordering::Relaxed);
             return None;
         }
-        // An unchanged report is only meaningful with a cached result id. We do not send
-        // one: stripping the kind here would turn missing evidence into a clean full report.
-        if answer.get("error").is_some()
-            || answer
-                .pointer("/result/kind")
-                .and_then(|kind| kind.as_str())
-                != Some("full")
-        {
+        if answer.get("error").is_some() {
             return None;
         }
-        answer.pointer("/result/items")?.as_array().cloned()
+        let kind = answer.pointer("/result/kind").and_then(|k| k.as_str());
+        if kind == Some("full") {
+            return answer.pointer("/result/items")?.as_array().cloned();
+        } else if kind == Some("unchanged") {
+            let published = self.diagnostics.read().await;
+            if let Some(p) = published.get(uri) {
+                return Some(p.items.clone());
+            }
+        }
+        None
     }
 
     /// Opens `text` as the file at `path` until the server reports an error on its 0-based
@@ -2425,10 +2427,11 @@ impl GenericLspEngine {
     ) -> Result<Vec<serde_json::Value>, DiagnosticsUnavailable> {
         let started = Instant::now();
         loop {
-            let (kind, known) = {
+            let (kind, has_published, known) = {
                 let sent = self.sent.read().await;
                 let published = self.diagnostics.read().await;
                 let last_sent = sent.get(uri);
+                let has_published = published.contains_key(uri);
                 let kind = match (published.get(uri), last_sent) {
                     (Some(p), _) => {
                         match gap(p, last_sent, self.versioned.load(Ordering::Relaxed)) {
@@ -2439,14 +2442,14 @@ impl GenericLspEngine {
                     (None, Some(s)) => Unavailable::NotPublished { sent: s.version },
                     (None, None) => Unavailable::NeverPublished,
                 };
-                (kind, last_sent.is_some())
+                (kind, has_published, last_sent.is_some())
             };
             let kind = if self.is_alive() {
                 kind
             } else {
                 Unavailable::ServerExited
             };
-            let limit = if known {
+            let limit = if has_published {
                 wait
             } else {
                 wait.min(FIRST_PUBLICATION_WAIT)
@@ -2457,7 +2460,7 @@ impl GenericLspEngine {
                     waited: started.elapsed(),
                     kind,
                 };
-                if known {
+                if has_published && known {
                     tracing::warn!(error = %err, "no diagnostics published for the text last sent");
                 }
                 return Err(err);

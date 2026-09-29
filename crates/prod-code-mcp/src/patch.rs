@@ -206,6 +206,29 @@ fn apply_hunks(text: &str, hunks: &[Hunk], shown: &str) -> Result<String> {
     Ok(out)
 }
 
+fn git_read_blob(root: &Path, rel_path: &str) -> Option<String> {
+    let clean = rel_path.trim_start_matches("./");
+    for spec in [
+        format!(":./{clean}"),
+        format!("HEAD:./{clean}"),
+        format!(":{clean}"),
+        format!("HEAD:{clean}"),
+    ] {
+        if let Ok(output) = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .arg("show")
+            .arg(&spec)
+            .output()
+            && output.status.success()
+            && let Ok(s) = String::from_utf8(output.stdout)
+        {
+            return Some(s);
+        }
+    }
+    None
+}
+
 /// What the files under `root` read after `diff`.
 pub fn apply(root: &Path, diff: &str) -> Result<Patched> {
     let mut out = Patched::default();
@@ -218,7 +241,19 @@ pub fn apply(root: &Path, diff: &str) -> Result<Patched> {
                         .with_context(|| format!("the diff changes {old}, which cannot be read"))?,
                     None => String::new(),
                 };
-                let text = apply_hunks(&current, &file.hunks, new)?;
+                let text = match apply_hunks(&current, &file.hunks, new) {
+                    Ok(text) => text,
+                    Err(orig_err) => {
+                        if let Some(old) = old
+                            && let Some(base) = git_read_blob(root, old)
+                            && let Ok(text) = apply_hunks(&base, &file.hunks, new)
+                        {
+                            text
+                        } else {
+                            return Err(orig_err);
+                        }
+                    }
+                };
                 out.texts.push((root.join(new), text));
             }
             (None, None) => anyhow::bail!("a diff section names no file"),
@@ -311,4 +346,39 @@ mod tests {
         assert_eq!(hunk_counts("@@ -1 +0,0 @@"), Some((1, 0)));
         assert_eq!(hunk_counts("@@ -1 +1 @@"), Some((1, 1)));
     }
+
+    #[test]
+    fn git_pre_image_fallback_when_working_tree_already_has_hunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let _ = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(repo)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(repo)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.codes"])
+            .current_dir(repo)
+            .output();
+        std::fs::write(repo.join("file.txt"), "line 1\nline 2 (old)\nline 3\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "file.txt"])
+            .current_dir(repo)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(repo)
+            .output();
+        std::fs::write(repo.join("file.txt"), "line 1\nline 2 (new)\nline 3\n").unwrap();
+        let diff = "--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,3 @@\n line 1\n-line 2 (old)\n+line 2 (new)\n line 3\n";
+        let patched = apply(repo, diff).unwrap();
+        assert_eq!(
+            patched.texts,
+            vec![(repo.join("file.txt"), "line 1\nline 2 (new)\nline 3\n".to_string())]
+        );
+    }
 }
+

@@ -105,7 +105,7 @@ const YAML_MARKERS: &[&str] = &[
     "compose.yml",
 ];
 const TOML_MARKERS: &[&str] = &["taplo.toml", ".taplo.toml"];
-const JSON_MARKERS: &[&str] = &[".jsonlintrc", "jsconfig.json"];
+const JSON_MARKERS: &[&str] = &[".jsonlintrc", ".jsonlintrc.json", ".jsonlint"];
 const HTML_MARKERS: &[&str] = &["index.html", "htmlhint.json", ".htmlhintrc"];
 const CSS_MARKERS: &[&str] = &[
     "stylelint.config.js",
@@ -488,19 +488,9 @@ pub fn has_markdown_project(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// A YAML project (.yamllint, compose.yaml, *.yaml, *.yml) at the root.
+/// A YAML project (.yamllint, compose.yaml, etc.) at the root.
 pub fn has_yaml_project(root: &Path) -> bool {
-    if YAML_MARKERS.iter().any(|m| root.join(m).exists()) {
-        return true;
-    }
-    std::fs::read_dir(root)
-        .map(|entries| {
-            entries.flatten().any(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".yaml") || name.ends_with(".yml")
-            })
-        })
-        .unwrap_or(false)
+    YAML_MARKERS.iter().any(|m| root.join(m).exists())
 }
 
 /// A TOML project (taplo.toml, *.toml) at the root.
@@ -508,28 +498,12 @@ pub fn has_toml_project(root: &Path) -> bool {
     if TOML_MARKERS.iter().any(|m| root.join(m).exists()) {
         return true;
     }
-    std::fs::read_dir(root)
-        .map(|entries| {
-            entries.flatten().any(|e| {
-                e.file_name().to_string_lossy().ends_with(".toml")
-            })
-        })
-        .unwrap_or(false)
+    false
 }
 
 /// A JSON project (.jsonlintrc, *.json, *.jsonc) at the root.
 pub fn has_json_project(root: &Path) -> bool {
-    if JSON_MARKERS.iter().any(|m| root.join(m).exists()) {
-        return true;
-    }
-    std::fs::read_dir(root)
-        .map(|entries| {
-            entries.flatten().any(|e| {
-                let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".json") || name.ends_with(".jsonc")
-            })
-        })
-        .unwrap_or(false)
+    JSON_MARKERS.iter().any(|m| root.join(m).exists())
 }
 
 /// An HTML project (index.html, *.html, *.htm) at the root.
@@ -1117,8 +1091,6 @@ mod tests {
                 EngineKind::Rust,
                 EngineKind::Go,
                 EngineKind::TypeScript,
-                EngineKind::Toml,
-                EngineKind::Json,
             ]
         );
     }

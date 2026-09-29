@@ -1507,12 +1507,46 @@ async fn main() -> Result<()> {
     let (cwd_subproject, cwd_engine) = cwd_root
         .as_deref()
         .map(|root| {
-            let hint = env::args()
+            let tokens: Vec<PathBuf> = env::args()
                 .skip(1)
+                .flat_map(|arg| {
+                    let pieces: Vec<String> = arg
+                        .split(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == ';' || c == '=')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                    std::iter::once(arg).chain(pieces)
+                })
                 .map(PathBuf::from)
-                .find(|p| p.is_file())
-                .and_then(|p| std::fs::canonicalize(p).ok())
-                .or_else(|| env::current_dir().ok())
+                .collect();
+            let file_hint = tokens.iter().find_map(|p| {
+                let candidate = if p.is_absolute() {
+                    p.clone()
+                } else {
+                    root.join(p)
+                };
+                if candidate.is_file() {
+                    std::fs::canonicalize(&candidate).ok()
+                } else {
+                    None
+                }
+            });
+            let hint = file_hint
+                .or_else(|| {
+                    tokens.iter().find_map(|p| {
+                        let candidate = if p.is_absolute() {
+                            p.clone()
+                        } else {
+                            root.join(p)
+                        };
+                        if candidate.is_dir() && candidate != *root {
+                            std::fs::canonicalize(&candidate).ok()
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .or_else(|| env::current_dir().and_then(std::fs::canonicalize).ok())
                 .unwrap_or_else(|| root.to_path_buf());
             prod_code_mcp::sync::engine_project(root, &hint)
         })
@@ -3708,7 +3742,8 @@ async fn run_diagnose(
 ) -> Result<()> {
     let cwd = env::current_dir()?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
-    let report = prod_code_mcp::dossier::diagnose(remote, &root, filter, timeout_secs).await?;
+    let hint = if cwd != root { Some(cwd.as_path()) } else { None };
+    let report = prod_code_mcp::dossier::diagnose(remote, &root, hint, filter, timeout_secs).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

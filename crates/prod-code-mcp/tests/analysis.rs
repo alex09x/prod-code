@@ -1909,7 +1909,7 @@ async fn diagnose_builds_a_dossier_with_the_site_its_caller_and_the_working_tree
 
     let remote = ExecGateway::start(lsp, exec).await.addr();
 
-    let report = dossier::diagnose(remote, &root, None, 60)
+    let report = dossier::diagnose(remote, &root, None, None, 60)
         .await
         .expect("diagnose runs");
 
@@ -1972,7 +1972,7 @@ async fn diagnose_surfaces_a_build_error_when_there_is_no_test_failure_to_pin_it
     });
     let remote = ExecGateway::start(no_lsp(), exec).await.addr();
 
-    let report = dossier::diagnose(remote, &root, None, 60)
+    let report = dossier::diagnose(remote, &root, None, None, 60)
         .await
         .expect("diagnose runs");
 
@@ -2074,7 +2074,7 @@ async fn diagnose_fails_cleanly_when_the_gateway_is_unreachable() {
     let root = ws.root();
     let unreachable: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
-    let err = dossier::diagnose(unreachable, &root, None, 5)
+    let err = dossier::diagnose(unreachable, &root, None, None, 5)
         .await
         .expect_err("connecting to a closed port fails");
 
@@ -2092,7 +2092,7 @@ async fn diagnose_builds_a_dossier_for_rust_multiline_colored_assertion() {
     let exec: ExecAnswer = Arc::new(move |_req| (output.clone(), Vec::new(), Some(101)));
     let remote = ExecGateway::start(no_lsp(), exec).await.addr();
 
-    let report = dossier::diagnose(remote, &root, None, 60)
+    let report = dossier::diagnose(remote, &root, None, None, 60)
         .await
         .expect("diagnose runs");
 
@@ -2169,7 +2169,7 @@ fn dossier_of<'a>(report: &'a DossierReport, test: &str) -> &'a FailureDossier {
 async fn diagnose_output(ws: &Workspace, stdout: Vec<u8>, code: i32) -> DossierReport {
     let exec: ExecAnswer = Arc::new(move |_req| (stdout.clone(), Vec::new(), Some(code)));
     let remote = ExecGateway::start(no_lsp(), exec).await.addr();
-    dossier::diagnose(remote, &ws.root(), None, 60)
+    dossier::diagnose(remote, &ws.root(), None, None, 60)
         .await
         .expect("diagnose runs")
 }
