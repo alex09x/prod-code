@@ -586,8 +586,8 @@ async fn a_matching_normal_response_resets_idle_probe_timeout_failures() {
     let (dir, script) = workspace();
     let seen_file = dir.path().join("seen");
     let mut settings = config(&script);
-    settings.health_probe_interval = Some(Duration::from_millis(100));
-    settings.request_timeout = Duration::from_millis(40);
+    settings.health_probe_interval = Some(Duration::from_millis(120));
+    settings.request_timeout = Duration::from_millis(80);
     settings.env.insert("FAKE_HEALTH".into(), "silence".into());
     settings.env.insert(
         "FAKE_SEEN_FILE".into(),
@@ -595,13 +595,13 @@ async fn a_matching_normal_response_resets_idle_probe_timeout_failures() {
     );
     let engine = GenericLspEngine::spawn(dir.path(), settings).await.unwrap();
     wait_for_probe_count(&seen_file, 2).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(90)).await;
     engine
         .send_request("textDocument/hover", serde_json::json!({}))
         .await
         .expect("matching normal response resets the failure streak");
     wait_for_probe_count(&seen_file, 4).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(90)).await;
     assert!(
         engine.is_alive(),
         "two later idle timeouts are not consecutive with the two before normal traffic"
@@ -1774,9 +1774,29 @@ fn each_language_gets_a_configuration_that_names_its_server() {
         !typescript.command.is_empty(),
         "TypeScript's server is named"
     );
+    let java = GenericLspConfig::for_java();
+    assert!(!java.command.is_empty(), "Java's server is named");
+    let kotlin = GenericLspConfig::for_kotlin();
+    assert_eq!(kotlin.command, "kotlin-language-server", "Kotlin's server is named");
+    let csharp = GenericLspConfig::for_csharp();
+    assert!(!csharp.command.is_empty(), "C#'s server is named");
+    let php = GenericLspConfig::for_php();
+    assert!(!php.command.is_empty(), "PHP's server is named");
+    let ruby = GenericLspConfig::for_ruby();
+    assert!(!ruby.command.is_empty(), "Ruby's server is named");
 
     // Every one of them waits the default for an answer unless told otherwise.
-    for config in [&python, &cpp, &swift, &typescript] {
+    for config in [
+        &python,
+        &cpp,
+        &swift,
+        &typescript,
+        &java,
+        &kotlin,
+        &csharp,
+        &php,
+        &ruby,
+    ] {
         assert_eq!(
             config.request_timeout,
             prod_code_engine_generic::DEFAULT_REQUEST_TIMEOUT,
