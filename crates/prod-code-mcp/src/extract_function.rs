@@ -77,8 +77,14 @@ impl Extracted {
                     .to_string(),
             );
         }
+        let kw = match Path::new(&self.file).extension().and_then(|e| e.to_str()) {
+            Some("py") => "def",
+            Some("go" | "swift") => "func",
+            Some("ts" | "tsx" | "js" | "jsx") => "function",
+            _ => "fn",
+        };
         let mut out = format!(
-            "`fn {}` extracted ({}); the selection now reads `{}`\n",
+            "`{kw} {}` extracted ({}); the selection now reads `{}`\n",
             self.name,
             self.file,
             self.call.trim()
@@ -606,6 +612,21 @@ pub async fn extract_function(
     parameterize: bool,
     other_files: bool,
 ) -> Result<Extracted> {
+    let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "rs" {
+        return crate::extract_function_polyglot::extract_function_polyglot(
+            remote,
+            root,
+            file,
+            (line, col),
+            (end_line, end_col),
+            name,
+            duplicates,
+            parameterize,
+            other_files,
+        )
+        .await;
+    }
     anyhow::ensure!(
         !name.is_empty()
             && name.chars().all(is_ident)
@@ -671,7 +692,16 @@ pub async fn extract_function(
             copies.push((file.to_path_buf(), text.clone(), c));
         }
         if other_files {
-            for other in crate_sources(file) {
+            let mut others = crate_sources(file);
+            for s in crate::signature_polyglot::collect_workspace_sources(
+                root,
+                crate::parameter_object::Language::Rust,
+            ) {
+                if s != file && !others.contains(&s) {
+                    others.push(s);
+                }
+            }
+            for other in others {
                 let Ok(other_text) = std::fs::read_to_string(&other) else {
                     continue;
                 };

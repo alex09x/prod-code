@@ -13,6 +13,7 @@ pub mod exec;
 pub mod extract_delegate;
 pub mod extract_field;
 pub mod extract_function;
+pub mod extract_function_polyglot;
 pub mod extract_interface;
 pub mod extract_parameter;
 pub mod extract_trait;

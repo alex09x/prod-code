@@ -757,7 +757,7 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Extract the selection into a new function and replace the same code elsewhere in the file.
+    /// Extract the selection into a new function and replace duplicates across TS, Python, Go, C++, Swift, and Rust.
     ExtractFunction {
         /// The file that holds the selection.
         file: PathBuf,
@@ -778,7 +778,7 @@ enum Commands {
         /// parameter of the new function.
         #[arg(long, default_value_t = false)]
         parameterize: bool,
-        /// Also look for copies in the crate's other files.
+        /// Also look for copies across the crate or workspace's other files.
         #[arg(long, default_value_t = false)]
         other_files: bool,
         /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
