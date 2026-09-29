@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "prod-code: Remote code intelligence for AI coding agents"
+authors:
+  - family-names: Panasenko
+    given-names: Alexander
+    orcid: "https://orcid.org/0009-0003-3569-6490"
+    email: alex@prod.codes
+repository-code: "https://github.com/alex09x/prod-code"
+url: "https://prod.codes"
+license: Apache-2.0
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23028284
+    description: "The concept DOI representing all versions of prod-code."
+  - type: doi
+    value: 10.5281/zenodo.23028285
+    description: "The version DOI for archived release v0.3.18."
+preferred-citation:
+  type: software
+  title: "prod-code: Remote code intelligence for AI coding agents"
+  authors:
+    - family-names: Panasenko
+      given-names: Alexander
+      orcid: "https://orcid.org/0009-0003-3569-6490"
+      email: alex@prod.codes
+  version: 0.3.18
+  date-released: "2026-09-26"
+  doi: 10.5281/zenodo.23028285
+  url: "https://github.com/alex09x/prod-code"
+  license: Apache-2.0

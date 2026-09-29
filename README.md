@@ -342,6 +342,25 @@ hosted CI).
 
 [**Alexander Panasenko**](https://prod.codes/about/) ([@alex09x](https://github.com/alex09x)) — [alex@prod.codes](mailto:alex@prod.codes)
 
+## Citation
+
+If you use `prod-code` in academic work or research, please cite the archived release (v0.3.18):
+
+```bibtex
+@software{panasenko_2026_prodcode,
+  author       = {Panasenko, Alexander},
+  title        = {prod-code: Remote code intelligence for AI coding agents},
+  month        = sep,
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {0.3.18},
+  doi          = {10.5281/zenodo.23028285},
+  url          = {https://doi.org/10.5281/zenodo.23028285}
+}
+```
+
+See [CITATION.cff](CITATION.cff) for complete citation metadata.
+
 ## License
 
 Dual-licensed under either of:
