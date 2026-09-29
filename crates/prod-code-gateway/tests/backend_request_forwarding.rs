@@ -194,6 +194,7 @@ async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path
             client_agent: None,
             client_host: None,
             purpose: None,
+            redirect_count: 0,
         }))
         .await
         .expect("handshake is sent");

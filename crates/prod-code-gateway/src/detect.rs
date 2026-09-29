@@ -41,6 +41,12 @@ const ZIG_MARKERS: &[&str] = &["build.zig", "build.zig.zon"];
 const ELIXIR_MARKERS: &[&str] = &["mix.exs"];
 const SCALA_MARKERS: &[&str] = &["build.sbt"];
 const LUA_MARKERS: &[&str] = &[".luarc.json", ".luacheckrc"];
+const HASKELL_MARKERS: &[&str] = &["cabal.project", "stack.yaml", "package.yaml"];
+const OCAML_MARKERS: &[&str] = &["dune-project", "dune"];
+const CLOJURE_MARKERS: &[&str] = &["project.clj", "deps.edn"];
+const JULIA_MARKERS: &[&str] = &["JuliaProject.toml"];
+const SHELL_MARKERS: &[&str] = &[".shellcheckrc"];
+const R_MARKERS: &[&str] = &["DESCRIPTION", "NAMESPACE"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -119,6 +125,79 @@ pub fn has_lua_project(root: &Path) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+/// A Haskell project (cabal.project, stack.yaml, package.yaml, *.cabal) at the root.
+pub fn has_haskell_project(root: &Path) -> bool {
+    if HASKELL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".cabal")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An OCaml project (dune-project, dune, *.opam) at the root.
+pub fn has_ocaml_project(root: &Path) -> bool {
+    if OCAML_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".opam")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Clojure project (project.clj, deps.edn) at the root.
+pub fn has_clojure_project(root: &Path) -> bool {
+    CLOJURE_MARKERS.iter().any(|m| root.join(m).exists())
+}
+
+/// A Julia project (Project.toml, JuliaProject.toml) at the root.
+pub fn has_julia_project(root: &Path) -> bool {
+    if JULIA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    let proj = root.join("Project.toml");
+    if proj.is_file()
+        && let Ok(text) = std::fs::read_to_string(&proj)
+        && (text.contains("[deps]") || text.contains("uuid ="))
+    {
+        return true;
+    }
+    false
+}
+
+/// A Shell project (.shellcheckrc, *.sh) at the root.
+pub fn has_shell_project(root: &Path) -> bool {
+    if SHELL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".sh")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An R project (DESCRIPTION, NAMESPACE) at the root.
+pub fn has_r_project(root: &Path) -> bool {
+    R_MARKERS.iter().any(|m| root.join(m).exists())
 }
 
 /// Detect the primary engine kind for the specified workspace path.
@@ -205,6 +284,24 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_lua_project(root) {
         return EngineKind::Lua;
     }
+    if has_haskell_project(root) {
+        return EngineKind::Haskell;
+    }
+    if has_ocaml_project(root) {
+        return EngineKind::Ocaml;
+    }
+    if has_clojure_project(root) {
+        return EngineKind::Clojure;
+    }
+    if has_julia_project(root) {
+        return EngineKind::Julia;
+    }
+    if has_shell_project(root) {
+        return EngineKind::Shell;
+    }
+    if has_r_project(root) {
+        return EngineKind::R;
+    }
     EngineKind::Generic
 }
 
@@ -259,6 +356,24 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_lua_project(root) {
         engines.push(EngineKind::Lua);
+    }
+    if has_haskell_project(root) {
+        engines.push(EngineKind::Haskell);
+    }
+    if has_ocaml_project(root) {
+        engines.push(EngineKind::Ocaml);
+    }
+    if has_clojure_project(root) {
+        engines.push(EngineKind::Clojure);
+    }
+    if has_julia_project(root) {
+        engines.push(EngineKind::Julia);
+    }
+    if has_shell_project(root) {
+        engines.push(EngineKind::Shell);
+    }
+    if has_r_project(root) {
+        engines.push(EngineKind::R);
     }
 
     if engines.is_empty() {
@@ -485,5 +600,35 @@ mod tests {
         std::fs::write(dir_lua.path().join(".luarc.json"), "{}").unwrap();
         assert_eq!(detect_engine(dir_lua.path()), EngineKind::Lua);
         assert_eq!(detect_all_engines(dir_lua.path()), vec![EngineKind::Lua]);
+
+        let dir_hs = tempdir().unwrap();
+        std::fs::write(dir_hs.path().join("cabal.project"), "packages: .").unwrap();
+        assert_eq!(detect_engine(dir_hs.path()), EngineKind::Haskell);
+        assert_eq!(detect_all_engines(dir_hs.path()), vec![EngineKind::Haskell]);
+
+        let dir_ml = tempdir().unwrap();
+        std::fs::write(dir_ml.path().join("dune-project"), "(lang dune 3.0)").unwrap();
+        assert_eq!(detect_engine(dir_ml.path()), EngineKind::Ocaml);
+        assert_eq!(detect_all_engines(dir_ml.path()), vec![EngineKind::Ocaml]);
+
+        let dir_clj = tempdir().unwrap();
+        std::fs::write(dir_clj.path().join("project.clj"), "(defproject p \"0.1\")").unwrap();
+        assert_eq!(detect_engine(dir_clj.path()), EngineKind::Clojure);
+        assert_eq!(detect_all_engines(dir_clj.path()), vec![EngineKind::Clojure]);
+
+        let dir_jl = tempdir().unwrap();
+        std::fs::write(dir_jl.path().join("JuliaProject.toml"), "name = \"Pkg\"").unwrap();
+        assert_eq!(detect_engine(dir_jl.path()), EngineKind::Julia);
+        assert_eq!(detect_all_engines(dir_jl.path()), vec![EngineKind::Julia]);
+
+        let dir_sh = tempdir().unwrap();
+        std::fs::write(dir_sh.path().join(".shellcheckrc"), "").unwrap();
+        assert_eq!(detect_engine(dir_sh.path()), EngineKind::Shell);
+        assert_eq!(detect_all_engines(dir_sh.path()), vec![EngineKind::Shell]);
+
+        let dir_r = tempdir().unwrap();
+        std::fs::write(dir_r.path().join("DESCRIPTION"), "Package: pkg").unwrap();
+        assert_eq!(detect_engine(dir_r.path()), EngineKind::R);
+        assert_eq!(detect_all_engines(dir_r.path()), vec![EngineKind::R]);
     }
 }

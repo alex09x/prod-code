@@ -1067,6 +1067,18 @@ fn plan_command_basic(
         ("scala", VerifyKind::Test) => vec!["sbt", "test"],
         ("lua", VerifyKind::Check) => vec!["luacheck", "."],
         ("lua", VerifyKind::Test) => vec!["busted"],
+        ("haskell", VerifyKind::Check) => vec!["cabal", "build"],
+        ("haskell", VerifyKind::Test) => vec!["cabal", "test"],
+        ("ocaml", VerifyKind::Check) => vec!["dune", "build"],
+        ("ocaml", VerifyKind::Test) => vec!["dune", "runtest"],
+        ("clojure", VerifyKind::Check) => vec!["lein", "check"],
+        ("clojure", VerifyKind::Test) => vec!["lein", "test"],
+        ("julia", VerifyKind::Check) => vec!["julia", "--project", "-e", "using Pkg; Pkg.build()"],
+        ("julia", VerifyKind::Test) => vec!["julia", "--project", "-e", "using Pkg; Pkg.test()"],
+        ("shell", VerifyKind::Check) => vec!["shellcheck", "**/*.sh"],
+        ("shell", VerifyKind::Test) => vec!["bats", "test"],
+        ("r", VerifyKind::Check) => vec!["R", "CMD", "check", "."],
+        ("r", VerifyKind::Test) => vec!["R", "-e", "testthat::test_dir('tests')"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1121,6 +1133,19 @@ fn plan_command_basic(
             ("lua", VerifyKind::Test) => {
                 cmd.push("--filter".to_string());
                 cmd.push(filter.to_string());
+            }
+            ("haskell", VerifyKind::Test) => {
+                cmd.push("--test-show-details=direct".to_string());
+                cmd.push(format!("--test-option=-m{}", filter));
+            }
+            ("clojure", VerifyKind::Test) => {
+                cmd.push(format!(":only {}", filter));
+            }
+            ("shell", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("r", VerifyKind::Test) => {
+                cmd.push(format!("-filter={}", filter));
             }
             ("rust", VerifyKind::Bench) => cmd.push(filter.to_string()),
             _ => {}
@@ -3077,5 +3102,49 @@ expected 42, got 43\n\
         })
         .unwrap();
         assert_eq!(text, r#"{"event":"test","name":"t","ok":true}"#);
+    }
+
+    #[test]
+    fn test_polyglot_plan_commands() {
+        assert_eq!(
+            plan_command("haskell", VerifyKind::Check, None).unwrap(),
+            ["cabal", "build"]
+        );
+        assert_eq!(
+            plan_command("haskell", VerifyKind::Test, Some("foo")).unwrap(),
+            ["cabal", "test", "--test-show-details=direct", "--test-option=-mfoo"]
+        );
+        assert_eq!(
+            plan_command("ocaml", VerifyKind::Check, None).unwrap(),
+            ["dune", "build"]
+        );
+        assert_eq!(
+            plan_command("ocaml", VerifyKind::Test, None).unwrap(),
+            ["dune", "runtest"]
+        );
+        assert_eq!(
+            plan_command("clojure", VerifyKind::Check, None).unwrap(),
+            ["lein", "check"]
+        );
+        assert_eq!(
+            plan_command("clojure", VerifyKind::Test, Some("my-ns")).unwrap(),
+            ["lein", "test", ":only my-ns"]
+        );
+        assert_eq!(
+            plan_command("julia", VerifyKind::Check, None).unwrap(),
+            ["julia", "--project", "-e", "using Pkg; Pkg.build()"]
+        );
+        assert_eq!(
+            plan_command("shell", VerifyKind::Check, None).unwrap(),
+            ["shellcheck", "**/*.sh"]
+        );
+        assert_eq!(
+            plan_command("shell", VerifyKind::Test, Some("test/my_test.bats")).unwrap(),
+            ["bats", "test", "test/my_test.bats"]
+        );
+        assert_eq!(
+            plan_command("r", VerifyKind::Check, None).unwrap(),
+            ["R", "CMD", "check", "."]
+        );
     }
 }

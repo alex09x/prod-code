@@ -133,6 +133,7 @@ async fn connect_shared(
             client_agent: None,
             client_host: None,
             purpose: None,
+            redirect_count: 0,
         }))
         .await
         .expect("send shared handshake");

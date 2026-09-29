@@ -2874,6 +2874,25 @@ pub async fn handle_client(
                     detect::resolve_engine(&engine_root, req.preferred_engine.as_deref());
                 let engine = engine_kind.as_str();
                 if !state.serves_engine(engine) {
+                    if req.redirect_count < 2 {
+                        let view = state.cluster_view().await;
+                        if let Some(target) = view.nodes.iter().find(|n| {
+                            n.alive && cluster_supports_engine(&n.status, engine)
+                        }) {
+                            tracing::info!(
+                                engine,
+                                target = %target.addr,
+                                "redirecting client to cluster node serving engine"
+                            );
+                            let _ = framed
+                                .send(WireMessage::Redirect {
+                                    target_addr: target.addr.clone(),
+                                    reason: Some(format!("engine {engine} is served by {}", target.addr)),
+                                })
+                                .await;
+                            return Ok(());
+                        }
+                    }
                     let reason = format!(
                         "engine {engine} is not served by this node (--engines {}); pick a node that lists it",
                         state.engine_allowlist.join(",")
@@ -2886,6 +2905,45 @@ pub async fn handle_client(
                     framed.send(WireMessage::Disconnect { reason }).await?;
                     return Ok(());
                 }
+
+                // Roadmap 5.1: If this workspace is not already loaded locally, but another live cluster
+                // node has it loaded warm, transparently redirect the client there.
+                let is_loaded_locally = state
+                    .workspace_manager
+                    .get_loaded(&server_workspace)
+                    .await
+                    .is_some();
+                if !is_loaded_locally && req.redirect_count == 0 {
+                    let view = state.cluster_view().await;
+                    let own_addr = state.advertise.read().await.clone();
+                    let ws_name = req
+                        .base_workspace_name
+                        .as_deref()
+                        .unwrap_or(&req.client_workspace_root);
+                    if let Some(holder) = view.nodes.iter().find(|n| {
+                        n.alive
+                            && n.addr != own_addr
+                            && cluster_supports_engine(&n.status, engine)
+                            && n.workspaces.iter().any(|w| w.name == ws_name)
+                    }) {
+                        tracing::info!(
+                            workspace = ws_name,
+                            target = %holder.addr,
+                            "transparently redirecting client to node with warm workspace engine"
+                        );
+                        let _ = framed
+                            .send(WireMessage::Redirect {
+                                target_addr: holder.addr.clone(),
+                                reason: Some(format!(
+                                    "workspace {ws_name} is already warm on {}",
+                                    holder.addr
+                                )),
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                }
+
                 let translator =
                     PathTranslator::new(&req.client_workspace_root, &server_workspace_str);
 
@@ -6364,6 +6422,7 @@ mod tests {
                     client_agent: None,
                     client_host: None,
                     purpose: None,
+                    redirect_count: 0,
                 },
             ))
             .await

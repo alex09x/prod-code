@@ -2371,7 +2371,7 @@ impl QueryTiming {
 }
 
 async fn execute_lsp_query(
-    remote: SocketAddr,
+    mut remote: SocketAddr,
     file_path: &Path,
     method: &str,
     params: serde_json::Value,
@@ -2441,11 +2441,24 @@ async fn execute_lsp_query(
                     client_agent: Some(prod_code_protocol::detect_client_agent()),
                     client_host: Some(prod_code_protocol::client_host()),
                     purpose: None,
+                    redirect_count: (attempt - 1) as u32,
                 }))
                 .await?;
 
             let handshake = match framed.next().await {
                 Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    if attempt > 3 {
+                        anyhow::bail!("too many gateway redirects: {reason:?}");
+                    }
+                    tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
+                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                        remote = addr;
+                        continue;
+                    } else {
+                        anyhow::bail!("invalid redirect target address: {target_addr}");
+                    }
+                }
                 other => anyhow::bail!("Unexpected handshake response: {:?}", other),
             };
             validate_selected_protocol_version(handshake.protocol_version, &supported_versions)
@@ -3728,6 +3741,7 @@ async fn open_editor_session(
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
             purpose: Some(prod_code_protocol::PURPOSE_EDITOR.to_string()),
+            redirect_count: 0,
         }))
         .await?;
     let handshake_resp = match framed.next().await {
@@ -4819,6 +4833,7 @@ async fn run_benchmark(
                 client_agent: Some(prod_code_protocol::detect_client_agent()),
                 client_host: Some(prod_code_protocol::client_host()),
                 purpose: None,
+                redirect_count: 0,
             };
 
             if framed

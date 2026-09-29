@@ -91,6 +91,12 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "elixir" => from(GenericLspConfig::for_elixir()),
         "scala" => from(GenericLspConfig::for_scala()),
         "lua" => from(GenericLspConfig::for_lua()),
+        "haskell" => from(GenericLspConfig::for_haskell()),
+        "ocaml" => from(GenericLspConfig::for_ocaml()),
+        "clojure" => from(GenericLspConfig::for_clojure()),
+        "julia" => from(GenericLspConfig::for_julia()),
+        "shell" => from(GenericLspConfig::for_shell()),
+        "r" => from(GenericLspConfig::for_r()),
         _ => return None,
     };
     let installed = if engine == "rust" {
