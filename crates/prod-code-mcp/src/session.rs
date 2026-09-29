@@ -184,6 +184,15 @@ impl LspSession {
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(supported_versions.clone()),
+                capabilities: Some(prod_code_protocol::ClientCapabilities {
+                    direct_edit: true,
+                    watch_files: true,
+                    indexing_status: true,
+                    shadow_runs: true,
+                    multi_root: true,
+                    sync_chunking: true,
+                    unix_socket_local: cfg!(unix),
+                }),
                 client_name: "prod-code-batch".to_string(),
                 client_pid: std::process::id(),
                 auth_token: None,
@@ -817,6 +826,7 @@ mod tests {
                                     stale_paths: Vec::new(),
                                     engine_age_ms: None,
                                     index_gated: false,
+                                    capabilities: None,
                                 },
                             ))
                             .await

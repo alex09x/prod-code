@@ -1,5 +1,6 @@
 use prod_code_protocol::{
-    HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, ProtocolNegotiationError,
+    ClientCapabilities, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION,
+    ProtocolNegotiationError, default_server_capabilities, negotiate_capabilities,
     negotiate_protocol_version, supported_protocol_versions, validate_selected_protocol_version,
 };
 use serde::Deserialize;
@@ -8,6 +9,7 @@ fn request(protocol_version: u32, supported_versions: Option<Vec<u32>>) -> Hands
     HandshakeRequest {
         protocol_version,
         supported_versions,
+        capabilities: None,
         client_name: "compatibility-test".to_string(),
         client_pid: 1,
         auth_token: None,
@@ -95,8 +97,37 @@ fn the_unchanged_response_shape_round_trips_for_both_peer_generations() {
         stale_paths: Vec::new(),
         engine_age_ms: None,
         index_gated: false,
+        capabilities: None,
     };
     let value = serde_json::to_value(&response).unwrap();
     let decoded: HandshakeResponse = serde_json::from_value(value).unwrap();
     assert_eq!(decoded, response);
+}
+
+#[test]
+fn capabilities_negotiation_computes_common_subset_or_defaults() {
+    let server_caps = default_server_capabilities();
+
+    // Legacy client offering None gets server supported defaults
+    let negotiated_default = negotiate_capabilities(None, &server_caps);
+    assert_eq!(negotiated_default, server_caps);
+
+    // Client offering partial capabilities
+    let client_caps = ClientCapabilities {
+        direct_edit: true,
+        watch_files: false,
+        indexing_status: true,
+        shadow_runs: false,
+        multi_root: true,
+        sync_chunking: false,
+        unix_socket_local: true,
+    };
+    let negotiated = negotiate_capabilities(Some(&client_caps), &server_caps);
+    assert!(negotiated.direct_edit);
+    assert!(!negotiated.watch_files);
+    assert!(negotiated.indexing_status);
+    assert!(!negotiated.shadow_runs);
+    assert!(negotiated.multi_root);
+    assert!(!negotiated.sync_chunking);
+    assert_eq!(negotiated.unix_socket_local, cfg!(unix));
 }

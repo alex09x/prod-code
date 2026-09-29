@@ -1,7 +1,7 @@
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, PathTranslator, ProdCodeCodec,
-    StatusResponse, WireMessage,
+    ClientCapabilities, HandshakeRequest, HandshakeResponse, PROTOCOL_VERSION, PathTranslator,
+    ProdCodeCodec, StatusResponse, WireMessage,
 };
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -105,6 +105,7 @@ async fn handle_test_client(
                         stale_paths: Vec::new(),
                         engine_age_ms: None,
                         index_gated: false,
+                        capabilities: None,
                     }))
                     .await?;
 
@@ -180,6 +181,7 @@ async fn test_full_phase1_e2e_flow() {
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(vec![PROTOCOL_VERSION]),
+                capabilities: None,
                 client_name: "test-client".to_string(),
                 client_pid: 9999,
                 auth_token: None,
@@ -257,4 +259,115 @@ async fn test_full_phase1_e2e_flow() {
             other => panic!("Unexpected status response: {:?}", other),
         }
     }
+}
+
+#[tokio::test]
+async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let socket_path = temp_dir.path().join("prod-code-test.sock");
+    let storage = temp_dir.path().join("workspaces");
+    std::fs::create_dir_all(&storage).unwrap();
+
+    let cli = prod_code_gateway::ServerCli {
+        bind: "127.0.0.1:0".parse().unwrap(),
+        socket_path: Some(socket_path.clone()),
+        storage,
+        idle_evict_secs: 1800,
+        engine_reserve_mib: 0,
+        max_concurrent_engine_loads: 1,
+        prune_worktree_days: 7,
+        prune_below_free_percent: 0,
+        engines: vec![],
+        shadow_dir: None,
+        peers: String::new(),
+        advertise: None,
+    };
+
+    let server_task = tokio::spawn(async move {
+        let _ = prod_code_gateway::run(cli).await;
+    });
+
+    // Wait until unix socket is created and ready
+    let mut connected = false;
+    for _ in 0..50 {
+        if socket_path.exists()
+            && let Ok(stream) = prod_code_protocol::transport::connect_unix(&socket_path).await
+        {
+            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+            if framed.send(WireMessage::Ping).await.is_ok()
+                && let Some(Ok(WireMessage::Pong)) = framed.next().await
+            {
+                connected = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(connected, "server failed to listen on unix domain socket within timeout");
+
+    // Connect via Unix socket and verify negotiated capabilities
+    {
+        let stream = prod_code_protocol::transport::connect_unix(&socket_path)
+            .await
+            .expect("connect via unix socket");
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+        // Probe status over unix socket
+        framed.send(WireMessage::StatusRequest).await.unwrap();
+        let status = match framed.next().await.unwrap().unwrap() {
+            WireMessage::StatusResponse(s) => s,
+            other => panic!("expected StatusResponse, got {other:?}"),
+        };
+        assert!(status.server_pid > 0);
+
+        // Perform handshake offering client capabilities
+        let client_caps = ClientCapabilities {
+            direct_edit: true,
+            watch_files: true,
+            indexing_status: true,
+            shadow_runs: true,
+            multi_root: true,
+            sync_chunking: true,
+            unix_socket_local: true,
+        };
+
+        framed
+            .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(vec![PROTOCOL_VERSION]),
+                capabilities: Some(client_caps.clone()),
+                client_name: "unix-test-client".to_string(),
+                client_pid: std::process::id(),
+                auth_token: None,
+                client_workspace_root: "/tmp/unix-test-ws".to_string(),
+                preferred_engine: None,
+                base_workspace_name: None,
+                engine_subpath: None,
+                client_agent: None,
+                client_host: None,
+                purpose: None,
+            }))
+            .await
+            .unwrap();
+
+        // Check handshake response includes server capabilities
+        let handshake_resp = match framed.next().await.unwrap().unwrap() {
+            WireMessage::HandshakeResponse(resp) => resp,
+            other => panic!("expected HandshakeResponse, got {other:?}"),
+        };
+        assert!(handshake_resp.capabilities.is_some());
+        let server_caps = handshake_resp.capabilities.unwrap();
+        assert!(server_caps.unix_socket_local);
+        assert!(server_caps.direct_edit);
+
+        // Send disconnect
+        framed
+            .send(WireMessage::Disconnect {
+                reason: "unix test done".to_string(),
+            })
+            .await
+            .unwrap();
+    }
+
+    server_task.abort();
 }

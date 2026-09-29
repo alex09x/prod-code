@@ -1044,6 +1044,7 @@ async fn open_session_unbounded(
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(supported_versions.clone()),
+            capabilities: None,
             client_name,
             client_pid: std::process::id(),
             auth_token: None,
@@ -1601,6 +1602,7 @@ mod tests {
             stale_paths: Vec::new(),
             engine_age_ms: None,
             index_gated: false,
+            capabilities: None,
         }
     }
 

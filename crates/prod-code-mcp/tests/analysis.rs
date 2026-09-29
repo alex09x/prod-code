@@ -93,6 +93,7 @@ impl ExecGateway {
                             stale_paths: Vec::new(),
                             engine_age_ms: None,
                             index_gated: false,
+                            capabilities: None,
                         }))
                         .await?;
                 }

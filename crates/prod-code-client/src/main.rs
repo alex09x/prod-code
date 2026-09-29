@@ -2427,6 +2427,7 @@ async fn execute_lsp_query(
                 .send(WireMessage::HandshakeRequest(HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
                     supported_versions: Some(supported_versions.clone()),
+                    capabilities: None,
                     client_name: "prod-code-cli".to_string(),
                     client_pid: std::process::id(),
                     auth_token: None,
@@ -3716,6 +3717,7 @@ async fn open_editor_session(
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(supported_versions.clone()),
+            capabilities: None,
             client_name: "prod-code-client".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
@@ -4806,6 +4808,7 @@ async fn run_benchmark(
             let handshake = HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(supported_versions.clone()),
+                capabilities: None,
                 client_name: format!("bench-worker-{worker_id}"),
                 client_pid: std::process::id(),
                 auth_token: None,

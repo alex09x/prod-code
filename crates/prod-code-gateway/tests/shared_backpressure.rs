@@ -122,6 +122,7 @@ async fn connect_shared(
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
             client_name: "shared-backpressure-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,

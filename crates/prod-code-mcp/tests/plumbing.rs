@@ -720,6 +720,7 @@ impl RecordingGateway {
                             stale_paths: Vec::new(),
                             engine_age_ms: None,
                             index_gated: false,
+                            capabilities: None,
                         }))
                         .await?;
                 }
@@ -1084,6 +1085,7 @@ async fn reconnecting_gateway(first: FirstHover) -> (SocketAddr, Arc<AtomicUsize
                                     stale_paths: Vec::new(),
                                     engine_age_ms: None,
                                     index_gated: false,
+                                    capabilities: None,
                                 }))
                                 .await;
                         }

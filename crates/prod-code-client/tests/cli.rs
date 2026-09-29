@@ -136,6 +136,7 @@ async fn handle_client(
                         stale_paths: Vec::new(),
                         engine_age_ms: None,
                         index_gated: false,
+                        capabilities: None,
                     }))
                     .await?;
             }
@@ -2915,6 +2916,7 @@ where
                                 stale_paths: Vec::new(),
                                 engine_age_ms: None,
                                 index_gated: false,
+                                capabilities: None,
                             })),
                         ),
                         WireMessage::ExecRequest(req) => {

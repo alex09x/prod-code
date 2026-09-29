@@ -36,6 +36,11 @@ const KOTLIN_MARKERS: &[&str] = &["build.gradle.kts", "settings.gradle.kts"];
 const CSHARP_MARKERS: &[&str] = &["global.json"];
 const PHP_MARKERS: &[&str] = &["composer.json"];
 const RUBY_MARKERS: &[&str] = &["Gemfile"];
+const DART_MARKERS: &[&str] = &["pubspec.yaml"];
+const ZIG_MARKERS: &[&str] = &["build.zig", "build.zig.zon"];
+const ELIXIR_MARKERS: &[&str] = &["mix.exs"];
+const SCALA_MARKERS: &[&str] = &["build.sbt"];
+const LUA_MARKERS: &[&str] = &[".luarc.json", ".luacheckrc"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -95,6 +100,22 @@ pub fn has_csharp_project(root: &Path) -> bool {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
                 name.ends_with(".csproj") || name.ends_with(".sln")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Lua project (.luarc.json, .luacheckrc, *.rockspec) at the root.
+pub fn has_lua_project(root: &Path) -> bool {
+    if LUA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".rockspec")
             })
         })
         .unwrap_or(false)
@@ -169,6 +190,21 @@ pub fn detect_engine(root: &Path) -> EngineKind {
             return EngineKind::Ruby;
         }
     }
+    if DART_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Dart;
+    }
+    if ZIG_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Zig;
+    }
+    if ELIXIR_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Elixir;
+    }
+    if SCALA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Scala;
+    }
+    if has_lua_project(root) {
+        return EngineKind::Lua;
+    }
     EngineKind::Generic
 }
 
@@ -208,6 +244,21 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if RUBY_MARKERS.iter().any(|m| root.join(m).exists()) {
         engines.push(EngineKind::Ruby);
+    }
+    if DART_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Dart);
+    }
+    if ZIG_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Zig);
+    }
+    if ELIXIR_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Elixir);
+    }
+    if SCALA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Scala);
+    }
+    if has_lua_project(root) {
+        engines.push(EngineKind::Lua);
     }
 
     if engines.is_empty() {
@@ -409,5 +460,30 @@ mod tests {
         std::fs::write(dir_rb.path().join("Gemfile"), "source 'https://rubygems.org'").unwrap();
         assert_eq!(detect_engine(dir_rb.path()), EngineKind::Ruby);
         assert_eq!(detect_all_engines(dir_rb.path()), vec![EngineKind::Ruby]);
+
+        let dir_dart = tempdir().unwrap();
+        std::fs::write(dir_dart.path().join("pubspec.yaml"), "name: test").unwrap();
+        assert_eq!(detect_engine(dir_dart.path()), EngineKind::Dart);
+        assert_eq!(detect_all_engines(dir_dart.path()), vec![EngineKind::Dart]);
+
+        let dir_zig = tempdir().unwrap();
+        std::fs::write(dir_zig.path().join("build.zig"), "").unwrap();
+        assert_eq!(detect_engine(dir_zig.path()), EngineKind::Zig);
+        assert_eq!(detect_all_engines(dir_zig.path()), vec![EngineKind::Zig]);
+
+        let dir_ex = tempdir().unwrap();
+        std::fs::write(dir_ex.path().join("mix.exs"), "defmodule Test do end").unwrap();
+        assert_eq!(detect_engine(dir_ex.path()), EngineKind::Elixir);
+        assert_eq!(detect_all_engines(dir_ex.path()), vec![EngineKind::Elixir]);
+
+        let dir_scala = tempdir().unwrap();
+        std::fs::write(dir_scala.path().join("build.sbt"), "name := \"test\"").unwrap();
+        assert_eq!(detect_engine(dir_scala.path()), EngineKind::Scala);
+        assert_eq!(detect_all_engines(dir_scala.path()), vec![EngineKind::Scala]);
+
+        let dir_lua = tempdir().unwrap();
+        std::fs::write(dir_lua.path().join(".luarc.json"), "{}").unwrap();
+        assert_eq!(detect_engine(dir_lua.path()), EngineKind::Lua);
+        assert_eq!(detect_all_engines(dir_lua.path()), vec![EngineKind::Lua]);
     }
 }

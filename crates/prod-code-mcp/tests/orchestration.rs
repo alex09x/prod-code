@@ -89,6 +89,7 @@ async fn missing_implementation_result_gateway() -> SocketAddr {
                             stale_paths: Vec::new(),
                             engine_age_ms: None,
                             index_gated: false,
+                            capabilities: None,
                         }))
                         .await
                         .unwrap();

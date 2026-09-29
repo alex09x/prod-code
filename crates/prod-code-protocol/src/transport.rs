@@ -32,6 +32,9 @@ pub fn tune(stream: &TcpStream) {
 /// The environment variable that holds the cluster's token.
 pub const AUTH_TOKEN_ENV: &str = "PROD_CODE_AUTH_TOKEN";
 
+/// The environment variable that names a Unix domain socket path for local connections.
+pub const SOCKET_PATH_ENV: &str = "PROD_CODE_SOCKET";
+
 /// The environment variable that names a file holding the cluster's token.
 pub const AUTH_TOKEN_FILE_ENV: &str = "PROD_CODE_AUTH_TOKEN_FILE";
 
@@ -82,6 +85,111 @@ pub async fn connect_with(addr: SocketAddr, token: Option<&str>) -> std::io::Res
         stream.write_all(&frame).await?;
     }
     Ok(stream)
+}
+
+/// Connects to the Unix domain socket at `path` and opens it with the cluster's
+/// [`auth_token`] when there is one.
+#[cfg(unix)]
+pub async fn connect_unix(path: impl AsRef<Path>) -> std::io::Result<tokio::net::UnixStream> {
+    connect_unix_with(path, auth_token().as_deref()).await
+}
+
+/// Connects to the Unix domain socket at `path` and sends `token` as its first frame when one
+/// is given.
+#[cfg(unix)]
+pub async fn connect_unix_with(
+    path: impl AsRef<Path>,
+    token: Option<&str>,
+) -> std::io::Result<tokio::net::UnixStream> {
+    let mut stream = tokio::net::UnixStream::connect(path).await?;
+    if let Some(token) = token {
+        let mut frame = bytes::BytesMut::new();
+        crate::codec::ProdCodeCodec::new()
+            .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
+        stream.write_all(&frame).await?;
+    }
+    Ok(stream)
+}
+
+/// A transport stream that can be either TCP or a local Unix domain socket.
+pub enum AnyStream {
+    Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(tokio::net::UnixStream),
+}
+
+impl AnyStream {
+    pub async fn connect_tcp(addr: SocketAddr) -> std::io::Result<Self> {
+        connect(addr).await.map(AnyStream::Tcp)
+    }
+
+    #[cfg(unix)]
+    pub async fn connect_unix(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        connect_unix(path).await.map(AnyStream::Unix)
+    }
+}
+
+impl From<TcpStream> for AnyStream {
+    fn from(s: TcpStream) -> Self {
+        AnyStream::Tcp(s)
+    }
+}
+
+#[cfg(unix)]
+impl From<tokio::net::UnixStream> for AnyStream {
+    fn from(s: tokio::net::UnixStream) -> Self {
+        AnyStream::Unix(s)
+    }
+}
+
+impl tokio::io::AsyncRead for AnyStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            #[cfg(unix)]
+            AnyStream::Unix(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for AnyStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            #[cfg(unix)]
+            AnyStream::Unix(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_flush(cx),
+            #[cfg(unix)]
+            AnyStream::Unix(s) => std::pin::Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            #[cfg(unix)]
+            AnyStream::Unix(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+        }
+    }
 }
 
 /// Maximum aggregate size of the textual headers of one language-server message.
@@ -289,6 +397,61 @@ mod tests {
         assert!(token.matches("s3cret"));
         assert!(!token.matches("s3creT"));
         assert!(!token.matches("s3cret2"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_transport_supports_framing_and_auth_token() {
+        let dir = std::env::temp_dir().join(format!("prod-code-test-sock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock_path = dir.join("test.sock");
+        let _ = std::fs::remove_file(&sock_path);
+        let listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+
+        let (client, accepted) = tokio::join!(
+            connect_unix_with(&sock_path, Some("unix-secret")),
+            listener.accept()
+        );
+        let client = client.unwrap();
+        let mut server = accepted.unwrap().0;
+
+        let mut codec = crate::ProdCodeCodec::new();
+        let mut buffer = bytes::BytesMut::new();
+        loop {
+            if let Some(message) = codec.decode(&mut buffer).unwrap() {
+                assert_eq!(
+                    message,
+                    WireMessage::Auth(AuthToken("unix-secret".to_string()))
+                );
+                break;
+            }
+            assert!(server.read_buf(&mut buffer).await.unwrap() > 0);
+        }
+
+        // Test AnyStream wrapping
+        let mut any_client = AnyStream::Unix(client);
+        let mut any_server = AnyStream::Unix(server);
+        let mut ping = bytes::BytesMut::new();
+        crate::ProdCodeCodec::new()
+            .encode(WireMessage::Ping, &mut ping)
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut any_client, &ping)
+            .await
+            .unwrap();
+
+        let mut buf2 = bytes::BytesMut::new();
+        loop {
+            if let Some(msg) = codec.decode(&mut buf2).unwrap() {
+                assert_eq!(msg, WireMessage::Ping);
+                break;
+            }
+            assert!(
+                tokio::io::AsyncReadExt::read_buf(&mut any_server, &mut buf2)
+                    .await
+                    .unwrap()
+                    > 0
+            );
+        }
     }
 }
 

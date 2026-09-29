@@ -23,7 +23,7 @@ use anyhow::Result;
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use prod_code_protocol::{
-    ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
+    AnyStream, ClusterResponse, ExecChanges, ExecChunk, ExecExit, ExecRequest, FileDelta, FileStamp,
     HandshakeResponse, LoadedWorkspaceInfo, NodeGossip, PathTranslator, PeerInfo, PlaceRequest,
     PlaceResponse, ProdCodeCodec, StatusResponse, SyncProbeRequest, SyncProbeResponse, SyncRequest,
     SyncResponse, WireMessage, content_hash, negotiate_protocol_version,
@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio_util::codec::Framed;
 use workspace::{SessionView, WorkspaceManager};
 
@@ -121,6 +121,10 @@ pub struct ServerCli {
     /// Bind address (IP:port). Defaults to 0.0.0.0:9400.
     #[arg(short, long, env = "PROD_CODE_BIND", default_value = "0.0.0.0:9400")]
     pub bind: SocketAddr,
+
+    /// Optional Unix domain socket path to bind for local transport.
+    #[arg(long, env = "PROD_CODE_SOCKET")]
+    pub socket_path: Option<PathBuf>,
 
     /// Workspace root storage directory on server.
     #[arg(
@@ -2152,7 +2156,7 @@ pub async fn run_exec(
     storage_root: &std::path::Path,
     metrics: &metrics::Metrics,
     workspace_manager: &WorkspaceManager,
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     req: ExecRequest,
 ) -> Result<()> {
     use tokio::io::AsyncReadExt;
@@ -2689,11 +2693,11 @@ pub async fn apply_sync_with_metrics(
 }
 
 pub async fn handle_client(
-    socket: TcpStream,
-    addr: SocketAddr,
+    stream: impl Into<AnyStream>,
+    addr: impl std::fmt::Display,
     state: Arc<ServerState>,
 ) -> Result<()> {
-    let mut framed = Framed::new(socket, ProdCodeCodec::new());
+    let mut framed = Framed::new(stream.into(), ProdCodeCodec::new());
 
     // A gateway with a token serves nothing, not even its status, to a connection that does
     // not open with it (#402).
@@ -2834,6 +2838,10 @@ pub async fn handle_client(
                 };
                 let session_id = state.next_session_id.fetch_add(1, Ordering::Relaxed);
                 let _active_session = ActiveSession::start(&state.active_sessions);
+                let session_capabilities = prod_code_protocol::negotiate_capabilities(
+                    req.capabilities.as_ref(),
+                    &prod_code_protocol::default_server_capabilities(),
+                );
 
                 let client_root_path = PathBuf::from(&req.client_workspace_root);
                 let server_workspace = workspace::resolve_server_workspace(
@@ -2897,6 +2905,7 @@ pub async fn handle_client(
                             stale_paths: workspace::stale_paths(&server_workspace),
                             engine_age_ms: None,
                             index_gated: false,
+                            capabilities: Some(session_capabilities.clone()),
                         }))
                         .await?;
                     let outcome = editor_proxy::run(
@@ -3007,6 +3016,7 @@ pub async fn handle_client(
                         stale_paths: workspace::stale_paths(&server_workspace),
                         engine_age_ms: Some(engine_age_ms),
                         index_gated,
+                        capabilities: Some(session_capabilities),
                     }))
                     .await?;
 
@@ -3057,7 +3067,7 @@ pub async fn handle_client(
 }
 
 async fn run_session_loop(
-    framed: Framed<TcpStream, ProdCodeCodec>,
+    framed: Framed<AnyStream, ProdCodeCodec>,
     translator: &PathTranslator,
     view: &SessionView,
     meta: Arc<SessionMeta>,
@@ -5847,6 +5857,34 @@ pub async fn run(cli: ServerCli) -> Result<()> {
         cli.prune_below_free_percent,
     ));
 
+    #[cfg(unix)]
+    let unix_listener = if let Some(ref path) = cli.socket_path {
+        if path.exists() {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let u_listener = tokio::net::UnixListener::bind(path)?;
+        tracing::info!("prod-code gateway listening on unix socket {}", path.display());
+        Some(u_listener)
+    } else {
+        None
+    };
+
+    #[cfg(unix)]
+    struct SocketCleaner<'a>(Option<&'a Path>);
+    #[cfg(unix)]
+    impl Drop for SocketCleaner<'_> {
+        fn drop(&mut self) {
+            if let Some(p) = self.0 {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+    #[cfg(unix)]
+    let _cleaner = SocketCleaner(cli.socket_path.as_deref());
+
     // A gateway is stopped by its supervisor (launchd, systemd) and by a deploy script, both
     // of which send SIGTERM and then wait. Without a handler the process dies where it stands:
     // in-flight queries are cut, and nothing that runs at exit runs. Stopping the accept loop
@@ -5854,9 +5892,26 @@ pub async fn run(cli: ServerCli) -> Result<()> {
     // socket, and the client treats a closed connection as a session to re-open.
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    async fn accept_unix(
+        listener: &Option<tokio::net::UnixListener>,
+    ) -> std::io::Result<(tokio::net::UnixStream, tokio::net::unix::SocketAddr)> {
+        match listener {
+            Some(l) => l.accept().await,
+            None => std::future::pending().await,
+        }
+    }
+
     loop {
-        let (socket, addr) = tokio::select! {
-            accepted = listener.accept() => accepted?,
+        let (stream, addr): (AnyStream, String) = tokio::select! {
+            accepted = listener.accept() => {
+                let (socket, addr) = accepted?;
+                prod_code_protocol::transport::tune(&socket);
+                (AnyStream::Tcp(socket), addr.to_string())
+            }
+            accepted = accept_unix(&unix_listener) => {
+                let (socket, _) = accepted?;
+                (AnyStream::Unix(socket), "unix-socket".to_string())
+            }
             _ = terminate.recv() => {
                 tracing::info!("SIGTERM: no longer accepting connections");
                 return Ok(());
@@ -5866,12 +5921,9 @@ pub async fn run(cli: ServerCli) -> Result<()> {
                 return Ok(());
             }
         };
-        // Small request/response frames must not wait for delayed ACKs (Nagle), and a client
-        // that went away without a close must not keep its session and its command (#256).
-        prod_code_protocol::transport::tune(&socket);
         let state_clone = Arc::clone(&state);
         tokio::spawn(async move {
-            if let Err(err) = handle_client(socket, addr, state_clone).await {
+            if let Err(err) = handle_client(stream, addr.clone(), state_clone).await {
                 tracing::error!(%addr, %err, "Error in client connection");
             }
         });
@@ -5897,6 +5949,7 @@ mod tests {
     use super::*;
     use prod_code_protocol::{HostResources, PROTOCOL_VERSION};
     use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpStream;
 
     #[tokio::test]
     async fn shared_output_queue_deadline_closes_every_generation_sender() {
@@ -6300,6 +6353,7 @@ mod tests {
                 prod_code_protocol::HandshakeRequest {
                     protocol_version: PROTOCOL_VERSION,
                     supported_versions: Some(vec![PROTOCOL_VERSION]),
+                    capabilities: None,
                     client_name: "test".to_string(),
                     client_pid: 1,
                     auth_token: None,
@@ -6939,7 +6993,7 @@ mod tests {
         let metrics = metrics::Metrics::new(metrics_dir.path().to_path_buf());
         let gateway = tokio::spawn(async move {
             let manager = WorkspaceManager::new();
-            let mut framed = Framed::new(server, ProdCodeCodec::new());
+            let mut framed = Framed::new(AnyStream::from(server), ProdCodeCodec::new());
             let req = ExecRequest {
                 client_workspace_root: "/tmp/restore-ws".to_string(),
                 base_workspace_name: Some("restore-ws".to_string()),

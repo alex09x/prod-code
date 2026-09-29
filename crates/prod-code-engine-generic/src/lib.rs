@@ -131,6 +131,11 @@ impl GenericLspConfig {
             "csharp" => Self::for_csharp(),
             "php" => Self::for_php(),
             "ruby" => Self::for_ruby(),
+            "dart" => Self::for_dart(),
+            "zig" => Self::for_zig(),
+            "elixir" => Self::for_elixir(),
+            "scala" => Self::for_scala(),
+            "lua" => Self::for_lua(),
             _ => return None,
         };
         let command = Path::new(&config.command);
@@ -417,6 +422,98 @@ impl GenericLspConfig {
         Self {
             command: cmd,
             args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Dart language servers.
+    pub fn for_dart() -> Self {
+        Self {
+            command: "dart".to_string(),
+            args: vec!["language-server".to_string()],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Zig language servers (zls).
+    pub fn for_zig() -> Self {
+        Self {
+            command: "zls".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Elixir language servers.
+    pub fn for_elixir() -> Self {
+        let (cmd, args) = if which_bin("expert").is_ok() {
+            ("expert".to_string(), vec![])
+        } else if which_bin("lexical").is_ok() {
+            ("lexical".to_string(), vec![])
+        } else {
+            ("elixir-ls".to_string(), vec![])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Scala language servers (metals).
+    pub fn for_scala() -> Self {
+        Self {
+            command: "metals".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Lua language servers.
+    pub fn for_lua() -> Self {
+        Self {
+            command: "lua-language-server".to_string(),
+            args: vec![],
             env: HashMap::new(),
             working_dir: None,
             initialization_options: None,

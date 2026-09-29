@@ -2744,6 +2744,7 @@ mod tests {
             .to_vec(),
             engine_age_ms: None,
             index_gated: false,
+            capabilities: None,
         };
         resend_lost_files(root, "", &handshake.stale_paths);
 

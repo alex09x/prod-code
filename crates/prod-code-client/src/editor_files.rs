@@ -40,6 +40,16 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "python" => "python",
         "typescript" | "javascript" | "tsx" | "jsx" => "typescript",
         "swift" => "swift",
+        "java" => "java",
+        "kotlin" | "kt" => "kotlin",
+        "csharp" | "cs" | "c#" | "dotnet" => "csharp",
+        "php" => "php",
+        "ruby" | "rb" => "ruby",
+        "dart" => "dart",
+        "zig" => "zig",
+        "elixir" | "ex" | "exs" => "elixir",
+        "scala" | "sbt" => "scala",
+        "lua" => "lua",
         _ => return None,
     })
 }

@@ -183,6 +183,7 @@ async fn exchange(gateway: &Gateway, client_root: &tempfile::TempDir, log: &Path
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: None,
+            capabilities: None,
             client_name: "fallback-forwarding-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,

@@ -1321,6 +1321,7 @@ async fn the_handshake_says_how_old_the_engine_is() {
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(vec![PROTOCOL_VERSION]),
+                capabilities: None,
                 client_name: "age-test".to_string(),
                 client_pid: std::process::id(),
                 auth_token: None,
@@ -2232,6 +2233,7 @@ impl EditorSession {
                 prod_code_protocol::HandshakeRequest {
                     protocol_version: prod_code_protocol::PROTOCOL_VERSION,
                     supported_versions: Some(vec![prod_code_protocol::PROTOCOL_VERSION]),
+                    capabilities: None,
                     client_name: "editor-test".to_string(),
                     client_pid: std::process::id(),
                     auth_token: None,

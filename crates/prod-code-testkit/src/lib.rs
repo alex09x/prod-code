@@ -156,6 +156,7 @@ async fn serve(socket: TcpStream, answer: Answer, calls: Arc<AtomicUsize>) -> an
                             .get("index_gated")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false),
+                        capabilities: None,
                     }))
                     .await?;
             }

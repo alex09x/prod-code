@@ -105,6 +105,7 @@ mod tests {
         let original = WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: 1,
             supported_versions: Some(vec![1]),
+            capabilities: None,
             client_name: "test-client".to_string(),
             client_pid: 1234,
             auth_token: None,
