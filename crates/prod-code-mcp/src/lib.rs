@@ -2,6 +2,7 @@
 
 pub mod call_tree;
 pub mod cluster;
+pub mod codemod;
 pub mod compile_check;
 pub mod dataflow;
 pub mod dead_code;
