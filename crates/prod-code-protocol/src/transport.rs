@@ -111,11 +111,39 @@ pub async fn connect_unix_with(
     Ok(stream)
 }
 
-/// A transport stream that can be either TCP or a local Unix domain socket.
+/// Connects to the Windows named pipe at `path` and opens it with the cluster's
+/// [`auth_token`] when there is one.
+#[cfg(windows)]
+pub async fn connect_named_pipe(
+    path: impl AsRef<Path>,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    connect_named_pipe_with(path, auth_token().as_deref()).await
+}
+
+/// Connects to the Windows named pipe at `path` and sends `token` as its first frame when one
+/// is given.
+#[cfg(windows)]
+pub async fn connect_named_pipe_with(
+    path: impl AsRef<Path>,
+    token: Option<&str>,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    let mut client = tokio::net::windows::named_pipe::ClientOptions::new().open(path.as_ref())?;
+    if let Some(token) = token {
+        let mut frame = bytes::BytesMut::new();
+        crate::codec::ProdCodeCodec::new()
+            .encode(WireMessage::Auth(AuthToken(token.to_string())), &mut frame)?;
+        client.write_all(&frame).await?;
+    }
+    Ok(client)
+}
+
+/// A transport stream that can be either TCP, a local Unix domain socket, or a Windows Named Pipe.
 pub enum AnyStream {
     Tcp(TcpStream),
     #[cfg(unix)]
     Unix(tokio::net::UnixStream),
+    #[cfg(windows)]
+    NamedPipe(tokio::net::windows::named_pipe::NamedPipeClient),
 }
 
 impl AnyStream {
@@ -126,6 +154,11 @@ impl AnyStream {
     #[cfg(unix)]
     pub async fn connect_unix(path: impl AsRef<Path>) -> std::io::Result<Self> {
         connect_unix(path).await.map(AnyStream::Unix)
+    }
+
+    #[cfg(windows)]
+    pub async fn connect_named_pipe(path: impl AsRef<Path>) -> std::io::Result<Self> {
+        connect_named_pipe(path).await.map(AnyStream::NamedPipe)
     }
 }
 
@@ -142,6 +175,13 @@ impl From<tokio::net::UnixStream> for AnyStream {
     }
 }
 
+#[cfg(windows)]
+impl From<tokio::net::windows::named_pipe::NamedPipeClient> for AnyStream {
+    fn from(s: tokio::net::windows::named_pipe::NamedPipeClient) -> Self {
+        AnyStream::NamedPipe(s)
+    }
+}
+
 impl tokio::io::AsyncRead for AnyStream {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
@@ -152,6 +192,8 @@ impl tokio::io::AsyncRead for AnyStream {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_read(cx, buf),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_read(cx, buf),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(s) => std::pin::Pin::new(s).poll_read(cx, buf),
         }
     }
 }
@@ -166,6 +208,8 @@ impl tokio::io::AsyncWrite for AnyStream {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_write(cx, buf),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_write(cx, buf),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(s) => std::pin::Pin::new(s).poll_write(cx, buf),
         }
     }
 
@@ -177,6 +221,8 @@ impl tokio::io::AsyncWrite for AnyStream {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_flush(cx),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_flush(cx),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(s) => std::pin::Pin::new(s).poll_flush(cx),
         }
     }
 
@@ -188,6 +234,8 @@ impl tokio::io::AsyncWrite for AnyStream {
             AnyStream::Tcp(s) => std::pin::Pin::new(s).poll_shutdown(cx),
             #[cfg(unix)]
             AnyStream::Unix(s) => std::pin::Pin::new(s).poll_shutdown(cx),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(s) => std::pin::Pin::new(s).poll_shutdown(cx),
         }
     }
 }
@@ -582,5 +630,20 @@ mod lsp_frame_tests {
                 .kind(),
             ErrorKind::InvalidData
         );
+    }
+
+    #[tokio::test]
+    async fn any_stream_from_tcp() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let any: AnyStream = client.into();
+        match any {
+            AnyStream::Tcp(_) => {}
+            #[cfg(unix)]
+            AnyStream::Unix(_) => panic!("expected Tcp"),
+            #[cfg(windows)]
+            AnyStream::NamedPipe(_) => panic!("expected Tcp"),
+        }
     }
 }

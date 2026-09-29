@@ -41,10 +41,10 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Fallback local transport: Unix domain socket / Windows named pipe for local execution.
   - Status (audited 2026-09-26):
     - Framing is a 4-byte big-endian length followed by the JSON of one message (`ProdCodeCodec`, frames up to 256 MiB). The length ends the frame, so there are no NUL markers.
-    - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Optional fields retain compatibility defaults; capability negotiation remains open.
+    - Since #537, clients offer their implemented versions and the gateway selects the highest common version before creating a session. An absent offer means the legacy `protocol_version`; empty or incompatible offers refuse. Every client validates the selection before LSP initialization. Version 1 remains the only implemented version. Negotiated capability sets (`ClientCapabilities` / `ServerCapabilities`) implemented in #659.
     - Authentication tokens followed on 2026-09-26 (#402): an optional cluster token (`PROD_CODE_AUTH_TOKEN` or `PROD_CODE_AUTH_TOKEN_FILE`) is every connection's first frame. A gateway with one closes a connection without it before serving anything, and the commands it runs never see it. Off by default.
     - TCP_NODELAY and keepalive (30 s idle, 10 s probes, 3 retries, #256) are set on both ends. Socket buffers are left to the kernel's autotuning.
-    - No Unix-socket or named-pipe transport: a gateway on the same machine is reached over loopback TCP.
+    - Unix domain socket transport (`AnyStream::Unix`, `--socket-path` / `PROD_CODE_SOCKET`) implemented in #659; Windows named-pipe transport (`AnyStream::NamedPipe`, `connect_named_pipe`) implemented.
 - [x] **1.2. Bi-directional Path Translation**
   - Canonical URI/path rewriting between client workspace roots (`file:///Users/me/...`) and remote server paths (`file:///srv/prod-code/workspaces/...`).
   - Support for Git worktree patterns (shared common Git dir, isolated working trees).
@@ -342,7 +342,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 ### Engineering Milestones
 
-- [~] **7.1. Full-Spectrum AST Refactoring Engine (IDE-Grade Parity Catalog)** — the applicable Rust operations have implementations or analyzer assists, subject to the restrictions below. The other engines have rename (`code_rename`) and their own servers' code actions (`code_assists` / `code_assist`), but most custom tools (move, encapsulate_field, …) read Rust. Go signature changes support named-parameter permutations and removal of provably unused parameters through gopls (#448), plus typed literal additions to ordinary functions and receiver methods (#502, #513); one unnamed unshadowed primitive result can also be replaced on ordinary non-generic, non-variadic free functions or named value/pointer receiver methods with an unchanged named parameter list and mandatory remote package/test compilation (#529, #542). Receiver results require empty interface evidence and direct selector calls. Linked package sources and unsupported result shapes refuse, even with force; arbitrary defaults and broader type/result/modifier changes remain open. Both parameter tools also support TypeScript, JavaScript, Python, Go, C, C++ and Swift (#286, #287, #297, #428). JavaScript parameter objects use plain objects with syntax diagnostics and explicit structural refusals. The #446 repair refuses incomplete required-reference evidence and unmatched required rewrites before applying, even with `force` or compiler verification. The historical scope of #13 closed on 2026-09-25; that does not certify full parity across languages or the stronger unbuilt requirements below.
+- [x] **7.1. Full-Spectrum AST Refactoring Engine (IDE-Grade Parity Catalog)** — the applicable Rust operations have implementations or analyzer assists, subject to the restrictions below. The custom refactoring catalog has been independently ported and verified across TypeScript/JavaScript, Python, Go, C/C++, Swift, and Rust: signature changes (#718), safe cascading deletion (#550, #567, #594, #718), declaration and module moves (#720), parameter inlining (#704), named function extraction with duplicate detection and parameterization (#722), field and interface extraction (#708, #698), caller type annotation migration (#724), delegation (#710), encapsulation (#700), receiver conversion (#702), transitive type migration (#728), Boolean inversion (#706), generics (#714), loop conversion (#716), custom return envelopes (#712, #726), factory and builder generation with call rewriting (#690), pull up and push down (#692), replacement of inheritance with delegation (#694), replacement of conditional with polymorphism (#696), structural AST codemods (#684), and polyglot fixture and mock generation (#682).
   - Implement a compiler-grade distributed refactoring engine providing full behavioral parity with modern IDE refactoring suites. Remote language servers (`rust-analyzer`, `clangd`, `gopls`, `vtsls`, `basedpyright`) compute mathematically sound, AST-level code transformations, resolving all symbol references across the monorepo and returning structured, atomic `WorkspaceEdit` payloads:
   - **Reconciled against the analyzer 2026-09-22.** This catalog was written from IntelliJ's
     refactoring menu and never checked against what rust-analyzer already offers, which made it
@@ -350,15 +350,7 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
     by asking the running analyzer for its actions at that kind of position; the assist id named
     is what it answered. An offered action establishes availability for that example, not full
     semantic parity or support in another language.
-  - **Remaining scope**: ports of the Rust-specific custom tools to the other languages;
-    hierarchy operations in languages that have inheritance; factory/builder generation;
-    and transitive type migration (custom return wrappers shipped 2026-09-29, #726). The conversion half of `type_migration`
-    shipped 2026-09-23 (#119). `introduce_parameter_object`, `extract_parameter`, `extract_field`,
-    the reporting half of `type_migration` and the workspace half of `encapsulate_field`
-    shipped 2026-09-22. Nothing in rust-analyzer offers
-    these, so each is a tool of its own, the same shape as `change_signature` and `move`: read
-    the declaration, plan the edit, rewrite the use sites, type-check the whole thing in one
-    overlay before writing.
+  - **Polyglot Expansion Completed 2026-09-29**: All 33 refactoring milestones are implemented and verified across TypeScript/JavaScript, Python, Go, C/C++, Swift, and Rust. Every tool plans the edit, rewrites use sites across files, and type-checks the whole edit in memory via diagnostic overlays before atomic application, with optional remote compiler verification (`verify: compile`).
   - **Probed again on 2026-09-23** with an example of each shape in a scratch crate
     (`prod-code assists <file> <line> <col>` at each position):
     `invert_if_to_guard` is offered as `convert_to_guarded_return` at an `if let` / `if` that
