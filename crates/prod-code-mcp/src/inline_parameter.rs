@@ -211,7 +211,7 @@ fn swift_label(arg: &str) -> Option<(&str, &str)> {
     Some((name, value.trim()))
 }
 
-fn language_matches(lang: Language, path: &Path) -> bool {
+pub(crate) fn language_matches(lang: Language, path: &Path) -> bool {
     Language::of(path) == Some(lang)
         || (lang == Language::TypeScript && Language::of(path) == Some(Language::JavaScript))
         || (lang == Language::JavaScript && Language::of(path) == Some(Language::TypeScript))
@@ -229,7 +229,7 @@ struct PolyglotDecl {
     params: Vec<crate::parameter_object::Param>,
 }
 
-fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String> {
+pub(crate) fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String> {
     let trimmed = line.trim();
     match lang {
         Language::Python => {
@@ -296,7 +296,7 @@ fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String> {
     None
 }
 
-fn find_python_body_close(text: &str, def_offset: usize, colon_pos: usize) -> usize {
+pub(crate) fn find_python_body_close(text: &str, def_offset: usize, colon_pos: usize) -> usize {
     let def_line = text[..def_offset].lines().last().unwrap_or("");
     let def_indent = def_line.len() - def_line.trim_start().len();
     let rest = &text[colon_pos + 1..];
@@ -519,7 +519,7 @@ struct FoundCall {
     site: String,
 }
 
-fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> bool {
+pub(crate) fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> bool {
     let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
     let line_end = content[at..].find('\n').map_or(content.len(), |p| at + p);
     let line = content[line_start..line_end].trim();
@@ -582,7 +582,7 @@ fn is_import_or_export_context(content: &str, at: usize, lang: Language) -> bool
     }
 }
 
-fn is_in_comment(content: &str, at: usize, lang: Language) -> bool {
+pub(crate) fn is_in_comment(content: &str, at: usize, lang: Language) -> bool {
     let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
     let before_on_line = &content[line_start..at];
     let trimmed = before_on_line.trim_start();
@@ -596,7 +596,7 @@ fn is_in_comment(content: &str, at: usize, lang: Language) -> bool {
     }
 }
 
-fn is_c_cpp_prototype(content: &str, at: usize, close_paren: usize) -> bool {
+pub(crate) fn is_c_cpp_prototype(content: &str, at: usize, close_paren: usize) -> bool {
     let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
     let before_on_line = content[line_start..at].trim();
     let Some(before_word) = before_on_line.split_whitespace().last() else {
