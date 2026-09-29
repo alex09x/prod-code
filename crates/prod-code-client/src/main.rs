@@ -645,9 +645,20 @@ enum Commands {
         /// The file that declares the function.
         file: PathBuf,
         /// 1-based line of the parameter's name.
-        line: u32,
+        #[arg(default_value = None)]
+        line: Option<u32>,
         /// 1-based column of the parameter's name.
-        col: u32,
+        #[arg(default_value = None)]
+        col: Option<u32>,
+        /// Function name.
+        #[arg(long)]
+        function: Option<String>,
+        /// Parameter name to inline.
+        #[arg(long)]
+        param: Option<String>,
+        /// `compile`: also run compiler check on the result in a shadow of the workspace.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -2095,22 +2106,34 @@ async fn main() -> Result<()> {
             file,
             line,
             col,
+            function,
+            param,
+            verify,
             apply,
             force,
         } => {
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                remote,
-                "code_inline_parameter",
-                serde_json::json!({
-                    "path": abs.to_string_lossy(),
-                    "line": line,
-                    "character": col,
-                    "apply": apply,
-                    "force": force,
-                }),
-            )
-            .await
+            let mut args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(l) = line {
+                args["line"] = serde_json::json!(l);
+            }
+            if let Some(c) = col {
+                args["character"] = serde_json::json!(c);
+            }
+            if let Some(f) = function {
+                args["function"] = serde_json::Value::String(f);
+            }
+            if let Some(p) = param {
+                args["parameter"] = serde_json::Value::String(p);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            run_tool(remote, "code_inline_parameter", args).await
         }
         Commands::ExtractDelegate {
             file,
