@@ -104,6 +104,14 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "nim" => from(GenericLspConfig::for_nim()),
         "d" => from(GenericLspConfig::for_d()),
         "fortran" => from(GenericLspConfig::for_fortran()),
+        "sql" => from(GenericLspConfig::for_sql()),
+        "graphql" => from(GenericLspConfig::for_graphql()),
+        "protobuf" => from(GenericLspConfig::for_protobuf()),
+        "crystal" => from(GenericLspConfig::for_crystal()),
+        "groovy" => from(GenericLspConfig::for_groovy()),
+        "ada" => from(GenericLspConfig::for_ada()),
+        "v" => from(GenericLspConfig::for_v()),
+        "racket" => from(GenericLspConfig::for_racket()),
         _ => return None,
     };
     let installed = if engine == "rust" {

@@ -59,6 +59,28 @@ const SOLIDITY_MARKERS: &[&str] = &[
 const NIM_MARKERS: &[&str] = &["nim.cfg"];
 const D_MARKERS: &[&str] = &["dub.json", "dub.sdl"];
 const FORTRAN_MARKERS: &[&str] = &["fpm.toml"];
+const SQL_MARKERS: &[&str] = &[".sqlfluff", "sqlfluff.cfg", ".sqls.json", "sqls.json", "schema.sql"];
+const GRAPHQL_MARKERS: &[&str] = &[
+    "codegen.yml",
+    "codegen.ts",
+    "codegen.json",
+    ".graphqlrc",
+    ".graphqlrc.yml",
+    ".graphqlrc.json",
+    "schema.graphql",
+];
+const PROTOBUF_MARKERS: &[&str] = &[
+    "buf.yaml",
+    "buf.work.yaml",
+    "buf.gen.yaml",
+    "buf.lock",
+    ".protolint.yaml",
+];
+const CRYSTAL_MARKERS: &[&str] = &["shard.yml", "shard.lock"];
+const GROOVY_MARKERS: &[&str] = &["Jenkinsfile"];
+const ADA_MARKERS: &[&str] = &["default.gpr"];
+const V_MARKERS: &[&str] = &["v.mod"];
+const RACKET_MARKERS: &[&str] = &["info.rkt"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -262,6 +284,122 @@ pub fn has_fortran_project(root: &Path) -> bool {
     FORTRAN_MARKERS.iter().any(|m| root.join(m).exists())
 }
 
+/// A SQL project (.sqlfluff, sqlfluff.cfg, .sqls.json, schema.sql, or *.sql) at the root.
+pub fn has_sql_project(root: &Path) -> bool {
+    if SQL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".sql")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A GraphQL project (codegen.yml, .graphqlrc, schema.graphql, or *.graphql) at the root.
+pub fn has_graphql_project(root: &Path) -> bool {
+    if GRAPHQL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".graphql") || name.ends_with(".gql")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Protobuf project (buf.yaml, buf.gen.yaml, .protolint.yaml, or *.proto) at the root.
+pub fn has_protobuf_project(root: &Path) -> bool {
+    if PROTOBUF_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".proto")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Crystal project (shard.yml, shard.lock, or *.cr) at the root.
+pub fn has_crystal_project(root: &Path) -> bool {
+    if CRYSTAL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".cr")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Groovy project (Jenkinsfile, *.groovy, *.gvy) at the root.
+pub fn has_groovy_project(root: &Path) -> bool {
+    if GROOVY_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".groovy") || name.ends_with(".gvy")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An Ada project (*.gpr, *.adb, *.ads) at the root.
+pub fn has_ada_project(root: &Path) -> bool {
+    if ADA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".gpr") || name.ends_with(".adb") || name.ends_with(".ads")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A V project (v.mod or *.v) at the root.
+pub fn has_v_project(root: &Path) -> bool {
+    if V_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".v") || name.ends_with(".vsh")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Racket project (info.rkt or *.rkt) at the root.
+pub fn has_racket_project(root: &Path) -> bool {
+    if RACKET_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".rkt")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Detect the primary engine kind for the specified workspace path.
 ///
 /// Priority order:
@@ -385,6 +523,30 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_fortran_project(root) {
         return EngineKind::Fortran;
     }
+    if has_sql_project(root) {
+        return EngineKind::Sql;
+    }
+    if has_graphql_project(root) {
+        return EngineKind::Graphql;
+    }
+    if has_protobuf_project(root) {
+        return EngineKind::Protobuf;
+    }
+    if has_crystal_project(root) {
+        return EngineKind::Crystal;
+    }
+    if has_groovy_project(root) {
+        return EngineKind::Groovy;
+    }
+    if has_ada_project(root) {
+        return EngineKind::Ada;
+    }
+    if has_v_project(root) {
+        return EngineKind::V;
+    }
+    if has_racket_project(root) {
+        return EngineKind::Racket;
+    }
     EngineKind::Generic
 }
 
@@ -478,6 +640,30 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_fortran_project(root) {
         engines.push(EngineKind::Fortran);
+    }
+    if has_sql_project(root) {
+        engines.push(EngineKind::Sql);
+    }
+    if has_graphql_project(root) {
+        engines.push(EngineKind::Graphql);
+    }
+    if has_protobuf_project(root) {
+        engines.push(EngineKind::Protobuf);
+    }
+    if has_crystal_project(root) {
+        engines.push(EngineKind::Crystal);
+    }
+    if has_groovy_project(root) {
+        engines.push(EngineKind::Groovy);
+    }
+    if has_ada_project(root) {
+        engines.push(EngineKind::Ada);
+    }
+    if has_v_project(root) {
+        engines.push(EngineKind::V);
+    }
+    if has_racket_project(root) {
+        engines.push(EngineKind::Racket);
     }
 
     if engines.is_empty() {
@@ -769,5 +955,114 @@ mod tests {
         std::fs::write(dir_f.path().join("fpm.toml"), "name = \"pkg\"").unwrap();
         assert_eq!(detect_engine(dir_f.path()), EngineKind::Fortran);
         assert_eq!(detect_all_engines(dir_f.path()), vec![EngineKind::Fortran]);
+
+        let dir_sql = tempdir().unwrap();
+        std::fs::write(dir_sql.path().join(".sqlfluff"), "[sqlfluff]").unwrap();
+        assert_eq!(detect_engine(dir_sql.path()), EngineKind::Sql);
+        assert_eq!(detect_all_engines(dir_sql.path()), vec![EngineKind::Sql]);
+
+        let dir_gql = tempdir().unwrap();
+        std::fs::write(dir_gql.path().join("codegen.yml"), "schema: schema.graphql").unwrap();
+        assert_eq!(detect_engine(dir_gql.path()), EngineKind::Graphql);
+        assert_eq!(detect_all_engines(dir_gql.path()), vec![EngineKind::Graphql]);
+
+        let dir_proto = tempdir().unwrap();
+        std::fs::write(dir_proto.path().join("buf.yaml"), "version: v1").unwrap();
+        assert_eq!(detect_engine(dir_proto.path()), EngineKind::Protobuf);
+        assert_eq!(detect_all_engines(dir_proto.path()), vec![EngineKind::Protobuf]);
+
+        let dir_cr = tempdir().unwrap();
+        std::fs::write(dir_cr.path().join("shard.yml"), "name: shard").unwrap();
+        assert_eq!(detect_engine(dir_cr.path()), EngineKind::Crystal);
+        assert_eq!(detect_all_engines(dir_cr.path()), vec![EngineKind::Crystal]);
+
+        let dir_groovy = tempdir().unwrap();
+        std::fs::write(dir_groovy.path().join("Jenkinsfile"), "pipeline {}").unwrap();
+        assert_eq!(detect_engine(dir_groovy.path()), EngineKind::Groovy);
+        assert_eq!(detect_all_engines(dir_groovy.path()), vec![EngineKind::Groovy]);
+
+        let dir_ada = tempdir().unwrap();
+        std::fs::write(dir_ada.path().join("default.gpr"), "project Default is end Default;").unwrap();
+        assert_eq!(detect_engine(dir_ada.path()), EngineKind::Ada);
+        assert_eq!(detect_all_engines(dir_ada.path()), vec![EngineKind::Ada]);
+
+        let dir_v = tempdir().unwrap();
+        std::fs::write(dir_v.path().join("v.mod"), "Module { name: 'pkg' }").unwrap();
+        assert_eq!(detect_engine(dir_v.path()), EngineKind::V);
+        assert_eq!(detect_all_engines(dir_v.path()), vec![EngineKind::V]);
+
+        let dir_rkt = tempdir().unwrap();
+        std::fs::write(dir_rkt.path().join("info.rkt"), "#lang info").unwrap();
+        assert_eq!(detect_engine(dir_rkt.path()), EngineKind::Racket);
+        assert_eq!(detect_all_engines(dir_rkt.path()), vec![EngineKind::Racket]);
+    }
+
+    #[test]
+    fn test_universal_language_detection_matrix_all_40_languages() {
+        struct Case {
+            lang: &'static str,
+            files: &'static [(&'static str, &'static str)],
+            kind: EngineKind,
+        }
+
+        let matrix = [
+            Case { lang: "Rust", files: &[("Cargo.toml", "[workspace]")], kind: EngineKind::Rust },
+            Case { lang: "Go", files: &[("go.mod", "module test")], kind: EngineKind::Go },
+            Case { lang: "Python", files: &[("pyproject.toml", "[project]")], kind: EngineKind::Python },
+            Case { lang: "TypeScript", files: &[("tsconfig.json", "{}")], kind: EngineKind::TypeScript },
+            Case { lang: "Cpp", files: &[("CMakeLists.txt", "project(test)")], kind: EngineKind::Cpp },
+            Case { lang: "Swift", files: &[("Package.swift", "// swift-tools-version:5.9")], kind: EngineKind::Swift },
+            Case { lang: "Java", files: &[("pom.xml", "<project></project>")], kind: EngineKind::Java },
+            Case { lang: "Kotlin", files: &[("build.gradle.kts", "")], kind: EngineKind::Kotlin },
+            Case { lang: "Csharp", files: &[("global.json", "{}")], kind: EngineKind::Csharp },
+            Case { lang: "Php", files: &[("composer.json", "{}")], kind: EngineKind::Php },
+            Case { lang: "Ruby", files: &[("Gemfile", "")], kind: EngineKind::Ruby },
+            Case { lang: "Dart", files: &[("pubspec.yaml", "name: test")], kind: EngineKind::Dart },
+            Case { lang: "Zig", files: &[("build.zig", "")], kind: EngineKind::Zig },
+            Case { lang: "Elixir", files: &[("mix.exs", "defmodule M do end")], kind: EngineKind::Elixir },
+            Case { lang: "Scala", files: &[("build.sbt", "")], kind: EngineKind::Scala },
+            Case { lang: "Lua", files: &[(".luarc.json", "{}")], kind: EngineKind::Lua },
+            Case { lang: "Haskell", files: &[("cabal.project", "")], kind: EngineKind::Haskell },
+            Case { lang: "Ocaml", files: &[("dune-project", "(lang dune 3.0)")], kind: EngineKind::Ocaml },
+            Case { lang: "Clojure", files: &[("project.clj", "")], kind: EngineKind::Clojure },
+            Case { lang: "Julia", files: &[("JuliaProject.toml", "")], kind: EngineKind::Julia },
+            Case { lang: "Shell", files: &[(".shellcheckrc", "")], kind: EngineKind::Shell },
+            Case { lang: "R", files: &[("DESCRIPTION", "Package: test")], kind: EngineKind::R },
+            Case { lang: "Erlang", files: &[("rebar.config", "")], kind: EngineKind::Erlang },
+            Case { lang: "Fsharp", files: &[("App.fsproj", "")], kind: EngineKind::Fsharp },
+            Case { lang: "Perl", files: &[("cpanfile", "")], kind: EngineKind::Perl },
+            Case { lang: "Solidity", files: &[("foundry.toml", "")], kind: EngineKind::Solidity },
+            Case { lang: "Nim", files: &[("nim.cfg", "")], kind: EngineKind::Nim },
+            Case { lang: "D", files: &[("dub.json", "{}")], kind: EngineKind::D },
+            Case { lang: "Fortran", files: &[("fpm.toml", "")], kind: EngineKind::Fortran },
+            Case { lang: "Sql", files: &[(".sqlfluff", "")], kind: EngineKind::Sql },
+            Case { lang: "Graphql", files: &[("codegen.yml", "")], kind: EngineKind::Graphql },
+            Case { lang: "Protobuf", files: &[("buf.yaml", "")], kind: EngineKind::Protobuf },
+            Case { lang: "Crystal", files: &[("shard.yml", "")], kind: EngineKind::Crystal },
+            Case { lang: "Groovy", files: &[("Jenkinsfile", "")], kind: EngineKind::Groovy },
+            Case { lang: "Ada", files: &[("default.gpr", "")], kind: EngineKind::Ada },
+            Case { lang: "V", files: &[("v.mod", "")], kind: EngineKind::V },
+            Case { lang: "Racket", files: &[("info.rkt", "")], kind: EngineKind::Racket },
+            Case { lang: "Generic", files: &[], kind: EngineKind::Generic },
+        ];
+
+        for case in matrix {
+            let dir = tempdir().unwrap();
+            for (filename, content) in case.files {
+                std::fs::write(dir.path().join(filename), content).unwrap();
+            }
+            let detected = detect_engine(dir.path());
+            assert_eq!(
+                detected, case.kind,
+                "Language {} detection mismatch: expected {:?}, got {:?}",
+                case.lang, case.kind, detected
+            );
+            let all = detect_all_engines(dir.path());
+            assert!(
+                all.contains(&case.kind),
+                "Language {} missing from detect_all_engines: {all:?}",
+                case.lang
+            );
+        }
     }
 }

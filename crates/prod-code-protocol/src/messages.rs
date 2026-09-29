@@ -122,6 +122,14 @@ pub enum EngineKind {
     Nim,
     D,
     Fortran,
+    Sql,
+    Graphql,
+    Protobuf,
+    Crystal,
+    Groovy,
+    Ada,
+    V,
+    Racket,
     Generic,
 }
 
@@ -157,6 +165,14 @@ impl EngineKind {
             EngineKind::Nim => "nim",
             EngineKind::D => "d",
             EngineKind::Fortran => "fortran",
+            EngineKind::Sql => "sql",
+            EngineKind::Graphql => "graphql",
+            EngineKind::Protobuf => "protobuf",
+            EngineKind::Crystal => "crystal",
+            EngineKind::Groovy => "groovy",
+            EngineKind::Ada => "ada",
+            EngineKind::V => "v",
+            EngineKind::Racket => "racket",
             EngineKind::Generic => "generic",
         }
     }
@@ -201,6 +217,14 @@ impl std::str::FromStr for EngineKind {
             "nim" => EngineKind::Nim,
             "d" | "dlang" => EngineKind::D,
             "fortran" | "f90" | "f95" => EngineKind::Fortran,
+            "sql" => EngineKind::Sql,
+            "graphql" | "gql" => EngineKind::Graphql,
+            "protobuf" | "proto" => EngineKind::Protobuf,
+            "crystal" | "cr" => EngineKind::Crystal,
+            "groovy" | "gvy" => EngineKind::Groovy,
+            "ada" | "adb" | "ads" => EngineKind::Ada,
+            "v" | "vsh" => EngineKind::V,
+            "racket" | "rkt" => EngineKind::Racket,
             _ => EngineKind::Generic,
         })
     }
@@ -1241,6 +1265,14 @@ mod wire_tests {
             ("nim", EngineKind::Nim),
             ("d", EngineKind::D),
             ("fortran", EngineKind::Fortran),
+            ("sql", EngineKind::Sql),
+            ("graphql", EngineKind::Graphql),
+            ("protobuf", EngineKind::Protobuf),
+            ("crystal", EngineKind::Crystal),
+            ("groovy", EngineKind::Groovy),
+            ("ada", EngineKind::Ada),
+            ("v", EngineKind::V),
+            ("racket", EngineKind::Racket),
         ];
         for (name, kind) in languages {
             assert_eq!(kind.as_str(), name);

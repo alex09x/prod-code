@@ -1093,6 +1093,22 @@ fn plan_command_basic(
         ("d", VerifyKind::Test) => vec!["dub", "test"],
         ("fortran", VerifyKind::Check) => vec!["fpm", "build"],
         ("fortran", VerifyKind::Test) => vec!["fpm", "test"],
+        ("sql", VerifyKind::Check) => vec!["sqlfluff", "lint"],
+        ("sql", VerifyKind::Test) => vec!["pg_prove"],
+        ("graphql", VerifyKind::Check) => vec!["graphql-codegen", "--check"],
+        ("graphql", VerifyKind::Test) => vec!["graphql-codegen"],
+        ("protobuf", VerifyKind::Check) => vec!["buf", "lint"],
+        ("protobuf", VerifyKind::Test) => vec!["buf", "breaking", "--against", ".git#branch=main"],
+        ("crystal", VerifyKind::Check) => vec!["crystal", "build", "--no-codegen"],
+        ("crystal", VerifyKind::Test) => vec!["crystal", "spec"],
+        ("groovy", VerifyKind::Check) => vec!["gradle", "compileGroovy"],
+        ("groovy", VerifyKind::Test) => vec!["gradle", "test"],
+        ("ada", VerifyKind::Check) => vec!["gprbuild", "-c"],
+        ("ada", VerifyKind::Test) => vec!["gprtest"],
+        ("v", VerifyKind::Check) => vec!["v", "check", "."],
+        ("v", VerifyKind::Test) => vec!["v", "test", "."],
+        ("racket", VerifyKind::Check) => vec!["raco", "make"],
+        ("racket", VerifyKind::Test) => vec!["raco", "test", "."],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1181,6 +1197,26 @@ fn plan_command_basic(
             }
             ("fortran", VerifyKind::Test) => {
                 cmd.push("--target".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("sql", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("crystal", VerifyKind::Test) => {
+                cmd.push("-e".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("groovy", VerifyKind::Test) => {
+                cmd.push("--tests".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("ada", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("v", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("racket", VerifyKind::Test) => {
                 cmd.push(filter.to_string());
             }
             ("rust", VerifyKind::Bench) => cmd.push(filter.to_string()),
@@ -2980,7 +3016,7 @@ expected 42, got 43\n\
             plan_command("lua", VerifyKind::Test, Some("suite")).unwrap(),
             vec!["busted", "--filter", "suite"]
         );
-        assert!(plan_command("fortran", VerifyKind::Check, None).is_err());
+        assert!(plan_command("unknown_language", VerifyKind::Check, None).is_err());
         let report = VerifyReport {
             kind: VerifyKind::Test,
             language: "rust".into(),
@@ -3238,5 +3274,100 @@ expected 42, got 43\n\
             plan_command("fortran", VerifyKind::Test, Some("my_test")).unwrap(),
             ["fpm", "test", "--target", "my_test"]
         );
+        assert_eq!(
+            plan_command("sql", VerifyKind::Check, None).unwrap(),
+            ["sqlfluff", "lint"]
+        );
+        assert_eq!(
+            plan_command("sql", VerifyKind::Test, Some("t/*.sql")).unwrap(),
+            ["pg_prove", "t/*.sql"]
+        );
+        assert_eq!(
+            plan_command("graphql", VerifyKind::Check, None).unwrap(),
+            ["graphql-codegen", "--check"]
+        );
+        assert_eq!(
+            plan_command("graphql", VerifyKind::Test, None).unwrap(),
+            ["graphql-codegen"]
+        );
+        assert_eq!(
+            plan_command("protobuf", VerifyKind::Check, None).unwrap(),
+            ["buf", "lint"]
+        );
+        assert_eq!(
+            plan_command("protobuf", VerifyKind::Test, None).unwrap(),
+            ["buf", "breaking", "--against", ".git#branch=main"]
+        );
+        assert_eq!(
+            plan_command("crystal", VerifyKind::Check, None).unwrap(),
+            ["crystal", "build", "--no-codegen"]
+        );
+        assert_eq!(
+            plan_command("crystal", VerifyKind::Test, Some("my_spec")).unwrap(),
+            ["crystal", "spec", "-e", "my_spec"]
+        );
+        assert_eq!(
+            plan_command("groovy", VerifyKind::Check, None).unwrap(),
+            ["gradle", "compileGroovy"]
+        );
+        assert_eq!(
+            plan_command("groovy", VerifyKind::Test, Some("MyTest")).unwrap(),
+            ["gradle", "test", "--tests", "MyTest"]
+        );
+        assert_eq!(
+            plan_command("ada", VerifyKind::Check, None).unwrap(),
+            ["gprbuild", "-c"]
+        );
+        assert_eq!(
+            plan_command("ada", VerifyKind::Test, Some("test_suite")).unwrap(),
+            ["gprtest", "test_suite"]
+        );
+        assert_eq!(
+            plan_command("v", VerifyKind::Check, None).unwrap(),
+            ["v", "check", "."]
+        );
+        assert_eq!(
+            plan_command("v", VerifyKind::Test, Some("test_foo")).unwrap(),
+            ["v", "test", ".", "test_foo"]
+        );
+        assert_eq!(
+            plan_command("racket", VerifyKind::Check, None).unwrap(),
+            ["raco", "make"]
+        );
+        assert_eq!(
+            plan_command("racket", VerifyKind::Test, Some("foo-test.rkt")).unwrap(),
+            ["raco", "test", ".", "foo-test.rkt"]
+        );
+    }
+
+    #[test]
+    fn test_universal_verification_matrix_all_languages() {
+        let languages = [
+            "rust", "go", "swift", "csharp", "java", "kotlin", "php", "ruby",
+            "dart", "zig", "elixir", "scala", "lua", "haskell", "ocaml", "clojure",
+            "julia", "shell", "r", "erlang", "fsharp", "perl", "solidity", "nim",
+            "d", "fortran", "sql", "graphql", "protobuf", "crystal", "groovy", "ada",
+            "v", "racket",
+        ];
+
+        for lang in languages {
+            let check_cmd = plan_command(lang, VerifyKind::Check, None);
+            assert!(
+                check_cmd.is_ok(),
+                "Language {lang} failed to plan check command: {:?}",
+                check_cmd.err()
+            );
+            let check = check_cmd.unwrap();
+            assert!(!check.is_empty(), "Language {lang} check command is empty");
+
+            let test_cmd = plan_command(lang, VerifyKind::Test, None);
+            assert!(
+                test_cmd.is_ok(),
+                "Language {lang} failed to plan test command: {:?}",
+                test_cmd.err()
+            );
+            let test = test_cmd.unwrap();
+            assert!(!test.is_empty(), "Language {lang} test command is empty");
+        }
     }
 }

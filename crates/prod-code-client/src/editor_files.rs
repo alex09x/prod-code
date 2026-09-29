@@ -63,6 +63,14 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "nim" => "nim",
         "d" | "dlang" => "d",
         "fortran" | "f90" | "f95" => "fortran",
+        "sql" => "sql",
+        "graphql" | "gql" => "graphql",
+        "proto" | "protobuf" => "protobuf",
+        "crystal" | "cr" => "crystal",
+        "groovy" | "gvy" => "groovy",
+        "ada" | "adb" | "ads" => "ada",
+        "v" | "vsh" => "v",
+        "racket" | "rkt" => "racket",
         _ => return None,
     })
 }
