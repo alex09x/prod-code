@@ -261,16 +261,18 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_migrate_type".to_string(),
-            description: "Change a declared type and report the whole shape of what that breaks, before any of it is done. Give the declaration's position (a struct field, a function parameter, a return type, or an annotated `let`) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. The errors that come back are not a failure, they are the work list: each is reported with its file, line and the source at that line, grouped by file. Where an error is exactly the old type meeting the new one, the report says what conversion would fix that site. With `convert: true` it writes `.into()` at every site where the old and new types meet and checks the overlay again: a conversion is kept only where the analyzer accepts it, a rejected one is taken back and its site stays in the report marked as tried, and if the kept conversions cause an error anywhere else none is kept. Narrowings (`u64` to `u32`) and fallible conversions therefore stay a person's decision. `apply` writes the declaration alone and refuses while any site remains, so a half-migrated type is never written by accident. `apply` then writes the declaration with the kept conversions. Rust only."
+            description: "Change a declared type and report the whole shape of what that breaks across Rust, TypeScript/JavaScript, Python, C++, Swift, and Go (Roadmap 7.1.4). Give the declaration's position or symbol name (a struct/class field, a function parameter, a return type, or an annotated variable) and the type it should become; the declaration is rewritten in memory and the workspace is type-checked in one overlay, with every file that references the symbol checked too. With `transitive: true`, downstream variable bindings, matching parameter types, and function return signatures along the data-flow graph are transitively migrated automatically. With `convert: true`, language-idiomatic conversions (`.into()` in Rust, `Number(...)` / `as` in TS, `int(...)` in Python, `int64(...)` in Go, `Int64(...)` in Swift, `static_cast<...>()` in C++) are written at sites where old and new types meet, keeping only conversions accepted by the analyzer. Type-checked in one overlay before anything is written."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File that declares the symbol" },
+                    "symbol": { "type": "string", "description": "Symbol name to migrate (field, parameter, function return type, variable; alternative to line/character)" },
                     "line": { "type": "integer", "description": "1-based line of the declared name" },
                     "character": { "type": "integer", "description": "1-based column of the declared name" },
                     "to": { "type": "string", "description": "The type it should become, spelled as it will be written" },
-                    "convert": { "type": "boolean", "description": "Write `.into()` at the sites where the old and new types meet, keeping only the conversions the analyzer accepts (default false: report only)" },
+                    "convert": { "type": "boolean", "description": "Write language-idiomatic conversions at the sites where old and new types meet, keeping only conversions the analyzer accepts (default false: report only)" },
+                    "transitive": { "type": "boolean", "description": "Transitively migrate downstream variable annotations, parameter types, and function return signatures along the data-flow graph (default false)" },
                     "apply": { "type": "boolean", "description": "Write the declaration (default false: report only)" },
                     "force": { "type": "boolean", "description": "Write the declaration while sites still do not fit" }
                 },
@@ -6732,16 +6734,17 @@ async fn handle_migrate_type(
 ) -> Result<McpToolCallResult> {
     let path_str = args
         .get("path")
-        .and_then(|v| v.as_str())
-        .context("Missing 'path' argument (or `symbol`)")?;
-    let line = args
-        .get("line")
-        .and_then(|v| v.as_u64())
-        .context("Missing 'line' argument (or `symbol`)")? as u32;
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str());
+    let symbol = args
+        .get("symbol")
+        .and_then(|v| v.as_str());
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
     let character = args
         .get("character")
+        .or_else(|| args.get("col"))
         .and_then(|v| v.as_u64())
-        .context("Missing 'character' argument (or `symbol`)")? as u32;
+        .map(|v| v as u32);
     let to = args
         .get("to")
         .and_then(|v| v.as_str())
@@ -6750,17 +6753,43 @@ async fn handle_migrate_type(
         .get("convert")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let transitive = args
+        .get("transitive")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    let file_path = resolve_file_path(workspace_root, path_str);
-    let done = crate::type_migration::migrate(
+
+    let file_path = if let Some(p) = path_str {
+        resolve_file_path(workspace_root, p)
+    } else if let Some(sym) = symbol {
+        let clean_sym = sym.rsplit("::").next().unwrap_or(sym).rsplit('.').next().unwrap_or(sym).trim();
+        let mut found = None;
+        for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && let Ok(content) = std::fs::read_to_string(p)
+                && content.contains(clean_sym)
+            {
+                found = Some(p.to_path_buf());
+                break;
+            }
+        }
+        found.with_context(|| format!("could not find file declaring symbol `{sym}`"))?
+    } else {
+        anyhow::bail!("Missing 'path' or 'symbol' argument");
+    };
+
+    let done = crate::type_migration::migrate_ext(
         remote,
         workspace_root,
         &file_path,
+        symbol,
         line,
         character,
         to,
         convert,
+        transitive,
         apply,
         force,
     )
