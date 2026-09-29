@@ -510,6 +510,25 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_replace_inheritance_with_delegation".to_string(),
+            description: "Replace inheritance with composition and delegation across Python, TypeScript/JavaScript, C++, and Swift (Roadmap 7.1.3). Decouples a subclass from its base class, introduces an encapsulated private delegate field, initializes it in constructors/initializers, auto-generates forwarding methods to maintain API compatibility, and strips invalid `override` modifiers and `super` calls. Type-checked via analyzer overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the subclass" },
+                    "sub_type": { "type": "string", "description": "Name of the subclass to refactor" },
+                    "symbol": { "type": "string", "description": "Alternative alias for sub_type" },
+                    "base_type": { "type": "string", "description": "Optional name of the base class to decouple from (auto-detected if omitted)" },
+                    "field_name": { "type": "string", "description": "Optional name for the delegate field (defaults to base class name in snake_case/camelCase)" },
+                    "methods": { "type": "array", "items": { "type": "string" }, "description": "Optional explicit list of method names to forward (auto-discovered if omitted)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                }
+            }),
+        },
+        McpTool {
             name: "code_extract_function".to_string(),
             description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
                 .to_string(),
@@ -1398,6 +1417,9 @@ pub async fn execute_tool(
         }
         "code_pull_up" => handle_pull_up(remote, workspace_root, &args).await,
         "code_push_down" => handle_push_down(remote, workspace_root, &args).await,
+        "code_replace_inheritance_with_delegation" | "code_replace_inheritance" => {
+            handle_replace_inheritance_with_delegation(remote, workspace_root, &args).await
+        }
         "code_extract_delegate" => {
             let path_str = args
                 .get("path")
@@ -3701,6 +3723,54 @@ async fn handle_push_down(
         class_name,
         target_classes.as_deref(),
         &members,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_replace_inheritance_with_delegation(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let sub_type = args
+        .get("sub_type")
+        .or_else(|| args.get("symbol"))
+        .or_else(|| args.get("class_name"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'sub_type' (or `symbol`) argument")?;
+    let base_type = args.get("base_type").and_then(|v| v.as_str());
+    let field_name = args.get("field_name").and_then(|v| v.as_str());
+    let methods: Option<Vec<String>> = args
+        .get("methods")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+
+    let done = crate::replace_inheritance::replace_inheritance_impl(
+        remote,
+        workspace_root,
+        &file_path,
+        sub_type,
+        base_type,
+        field_name,
+        methods.as_deref(),
         apply,
         force,
         verify,
@@ -6268,6 +6338,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_replace_constructor",
     "code_pull_up",
     "code_push_down",
+    "code_replace_inheritance_with_delegation",
 ];
 
 /// One `workspace/symbol` hit, positioned on the symbol's name (1-based).

@@ -932,6 +932,33 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Replace inheritance with composition and delegation.
+    #[command(alias = "replace-inheritance")]
+    ReplaceInheritanceWithDelegation {
+        /// File that declares the subclass
+        file: PathBuf,
+        /// Name of the subclass to refactor
+        #[arg(long = "sub-type", visible_alias = "class")]
+        sub_type: String,
+        /// Optional name of the base class to decouple from (auto-detected if omitted)
+        #[arg(long = "base-type")]
+        base_type: Option<String>,
+        /// Optional name for the delegate field (defaults to base class name)
+        #[arg(long = "field-name")]
+        field_name: Option<String>,
+        /// Optional explicit list of method names to forward (auto-discovered if omitted)
+        #[arg(long, value_delimiter = ',')]
+        methods: Vec<String>,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if warnings or non-fatal diagnostics occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a method into a field of its type, initialised wherever the
     /// type is built.
     ExtractField {
@@ -2316,6 +2343,50 @@ async fn main() -> Result<()> {
             }
             let result =
                 prod_code_mcp::tools::execute_tool(remote, &root, "code_push_down", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::ReplaceInheritanceWithDelegation {
+            file,
+            sub_type,
+            base_type,
+            field_name,
+            methods,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "sub_type": sub_type,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(b) = base_type {
+                args["base_type"] = serde_json::Value::String(b);
+            }
+            if let Some(f) = field_name {
+                args["field_name"] = serde_json::Value::String(f);
+            }
+            if !methods.is_empty() {
+                args["methods"] = serde_json::Value::Array(
+                    methods.into_iter().map(serde_json::Value::String).collect(),
+                );
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_inheritance_with_delegation", args)
                     .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
