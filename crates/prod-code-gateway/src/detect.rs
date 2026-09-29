@@ -1113,7 +1113,13 @@ mod tests {
         let all = detect_all_engines(dir.path());
         assert_eq!(
             all,
-            vec![EngineKind::Rust, EngineKind::Go, EngineKind::TypeScript]
+            vec![
+                EngineKind::Rust,
+                EngineKind::Go,
+                EngineKind::TypeScript,
+                EngineKind::Toml,
+                EngineKind::Json,
+            ]
         );
     }
 
