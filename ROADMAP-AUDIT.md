@@ -106,8 +106,7 @@ evidence remain above; the original mechanism or required scope remains open.
 - **5.4**: per-workspace out-of-process macro servers are not a sandboxed shared worker farm.
 - **6.3**: seeded per-worktree artifacts and per-user caches are not a shared read-only dependency
   artifact cache.
-- **7.1 `extract_function`**: token-matched copies, with optional other-file search, are not
-  automatic workspace-wide structural duplicate detection.
+- **7.1 `extract_function`**: polyglot function extraction and automatic workspace-wide structural duplicate detection across TypeScript/JavaScript, Python, Go, C++, Swift, and Rust implemented in #722: detects free variables and infers parameter/return types, preserves indentation and receiver context, parameterizes differing literals (`parameterize: true`), and discovers and rewrites structural duplicates workspace-wide (`other_files: true`) with automatic relative import insertion.
 - **7.1 `extract_trait` / `extract_interface`**: #505 supports ordinary Rust inherent lifetime,
   type and const parameters with bounds, but imports for moved methods still do not update caller
   type annotations. Attributed impls, conditional methods, `Self`-dependent impl bounds, opaque

@@ -595,7 +595,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_function".to_string(),
-            description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
+            description: "Extract the selected code into a new function with the name you give across TypeScript/JavaScript, Python, Go, C++, Swift, and Rust (Roadmap 7.1.2), and replace duplicates with the same call. Structural duplicates within the file and across the workspace (`other_files: true`) are detected and replaced; parameterizing differing literals is supported with `parameterize: true`. For Rust, rust-analyzer's `extract_function` performs the initial extraction, and borrow safety is verified with `compile_gate`. Set `duplicates: false` to extract the selection alone."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -4426,8 +4426,10 @@ async fn handle_extract_function(
     .await?;
     // rust-analyzer does not check borrows: a duplicate whose call moves a value the code after
     // it still uses type-checks and does not compile. So the compiler sees any such result.
+    let is_rust = file_path.extension().and_then(|e| e.to_str()) == Some("rs");
     let verify =
-        args.get("verify").and_then(|v| v.as_str()) == Some("compile") || done.replaced() > 0;
+        (args.get("verify").and_then(|v| v.as_str()) == Some("compile") || done.replaced() > 0)
+            && is_rust;
     let gate = if verify {
         Some(
             compile_gate(
