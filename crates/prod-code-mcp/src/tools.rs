@@ -321,7 +321,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_invert_boolean".to_string(),
-            description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. At a `bool` field or a `let` binding instead, the value is inverted: every read gains a `!` or loses the one it had (parenthesized when it goes on), and every write stores the negation — an assignment, the `let` initialiser, the field in a struct literal or its shorthand. A borrow, a compound assignment (`|=`), a pattern that binds it, a use in a format string, a derived `Default` or a serde derive cannot keep their meaning and block the write unless `force`; a local without a `: bool` annotation is inverted only when the analyzer says it is `bool`. Type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+            description: "Invert a predicate: a function returning `bool` gets a new name and the opposite meaning (`is_valid` → `is_invalid`), and every caller keeps doing what it did. Give the function's name position (or `symbol`) and `new_name`. The body returns the negation of what it returned — a one-expression body is negated in place, a longer one as a block, and every `return` of the function (not of a closure or nested `fn` inside it) is negated. Every call becomes `!new_name(…)`, or loses the `!` it had, since the two cancel; a call followed by `.`, `?` or an index is parenthesized. A reference that is not a call — the function used as a value — is named, because it keeps its old meaning under the new name. A recursive predicate is refused. At a `bool` field or a `let` binding instead, the value is inverted: every read gains a `!` or loses the one it had (parenthesized when it goes on), and every write stores the negation — an assignment, the `let` initialiser, the field in a struct literal or its shorthand. A borrow, a compound assignment (`|=`), a pattern that binds it, a use in a format string, a derived `Default` or a serde derive cannot keep their meaning and block the write unless `force`; a local without a `: bool` annotation is inverted only when the analyzer says it is `bool`. Type-checked in one overlay; `verify: \"compile\"` adds compiler checks. Rust, TypeScript, JavaScript, Python, C++, Swift, Go."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -329,8 +329,10 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File that declares the function, field or variable" },
                     "line": { "type": "integer", "description": "1-based line of its name" },
                     "character": { "type": "integer", "description": "1-based column of its name" },
+                    "symbol": { "type": "string", "description": "Predicate name or symbol (`isValid`, `Math::isValid`)" },
+                    "function": { "type": "string", "description": "Predicate function name" },
                     "new_name": { "type": "string", "description": "The name of the inverted predicate, field or variable" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -3359,12 +3361,12 @@ async fn handle_invert_boolean(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument (or `symbol`)")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
-    };
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let symbol = args
+        .get("symbol")
+        .or_else(|| args.get("function"))
+        .and_then(|v| v.as_str());
     let new_name = args
         .get("new_name")
         .and_then(|v| v.as_str())
@@ -3373,17 +3375,37 @@ async fn handle_invert_boolean(
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::invert_boolean::invert(
-        remote,
-        workspace_root,
-        &file_path,
-        num("line")?,
-        num("character")?,
-        new_name,
-        apply && !verify,
-        force,
-    )
-    .await?;
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        let l = line.context("Missing 'line' argument for Rust invert_boolean")?;
+        let c = character.context("Missing 'character' argument for Rust invert_boolean")?;
+        crate::invert_boolean::invert(
+            remote,
+            workspace_root,
+            &file_path,
+            l,
+            c,
+            new_name,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        crate::invert_boolean::invert_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            line,
+            character,
+            symbol,
+            new_name,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
     refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();

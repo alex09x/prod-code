@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 /// What the inversion did, or would do if it were applied.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -164,7 +165,10 @@ pub fn own_returns(inner: &str) -> Vec<usize> {
                 || head.ends_with('|')
                 || (line.contains('|') && line.contains("->"))
                 || line.trim_start().starts_with("fn ")
-                || line.contains(" fn ");
+                || line.contains(" fn ")
+                || line.contains("func ")
+                || line.contains("function ")
+                || line.contains("=>");
             stack.push(opaque);
             i += 1;
             continue;
@@ -239,6 +243,9 @@ fn call_start(text: &str, at: usize) -> usize {
     let before = text[..at].trim_end();
     if let Some(dot_end) = before.strip_suffix('.').map(|b| b.len()) {
         return crate::encapsulate_field::chain_start(text, dot_end);
+    }
+    if let Some(arrow_end) = before.strip_suffix("->").map(|b| b.len()) {
+        return crate::encapsulate_field::chain_start(text, arrow_end);
     }
     let mut start = at;
     loop {
@@ -444,6 +451,443 @@ pub async fn invert(
         writes: 0,
         blocked: Vec::new(),
         unmatched,
+        rewritten: rewritten
+            .into_iter()
+            .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
+            .collect(),
+        diagnostics,
+        applied,
+    })
+}
+
+fn negate_expr_python(expr: &str) -> String {
+    let t = expr.trim();
+    if t == "True" {
+        return "False".to_string();
+    }
+    if t == "False" {
+        return "True".to_string();
+    }
+    if let Some(after) = t.strip_prefix("not ") {
+        let trimmed = after.trim();
+        if trimmed.starts_with('(')
+            && trimmed.ends_with(')')
+            && let Some(close) = crate::parameter_object::matching_bracket(trimmed, 0)
+            && close == trimmed.len() - 1
+        {
+            return trimmed[1..trimmed.len() - 1].trim().to_string();
+        }
+        return trimmed.to_string();
+    }
+    if t.starts_with("not(")
+        && t.ends_with(')')
+        && let inside = &t[3..]
+        && let Some(close) = crate::parameter_object::matching_bracket(inside, 0)
+        && close == inside.len() - 1
+    {
+        return inside[1..inside.len() - 1].trim().to_string();
+    }
+    format!("not ({t})")
+}
+
+fn negate_expr_c_like(expr: &str) -> String {
+    let t = expr.trim();
+    if t == "true" {
+        return "false".to_string();
+    }
+    if t == "false" {
+        return "true".to_string();
+    }
+    if t.starts_with('!') && !t.starts_with("!=") && !t.starts_with("!==") {
+        let after = t[1..].trim();
+        if after.starts_with('(')
+            && after.ends_with(')')
+            && let Some(close) = crate::parameter_object::matching_bracket(after, 0)
+            && close == after.len() - 1
+        {
+            return after[1..after.len() - 1].trim().to_string();
+        }
+        return after.to_string();
+    }
+    format!("!({t})")
+}
+
+fn negate_python_body(body: &str) -> String {
+    let mut out_lines = Vec::new();
+    let mut min_def_indent = None;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let indent = line.len() - line.trim_start().len();
+
+        if let Some(def_ind) = min_def_indent {
+            if indent > def_ind {
+                out_lines.push(line.to_string());
+                continue;
+            } else if !trimmed.is_empty() {
+                min_def_indent = None;
+            }
+        }
+
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            min_def_indent = Some(indent);
+            out_lines.push(line.to_string());
+            continue;
+        }
+
+        if trimmed.starts_with("return ") {
+            let val = trimmed.strip_prefix("return ").unwrap().trim();
+            let leading = &line[..indent];
+            out_lines.push(format!("{leading}return {}", negate_expr_python(val)));
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    out_lines.join("\n")
+}
+
+fn negate_c_like_body(body: &str) -> String {
+    let mut out = body.to_string();
+    let returns = own_returns(body);
+    for at in returns.into_iter().rev() {
+        let end = return_value_end(body, at);
+        let val_with_semi = body[at + "return".len()..end].trim();
+        let has_semi = val_with_semi.ends_with(';');
+        let val = val_with_semi.trim_end_matches(';').trim();
+        if !val.is_empty() {
+            let neg = negate_expr_c_like(val);
+            let semi = if has_semi { ";" } else { "" };
+            out.replace_range(at..end, &format!("return {neg}{semi}"));
+        }
+    }
+    let trimmed = out.trim();
+    if !trimmed.contains(';') && !trimmed.contains("return") && !trimmed.is_empty() {
+        return format!("\n    {}\n", negate_expr_c_like(trimmed));
+    }
+    out
+}
+
+struct PolyglotPredDecl {
+    fn_name: String,
+    decl_name_at: usize,
+    close_paren: usize,
+    body_open: usize,
+    body_close: usize,
+}
+
+fn find_polyglot_predicate_declaration(
+    text: &str,
+    lang: Language,
+    line: Option<u32>,
+    symbol: Option<&str>,
+) -> Result<PolyglotPredDecl> {
+    let clean_name = symbol
+        .map(|s| {
+            s.rsplit_once("::")
+                .map(|(_, m)| m)
+                .or_else(|| s.rsplit_once('.').map(|(_, m)| m))
+                .unwrap_or(s)
+                .trim()
+                .to_string()
+        })
+        .or_else(|| {
+            let l = line?;
+            let lines: Vec<&str> = text.lines().collect();
+            if l == 0 || l as usize > lines.len() {
+                return None;
+            }
+            let target_idx = (l - 1) as usize;
+            let start_idx = target_idx.saturating_sub(3);
+            let end_idx = (target_idx + 3).min(lines.len().saturating_sub(1));
+            for i in (start_idx..=end_idx).rev() {
+                if let Some(name) = crate::inline_parameter::extract_decl_name_from_line(lines[i], lang) {
+                    return Some(name);
+                }
+            }
+            None
+        })
+        .context("could not determine predicate name to invert")?;
+
+    let needle_paren = format!("{clean_name}(");
+    let needle_space = format!("{clean_name} (");
+    let needle_generic = format!("{clean_name}<");
+
+    let mut found = None;
+    for (pos, _) in text
+        .match_indices(&needle_paren)
+        .chain(text.match_indices(&needle_space))
+        .chain(text.match_indices(&needle_generic))
+    {
+        if pos > 0 {
+            let prev = text[..pos].chars().next_back().unwrap();
+            if is_ident(prev) {
+                continue;
+            }
+        }
+        let after_name = pos + clean_name.len();
+        let open_paren = match text[after_name..].find('(') {
+            Some(p) => after_name + p,
+            None => continue,
+        };
+        let close_paren = match crate::parameter_object::matching_bracket(text, open_paren) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let (body_open, body_close) = if lang == Language::Python {
+            let colon = match text[close_paren..].find(':') {
+                Some(c) => close_paren + c,
+                None => continue,
+            };
+            let b_close = crate::inline_parameter::find_python_body_close(text, pos, colon);
+            (colon, b_close)
+        } else {
+            let b_open = match text[close_paren..].find('{') {
+                Some(b) => close_paren + b,
+                None => continue,
+            };
+            let b_close = match crate::parameter_object::matching_bracket(text, b_open) {
+                Some(b) => b,
+                None => continue,
+            };
+            (b_open, b_close)
+        };
+
+        found = Some(PolyglotPredDecl {
+            fn_name: clean_name.clone(),
+            decl_name_at: pos,
+            close_paren,
+            body_open,
+            body_close,
+        });
+        break;
+    }
+
+    found.with_context(|| format!("could not find declaration for predicate `{clean_name}`"))
+}
+
+/// Inverts the boolean predicate in polyglot languages: TypeScript/JavaScript, Python, C++, Swift, Go.
+#[allow(clippy::too_many_arguments)]
+pub async fn invert_polyglot(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: Option<u32>,
+    _character: Option<u32>,
+    symbol: Option<&str>,
+    new_name: &str,
+    apply: bool,
+    force: bool,
+) -> Result<Inverted> {
+    anyhow::ensure!(
+        !new_name.is_empty() && new_name.chars().all(is_ident),
+        "`{new_name}` is not an identifier"
+    );
+    let lang = Language::of(file).with_context(|| format!("unsupported language for {}", file.display()))?;
+    let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
+
+    let decl = find_polyglot_predicate_declaration(&text, lang, line, symbol)?;
+    anyhow::ensure!(decl.fn_name != new_name, "the new name is the old one");
+
+    let mut edits: BTreeMap<PathBuf, Vec<(usize, usize, String)>> = BTreeMap::new();
+    let mut texts: BTreeMap<PathBuf, String> = BTreeMap::new();
+    texts.insert(file.to_path_buf(), text.clone());
+
+    let (mut negated, mut cancelled) = (0usize, 0usize);
+    let mut all_unmatched = Vec::new();
+
+    // Declaration file edits: rename function at declaration and negate body
+    let own = edits.entry(file.to_path_buf()).or_default();
+    own.push((decl.decl_name_at, decl.fn_name.len(), new_name.to_string()));
+
+    let body_slice = &text[decl.body_open + 1..decl.body_close];
+    let new_body = if lang == Language::Python {
+        negate_python_body(body_slice)
+    } else {
+        negate_c_like_body(body_slice)
+    };
+    own.push((decl.body_open + 1, decl.body_close - decl.body_open - 1, new_body));
+
+    let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+
+    // Traverse workspace files for calls, prototypes, and imports
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        let path = entry.path();
+        if !path.is_file() || !crate::inline_parameter::language_matches(lang, path) {
+            continue;
+        }
+        let Ok(other_content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if !other_content.contains(&decl.fn_name) {
+            continue;
+        }
+
+        let is_decl_file = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == canonical_file;
+        let rel_path = display(root, path);
+
+        let mut file_edits = Vec::new();
+
+        for (at, _) in other_content.match_indices(&decl.fn_name) {
+            if at > 0 {
+                let prev = other_content[..at].chars().next_back().unwrap();
+                if is_ident(prev) {
+                    continue;
+                }
+            }
+            let after = &other_content[at + decl.fn_name.len()..];
+            if after.starts_with(is_ident) {
+                continue;
+            }
+
+            let line = other_content[..at].lines().count();
+            let col = at - other_content[..at].rfind('\n').map_or(0, |p| p + 1) + 1;
+            let site = format!("{rel_path}:{line}:{col}");
+
+            // Declaration check in declaring file
+            if is_decl_file && at >= decl.decl_name_at && at <= decl.close_paren {
+                continue;
+            }
+
+            // Self-call check inside function's own body
+            if is_decl_file && at > decl.body_open && at < decl.body_close {
+                anyhow::bail!("`{}` calls itself; invert a recursive predicate by hand", decl.fn_name);
+            }
+
+            let Some((_args_start, args_end)) = crate::parameter_object::call_args_span(&other_content, at + decl.fn_name.len()) else {
+                if crate::inline_parameter::is_in_comment(&other_content, at, lang) {
+                    continue;
+                }
+                if crate::inline_parameter::is_import_or_export_context(&other_content, at, lang) {
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    continue;
+                }
+                all_unmatched.push(format!("{site} `{}` used as a value", decl.fn_name));
+                continue;
+            };
+
+            if matches!(lang, Language::Cpp | Language::C) && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, args_end) {
+                file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                continue;
+            }
+
+            // Real call site!
+            let begin = call_start(&other_content, at);
+            let after_call = other_content[args_end + 1..].trim_start();
+            let continues = after_call.starts_with('.') || after_call.starts_with('?') || after_call.starts_with('[');
+            let lead = other_content[..begin].trim_end();
+
+            if lang == Language::Python {
+                let is_negated = if let Some(before_not) = lead.strip_suffix("not") {
+                    before_not.chars().next_back().is_none_or(|c| !is_ident(c))
+                } else {
+                    false
+                };
+                if is_negated {
+                    let not_start = lead.len() - 3;
+                    file_edits.push((not_start, begin - not_start, String::new()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    cancelled += 1;
+                } else if continues {
+                    file_edits.push((begin, 0, "(not ".to_string()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    file_edits.push((args_end + 1, 0, ")".to_string()));
+                    negated += 1;
+                } else {
+                    file_edits.push((begin, 0, "not ".to_string()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    negated += 1;
+                }
+            } else {
+                let is_negated = lead.ends_with('!') && !lead.ends_with("!=") && !lead.ends_with("!==");
+                if !continues && is_negated {
+                    let not_start = lead.len() - 1;
+                    file_edits.push((not_start, begin - not_start, String::new()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    cancelled += 1;
+                } else if continues {
+                    file_edits.push((begin, 0, "(!".to_string()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    file_edits.push((args_end + 1, 0, ")".to_string()));
+                    negated += 1;
+                } else {
+                    file_edits.push((begin, 0, "!".to_string()));
+                    file_edits.push((at, decl.fn_name.len(), new_name.to_string()));
+                    negated += 1;
+                }
+            }
+        }
+
+        if !file_edits.is_empty() {
+            texts.insert(path.to_path_buf(), other_content);
+            edits.entry(path.to_path_buf()).or_default().extend(file_edits);
+        }
+    }
+
+    let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
+    for (path, mut file_edits) in edits {
+        let mut body = texts.get(&path).cloned().unwrap_or_default();
+        file_edits.sort_by_key(|(at, len, _)| (*at, *len != 0));
+        for (at, len, replacement) in file_edits.into_iter().rev() {
+            body.replace_range(at..at + len, &replacement);
+        }
+        rewritten.insert(path, body);
+    }
+
+    let to_check: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (p.clone(), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.message.lines().next().unwrap_or(""),
+                d.code
+                    .as_deref()
+                    .map(|c| format!(" [{c}]"))
+                    .unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    let mut applied = false;
+    if apply {
+        anyhow::ensure!(
+            all_unmatched.is_empty(),
+            "{} reference(s) to `{}` were not negated and would mean the opposite; nothing was written:\n  {}",
+            all_unmatched.len(),
+            decl.fn_name,
+            all_unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. Pass `force: true` to write it anyway:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let edit = crate::signature::whole_file_edit(&rewritten);
+        crate::refactor::apply_workspace_edit(root, &edit)?;
+        applied = true;
+    }
+
+    Ok(Inverted {
+        was: decl.fn_name,
+        now: new_name.to_string(),
+        root: root.to_path_buf(),
+        file: display(root, file),
+        kind: "function".to_string(),
+        negated,
+        cancelled,
+        writes: 0,
+        blocked: Vec::new(),
+        unmatched: all_unmatched,
         rewritten: rewritten
             .into_iter()
             .map(|(p, t)| (p.to_string_lossy().into_owned(), t))

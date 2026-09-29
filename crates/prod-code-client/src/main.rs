@@ -601,6 +601,12 @@ enum Commands {
         /// 1-based column of the function's name, with `--line`.
         #[arg(long, default_value_t = 1)]
         character: u32,
+        /// Optional path to the file when symbol is just a function name.
+        #[arg(long)]
+        path: Option<String>,
+        /// Optional function name.
+        #[arg(long)]
+        function: Option<String>,
         /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
         #[arg(long)]
         verify: Option<String>,
@@ -2041,19 +2047,29 @@ async fn main() -> Result<()> {
             new_name,
             line,
             character,
+            path,
+            function,
             verify,
             apply,
             force,
         } => {
             let mut args =
                 serde_json::json!({ "new_name": new_name, "apply": apply, "force": force });
-            match line {
-                Some(line) => {
-                    args["path"] = serde_json::Value::String(symbol);
-                    args["line"] = serde_json::Value::from(line);
-                    args["character"] = serde_json::Value::from(character);
-                }
-                None => args["symbol"] = serde_json::Value::String(symbol),
+            let is_file_path = std::path::Path::new(&symbol).extension().is_some() || std::path::Path::new(&symbol).exists();
+            if let Some(line) = line {
+                args["path"] = serde_json::Value::String(symbol);
+                args["line"] = serde_json::Value::from(line);
+                args["character"] = serde_json::Value::from(character);
+            } else if is_file_path {
+                args["path"] = serde_json::Value::String(symbol);
+            } else {
+                args["symbol"] = serde_json::Value::String(symbol);
+            }
+            if let Some(path) = path {
+                args["path"] = serde_json::Value::String(path);
+            }
+            if let Some(function) = function {
+                args["function"] = serde_json::Value::String(function);
             }
             if let Some(verify) = verify {
                 args["verify"] = serde_json::Value::String(verify);
