@@ -13,16 +13,31 @@
 //! rather than handed over.
 
 pub mod builder;
+pub mod mock;
+pub mod polyglot;
 
+use crate::parameter_object::Language;
 use crate::tools::{SymbolHit, workspace_symbol_search};
 use anyhow::{Context, Result};
+use polyglot::{PolyglotShape, format_polyglot_fixture, parse_polyglot_shape};
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How deep to build nested workspace types before falling back to `Default::default()`.
 pub const DEFAULT_DEPTH: u32 = 2;
 /// Fields generated for one type; a bigger struct is still generated, just noted.
 const MANY_FIELDS: usize = 40;
+
+/// Options for fixture and mock generation.
+#[derive(Debug, Clone, Default)]
+pub struct FixtureOptions {
+    pub depth: u32,
+    pub verify: bool,
+    pub hint: Option<PathBuf>,
+    pub randomized: bool,
+    pub mock: bool,
+    pub language: Option<Language>,
+}
 
 /// A generated fixture and what the analyzer said about it.
 #[derive(Debug, Clone)]
@@ -37,23 +52,33 @@ pub struct Fixture {
     /// What the analyzer reported for the generated code, empty when it is clean.
     pub diagnostics: Vec<String>,
     pub verified: bool,
+    /// Language code block tag (e.g. "rust", "go", "typescript", "python", "cpp", "swift").
+    pub language: &'static str,
+    /// Whether this output is a mock implementation.
+    pub is_mock: bool,
+    /// Complete formatted snippet ready to paste.
+    pub snippet: String,
 }
 
 impl Fixture {
     pub fn render(&self) -> String {
+        let label = if self.is_mock { "mock" } else { "fixture" };
         let mut out = format!(
-            "fixture for `{}` (declared in {})\n\n```rust\nlet {} = {};\n```\n",
-            self.type_name,
-            self.file,
-            snake_case(&self.type_name),
-            self.value
+            "{label} for `{}` (declared in {})\n\n```{}\n{}\n```\n",
+            self.type_name, self.file, self.language, self.snippet
         );
         if !self.fallbacks.is_empty() {
             let mut names = self.fallbacks.clone();
             names.sort();
             names.dedup();
+            let fallback_label = match self.language {
+                "rust" => "`Default::default()`",
+                "go" => "zero-value",
+                "python" => "`None`",
+                _ => "default fallback",
+            };
             out.push_str(&format!(
-                "\n`Default::default()` stands in for: {} (not declared in this workspace, or deeper than the depth limit)\n",
+                "\n{fallback_label} stands in for: {} (not declared in this workspace, or deeper than the depth limit)\n",
                 names.join(", ")
             ));
         }
@@ -482,8 +507,18 @@ async fn resolve_type(
     let hits = workspace_symbol_search(remote, root, name, hint, 32).await?;
     let mut types: Vec<SymbolHit> = hits
         .into_iter()
-        .filter(|h| h.name == name && matches!(h.kind, "Struct" | "Enum" | "Class" | "Interface"))
+        .filter(|h| {
+            h.name == name
+                && matches!(
+                    h.kind,
+                    "Struct" | "Enum" | "Class" | "Interface" | "TypeParameter" | "Object"
+                )
+        })
         .collect();
+    if types.is_empty() {
+        let any_hits = workspace_symbol_search(remote, root, name, hint, 32).await?;
+        types = any_hits.into_iter().filter(|h| h.name == name).collect();
+    }
     if let Some(hint) = hint {
         let in_hint: Vec<SymbolHit> = types.iter().filter(|h| h.path == hint).cloned().collect();
         if !in_hint.is_empty() {
@@ -523,20 +558,58 @@ async fn resolve_type(
     }
 }
 
-/// The shape of a named type and the file that declares it.
-async fn shape_of(
+fn extract_decl_around_line(text: &str, line: u32) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    if line == 0 || line as usize > lines.len() {
+        return None;
+    }
+    let idx = (line - 1) as usize;
+    let mut start = idx;
+    while start > 0
+        && !lines[start].contains('{')
+        && !lines[start].trim_start().starts_with("class ")
+        && !lines[start].trim_start().starts_with("type ")
+        && !lines[start].trim_start().starts_with("struct ")
+        && !lines[start].trim_start().starts_with("interface ")
+        && !lines[start].trim_start().starts_with("pub ")
+    {
+        start -= 1;
+    }
+    let mut end = idx;
+    let mut brace_depth = 0i32;
+    let mut found_brace = false;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        for c in line.chars() {
+            if c == '{' {
+                brace_depth += 1;
+                found_brace = true;
+            } else if c == '}' {
+                brace_depth -= 1;
+            }
+        }
+        end = i;
+        if found_brace && brace_depth <= 0 {
+            break;
+        }
+    }
+    Some(lines[start..=end].join("\n"))
+}
+
+/// The polyglot shape of a named type and the file that declares it.
+pub async fn shape_of_polyglot(
     remote: SocketAddr,
     root: &Path,
     name: &str,
     hint: Option<&Path>,
-) -> Result<(Shape, String)> {
+    explicit_lang: Option<Language>,
+) -> Result<(PolyglotShape, String, Language)> {
     let hit = resolve_type(remote, root, name, hint).await?;
+    let lang = explicit_lang
+        .or_else(|| Language::of(&hit.path))
+        .unwrap_or(Language::Rust);
     let uri = url::Url::from_file_path(&hit.path)
         .map_err(|_| anyhow::anyhow!("invalid path {:?}", hit.path))?
         .to_string();
-    // Not hover: rust-analyzer elides a struct's fields past the tenth with `/* … */`, and a
-    // fixture built from that is missing fields without saying so. The declaration's line
-    // range from documentSymbol plus the file itself is exact.
     let symbols = crate::tools::execute_lsp_query(
         remote,
         root,
@@ -544,23 +617,53 @@ async fn shape_of(
         "textDocument/documentSymbol",
         serde_json::json!({ "textDocument": { "uri": uri } }),
     )
-    .await?;
+    .await
+    .unwrap_or(serde_json::Value::Null);
     let text = std::fs::read_to_string(&hit.path)
         .with_context(|| format!("cannot read {}", hit.path.display()))?;
-    let decl = declaration_at(&symbols, hit.line, &text).with_context(|| {
-        format!(
-            "no declaration of `{name}` at {}:{}",
-            hit.path.display(),
-            hit.line
-        )
-    })?;
-    let shape = parse_shape(&decl).with_context(|| format!("cannot read the shape of `{name}`"))?;
+    let decl = declaration_at(&symbols, hit.line, &text)
+        .or_else(|| extract_decl_around_line(&text, hit.line))
+        .with_context(|| {
+            format!(
+                "no declaration of `{name}` at {}:{}",
+                hit.path.display(),
+                hit.line
+            )
+        })?;
+    let poly_shape = parse_polyglot_shape(&decl, lang)
+        .or_else(|| {
+            parse_shape(&decl).map(|s| match s {
+                Shape::Record(f) => PolyglotShape::Record(f),
+                Shape::Tuple(t) => PolyglotShape::Tuple(t),
+                Shape::Unit => PolyglotShape::Unit,
+                Shape::Enum(v) => PolyglotShape::Enum(v),
+            })
+        })
+        .with_context(|| format!("cannot read the shape of `{name}`"))?;
     let file = hit
         .path
         .strip_prefix(root)
         .unwrap_or(&hit.path)
         .to_string_lossy()
         .into_owned();
+    Ok((poly_shape, file, lang))
+}
+
+/// The shape of a named type and the file that declares it.
+pub async fn shape_of(
+    remote: SocketAddr,
+    root: &Path,
+    name: &str,
+    hint: Option<&Path>,
+) -> Result<(Shape, String)> {
+    let (poly, file, _lang) = shape_of_polyglot(remote, root, name, hint, None).await?;
+    let shape = match poly {
+        PolyglotShape::Record(f) => Shape::Record(f),
+        PolyglotShape::Tuple(t) => Shape::Tuple(t),
+        PolyglotShape::Unit => Shape::Unit,
+        PolyglotShape::Enum(v) => Shape::Enum(v),
+        PolyglotShape::Interface { .. } => Shape::Unit,
+    };
     Ok((shape, file))
 }
 
@@ -573,24 +676,71 @@ pub async fn generate(
     verify: bool,
     hint: Option<&Path>,
 ) -> Result<Fixture> {
-    let (shape, file) = shape_of(remote, root, symbol, hint).await?;
-    let mut fallbacks = Vec::new();
-    let mut seen = vec![symbol.to_string()];
-    let value = match &shape {
-        Shape::Unit => symbol.to_string(),
-        _ => build_literal(
-            remote,
-            root,
-            symbol,
+    generate_with_options(
+        remote,
+        root,
+        symbol,
+        FixtureOptions {
             depth,
-            0,
-            &mut seen,
-            &mut fallbacks,
-            hint,
-        )
-        .await
-        .with_context(|| format!("cannot build a value for `{symbol}`"))?,
+            verify,
+            hint: hint.map(PathBuf::from),
+            randomized: false,
+            mock: false,
+            language: None,
+        },
+    )
+    .await
+}
+
+/// Generates a fixture or mock with explicit options for polyglot languages, randomized data, and mock mode.
+pub async fn generate_with_options(
+    remote: SocketAddr,
+    root: &Path,
+    symbol: &str,
+    options: FixtureOptions,
+) -> Result<Fixture> {
+    let (shape, file, lang) = shape_of_polyglot(
+        remote,
+        root,
+        symbol,
+        options.hint.as_deref(),
+        options.language,
+    )
+    .await?;
+
+    let is_mock = options.mock || matches!(shape, PolyglotShape::Interface { .. });
+    let mut fallbacks = Vec::new();
+
+    let (value, snippet) = if lang == Language::Rust && !options.randomized && !is_mock {
+        let rust_shape = match &shape {
+            PolyglotShape::Record(f) => Shape::Record(f.clone()),
+            PolyglotShape::Tuple(t) => Shape::Tuple(t.clone()),
+            PolyglotShape::Unit => Shape::Unit,
+            PolyglotShape::Enum(v) => Shape::Enum(v.clone()),
+            PolyglotShape::Interface { .. } => Shape::Unit,
+        };
+        let mut seen = vec![symbol.to_string()];
+        let val = match &rust_shape {
+            Shape::Unit => symbol.to_string(),
+            _ => build_literal(
+                remote,
+                root,
+                symbol,
+                options.depth,
+                0,
+                &mut seen,
+                &mut fallbacks,
+                options.hint.as_deref(),
+            )
+            .await
+            .with_context(|| format!("cannot build a value for `{symbol}`"))?,
+        };
+        let snip = format!("let {} = {};", snake_case(symbol), val);
+        (val, snip)
+    } else {
+        format_polyglot_fixture(lang, symbol, &shape, options.randomized, is_mock)
     };
+
     let mut fixture = Fixture {
         type_name: symbol.to_string(),
         value,
@@ -598,21 +748,46 @@ pub async fn generate(
         fallbacks,
         diagnostics: Vec::new(),
         verified: false,
+        language: lang.fence(),
+        is_mock,
+        snippet,
     };
-    if verify {
+
+    if options.verify {
         let path = root.join(&file);
         let original = std::fs::read_to_string(&path)
             .with_context(|| format!("cannot read {}", path.display()))?;
-        // The generated code is appended, so anything it breaks is reported at a line past the
-        // original file. Diagnostics above that line belong to the file as it already is
-        // (unexpanded derives, for instance) and are not ours to report.
         let first_generated_line = original.lines().count() as u32 + 1;
-        let probe = format!(
-            "{original}\n#[cfg(test)]\nmod prod_code_generated_fixture {{\n    #[allow(unused_imports)]\n    use super::*;\n\n    #[test]\n    fn builds() {{\n        let {} = {};\n        let _ = {};\n    }}\n}}\n",
-            snake_case(symbol),
-            fixture.value,
-            snake_case(symbol)
-        );
+        let probe = match lang {
+            Language::Rust => {
+                if fixture.is_mock {
+                    format!("{original}\n#[cfg(test)]\nmod prod_code_generated_fixture {{\n    #[allow(unused_imports)]\n    use super::*;\n\n{}\n}}\n", fixture.snippet)
+                } else {
+                    format!(
+                        "{original}\n#[cfg(test)]\nmod prod_code_generated_fixture {{\n    #[allow(unused_imports)]\n    use super::*;\n\n    #[test]\n    fn builds() {{\n        let {} = {};\n        let _ = {};\n    }}\n}}\n",
+                        snake_case(symbol),
+                        fixture.value,
+                        snake_case(symbol)
+                    )
+                }
+            }
+            Language::Go => {
+                format!("{original}\n\nfunc _TestProdCodeFixtureProbe() {{\n    {}\n}}\n", fixture.snippet)
+            }
+            Language::TypeScript | Language::JavaScript => {
+                format!("{original}\n\n// prod-code fixture probe\n{}\n", fixture.snippet)
+            }
+            Language::Python => {
+                format!("{original}\n\ndef _prod_code_fixture_probe():\n    {}\n", fixture.snippet)
+            }
+            Language::Cpp | Language::C => {
+                format!("{original}\n\nvoid _prod_code_fixture_probe() {{\n    {}\n}}\n", fixture.snippet)
+            }
+            Language::Swift => {
+                format!("{original}\n\nfunc _prod_code_fixture_probe() {{\n    {}\n}}\n", fixture.snippet)
+            }
+        };
+
         let reports =
             crate::diagnostics::validate_texts(remote, root, &[(path.clone(), probe)], &[]).await?;
         fixture.verified = true;
@@ -634,6 +809,7 @@ pub async fn generate(
             })
             .collect();
     }
+
     Ok(fixture)
 }
 
@@ -748,6 +924,9 @@ mod tests {
             fallbacks: vec!["Engine".into(), "Engine".into()],
             diagnostics: Vec::new(),
             verified: true,
+            language: "rust",
+            is_mock: false,
+            snippet: "let config = Config {\n    port: 0,\n};".into(),
         };
         let text = f.render();
         assert!(text.contains("let config = Config {"), "{text}");

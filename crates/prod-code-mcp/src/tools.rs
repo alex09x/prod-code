@@ -854,16 +854,19 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_generate_fixture".to_string(),
-            description: "Build a compile-ready value for a type from the declaration the analyzer resolves the name to, so the fixture has every field the type has today. Fields are filled by type (0, false, String::new(), None, Vec::new(), and so on), types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to `Default::default()`. With `verify` (default true) the fixture is type-checked in an in-memory overlay of the file that declares the type, so a missing field or a type without `Default` comes back as the analyzer's error instead of as a failed build; that file's imports are in scope during the check, so a fixture pasted into another module may still need them. Nothing is written. Rust only. With `builder: true`, instead generate a typed builder for a named-field struct, including ordinary lifetime, type and const parameters, defaults and bounds: one setter per field and an explicit missing-field error from build, with no guessed defaults. Self-dependent bounds, macro-expanded types and nontrivial const expressions are refused. `builder_name` overrides TypeBuilder; `depth` is value mode only. Builder verification checks names and generated code in the declaring scope; incomplete or rejected verification is an error. `verify: false` returns an explicitly unverified draft. Unsupported shapes and name collisions are refused."
+            description: "Build a compile-ready value or test mock for a type from the declaration the analyzer resolves the name to, across Rust, Go, TypeScript, Python, C++, and Swift. Fields are filled with appropriate types, types declared in this workspace are built field by field down to `depth`, and anything deeper or foreign falls back to defaults. With `randomized: true`, generates realistic non-zero test dummy data (tokens, realistic numbers, dates, non-empty collections). With `mock: true`, generates a mock implementation with call tracking for interfaces, traits, or protocols. With `verify` (default true) the fixture is type-checked in an in-memory overlay. With `builder: true` (Rust only), generates a typed builder for a named struct."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "symbol": { "type": "string", "description": "The type to build (`Config`, `SliceReport`)" },
+                    "symbol": { "type": "string", "description": "The type to build (`Config`, `SliceReport`, `UserService`)" },
                     "path": { "type": "string", "description": "The file that declares it, when the name is ambiguous (a re-export makes a type resolve twice)" },
-                    "depth": { "type": "integer", "description": "How deep to build nested workspace types before falling back to Default::default() (default 2)" },
+                    "depth": { "type": "integer", "description": "How deep to build nested workspace types before falling back to defaults (default 2)" },
                     "builder": { "type": "boolean", "description": "Generate a typed Rust builder instead of a value (default false); omit depth" },
                     "builder_name": { "type": "string", "description": "Generated builder name (default TypeBuilder); requires builder=true" },
+                    "randomized": { "type": "boolean", "description": "Generate realistic non-zero dummy test data instead of default empty/zero values" },
+                    "mock": { "type": "boolean", "description": "Generate a test mock implementation with call tracking for an interface, trait, protocol or struct" },
+                    "language": { "type": "string", "description": "Explicit language override: 'rust', 'go', 'typescript', 'python', 'cpp', 'swift'" },
                     "verify": { "type": "boolean", "description": "Type-check the fixture before returning it (default true)" }
                 },
                 "required": ["symbol"]
@@ -2640,17 +2643,48 @@ async fn handle_generate_fixture(
             McpToolCallResult::error(preview.render())
         });
     }
+    let randomized = args
+        .get("randomized")
+        .map(|value| value.as_bool().context("'randomized' must be a boolean"))
+        .transpose()?
+        .unwrap_or(false);
+    let mock = args
+        .get("mock")
+        .map(|value| value.as_bool().context("'mock' must be a boolean"))
+        .transpose()?
+        .unwrap_or(false);
+    anyhow::ensure!(!builder || !mock, "'mock' conflicts with builder=true");
+    let language = args
+        .get("language")
+        .and_then(|v| v.as_str())
+        .and_then(|s| match s.to_ascii_lowercase().as_str() {
+            "rust" | "rs" => Some(crate::parameter_object::Language::Rust),
+            "go" | "golang" => Some(crate::parameter_object::Language::Go),
+            "typescript" | "ts" => Some(crate::parameter_object::Language::TypeScript),
+            "javascript" | "js" => Some(crate::parameter_object::Language::JavaScript),
+            "python" | "py" => Some(crate::parameter_object::Language::Python),
+            "c" => Some(crate::parameter_object::Language::C),
+            "cpp" | "c++" => Some(crate::parameter_object::Language::Cpp),
+            "swift" => Some(crate::parameter_object::Language::Swift),
+            _ => None,
+        });
+
     let depth = args
         .get("depth")
         .and_then(|v| v.as_u64())
         .unwrap_or(crate::fixture::DEFAULT_DEPTH as u64) as u32;
-    let fixture = crate::fixture::generate(
+    let fixture = crate::fixture::generate_with_options(
         remote,
         workspace_root,
         symbol,
-        depth,
-        verify,
-        hint.as_deref(),
+        crate::fixture::FixtureOptions {
+            depth,
+            verify,
+            hint,
+            randomized,
+            mock,
+            language,
+        },
     )
     .await?;
     let clean = fixture.diagnostics.is_empty();
