@@ -577,7 +577,10 @@ pub(crate) fn is_import_or_export_context(content: &str, at: usize, lang: Langua
             line.starts_with("import ")
         }
         Language::Rust => {
-            line.starts_with("use ")
+            let without_pub = line.strip_prefix("pub ")
+                .or_else(|| line.strip_prefix("pub(crate) "))
+                .unwrap_or(line);
+            without_pub.starts_with("use ")
         }
     }
 }

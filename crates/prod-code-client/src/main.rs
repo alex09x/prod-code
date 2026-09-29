@@ -848,9 +848,12 @@ enum Commands {
     WrapReturn {
         /// The function by name, or a file with `--line`.
         symbol: String,
-        /// `option`, `result`, `promise`, or `pointer`.
+        /// `option`, `result`, `promise`, `pointer`, or a custom envelope type name.
         #[arg(long)]
         wrapper: String,
+        /// Optional constructor or factory expression for wrapping returned values.
+        #[arg(long)]
+        constructor: Option<String>,
         /// For `result`: the error type, such as `anyhow::Error` or `Error`.
         #[arg(long)]
         error: Option<String>,
@@ -2401,6 +2404,7 @@ async fn main() -> Result<()> {
         Commands::WrapReturn {
             symbol,
             wrapper,
+            constructor,
             error,
             path,
             function,
@@ -2412,6 +2416,9 @@ async fn main() -> Result<()> {
         } => {
             let mut args =
                 serde_json::json!({ "wrapper": wrapper, "apply": apply, "force": force });
+            if let Some(c) = constructor {
+                args["constructor"] = serde_json::Value::String(c);
+            }
             if let Some(p) = path {
                 args["path"] = serde_json::Value::String(p);
                 args["symbol"] = serde_json::Value::String(function.unwrap_or(symbol));
