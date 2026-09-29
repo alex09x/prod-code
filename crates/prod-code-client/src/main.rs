@@ -301,6 +301,9 @@ enum Commands {
         /// Also list exported / public symbols nothing in the checkout uses
         #[arg(long)]
         include_exported: bool,
+        /// Whole-program graph reachability analysis from entry points (main, public APIs, tests, route handlers)
+        #[arg(long)]
+        reachability: bool,
         /// Stop after this many source files
         #[arg(long, default_value_t = 400)]
         max_files: usize,
@@ -312,6 +315,9 @@ enum Commands {
         /// Stop after this many source files
         #[arg(long, default_value_t = 400)]
         max_files: usize,
+        /// Whole-program graph reachability analysis to detect and prune circular unreachable dead code
+        #[arg(long)]
+        reachability: bool,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -1511,18 +1517,25 @@ async fn main() -> Result<()> {
         } => run_impact(remote, base.as_deref(), depth, run, ci, json).await,
         Commands::DeadCode {
             include_exported,
+            reachability,
             max_files,
             json,
-        } => run_dead_code(remote, include_exported, max_files, json).await,
+        } => run_dead_code(remote, include_exported, reachability, max_files, json).await,
         Commands::Prune {
             max_files,
             apply,
             force,
+            reachability,
         } => {
             run_tool(
                 remote,
                 "code_prune_orphans",
-                serde_json::json!({ "max_files": max_files, "apply": apply, "force": force }),
+                serde_json::json!({
+                    "max_files": max_files,
+                    "apply": apply,
+                    "force": force,
+                    "reachability": reachability,
+                }),
             )
             .await
         }
@@ -3194,15 +3207,23 @@ async fn run_diagnostics(
 async fn run_dead_code(
     remote: SocketAddr,
     include_exported: bool,
+    reachability: bool,
     max_files: usize,
     json: bool,
 ) -> Result<()> {
     let cwd = env::current_dir()?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
     let started = std::time::Instant::now();
-    let report =
-        prod_code_mcp::dead_code::find_dead_code(remote, &root, include_exported, max_files)
-            .await?;
+    let report = prod_code_mcp::dead_code::find_dead_code_opts(
+        remote,
+        &root,
+        prod_code_mcp::dead_code::DeadCodeOptions {
+            include_exported,
+            max_files,
+            reachability,
+        },
+    )
+    .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

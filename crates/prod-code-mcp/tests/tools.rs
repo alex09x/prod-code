@@ -3696,6 +3696,57 @@ async fn code_dead_code_finds_an_unreferenced_function() {
 }
 
 #[tokio::test]
+async fn code_dead_code_with_reachability_detects_dead_cycle() {
+    let ws = workspace();
+    write(
+        &ws,
+        "Cargo.toml",
+        "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    let lib = write(
+        &ws,
+        "src/lib.rs",
+        "fn cycle_a() {\n    cycle_b();\n}\n\nfn cycle_b() {\n    cycle_a();\n}\n",
+    );
+    commit(&ws);
+    let lib_p = std::fs::canonicalize(&lib).unwrap();
+    let remote = scripted_gateway(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("cycle_a", 12, 1, 3, 4),
+            answers::document_symbol("cycle_b", 12, 5, 7, 4)
+        ]),
+        "textDocument/references" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(u64::MAX);
+            if line == 0 {
+                // cycle_a referenced by cycle_b at line 6
+                answers::locations(&lib_p, &[(6, 5)])
+            } else {
+                // cycle_b referenced by cycle_a at line 2
+                answers::locations(&lib_p, &[(2, 5)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await;
+    let result = execute_tool(
+        remote,
+        &ws.root(),
+        "code_dead_code",
+        serde_json::json!({ "reachability": true }),
+    )
+    .await
+    .expect("the scan runs");
+    let text = text_of(&result);
+    assert!(text.contains("whole-program reachability scan"), "{text}");
+    assert!(text.contains("cycle detected"), "{text}");
+    assert!(text.contains("cycle_a"), "{text}");
+    assert!(text.contains("cycle_b"), "{text}");
+}
+
+#[tokio::test]
 async fn code_impact_attributes_a_changed_line_to_its_function() {
     let ws = rust_workspace("pub fn a() -> i32 {\n    1\n}\n");
     let lib = write(&ws, "src/lib.rs", "pub fn a() -> i32 {\n    10\n}\n");

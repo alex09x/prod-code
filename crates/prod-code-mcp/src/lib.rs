@@ -32,6 +32,7 @@ pub mod parameter_object;
 pub mod patch;
 pub mod protocol;
 pub mod prune;
+pub mod reachability;
 pub mod refactor;
 pub mod remote_fs;
 pub mod rename_accessors;

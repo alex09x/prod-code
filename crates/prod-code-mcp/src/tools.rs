@@ -874,6 +874,7 @@ pub fn list_tools() -> Vec<McpTool> {
                 "type": "object",
                 "properties": {
                     "include_exported": { "type": "boolean", "description": "Also list exported / public symbols nothing in the checkout uses" },
+                    "reachability": { "type": "boolean", "description": "Perform whole-program graph reachability analysis from entry points (main, public APIs, tests, route handlers) to detect unreachable functions, types, and circular dead cycles" },
                     "max_files": { "type": "integer", "description": "Stop after this many source files (default 400)" }
                 }
             }),
@@ -887,7 +888,8 @@ pub fn list_tools() -> Vec<McpTool> {
                 "properties": {
                     "max_files": { "type": "integer", "description": "Stop after this many source files (default 400)" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report what would be removed and the type check)" },
-                    "force": { "type": "boolean", "description": "Write even when the result does not compile" }
+                    "force": { "type": "boolean", "description": "Write even when the result does not compile" },
+                    "reachability": { "type": "boolean", "description": "Prune unreachable functions, types, and circular dead cycles detected by whole-program reachability analysis" }
                 }
             }),
         },
@@ -1372,9 +1374,22 @@ pub async fn execute_tool(
                 .unwrap_or(400) as usize;
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let pruned =
-                crate::prune::prune_orphans(remote, workspace_root, max_files, apply, force)
-                    .await?;
+            let reachability = args
+                .get("reachability")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let pruned = crate::prune::prune_orphans_opts(
+                remote,
+                workspace_root,
+                crate::dead_code::DeadCodeOptions {
+                    include_exported: false,
+                    max_files,
+                    reachability,
+                },
+                apply,
+                force,
+            )
+            .await?;
             let text = pruned.render();
             Ok(if pruned.diagnostics.is_empty() {
                 McpToolCallResult::text(text)
@@ -2546,13 +2561,24 @@ async fn handle_dead_code(
         .get("include_exported")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let reachability = args
+        .get("reachability")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let max_files = args
         .get("max_files")
         .and_then(|v| v.as_u64())
         .unwrap_or(400) as usize;
-    let report =
-        crate::dead_code::find_dead_code(remote, workspace_root, include_exported, max_files)
-            .await?;
+    let report = crate::dead_code::find_dead_code_opts(
+        remote,
+        workspace_root,
+        crate::dead_code::DeadCodeOptions {
+            include_exported,
+            max_files,
+            reachability,
+        },
+    )
+    .await?;
     Ok(McpToolCallResult::text(report.render()))
 }
 

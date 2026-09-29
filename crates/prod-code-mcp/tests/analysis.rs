@@ -1718,6 +1718,9 @@ async fn dead_code_report_render_covers_every_section() {
         exported_unreferenced: 2,
         truncated: true,
         unverified: vec![],
+        reachability: None,
+        unreachable_clusters: vec![],
+        root_entry_points: vec![],
     };
 
     let text = report.render();
@@ -2587,4 +2590,187 @@ fn colored_jest_output_gives_the_same_values_and_keeps_its_escapes() {
     assert_eq!(a.expected.as_deref(), Some("3"));
     assert!(a.excerpt.contains("\x1b[32m3\x1b[39m"));
     assert!(a.excerpt.contains("\x1b[31m2\x1b[39m"));
+}
+
+#[tokio::test]
+async fn find_dead_code_reachability_detects_circular_dead_cycle() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/main.rs",
+            "fn main() {\n    active();\n}\n\nfn active() {}\n",
+        ),
+        (
+            "src/cycle.rs",
+            "fn cycle_a() {\n    cycle_b();\n}\n\nfn cycle_b() {\n    cycle_a();\n}\n",
+        ),
+    ]);
+    let root = ws.root();
+    let main_path = ws.path("src/main.rs");
+    let cycle_path = ws.path("src/cycle.rs");
+
+    let main_p = main_path.clone();
+    let cycle_p = cycle_path.clone();
+
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            if uri.contains("main.rs") {
+                serde_json::json!([
+                    answers::document_symbol("main", 12, 1, 3, 4),
+                    answers::document_symbol("active", 12, 5, 5, 4)
+                ])
+            } else {
+                serde_json::json!([
+                    answers::document_symbol("cycle_a", 12, 1, 3, 4),
+                    answers::document_symbol("cycle_b", 12, 5, 7, 4)
+                ])
+            }
+        }
+        "textDocument/references" => {
+            let uri = params
+                .pointer("/textDocument/uri")
+                .and_then(|u| u.as_str())
+                .unwrap_or("");
+            let line = params
+                .pointer("/position/line")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(u64::MAX);
+
+            if uri.contains("main.rs") {
+                if line == 0 {
+                    // main: no callers
+                    answers::locations(&main_p, &[])
+                } else {
+                    // active: called by main inside line 2
+                    answers::locations(&main_p, &[(2, 5)])
+                }
+            } else if line == 0 {
+                // cycle_a: called by cycle_b at line 6
+                answers::locations(&cycle_p, &[(6, 5)])
+            } else {
+                // cycle_b: called by cycle_a at line 2
+                answers::locations(&cycle_p, &[(2, 5)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+
+    // 1. Under legacy reference counting: both cycle_a and cycle_b have reference count 1,
+    // so legacy dead code scan says NEITHER is dead!
+    let legacy_report = dead_code::find_dead_code_opts(
+        remote,
+        &root,
+        dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: false,
+        },
+    )
+    .await
+    .expect("legacy scan runs");
+
+    assert!(
+        legacy_report.dead.is_empty(),
+        "legacy reference counting misses the dead cycle: {:?}",
+        legacy_report.dead
+    );
+
+    // 2. Under whole-program reachability analysis from entry points:
+    // main() is identified as root; active() is reached from main().
+    // Neither cycle_a nor cycle_b is reachable from main().
+    // They are correctly detected as unreachable and clustered as a circular dead cycle!
+    let reach_report = dead_code::find_dead_code_opts(
+        remote,
+        &root,
+        dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: true,
+        },
+    )
+    .await
+    .expect("reachability scan runs");
+
+    let dead_names: Vec<&str> = reach_report.dead.iter().map(|d| d.name.as_str()).collect();
+    assert!(dead_names.contains(&"cycle_a"), "cycle_a is dead: {dead_names:?}");
+    assert!(dead_names.contains(&"cycle_b"), "cycle_b is dead: {dead_names:?}");
+    assert!(!dead_names.contains(&"main"), "main is entry point: {dead_names:?}");
+    assert!(!dead_names.contains(&"active"), "active is reached: {dead_names:?}");
+
+    let summary = reach_report.reachability.as_ref().expect("reachability summary exists");
+    assert_eq!(summary.roots_count, 1); // main
+    assert_eq!(summary.reachable_count, 2); // main, active
+    assert_eq!(summary.unreachable_count, 2); // cycle_a, cycle_b
+    assert_eq!(summary.cluster_count, 1);
+
+    assert_eq!(reach_report.unreachable_clusters.len(), 1);
+    let cluster = &reach_report.unreachable_clusters[0];
+    assert!(cluster.cycle, "cycle must be detected");
+    assert_eq!(cluster.symbols.len(), 2);
+    assert_eq!(cluster.internal_calls.len(), 2);
+
+    let rendered = reach_report.render();
+    assert!(rendered.contains("whole-program reachability scan"));
+    assert!(rendered.contains("cycle detected"));
+}
+
+#[tokio::test]
+async fn reachability_preserves_unverified_symbols_under_contract_435() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/lib.rs",
+            "fn unverified_fn() {\n    helper_fn();\n}\n\nfn helper_fn() {}\n",
+        ),
+    ]);
+    let root = ws.root();
+    let lib_p = ws.path("src/lib.rs");
+
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("unverified_fn", 12, 1, 3, 4),
+            answers::document_symbol("helper_fn", 12, 5, 5, 4)
+        ]),
+        "textDocument/references" => {
+            let line = params
+                .pointer("/position/line")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(u64::MAX);
+
+            if line == 0 {
+                // Analyzer fails for unverified_fn!
+                serde_json::Value::Null
+            } else {
+                // helper_fn called by unverified_fn
+                answers::locations(&lib_p, &[(2, 5)])
+            }
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+
+    let report = dead_code::find_dead_code_opts(
+        remote,
+        &root,
+        dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files: 100,
+            reachability: true,
+        },
+    )
+    .await
+    .expect("scan runs");
+
+    // helper_fn is reachable from unverified_fn, which is conservatively protected.
+    // Therefore, NEITHER is marked dead.
+    assert!(report.dead.is_empty(), "unverified dependencies are preserved: {:?}", report.dead);
+    assert_eq!(report.unverified.len(), 1);
+    assert_eq!(report.unverified[0].name.as_deref(), Some("unverified_fn"));
 }

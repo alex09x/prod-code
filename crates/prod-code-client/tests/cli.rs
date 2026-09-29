@@ -924,6 +924,31 @@ async fn cli_scans_for_dead_code_reporting_unreferenced_items() {
 }
 
 #[tokio::test]
+async fn cli_scans_for_dead_code_with_reachability_flag() {
+    let ws = make_workspace();
+    let gw = MockGateway::start(|method, _| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([answers::document_symbol("unused_item", 12, 1, 2, 8)])
+        }
+        "textDocument/references" => serde_json::json!([]),
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let out = run_cli(&ws, gw.addr, &["dead-code", "--reachability"]).await;
+    assert!(out.status.success());
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("whole-program reachability scan"));
+
+    let out_json = run_cli(&ws, gw.addr, &["dead-code", "--reachability", "--json"]).await;
+    assert!(out_json.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout_of(&out_json)).expect("dead-code json parse");
+    assert!(parsed.get("reachability").is_some());
+    assert!(parsed.get("dead").is_some());
+}
+
+#[tokio::test]
 async fn cli_reads_remote_source_file_with_line_context() {
     let ws = make_workspace();
     let gw = MockGateway::start(|_, _| serde_json::Value::Null).await;
