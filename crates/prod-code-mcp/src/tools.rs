@@ -443,18 +443,19 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_loop_to_iterator".to_string(),
-            description: "Turn a `for` loop that only builds up an accumulator into an iterator chain: `let mut sum = 0; for p in prices { sum += p * 2; }` becomes `let sum: u64 = prices.into_iter().map(|p| p * 2).sum();`. Recognised: a sum from zero, a count (`if C { n += 1 }` into a `usize`), and a `Vec` built with `push`, each optionally under one `if`. The accumulator must be declared by the `let mut` just above the loop. Refused: `break`, `continue`, `return`, `?` or `.await` in the body, any other use of the accumulator, a non-empty start value. `mut` stays only when the analyzer says the variable is still changed afterwards. Type-checked before anything is written. Rust only; rust-analyzer's own `convert_for_loop_with_for_each` keeps the mutable accumulator."
+            description: "Turn an accumulating `for` loop into an iterator chain, stream expression, comprehension, or functional pipeline across TypeScript/JavaScript, Python, Swift, Go, C++, and Rust (Roadmap 7.1.5). Recognised patterns: sum/reduction, count of matching elements, collection/mapping (`push`, `append`, etc.), find/search (`find`, `find_map`), and boolean predicates (`any`, `all`). Addressable by `symbol` (function or accumulator name) or `line`/`character`. Type-checked before anything is written."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File that holds the loop" },
-                    "line": { "type": "integer", "description": "1-based line of the `for`" },
+                    "symbol": { "type": "string", "description": "Optional function or accumulator name identifying the loop" },
+                    "line": { "type": "integer", "description": "1-based line of the `for` loop" },
                     "character": { "type": "integer", "description": "1-based column on that line" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
-                "required": ["path", "line", "character"]
+                "required": ["path"]
             }),
         },
         McpTool {
@@ -1437,23 +1438,29 @@ pub async fn execute_tool(
         "code_loop_to_iterator" => {
             let path_str = args
                 .get("path")
+                .or_else(|| args.get("file"))
                 .and_then(|v| v.as_str())
                 .context("Missing 'path' argument")?;
-            let num = |key: &str| -> Result<u32> {
-                args.get(key)
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .with_context(|| format!("Missing '{key}' argument"))
-            };
+            let symbol = args
+                .get("symbol")
+                .or_else(|| args.get("function"))
+                .and_then(|v| v.as_str());
+            let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+            let character = args
+                .get("character")
+                .or_else(|| args.get("col"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32);
             let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::loop_to_iterator::loop_to_iterator(
+            let done = crate::loop_to_iterator::loop_to_iterator_polyglot(
                 remote,
                 workspace_root,
                 &file_path,
-                num("line")?,
-                num("character")?,
+                symbol,
+                line,
+                character,
                 apply,
                 force,
             )
@@ -6836,7 +6843,12 @@ async fn compile_gate(
 /// position. They are not symbol-addressable: nothing resolves their `symbol` to a
 /// path/line/character before the handler runs, because the handler wants the name itself.
 #[cfg(test)]
-const NAMES_A_SYMBOL: &[&str] = &["code_generate_fixture"];
+const NAMES_A_SYMBOL: &[&str] = &[
+    "code_generate_fixture",
+    "code_inline_parameter",
+    "code_extract_delegate",
+    "code_loop_to_iterator",
+];
 
 /// Tools that accept `symbol` in place of `path`/`line`/`character`.
 const SYMBOL_ADDRESSABLE: &[&str] = &[

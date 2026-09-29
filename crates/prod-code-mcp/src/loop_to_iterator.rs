@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 /// What the loop builds.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -23,6 +24,22 @@ pub enum Shape {
     Count { cond: String },
     /// `acc.push(X)`, maybe under `if C`.
     Collect { cond: Option<String>, value: String },
+    /// `if C { acc = Some(X); break; }` into `Option<T>`.
+    Find { cond: String, value: String },
+    /// `if C { acc = true; break; }` into `bool`.
+    Any { cond: String },
+    /// `if !C { acc = false; break; }` into `bool`.
+    All { cond: String },
+}
+
+/// A recognised polyglot loop replacement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolyglotLoop {
+    pub start: usize,
+    pub end: usize,
+    pub indent: String,
+    pub replacement: String,
+    pub statement: String,
 }
 
 /// A recognised loop and the statement that declares its accumulator.
@@ -120,11 +137,15 @@ fn whole_word_count(text: &str, word: &str) -> usize {
 
 /// The zero a sum starts from: `0`, `0.0`, `0u64`, `0_i32`, `0.0f64`.
 fn is_zero(init: &str) -> bool {
-    let number: String = init
+    let s = init.trim().trim_end_matches([';', ',']);
+    if s == "0" || s == "0.0" || s == "0n" || s == "0L" || s == "0.0f" {
+        return true;
+    }
+    let number: String = s
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '_')
         .collect();
-    let suffix = &init[number.len()..];
+    let suffix = &s[number.len()..];
     !number.is_empty()
         && number.chars().all(|c| c == '0' || c == '.' || c == '_')
         && (suffix.is_empty()
@@ -143,6 +164,8 @@ fn is_zero(init: &str) -> bool {
                     | "usize"
                     | "f32"
                     | "f64"
+                    | "L"
+                    | "f"
             ))
 }
 
@@ -202,7 +225,7 @@ pub fn recognise(text: &str, at: usize) -> Result<AccumulatorLoop> {
     );
     let init = init.trim();
 
-    for word in ["break", "continue", "return"] {
+    for word in ["continue", "return"] {
         anyhow::ensure!(
             whole_word_count(body, word) == 0,
             "the loop's body has `{word}`, which an iterator chain cannot express"
@@ -212,49 +235,101 @@ pub fn recognise(text: &str, at: usize) -> Result<AccumulatorLoop> {
         !body.contains('?') && !body.contains(".await"),
         "the loop's body can leave early (`?`) or await"
     );
-    anyhow::ensure!(
-        whole_word_count(body, &acc) == 1,
-        "the loop's body uses `{acc}` for more than the one accumulating statement"
-    );
 
-    // One statement, or one `if` holding one statement.
-    let (cond, stmt) = match body.strip_prefix("if ") {
-        Some(rest) => {
-            let brace = at_depth_zero(rest, 0, "{").context("the `if` has no body")?;
-            let inner_open = body.len() - rest.len() + brace;
-            let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
-                .context("the `if` is not closed")?;
-            anyhow::ensure!(
-                body[inner_close + 1..].trim().is_empty(),
-                "the `if` has an `else` or is followed by more statements"
-            );
-            (
-                Some(rest[..brace].trim().to_string()),
-                body[inner_open + 1..inner_close].trim(),
-            )
-        }
-        None => (None, body),
-    };
-    anyhow::ensure!(
-        stmt.matches(';').count() <= 1,
-        "the loop's body has more than one statement"
-    );
-    let (pushes, value) = accumulation(stmt, &acc)
-        .with_context(|| format!("the loop's body is not `{acc} += …;` or `{acc}.push(…);`"))?;
-    let shape = if pushes {
+    let shape = if whole_word_count(body, "break") == 1 {
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = at_depth_zero(rest, 0, "{").context("the `if` has no body")?;
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the loop's body has `break`, which an iterator chain cannot express"
+                );
+                (
+                    rest[..brace].trim().to_string(),
+                    body[inner_open + 1..inner_close].trim(),
+                )
+            }
+            None => anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express"),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        let parts: Vec<&str> = stmt_trimmed.split(';').map(str::trim).filter(|s| !s.is_empty()).collect();
         anyhow::ensure!(
-            matches!(init, "Vec::new()" | "vec![]") || init.starts_with("Vec::with_capacity("),
-            "`{acc}` does not start empty (`{init}`), so a collected vector would lose it"
+            parts.len() == 2 && parts[1] == "break",
+            "the loop's body has `break`, which an iterator chain cannot express"
         );
-        Shape::Collect { cond, value }
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let assign = parts[0];
+        let (assign_lhs, assign_rhs) = assign.split_once('=').context("expected assignment before break")?;
+        anyhow::ensure!(
+            assign_lhs.trim() == acc,
+            "assignment target is not the accumulator"
+        );
+        let rhs = assign_rhs.trim();
+        if init == "None" && rhs.starts_with("Some(") && rhs.ends_with(')') {
+            let val = rhs[5..rhs.len() - 1].trim();
+            Shape::Find { cond, value: val.to_string() }
+        } else if init == "false" && rhs == "true" {
+            Shape::Any { cond }
+        } else if init == "true" && rhs == "false" {
+            Shape::All { cond: format!("!({cond})") }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
     } else {
         anyhow::ensure!(
-            is_zero(init),
-            "`{acc}` starts at `{init}`, not zero, so a sum would lose it"
+            whole_word_count(body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
         );
-        match cond {
-            Some(cond) if value == "1" => Shape::Count { cond },
-            cond => Shape::Sum { cond, value },
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+
+        // One statement, or one `if` holding one statement.
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = at_depth_zero(rest, 0, "{").context("the `if` has no body")?;
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (
+                    Some(rest[..brace].trim().to_string()),
+                    body[inner_open + 1..inner_close].trim(),
+                )
+            }
+            None => (None, body),
+        };
+        anyhow::ensure!(
+            stmt.matches(';').count() <= 1,
+            "the loop's body has more than one statement"
+        );
+        let (pushes, value) = accumulation(stmt, &acc)
+            .with_context(|| format!("the loop's body is not `{acc} += …;` or `{acc}.push(…);`"))?;
+        if pushes {
+            anyhow::ensure!(
+                matches!(init, "Vec::new()" | "vec![]") || init.starts_with("Vec::with_capacity("),
+                "`{acc}` does not start empty (`{init}`), so a collected vector would lose it"
+            );
+            Shape::Collect { cond, value }
+        } else {
+            anyhow::ensure!(
+                is_zero(init),
+                "`{acc}` starts at `{init}`, not zero, so a sum would lose it"
+            );
+            match cond {
+                Some(cond) if value == "1" => Shape::Count { cond },
+                cond => Shape::Sum { cond, value },
+            }
         }
     };
     let indent: String = text[let_start..]
@@ -326,6 +401,24 @@ pub fn chain(l: &AccumulatorLoop, ty: &str, source_type: Option<&str>, mutable: 
         } => {
             format!(".filter_map(|{p}| if {c} {{ Some({value}) }} else {{ None }}).collect()")
         }
+        Shape::Find { cond, value } if value == p && simple => {
+            format!(".find(|&{p}| {cond})")
+        }
+        Shape::Find { cond, value } => {
+            format!(".find_map(|{p}| if {cond} {{ Some({value}) }} else {{ None }})")
+        }
+        Shape::Any { cond } if simple => {
+            format!(".any(|&{p}| {cond})")
+        }
+        Shape::Any { cond } => {
+            format!(".any(|{p}| {cond})")
+        }
+        Shape::All { cond } if simple => {
+            format!(".all(|&{p}| {cond})")
+        }
+        Shape::All { cond } => {
+            format!(".all(|{p}| {cond})")
+        }
     };
     format!(
         "{}let {}{}: {ty} = {}{steps};",
@@ -369,7 +462,7 @@ async fn hover_type(
         "textDocument/hover",
         serde_json::json!({
             "textDocument": { "uri": uri },
-            "position": { "line": line - 1, "character": col - 1 },
+            "position": { "line": line.saturating_sub(1), "character": col.saturating_sub(1) }
         }),
     )
     .await
@@ -397,6 +490,8 @@ pub async fn loop_to_iterator(
     let ty = match (&l.declared, &l.shape) {
         (Some(t), _) => t.clone(),
         (None, Shape::Collect { .. }) => "Vec<_>".to_string(),
+        (None, Shape::Find { .. }) => "Option<_>".to_string(),
+        (None, Shape::Any { .. } | Shape::All { .. }) => "bool".to_string(),
         (None, _) => {
             let name_at = l.start + text[l.start..].find(&l.acc).unwrap_or(0);
             hover_type(remote, root, file, &text, name_at)
@@ -419,6 +514,20 @@ pub async fn loop_to_iterator(
         anyhow::ensure!(
             ty == "usize",
             "`{}` is a `{ty}`, and `count()` gives a `usize`",
+            l.acc
+        );
+    }
+    if matches!(l.shape, Shape::Any { .. } | Shape::All { .. }) {
+        anyhow::ensure!(
+            ty == "bool",
+            "`{}` is a `{ty}`, and predicate tests give a `bool`",
+            l.acc
+        );
+    }
+    if matches!(l.shape, Shape::Find { .. }) {
+        anyhow::ensure!(
+            ty.starts_with("Option<") || ty == "Option<_>",
+            "`{}` is a `{ty}`, and find gives an `Option`",
             l.acc
         );
     }
@@ -493,6 +602,1178 @@ pub async fn loop_to_iterator(
     })
 }
 
+/// Recognises a TypeScript / JavaScript loop replacement.
+pub fn recognise_ts(text: &str, at: usize) -> Result<PolyglotLoop> {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+
+    let for_at = if let Some(idx) = text[line_start..line_end].find("for ") {
+        line_start + idx
+    } else if let Some(idx) = text[at..].find("for ") {
+        at + idx
+    } else if let Some(idx) = text[..at].rfind("for ") {
+        idx
+    } else {
+        anyhow::bail!("no `for` loop found at or near this position");
+    };
+
+    let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    let before_for = text[for_line_start..for_at].trim();
+    anyhow::ensure!(!before_for.ends_with("await"), "the loop's header awaits");
+
+    let open_paren = at_depth_zero(text, for_at + 4, "(").context("the `for` has no `(`")?;
+    let close_paren = crate::parameter_object::matching_bracket(text, open_paren)
+        .context("the `for` header `(...)` is not closed")?;
+    let header = text[open_paren + 1..close_paren].trim();
+    anyhow::ensure!(
+        header.contains(" of "),
+        "only `for...of` loops over collections are supported"
+    );
+    let (lhs, source) = header.split_once(" of ").context("expected `of` in for-of loop")?;
+    let source = source.trim().to_string();
+    let pattern = lhs
+        .strip_prefix("const ")
+        .or_else(|| lhs.strip_prefix("let "))
+        .or_else(|| lhs.strip_prefix("var "))
+        .unwrap_or(lhs)
+        .trim()
+        .to_string();
+
+    let open_brace = at_depth_zero(text, close_paren + 1, "{").context("the loop has no body `{`")?;
+    let close_brace = crate::parameter_object::matching_bracket(text, open_brace)
+        .context("the loop's body is not closed")?;
+    let body = text[open_brace + 1..close_brace].trim();
+
+    let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
+    let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
+    let dec_line = before_loop[dec_start..].trim();
+    let dec_trimmed = dec_line.trim_end_matches(';').trim();
+    let after_kw = dec_trimmed
+        .strip_prefix("let ")
+        .or_else(|| dec_trimmed.strip_prefix("const "))
+        .or_else(|| dec_trimmed.strip_prefix("var "))
+        .context("the statement above the loop is not a variable declaration (`let`/`const`/`var`)")?;
+    let (lhs_dec, init) = after_kw.split_once('=').context("the accumulator has no initial value")?;
+    let acc = match lhs_dec.split_once(':') {
+        Some((n, _)) => n.trim().to_string(),
+        None => lhs_dec.trim().to_string(),
+    };
+    anyhow::ensure!(
+        !acc.is_empty() && acc.chars().all(is_ident),
+        "`{lhs_dec}` is not a single variable"
+    );
+    let init = init.trim();
+
+    for word in ["continue", "return", "throw", "yield"] {
+        anyhow::ensure!(
+            whole_word_count(body, word) == 0,
+            "the loop's body has `{word}`, which an iterator chain cannot express"
+        );
+    }
+    anyhow::ensure!(!body.contains("await "), "the loop's body can await");
+
+    let shape = if whole_word_count(body, "break") == 1 {
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let rest_trim = rest.trim_start();
+                let paren_open = rest_trim.find('(').context("the `if` has no `(`")?;
+                let paren_close = crate::parameter_object::matching_bracket(rest_trim, paren_open)
+                    .context("the `if` condition is not closed")?;
+                let cond_str = rest_trim[paren_open + 1..paren_close].trim().to_string();
+                let after_paren = rest_trim[paren_close + 1..].trim_start();
+                let brace = after_paren.find('{').context("the `if` has no body")?;
+                let inner_open = body.len() - after_paren.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (cond_str, body[inner_open + 1..inner_close].trim())
+            }
+            None => anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express"),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        let parts: Vec<&str> = stmt_trimmed.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        anyhow::ensure!(
+            parts.len() == 2 && parts[1] == "break",
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        let assign = parts[0];
+        let (assign_lhs, assign_rhs) = assign.split_once('=').context("expected assignment before break")?;
+        anyhow::ensure!(
+            assign_lhs.trim() == acc,
+            "assignment target is not the accumulator"
+        );
+        let rhs = assign_rhs.trim();
+        if init == "null" || init == "undefined" {
+            Shape::Find { cond, value: rhs.to_string() }
+        } else if init == "false" && rhs == "true" {
+            Shape::Any { cond }
+        } else if init == "true" && rhs == "false" {
+            let cond_norm = if let Some(inner) = cond.strip_prefix('!') {
+                inner.trim().to_string()
+            } else {
+                format!("!({cond})")
+            };
+            Shape::All { cond: cond_norm }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
+    } else {
+        anyhow::ensure!(
+            whole_word_count(body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let rest_trim = rest.trim_start();
+                let paren_open = rest_trim.find('(').context("the `if` has no `(`")?;
+                let paren_close = crate::parameter_object::matching_bracket(rest_trim, paren_open)
+                    .context("the `if` condition is not closed")?;
+                let cond_str = rest_trim[paren_open + 1..paren_close].trim().to_string();
+                let after_paren = rest_trim[paren_close + 1..].trim_start();
+                let brace = after_paren.find('{').context("the `if` has no body")?;
+                let inner_open = body.len() - after_paren.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (Some(cond_str), body[inner_open + 1..inner_close].trim())
+            }
+            None => (None, body),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        if let Some(rest) = stmt_trimmed.strip_prefix(&acc) {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix("+=") {
+                let v = val.trim();
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a sum would lose it");
+                if let Some(c) = cond {
+                    if v == "1" {
+                        Shape::Count { cond: c }
+                    } else {
+                        Shape::Sum { cond: Some(c), value: v.to_string() }
+                    }
+                } else {
+                    Shape::Sum { cond: None, value: v.to_string() }
+                }
+            } else if rest == "++" {
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a count would lose it");
+                let c = cond.unwrap_or_else(|| "true".to_string());
+                Shape::Count { cond: c }
+            } else if let Some(args) = rest.strip_prefix(".push(") {
+                let v = args.strip_suffix(')').context("malformed push call")?;
+                anyhow::ensure!(
+                    init == "[]" || init == "new Array()" || init == "Array()",
+                    "`{acc}` does not start empty (`{init}`)"
+                );
+                Shape::Collect { cond, value: v.trim().to_string() }
+            } else {
+                anyhow::bail!("the loop's body is not `{acc} += …;` or `{acc}.push(…);`");
+            }
+        } else {
+            anyhow::bail!("the loop's body is not `{acc} += …;` or `{acc}.push(…);`");
+        }
+    };
+
+    let statement = match shape {
+        Shape::Sum { cond: None, value } if value == pattern => {
+            format!("const {acc} = {source}.reduce((acc, {pattern}) => acc + {pattern}, 0);")
+        }
+        Shape::Sum { cond: None, value } => {
+            format!("const {acc} = {source}.reduce((acc, {pattern}) => acc + ({value}), 0);")
+        }
+        Shape::Sum { cond: Some(c), value } => {
+            format!("const {acc} = {source}.filter({pattern} => {c}).reduce((acc, {pattern}) => acc + ({value}), 0);")
+        }
+        Shape::Count { cond } => {
+            format!("const {acc} = {source}.filter({pattern} => {cond}).length;")
+        }
+        Shape::Collect { cond: None, value } if value == pattern => {
+            format!("const {acc} = {source}.map({pattern} => {pattern});")
+        }
+        Shape::Collect { cond: None, value } => {
+            format!("const {acc} = {source}.map({pattern} => {value});")
+        }
+        Shape::Collect { cond: Some(c), value } => {
+            format!("const {acc} = {source}.filter({pattern} => {c}).map({pattern} => {value});")
+        }
+        Shape::Find { cond, value } if value == pattern => {
+            format!("const {acc} = {source}.find({pattern} => {cond}) ?? null;")
+        }
+        Shape::Find { cond, value } => {
+            format!("const {acc} = {source}.filter({pattern} => {cond}).map({pattern} => {value})[0] ?? null;")
+        }
+        Shape::Any { cond } => {
+            format!("const {acc} = {source}.some({pattern} => {cond});")
+        }
+        Shape::All { cond } => {
+            format!("const {acc} = {source}.every({pattern} => {cond});")
+        }
+    };
+
+    let indent: String = text[dec_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let replacement = format!("{indent}{statement}");
+
+    Ok(PolyglotLoop {
+        start: dec_start,
+        end: close_brace + 1,
+        indent,
+        replacement,
+        statement,
+    })
+}
+
+/// Recognises a Python loop replacement.
+pub fn recognise_python(text: &str, at: usize) -> Result<PolyglotLoop> {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+
+    let for_at = if let Some(idx) = text[line_start..line_end].find("for ") {
+        line_start + idx
+    } else if let Some(idx) = text[at..].find("for ") {
+        at + idx
+    } else if let Some(idx) = text[..at].rfind("for ") {
+        idx
+    } else {
+        anyhow::bail!("no `for` loop found at or near this position");
+    };
+
+    let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    let for_line_end = text[for_at..].find('\n').map_or(text.len(), |i| for_at + i);
+    let for_line = text[for_line_start..for_line_end].trim();
+
+    let for_indent: String = text[for_line_start..for_at]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+
+    let for_header = for_line.strip_prefix("for ").context("expected `for `")?;
+    let for_header = for_header.strip_suffix(':').context("expected `:` at end of for line")?.trim();
+    let (pattern, source) = for_header.split_once(" in ").context("expected `in` in for loop")?;
+    let pattern = pattern.trim().to_string();
+    let source = source.trim().to_string();
+
+    let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
+    let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
+    let dec_line = before_loop[dec_start..].trim();
+    let (lhs_dec, init) = dec_line.split_once('=').context("the accumulator has no initial value")?;
+    let acc = match lhs_dec.split_once(':') {
+        Some((n, _)) => n.trim().to_string(),
+        None => lhs_dec.trim().to_string(),
+    };
+    anyhow::ensure!(
+        !acc.is_empty() && acc.chars().all(is_ident),
+        "`{lhs_dec}` is not a single variable"
+    );
+    let init = init.trim();
+
+    let rest = &text[for_line_end..];
+    let mut body_end = for_line_end;
+    let mut body_lines = Vec::new();
+    let mut current_offset = for_line_end;
+
+    for line in rest.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            current_offset += line.len();
+            continue;
+        }
+        let line_indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t') .collect();
+        if line_indent.len() > for_indent.len() && line.starts_with(&for_indent) {
+            body_lines.push(line.trim());
+            current_offset += line.len();
+            body_end = current_offset;
+        } else {
+            break;
+        }
+    }
+
+    anyhow::ensure!(!body_lines.is_empty(), "the loop has no body");
+    let body = body_lines.join("\n");
+
+    for word in ["continue", "return", "raise", "yield"] {
+        anyhow::ensure!(
+            whole_word_count(&body, word) == 0,
+            "the loop's body has `{word}`, which an iterator chain cannot express"
+        );
+    }
+    anyhow::ensure!(!body.contains("await "), "the loop's body can await");
+
+    let shape = if whole_word_count(&body, "break") == 1 {
+        anyhow::ensure!(
+            whole_word_count(&body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, rhs) = if let Some(rest) = body.strip_prefix("if ") {
+            let (cond_part, action_part) = if let Some((c, a)) = rest.split_once(':') {
+                (c.trim().to_string(), a.trim())
+            } else {
+                anyhow::bail!("malformed if statement in python loop");
+            };
+            let action_lines: Vec<&str> = action_part.split(['\n', ';']).map(str::trim).filter(|s| !s.is_empty()).collect();
+            anyhow::ensure!(action_lines.len() == 2 && action_lines[1] == "break", "expected assign and break");
+            let (assign_lhs, assign_rhs) = action_lines[0].split_once('=').context("expected assignment")?;
+            anyhow::ensure!(assign_lhs.trim() == acc, "assignment target is not the accumulator");
+            (cond_part, assign_rhs.trim())
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        };
+
+        if init == "None" {
+            Shape::Find { cond, value: rhs.to_string() }
+        } else if init == "False" && rhs == "True" {
+            Shape::Any { cond }
+        } else if init == "True" && rhs == "False" {
+            let cond_norm = if let Some(inner) = cond.strip_prefix("not ") {
+                inner.trim().to_string()
+            } else {
+                format!("not ({cond})")
+            };
+            Shape::All { cond: cond_norm }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
+    } else {
+        anyhow::ensure!(
+            whole_word_count(&body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        anyhow::ensure!(
+            whole_word_count(&body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = if let Some(rest) = body.strip_prefix("if ") {
+            let (c, a) = rest.split_once(':').context("expected `:` in if statement")?;
+            (Some(c.trim().to_string()), a.trim())
+        } else {
+            (None, body.as_str())
+        };
+
+        let stmt_trimmed = stmt.trim();
+        if let Some(rest) = stmt_trimmed.strip_prefix(&acc) {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix("+=") {
+                let v = val.trim();
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a sum would lose it");
+                if let Some(c) = cond {
+                    if v == "1" {
+                        Shape::Count { cond: c }
+                    } else {
+                        Shape::Sum { cond: Some(c), value: v.to_string() }
+                    }
+                } else {
+                    Shape::Sum { cond: None, value: v.to_string() }
+                }
+            } else if let Some(args) = rest.strip_prefix(".append(") {
+                let v = args.strip_suffix(')').context("malformed append call")?;
+                anyhow::ensure!(init == "[]" || init == "list()", "`{acc}` does not start empty (`{init}`)");
+                Shape::Collect { cond, value: v.trim().to_string() }
+            } else {
+                anyhow::bail!("the loop's body is not `{acc} += …` or `{acc}.append(…)`");
+            }
+        } else {
+            anyhow::bail!("the loop's body is not `{acc} += …` or `{acc}.append(…)`");
+        }
+    };
+
+    let statement = match shape {
+        Shape::Sum { cond: None, value } if value == pattern => {
+            format!("{acc} = sum({source})")
+        }
+        Shape::Sum { cond: None, value } => {
+            format!("{acc} = sum({value} for {pattern} in {source})")
+        }
+        Shape::Sum { cond: Some(c), value } => {
+            format!("{acc} = sum({value} for {pattern} in {source} if {c})")
+        }
+        Shape::Count { cond } => {
+            format!("{acc} = sum(1 for {pattern} in {source} if {cond})")
+        }
+        Shape::Collect { cond: None, value } => {
+            format!("{acc} = [{value} for {pattern} in {source}]")
+        }
+        Shape::Collect { cond: Some(c), value } => {
+            format!("{acc} = [{value} for {pattern} in {source} if {c}]")
+        }
+        Shape::Find { cond, value } => {
+            format!("{acc} = next(({value} for {pattern} in {source} if {cond}), None)")
+        }
+        Shape::Any { cond } => {
+            format!("{acc} = any({cond} for {pattern} in {source})")
+        }
+        Shape::All { cond } => {
+            format!("{acc} = all({cond} for {pattern} in {source})")
+        }
+    };
+
+    let indent: String = text[dec_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let replacement = format!("{indent}{statement}");
+
+    Ok(PolyglotLoop {
+        start: dec_start,
+        end: body_end,
+        indent,
+        replacement,
+        statement,
+    })
+}
+
+/// Recognises a Swift loop replacement.
+pub fn recognise_swift(text: &str, at: usize) -> Result<PolyglotLoop> {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+
+    let for_at = if let Some(idx) = text[line_start..line_end].find("for ") {
+        line_start + idx
+    } else if let Some(idx) = text[at..].find("for ") {
+        at + idx
+    } else if let Some(idx) = text[..at].rfind("for ") {
+        idx
+    } else {
+        anyhow::bail!("no `for` loop found at or near this position");
+    };
+
+    let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    let open_brace = at_depth_zero(text, for_at + 4, "{").context("the loop has no body `{`")?;
+    let header = text[for_at + 4..open_brace].trim();
+    let (pattern, source) = header.split_once(" in ").context("expected `in` in for loop")?;
+    let pattern = pattern.trim().to_string();
+    let source = source.trim().to_string();
+
+    let close_brace = crate::parameter_object::matching_bracket(text, open_brace)
+        .context("the loop's body is not closed")?;
+    let body = text[open_brace + 1..close_brace].trim();
+
+    let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
+    let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
+    let dec_line = before_loop[dec_start..].trim();
+    let dec_trimmed = dec_line.trim_end_matches(';').trim();
+    let after_var = dec_trimmed.strip_prefix("var ").context("the statement above the loop is not `var <acc> = …`")?;
+    let (lhs_dec, init) = after_var.split_once('=').context("the accumulator has no initial value")?;
+    let acc = match lhs_dec.split_once(':') {
+        Some((n, _)) => n.trim().to_string(),
+        None => lhs_dec.trim().to_string(),
+    };
+    anyhow::ensure!(
+        !acc.is_empty() && acc.chars().all(is_ident),
+        "`{lhs_dec}` is not a single variable"
+    );
+    let init = init.trim();
+
+    for word in ["continue", "return", "throw"] {
+        anyhow::ensure!(
+            whole_word_count(body, word) == 0,
+            "the loop's body has `{word}`, which an iterator chain cannot express"
+        );
+    }
+    anyhow::ensure!(!body.contains("await "), "the loop's body can await");
+
+    let shape = if whole_word_count(body, "break") == 1 {
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = rest.find('{').context("the `if` has no body")?;
+                let cond_str = rest[..brace].trim().to_string();
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (cond_str, body[inner_open + 1..inner_close].trim())
+            }
+            None => anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express"),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        let parts: Vec<&str> = stmt_trimmed.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        anyhow::ensure!(
+            parts.len() == 2 && parts[1] == "break",
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        let (assign_lhs, assign_rhs) = parts[0].split_once('=').context("expected assignment before break")?;
+        anyhow::ensure!(assign_lhs.trim() == acc, "assignment target is not the accumulator");
+        let rhs = assign_rhs.trim();
+        if init == "nil" {
+            Shape::Find { cond, value: rhs.to_string() }
+        } else if init == "false" && rhs == "true" {
+            Shape::Any { cond }
+        } else if init == "true" && rhs == "false" {
+            let cond_norm = if let Some(inner) = cond.strip_prefix('!') {
+                inner.trim().to_string()
+            } else {
+                format!("!({cond})")
+            };
+            Shape::All { cond: cond_norm }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
+    } else {
+        anyhow::ensure!(
+            whole_word_count(body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = rest.find('{').context("the `if` has no body")?;
+                let cond_str = rest[..brace].trim().to_string();
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (Some(cond_str), body[inner_open + 1..inner_close].trim())
+            }
+            None => (None, body),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        if let Some(rest) = stmt_trimmed.strip_prefix(&acc) {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix("+=") {
+                let v = val.trim();
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a sum would lose it");
+                if let Some(c) = cond {
+                    if v == "1" {
+                        Shape::Count { cond: c }
+                    } else {
+                        Shape::Sum { cond: Some(c), value: v.to_string() }
+                    }
+                } else {
+                    Shape::Sum { cond: None, value: v.to_string() }
+                }
+            } else if let Some(args) = rest.strip_prefix(".append(") {
+                let v = args.strip_suffix(')').context("malformed append call")?;
+                anyhow::ensure!(
+                    init == "[]" || init.ends_with("()") || init.ends_with("[]"),
+                    "`{acc}` does not start empty (`{init}`)"
+                );
+                Shape::Collect { cond, value: v.trim().to_string() }
+            } else {
+                anyhow::bail!("the loop's body is not `{acc} += …` or `{acc}.append(…)`");
+            }
+        } else {
+            anyhow::bail!("the loop's body is not `{acc} += …` or `{acc}.append(…)`");
+        }
+    };
+
+    let statement = match shape {
+        Shape::Sum { cond: None, value } if value == pattern => {
+            format!("let {acc} = {source}.reduce(0, +)")
+        }
+        Shape::Sum { cond: None, value } => {
+            format!("let {acc} = {source}.reduce(0) {{ $0 + ({value}) }}")
+        }
+        Shape::Sum { cond: Some(c), value } => {
+            format!("let {acc} = {source}.filter {{ {c} }}.reduce(0) {{ $0 + ({value}) }}")
+        }
+        Shape::Count { cond } => {
+            format!("let {acc} = {source}.filter {{ {cond} }}.count")
+        }
+        Shape::Collect { cond: None, value } if value == pattern => {
+            format!("let {acc} = {source}.map {{ {pattern} }}")
+        }
+        Shape::Collect { cond: None, value } => {
+            format!("let {acc} = {source}.map {{ {value} }}")
+        }
+        Shape::Collect { cond: Some(c), value } => {
+            format!("let {acc} = {source}.filter {{ {c} }}.map {{ {value} }}")
+        }
+        Shape::Find { cond, value } if value == pattern => {
+            format!("let {acc} = {source}.first(where: {{ {cond} }})")
+        }
+        Shape::Find { cond, value } => {
+            format!("let {acc} = {source}.first(where: {{ {cond} }}).map {{ {value} }}")
+        }
+        Shape::Any { cond } => {
+            format!("let {acc} = {source}.contains(where: {{ {cond} }})")
+        }
+        Shape::All { cond } => {
+            format!("let {acc} = {source}.allSatisfy {{ {cond} }}")
+        }
+    };
+
+    let indent: String = text[dec_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let replacement = format!("{indent}{statement}");
+
+    Ok(PolyglotLoop {
+        start: dec_start,
+        end: close_brace + 1,
+        indent,
+        replacement,
+        statement,
+    })
+}
+
+/// Recognises a C++ loop replacement.
+pub fn recognise_cpp(text: &str, at: usize) -> Result<PolyglotLoop> {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+
+    let for_at = if let Some(idx) = text[line_start..line_end].find("for ") {
+        line_start + idx
+    } else if let Some(idx) = text[at..].find("for ") {
+        at + idx
+    } else if let Some(idx) = text[..at].rfind("for ") {
+        idx
+    } else {
+        anyhow::bail!("no `for` loop found at or near this position");
+    };
+
+    let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    let open_paren = at_depth_zero(text, for_at + 4, "(").context("the `for` has no `(`")?;
+    let close_paren = crate::parameter_object::matching_bracket(text, open_paren)
+        .context("the `for` header `(...)` is not closed")?;
+    let header = text[open_paren + 1..close_paren].trim();
+    let (decl, source) = header.split_once(':').context("expected `:` in range-for loop")?;
+    let source = source.trim().to_string();
+    let pattern = decl
+        .rsplit(|c: char| !is_ident(c))
+        .find(|s| !s.is_empty())
+        .context("could not extract loop variable")?
+        .to_string();
+
+    let open_brace = at_depth_zero(text, close_paren + 1, "{").context("the loop has no body `{`")?;
+    let close_brace = crate::parameter_object::matching_bracket(text, open_brace)
+        .context("the loop's body is not closed")?;
+    let body = text[open_brace + 1..close_brace].trim();
+
+    let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
+    let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
+    let dec_line = before_loop[dec_start..].trim();
+    let dec_trimmed = dec_line.trim_end_matches(';').trim();
+    let (lhs_dec, init) = dec_trimmed.split_once('=').context("the accumulator has no initial value")?;
+    let acc = lhs_dec
+        .rsplit(|c: char| !is_ident(c))
+        .find(|s| !s.is_empty())
+        .context("could not extract accumulator variable")?
+        .to_string();
+    let init = init.trim();
+
+    for word in ["continue", "return", "throw"] {
+        anyhow::ensure!(
+            whole_word_count(body, word) == 0,
+            "the loop's body has `{word}`, which an iterator chain cannot express"
+        );
+    }
+
+    let shape = if whole_word_count(body, "break") == 1 {
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let rest_trim = rest.trim_start();
+                let paren_open = rest_trim.find('(').context("the `if` has no `(`")?;
+                let paren_close = crate::parameter_object::matching_bracket(rest_trim, paren_open)
+                    .context("the `if` condition is not closed")?;
+                let cond_str = rest_trim[paren_open + 1..paren_close].trim().to_string();
+                let after_paren = rest_trim[paren_close + 1..].trim_start();
+                let brace = after_paren.find('{').context("the `if` has no body")?;
+                let inner_open = body.len() - after_paren.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (cond_str, body[inner_open + 1..inner_close].trim())
+            }
+            None => anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express"),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        let parts: Vec<&str> = stmt_trimmed.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        anyhow::ensure!(
+            parts.len() == 2 && parts[1] == "break",
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        let (assign_lhs, assign_rhs) = parts[0].split_once('=').context("expected assignment before break")?;
+        anyhow::ensure!(assign_lhs.trim() == acc, "assignment target is not the accumulator");
+        let rhs = assign_rhs.trim();
+        if init == "false" && rhs == "true" {
+            Shape::Any { cond }
+        } else if init == "true" && rhs == "false" {
+            let cond_norm = if let Some(inner) = cond.strip_prefix('!') {
+                inner.trim().to_string()
+            } else {
+                format!("!({cond})")
+            };
+            Shape::All { cond: cond_norm }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
+    } else {
+        anyhow::ensure!(
+            whole_word_count(body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let rest_trim = rest.trim_start();
+                let paren_open = rest_trim.find('(').context("the `if` has no `(`")?;
+                let paren_close = crate::parameter_object::matching_bracket(rest_trim, paren_open)
+                    .context("the `if` condition is not closed")?;
+                let cond_str = rest_trim[paren_open + 1..paren_close].trim().to_string();
+                let after_paren = rest_trim[paren_close + 1..].trim_start();
+                let brace = after_paren.find('{').context("the `if` has no body")?;
+                let inner_open = body.len() - after_paren.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (Some(cond_str), body[inner_open + 1..inner_close].trim())
+            }
+            None => (None, body),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        if let Some(rest) = stmt_trimmed.strip_prefix(&acc) {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix("+=") {
+                let v = val.trim();
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a sum would lose it");
+                if let Some(c) = cond {
+                    if v == "1" {
+                        Shape::Count { cond: c }
+                    } else {
+                        Shape::Sum { cond: Some(c), value: v.to_string() }
+                    }
+                } else {
+                    Shape::Sum { cond: None, value: v.to_string() }
+                }
+            } else if rest == "++" {
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a count would lose it");
+                let c = cond.unwrap_or_else(|| "true".to_string());
+                Shape::Count { cond: c }
+            } else {
+                anyhow::bail!("the loop's body is not `{acc} += …;`");
+            }
+        } else {
+            anyhow::bail!("the loop's body is not `{acc} += …;`");
+        }
+    };
+
+    let statement = match shape {
+        Shape::Sum { cond: None, value } if value == pattern => {
+            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0);")
+        }
+        Shape::Sum { cond: None, value } => {
+            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0, [](auto _acc, const auto& {pattern}) {{ return _acc + ({value}); }});")
+        }
+        Shape::Sum { cond: Some(c), value } => {
+            format!("const auto {acc} = std::accumulate({source}.begin(), {source}.end(), 0, [](auto _acc, const auto& {pattern}) {{ return ({c}) ? _acc + ({value}) : _acc; }});")
+        }
+        Shape::Count { cond } => {
+            format!("const auto {acc} = std::count_if({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+        }
+        Shape::Any { cond } => {
+            format!("const bool {acc} = std::any_of({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+        }
+        Shape::All { cond } => {
+            format!("const bool {acc} = std::all_of({source}.begin(), {source}.end(), [](const auto& {pattern}) {{ return {cond}; }});")
+        }
+        _ => anyhow::bail!("unsupported shape for C++"),
+    };
+
+    let indent: String = text[dec_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let replacement = format!("{indent}{statement}");
+
+    Ok(PolyglotLoop {
+        start: dec_start,
+        end: close_brace + 1,
+        indent,
+        replacement,
+        statement,
+    })
+}
+
+/// Recognises a Go loop replacement.
+pub fn recognise_go(text: &str, at: usize) -> Result<PolyglotLoop> {
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+
+    let for_at = if let Some(idx) = text[line_start..line_end].find("for ") {
+        line_start + idx
+    } else if let Some(idx) = text[at..].find("for ") {
+        at + idx
+    } else if let Some(idx) = text[..at].rfind("for ") {
+        idx
+    } else {
+        anyhow::bail!("no `for` loop found at or near this position");
+    };
+
+    let for_line_start = text[..for_at].rfind('\n').map_or(0, |i| i + 1);
+    let open_brace = at_depth_zero(text, for_at + 4, "{").context("the loop has no body `{`")?;
+    let header = text[for_at + 4..open_brace].trim();
+    let (lhs, source) = header.split_once(" range ").context("expected `range` in for loop")?;
+    let source = source.trim().to_string();
+    let pattern = if let Some((_, v)) = lhs.split_once(',') {
+        v.trim().to_string()
+    } else {
+        lhs.trim().to_string()
+    };
+    let pattern = pattern.strip_suffix(":=").unwrap_or(&pattern).trim().to_string();
+
+    let close_brace = crate::parameter_object::matching_bracket(text, open_brace)
+        .context("the loop's body is not closed")?;
+    let body = text[open_brace + 1..close_brace].trim();
+
+    let before_loop = text[..for_line_start].trim_end_matches(['\n', ' ', '\t']);
+    let dec_start = before_loop.rfind('\n').map_or(0, |i| i + 1);
+    let dec_line = before_loop[dec_start..].trim();
+    let dec_trimmed = dec_line.trim_end_matches(';').trim();
+    let (acc, init) = if let Some((a, i)) = dec_trimmed.split_once(":=") {
+        (a.trim().to_string(), i.trim())
+    } else if let Some(rest) = dec_trimmed.strip_prefix("var ") {
+        if let Some((lhs, i)) = rest.split_once('=') {
+            let a = lhs.split_whitespace().next().unwrap_or(lhs).trim();
+            (a.to_string(), i.trim())
+        } else {
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            anyhow::ensure!(!parts.is_empty(), "malformed var declaration");
+            (parts[0].to_string(), "0")
+        }
+    } else {
+        anyhow::bail!("the statement above the loop is not a variable declaration");
+    };
+    anyhow::ensure!(
+        !acc.is_empty() && acc.chars().all(is_ident),
+        "`{acc}` is not a single variable"
+    );
+
+    for word in ["continue", "return", "panic"] {
+        anyhow::ensure!(
+            whole_word_count(body, word) == 0,
+            "the loop's body has `{word}`, which an iterator chain cannot express"
+        );
+    }
+
+    let shape = if whole_word_count(body, "break") == 1 {
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = rest.find('{').context("the `if` has no body")?;
+                let cond_str = rest[..brace].trim().to_string();
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (cond_str, body[inner_open + 1..inner_close].trim())
+            }
+            None => anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express"),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        let parts: Vec<&str> = stmt_trimmed.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
+        anyhow::ensure!(
+            parts.len() == 2 && parts[1] == "break",
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        let (assign_lhs, assign_rhs) = parts[0].split_once('=').context("expected assignment before break")?;
+        anyhow::ensure!(assign_lhs.trim() == acc, "assignment target is not the accumulator");
+        let rhs = assign_rhs.trim();
+        if init == "false" && rhs == "true" {
+            Shape::Any { cond }
+        } else if init == "true" && rhs == "false" {
+            let cond_norm = if let Some(inner) = cond.strip_prefix('!') {
+                inner.trim().to_string()
+            } else {
+                format!("!({cond})")
+            };
+            Shape::All { cond: cond_norm }
+        } else {
+            anyhow::bail!("the loop's body has `break`, which an iterator chain cannot express");
+        }
+    } else {
+        anyhow::ensure!(
+            whole_word_count(body, "break") == 0,
+            "the loop's body has `break`, which an iterator chain cannot express"
+        );
+        anyhow::ensure!(
+            whole_word_count(body, &acc) == 1,
+            "the loop's body uses `{acc}` for more than the one accumulating statement"
+        );
+        let (cond, stmt) = match body.strip_prefix("if ") {
+            Some(rest) => {
+                let brace = rest.find('{').context("the `if` has no body")?;
+                let cond_str = rest[..brace].trim().to_string();
+                let inner_open = body.len() - rest.len() + brace;
+                let inner_close = crate::parameter_object::matching_bracket(body, inner_open)
+                    .context("the `if` is not closed")?;
+                anyhow::ensure!(
+                    body[inner_close + 1..].trim().is_empty(),
+                    "the `if` has an `else` or is followed by more statements"
+                );
+                (Some(cond_str), body[inner_open + 1..inner_close].trim())
+            }
+            None => (None, body),
+        };
+        let stmt_trimmed = stmt.trim_end_matches(';').trim();
+        if let Some(rest) = stmt_trimmed.strip_prefix(&acc) {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix("+=") {
+                let v = val.trim();
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a sum would lose it");
+                if let Some(c) = cond {
+                    if v == "1" {
+                        Shape::Count { cond: c }
+                    } else {
+                        Shape::Sum { cond: Some(c), value: v.to_string() }
+                    }
+                } else {
+                    Shape::Sum { cond: None, value: v.to_string() }
+                }
+            } else if rest == "++" {
+                anyhow::ensure!(is_zero(init), "`{acc}` starts at `{init}`, not zero, so a count would lose it");
+                let c = cond.unwrap_or_else(|| "true".to_string());
+                Shape::Count { cond: c }
+            } else if let Some(args) = rest.strip_prefix("=") {
+                let args = args.trim();
+                if let Some(app) = args.strip_prefix("append(") {
+                    let v = app.strip_suffix(')').context("malformed append call")?;
+                    let (target, item) = v.split_once(',').context("expected slice, item in append")?;
+                    anyhow::ensure!(target.trim() == acc, "append target is not accumulator");
+                    Shape::Collect { cond, value: item.trim().to_string() }
+                } else {
+                    anyhow::bail!("unsupported assignment in Go loop");
+                }
+            } else {
+                anyhow::bail!("the loop's body is not `{acc} += …` or `{acc} = append(…)`");
+            }
+        } else {
+            anyhow::bail!("the loop's body is not `{acc} += …` or `{acc} = append(…)`");
+        }
+    };
+
+    let statement = match shape {
+        Shape::Sum { cond: None, value } => {
+            format!("{acc} := func() int {{ s := 0; for _, {pattern} := range {source} {{ s += {value} }}; return s }}()")
+        }
+        Shape::Sum { cond: Some(c), value } => {
+            format!("{acc} := func() int {{ s := 0; for _, {pattern} := range {source} {{ if {c} {{ s += {value} }} }}; return s }}()")
+        }
+        Shape::Count { cond } => {
+            format!("{acc} := func() int {{ c := 0; for _, {pattern} := range {source} {{ if {cond} {{ c++ }} }}; return c }}()")
+        }
+        Shape::Collect { cond: None, value } => {
+            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for _, {pattern} := range {source} {{ res = append(res, {value}) }}; return res }}()")
+        }
+        Shape::Collect { cond: Some(c), value } => {
+            format!("{acc} := func() []interface{{}} {{ res := make([]interface{{}}, 0); for _, {pattern} := range {source} {{ if {c} {{ res = append(res, {value}) }} }}; return res }}()")
+        }
+        Shape::Any { cond } => {
+            format!("{acc} := func() bool {{ for _, {pattern} := range {source} {{ if {cond} {{ return true }} }}; return false }}()")
+        }
+        Shape::All { cond } => {
+            format!("{acc} := func() bool {{ for _, {pattern} := range {source} {{ if !({cond}) {{ return false }} }}; return true }}()")
+        }
+        _ => anyhow::bail!("unsupported shape for Go"),
+    };
+
+    let indent: String = text[dec_start..]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect();
+    let replacement = format!("{indent}{statement}");
+
+    Ok(PolyglotLoop {
+        start: dec_start,
+        end: close_brace + 1,
+        indent,
+        replacement,
+        statement,
+    })
+}
+
+/// Finds the offset of the target loop given either line/col or symbol name.
+pub fn find_loop_offset(
+    text: &str,
+    _lang: Language,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+) -> Result<usize> {
+    if let Some(l) = line {
+        let c = col.unwrap_or(1);
+        if let Some(offset) = crate::signature::offset_of(text, l, c) {
+            return Ok(offset);
+        }
+    }
+    let sym = symbol.context("missing `line` or `symbol` identifying the loop")?;
+    // 1. Look for function declaration containing `sym`
+    for pattern in [
+        format!("fn {sym}"),
+        format!("def {sym}"),
+        format!("func {sym}"),
+        format!("function {sym}"),
+        format!("{sym}("),
+    ] {
+        if let Some(for_idx) = text.find(&pattern).and_then(|idx| text[idx..].find("for ").map(|f| idx + f)) {
+            return Ok(for_idx);
+        }
+    }
+    // 2. Look for accumulator or loop variable `sym`
+    for pattern in [
+        format!("let mut {sym}"),
+        format!("let {sym}"),
+        format!("var {sym}"),
+        format!("const {sym}"),
+        format!("{sym} ="),
+        format!("{sym} :="),
+    ] {
+        if let Some(for_idx) = text.find(&pattern).and_then(|idx| text[idx..].find("for ").map(|f| idx + f)) {
+            return Ok(for_idx);
+        }
+    }
+    anyhow::bail!("could not find loop for symbol `{sym}`")
+}
+
+/// Polyglot entry point for converting an accumulating loop into an iterator chain or functional expression.
+#[allow(clippy::too_many_arguments)]
+pub async fn loop_to_iterator_polyglot(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    apply: bool,
+    force: bool,
+) -> Result<Rewritten> {
+    let lang = crate::parameter_object::Language::of(file)
+        .with_context(|| format!("unsupported language for {}", file.display()))?;
+
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+
+    let rel = file
+        .strip_prefix(root)
+        .unwrap_or(file)
+        .display()
+        .to_string();
+
+    if lang == Language::Rust {
+        let (l, c) = match (line, col) {
+            (Some(l), Some(c)) => (l, c),
+            (Some(l), None) => (l, 1),
+            _ => {
+                let offset = find_loop_offset(&text, lang, symbol, line, col)?;
+                crate::signature::line_col_at(&text, offset)
+                    .with_context(|| format!("cannot find line/col for loop in {}", file.display()))?
+            }
+        };
+        return loop_to_iterator(remote, root, file, l, c, apply, force).await;
+    }
+
+    let offset = find_loop_offset(&text, lang, symbol, line, col)?;
+
+    let polyglot_loop = match lang {
+        Language::TypeScript | Language::JavaScript => recognise_ts(&text, offset)?,
+        Language::Python => recognise_python(&text, offset)?,
+        Language::Swift => recognise_swift(&text, offset)?,
+        Language::Cpp | Language::C => recognise_cpp(&text, offset)?,
+        Language::Go => recognise_go(&text, offset)?,
+        Language::Rust => unreachable!(),
+    };
+
+    let mut new_text = text.clone();
+    new_text.replace_range(polyglot_loop.start..polyglot_loop.end, &polyglot_loop.replacement);
+
+    let reports = crate::diagnostics::validate_texts(
+        remote,
+        root,
+        &[(file.to_path_buf(), new_text.clone())],
+        &[],
+    )
+    .await?;
+    let errors: Vec<&crate::diagnostics::DocDiagnostic> = reports
+        .iter()
+        .flat_map(|r| r.items.iter())
+        .filter(|d| d.severity == "error")
+        .collect();
+    let diagnostics: Vec<String> = errors
+        .iter()
+        .map(|d| {
+            format!(
+                "{}{} ({rel}:{}:{})",
+                d.message.lines().next().unwrap_or(""),
+                d.code
+                    .as_deref()
+                    .map(|c| format!(" [{c}]"))
+                    .unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    let mut applied = false;
+    if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let files: BTreeMap<PathBuf, String> =
+            std::iter::once((file.to_path_buf(), new_text.clone())).collect();
+        crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;
+        applied = true;
+    }
+
+    Ok(Rewritten {
+        statement: polyglot_loop.statement,
+        root: root.to_path_buf(),
+        file: rel,
+        new_text,
+        diagnostics,
+        applied,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -523,6 +1804,37 @@ mod tests {
         assert_eq!(
             chain(&names, "Vec<_>", None, true),
             "    let mut out: Vec<_> = users.into_iter().filter_map(|(id, name)| if *id > 10 { Some(name.clone()) } else { None }).collect();"
+        );
+    }
+
+    #[test]
+    fn rust_general_loop_conversion_find_any_all() {
+        let find_src = "pub fn find_user(users: &[u32]) -> Option<&u32> {\n    let mut found = None;\n    for u in users {\n        if *u > 10 {\n            found = Some(u);\n            break;\n        }\n    }\n    found\n}\n";
+        let l = recognise(find_src, find_src.find("for u in").unwrap()).unwrap();
+        assert_eq!(
+            chain(&l, "Option<_>", None, false),
+            "    let found: Option<_> = users.into_iter().find(|&u| *u > 10);"
+        );
+
+        let find_map_src = "pub fn find_user(users: &[u32]) -> Option<u32> {\n    let mut found = None;\n    for u in users {\n        if *u > 10 {\n            found = Some(*u);\n            break;\n        }\n    }\n    found\n}\n";
+        let l2 = recognise(find_map_src, find_map_src.find("for u in").unwrap()).unwrap();
+        assert_eq!(
+            chain(&l2, "Option<_>", None, false),
+            "    let found: Option<_> = users.into_iter().find_map(|u| if *u > 10 { Some(*u) } else { None });"
+        );
+
+        let any_src = "pub fn has_admin(users: &[bool]) -> bool {\n    let mut has_any = false;\n    for u in users {\n        if *u {\n            has_any = true;\n            break;\n        }\n    }\n    has_any\n}\n";
+        let l = recognise(any_src, any_src.find("for u in").unwrap()).unwrap();
+        assert_eq!(
+            chain(&l, "bool", None, false),
+            "    let has_any: bool = users.into_iter().any(|&u| *u);"
+        );
+
+        let all_src = "pub fn all_active(users: &[bool]) -> bool {\n    let mut all_match = true;\n    for u in users {\n        if !*u {\n            all_match = false;\n            break;\n        }\n    }\n    all_match\n}\n";
+        let l = recognise(all_src, all_src.find("for u in").unwrap()).unwrap();
+        assert_eq!(
+            chain(&l, "bool", None, false),
+            "    let all_match: bool = users.into_iter().all(|&u| !(!*u));"
         );
     }
 
@@ -593,5 +1905,64 @@ mod tests {
         assert_eq!(binding_type("```rust\nfn f()\n```"), None);
         assert!(is_zero("0") && is_zero("0.0") && is_zero("0u64") && is_zero("0_i32"));
         assert!(!is_zero("1") && !is_zero("x") && !is_zero("0x10"));
+    }
+
+    #[test]
+    fn polyglot_ts_recognised() {
+        let src = "function total(prices: number[]): number {\n    let sum = 0;\n    for (const p of prices) {\n        sum += p * 2;\n    }\n    return sum;\n}";
+        let poly = recognise_ts(src, src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    const sum = prices.reduce((acc, p) => acc + (p * 2), 0);");
+
+        let cnt_src = "function evens(xs: number[]): number {\n    let count = 0;\n    for (const x of xs) {\n        if (x % 2 === 0) {\n            count += 1;\n        }\n    }\n    return count;\n}";
+        let poly = recognise_ts(cnt_src, cnt_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    const count = xs.filter(x => x % 2 === 0).length;");
+
+        let find_src = "function findItem(items: string[]): string | null {\n    let found = null;\n    for (const item of items) {\n        if (item.length > 3) {\n            found = item;\n            break;\n        }\n    }\n    return found;\n}";
+        let poly = recognise_ts(find_src, find_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    const found = items.find(item => item.length > 3) ?? null;");
+    }
+
+    #[test]
+    fn polyglot_python_recognised() {
+        let src = "def total(prices):\n    total = 0\n    for p in prices:\n        total += p * 2\n    return total";
+        let poly = recognise_python(src, src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    total = sum(p * 2 for p in prices)");
+
+        let cnt_src = "def evens(xs):\n    count = 0\n    for x in xs:\n        if x % 2 == 0:\n            count += 1\n    return count";
+        let poly = recognise_python(cnt_src, cnt_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    count = sum(1 for x in xs if x % 2 == 0)");
+
+        let collect_src = "def names(users):\n    out = []\n    for u in users:\n        if u.age > 10:\n            out.append(u.name)\n    return out";
+        let poly = recognise_python(collect_src, collect_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    out = [u.name for u in users if u.age > 10]");
+    }
+
+    #[test]
+    fn polyglot_swift_recognised() {
+        let src = "func total(prices: [Int]) -> Int {\n    var sum = 0\n    for p in prices {\n        sum += p * 2\n    }\n    return sum\n}";
+        let poly = recognise_swift(src, src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    let sum = prices.reduce(0) { $0 + (p * 2) }");
+
+        let cnt_src = "func evens(xs: [Int]) -> Int {\n    var count = 0\n    for x in xs {\n        if x % 2 == 0 {\n            count += 1\n        }\n    }\n    return count\n}";
+        let poly = recognise_swift(cnt_src, cnt_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    let count = xs.filter { x % 2 == 0 }.count");
+    }
+
+    #[test]
+    fn polyglot_cpp_recognised() {
+        let src = "int total(const std::vector<int>& prices) {\n    int sum = 0;\n    for (const auto& p : prices) {\n        sum += p * 2;\n    }\n    return sum;\n}";
+        let poly = recognise_cpp(src, src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    const auto sum = std::accumulate(prices.begin(), prices.end(), 0, [](auto _acc, const auto& p) { return _acc + (p * 2); });");
+
+        let any_src = "bool has_even(const std::vector<int>& xs) {\n    bool has_any = false;\n    for (const auto& x : xs) {\n        if (x % 2 == 0) {\n            has_any = true;\n            break;\n        }\n    }\n    return has_any;\n}";
+        let poly = recognise_cpp(any_src, any_src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    const bool has_any = std::any_of(xs.begin(), xs.end(), [](const auto& x) { return x % 2 == 0; });");
+    }
+
+    #[test]
+    fn polyglot_go_recognised() {
+        let src = "func total(prices []int) int {\n    sum := 0\n    for _, p := range prices {\n        sum += p * 2\n    }\n    return sum\n}";
+        let poly = recognise_go(src, src.find("for ").unwrap()).unwrap();
+        assert_eq!(poly.replacement, "    sum := func() int { s := 0; for _, p := range prices { s += p * 2 }; return s }()");
     }
 }
