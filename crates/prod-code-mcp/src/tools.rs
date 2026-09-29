@@ -402,22 +402,24 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_delegate".to_string(),
-            description: "Extract a delegate (Extract Class): the fields you name leave a struct for a new helper type the struct then holds, with the methods you name that use only those fields. The struct keeps a forwarding method of the same signature for each moved method, so callers do not change; every other access to a moved field goes through the new field (`a.city` becomes `a.address.city`, found through the analyzer's references), and every struct literal builds the helper. A literal or pattern with `..` is refused. Type-checked in one overlay before anything is written. Rust only; plain structs with named fields."
+            description: "Extract a delegate (Extract Class): the fields you name leave a struct or class for a new helper type the struct/class then holds, with the methods you name that use only those fields. The owner keeps a forwarding method of the same signature for each moved method, so callers do not change; external access to moved fields goes through the new field (`a.city` becomes `a.address.city`), and struct literals build the helper. Supported across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust. Type-checked in one overlay before anything is written."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File that declares the struct" },
-                    "line": { "type": "integer", "description": "1-based line of the `struct` keyword" },
-                    "character": { "type": "integer", "description": "1-based column on that line" },
+                    "path": { "type": "string", "description": "File that declares the struct or class" },
+                    "line": { "type": "integer", "description": "1-based line of the `struct`/`class` keyword (optional if `symbol` is given)" },
+                    "character": { "type": "integer", "description": "1-based column on that line (optional if `symbol` is given)" },
+                    "symbol": { "type": "string", "description": "Name of the struct or class (alternative to line/character)" },
                     "fields": { "type": "array", "items": { "type": "string" }, "description": "Fields that move into the helper" },
                     "methods": { "type": "array", "items": { "type": "string" }, "description": "Methods that move with them (may use only those fields)" },
                     "name": { "type": "string", "description": "Name of the helper type" },
                     "field": { "type": "string", "description": "Name of the field that holds the helper" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
-                "required": ["path", "line", "character", "fields", "name", "field"]
+                "required": ["path", "fields", "name", "field"]
             }),
         },
         McpTool {
@@ -1487,57 +1489,7 @@ pub async fn execute_tool(
         "code_extract_interface" => {
             handle_extract_interface(remote, workspace_root, &args).await
         }
-        "code_extract_delegate" => {
-            let path_str = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .context("Missing 'path' argument")?;
-            let list = |key: &str| -> Vec<String> {
-                args.get(key)
-                    .and_then(|v| v.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|m| m.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
-            let text = |key: &str| -> Result<String> {
-                args.get(key)
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .with_context(|| format!("Missing '{key}' argument"))
-            };
-            let num = |key: &str| -> Result<u32> {
-                args.get(key)
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .with_context(|| format!("Missing '{key}' argument"))
-            };
-            let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
-            let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-            let file_path = resolve_file_path(workspace_root, path_str);
-            let done = crate::extract_delegate::extract_delegate(
-                remote,
-                workspace_root,
-                &file_path,
-                num("line")?,
-                num("character")?,
-                &list("fields"),
-                &list("methods"),
-                &text("name")?,
-                &text("field")?,
-                apply,
-                force,
-            )
-            .await?;
-            let out = done.render();
-            Ok(if done.diagnostics.is_empty() {
-                McpToolCallResult::text(out)
-            } else {
-                McpToolCallResult::error(out)
-            })
-        }
+        "code_extract_delegate" => handle_extract_delegate(remote, workspace_root, &args).await,
         "code_convert_to_method" => handle_convert_to_method(remote, workspace_root, &args).await,
         "code_invert_boolean" => handle_invert_boolean(remote, workspace_root, &args).await,
         "code_generify" => handle_generify(remote, workspace_root, &args).await,
@@ -3141,6 +3093,111 @@ async fn handle_introduce_parameter_object(
         McpToolCallResult::text(text)
     } else {
         McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_extract_delegate(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let symbol = args
+        .get("symbol")
+        .and_then(|v| v.as_str())
+        .or_else(|| args.get("class").and_then(|v| v.as_str()))
+        .or_else(|| args.get("type").and_then(|v| v.as_str()));
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
+
+    if symbol.is_none() && line.is_none() {
+        anyhow::bail!("Specify either `symbol` (or `class`/`type`) or `line` and `character` for the class/struct");
+    }
+
+    let list = |key: &str| -> Vec<String> {
+        args.get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|m| m.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let text = |key: &str| -> Result<String> {
+        args.get(key)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .with_context(|| format!("Missing '{key}' argument"))
+    };
+    let fields = list("fields");
+    anyhow::ensure!(!fields.is_empty(), "Missing or empty 'fields' argument");
+    let methods = list("methods");
+    let helper_name = text("name")?;
+    let field_name = text("field")?;
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+
+    let file_path = resolve_file_path(workspace_root, path_str);
+    anyhow::ensure!(
+        !verify
+            || crate::parameter_object::Language::of(&file_path)
+                == Some(crate::parameter_object::Language::Rust),
+        "`verify: compile` runs `cargo check`, which judges Rust only; {} is checked by its \
+         language server's diagnostics alone",
+        path_str
+    );
+
+    let mut done = crate::extract_delegate::extract_delegate_polyglot(
+        remote,
+        workspace_root,
+        &file_path,
+        symbol,
+        line,
+        character,
+        &fields,
+        &methods,
+        &helper_name,
+        &field_name,
+        apply && !verify,
+        force,
+        None,
+    )
+    .await?;
+
+    let gate = if verify {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty() && gate.as_ref().is_none_or(|g| g.passed);
+    let mut out = done.render();
+    if let Some(gate) = &gate {
+        out.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(out)
+    } else {
+        McpToolCallResult::error(out)
     })
 }
 

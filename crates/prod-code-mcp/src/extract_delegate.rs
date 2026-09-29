@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -492,15 +493,1731 @@ pub fn restructure(
     Ok(out)
 }
 
-/// Extracts `fields` and `methods` of the struct at `line`:`col` of `file` into `helper`, held
-/// in the new field `field`.
+fn is_ident_str(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(is_ident)
+}
+
+fn reindent(text: &str, indent: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let min_indent = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    lines
+        .iter()
+        .map(|l| {
+            if l.trim().is_empty() {
+                String::new()
+            } else {
+                let stripped = if l.len() >= min_indent {
+                    &l[min_indent..]
+                } else {
+                    l.trim_start()
+                };
+                format!("{indent}{stripped}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn extract_param_names_ts(params: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in split_top(params, ',') {
+        let p = params[piece.0..piece.1].trim();
+        if p.is_empty() {
+            continue;
+        }
+        let before_colon = p.split(':').next().unwrap_or(p).trim();
+        let name = before_colon.split_whitespace().last().unwrap_or("").trim_start_matches("...");
+        if is_ident_str(name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+fn extract_param_names_py(params: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in split_top(params, ',') {
+        let p = params[piece.0..piece.1].trim();
+        if p.is_empty() || p == "self" || p.starts_with("self:") {
+            continue;
+        }
+        let before_equal = p.split('=').next().unwrap_or(p).trim();
+        let before_colon = before_equal.split(':').next().unwrap_or(before_equal).trim();
+        let name = before_colon.trim_start_matches('*');
+        if is_ident_str(name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+fn extract_param_names_cpp(params: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in split_top(params, ',') {
+        let p = params[piece.0..piece.1].trim();
+        if p.is_empty() {
+            continue;
+        }
+        let before_equal = p.split('=').next().unwrap_or(p).trim();
+        let name = before_equal.split_whitespace().last().unwrap_or("").trim_matches(['&', '*']);
+        if is_ident_str(name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+fn extract_param_names_swift(params: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in split_top(params, ',') {
+        let p = params[piece.0..piece.1].trim();
+        if p.is_empty() {
+            continue;
+        }
+        let before_colon = p.split(':').next().unwrap_or(p).trim();
+        let parts: Vec<&str> = before_colon.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let label = parts[0];
+            let name = parts[1];
+            if label == "_" {
+                names.push(name.to_string());
+            } else {
+                names.push(format!("{label}: {name}"));
+            }
+        } else if let Some(name) = parts.first() && is_ident_str(name) {
+            names.push(format!("{name}: {name}"));
+        }
+    }
+    names
+}
+
+fn extract_param_names_go(params: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for piece in split_top(params, ',') {
+        let p = params[piece.0..piece.1].trim();
+        if p.is_empty() {
+            continue;
+        }
+        let name = p.split_whitespace().next().unwrap_or("");
+        if is_ident_str(name) {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
 #[allow(clippy::too_many_arguments)]
-pub async fn extract_delegate(
+pub fn restructure_ts(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    is_js: bool,
+) -> Result<(String, String)> {
+    let (open_brace, close_brace, owner, is_export) = {
+        let mut found = None;
+        for (i, _) in text.match_indices("class ") {
+            if i > 0 && text[..i].chars().next_back().is_some_and(is_ident) {
+                continue;
+            }
+            let after = &text[i + 6..];
+            let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(sym) = symbol_opt && sym != name {
+                continue;
+            }
+            let Some(open_rel) = after.find('{') else { continue };
+            let open = i + 6 + open_rel;
+            let Some(close) = crate::parameter_object::matching_bracket(text, open) else { continue };
+            if let Some(line) = line_opt && line > 0 {
+                let (sl, _) = crate::signature::position_at(text, i)?;
+                let (el, _) = crate::signature::position_at(text, close)?;
+                if line < sl || line > el {
+                    continue;
+                }
+            }
+            let before_class = text[..i].trim_end();
+            let is_export = before_class.ends_with("export") || before_class.ends_with("export default");
+            found = Some((open, close, name, is_export));
+            break;
+        }
+        found.with_context(|| {
+            if let Some(sym) = symbol_opt {
+                format!("class `{sym}` not found")
+            } else {
+                "no class found at the specified location".to_string()
+            }
+        })?
+    };
+
+    let body = &text[open_brace + 1..close_brace];
+
+    let mut field_decls: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(semi) = trimmed.strip_suffix(';') {
+            let decl = semi.trim();
+            let without_init = decl.split('=').next().unwrap_or(decl).trim();
+            if let Some((lhs, ty)) = without_init.split_once(':') {
+                let fname = lhs.split_whitespace().last().unwrap_or("").trim();
+                if is_ident_str(fname) && !fname.starts_with("return") {
+                    field_decls.insert(fname.to_string(), (line.to_string(), Some(ty.trim().to_string())));
+                }
+            } else {
+                let fname = without_init.split_whitespace().last().unwrap_or("").trim();
+                if is_ident_str(fname) && !fname.starts_with("constructor") && !fname.starts_with("return") {
+                    field_decls.insert(fname.to_string(), (line.to_string(), None));
+                }
+            }
+        }
+    }
+
+    let mut ctor_assigned_fields: BTreeMap<String, String> = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("this.") && trimmed.contains('=') && trimmed.ends_with(';') {
+            let without_semi = &trimmed[..trimmed.len() - 1];
+            if let Some((lhs, rhs)) = without_semi.split_once('=') {
+                let fname = lhs.trim().trim_start_matches("this.").trim();
+                if is_ident_str(fname) {
+                    ctor_assigned_fields.insert(fname.to_string(), rhs.trim().to_string());
+                }
+            }
+        }
+    }
+
+    for f in fields {
+        anyhow::ensure!(
+            field_decls.contains_key(f) || ctor_assigned_fields.contains_key(f) || body.contains(&format!("this.{f}")),
+            "`{owner}` has no field `{f}`"
+        );
+    }
+    anyhow::ensure!(
+        !field_decls.contains_key(field) && !ctor_assigned_fields.contains_key(field),
+        "`{owner}` already has a field `{field}`"
+    );
+
+    struct TsMethod {
+        vis: String,
+        is_async: bool,
+        params: String,
+        ret_type: Option<String>,
+        full_text: String,
+        body: String,
+    }
+
+    let mut moved_methods: BTreeMap<String, TsMethod> = BTreeMap::new();
+    let mut offset = 0;
+    while offset < body.len() {
+        let slice = &body[offset..];
+        let Some(paren_rel) = slice.find('(') else { break };
+        let paren_pos = offset + paren_rel;
+        let before_paren = body[offset..paren_pos].trim();
+        let last_word = before_paren.split_whitespace().last().unwrap_or("");
+        if is_ident_str(last_word)
+            && last_word != "constructor"
+            && last_word != "if"
+            && last_word != "while"
+            && last_word != "for"
+            && last_word != "switch"
+            && let Some(close_paren_rel) = body[paren_pos..].find(')')
+        {
+            let close_paren = paren_pos + close_paren_rel;
+            let params = body[paren_pos + 1..close_paren].trim().to_string();
+            let after_close = &body[close_paren + 1..];
+            if let Some(open_b_rel) = after_close.find('{') {
+                let open_b = close_paren + 1 + open_b_rel;
+                let between = body[close_paren + 1..open_b].trim();
+                let ret_type = between.strip_prefix(':').map(|s| s.trim().to_string());
+                    if let Some(close_b_rel) = crate::parameter_object::matching_bracket(&body[open_b..], 0) {
+                        let close_b = open_b + close_b_rel;
+                        let line_start = body[..offset + slice[..paren_rel].rfind('\n').map_or(0, |x| x + 1)]
+                            .rfind('\n')
+                            .map_or(0, |x| x + 1);
+                        let m_start = body[line_start..paren_pos]
+                            .find(last_word)
+                            .map(|x| line_start + x)
+                            .unwrap_or(paren_pos - last_word.len());
+                        let header_part = body[line_start..m_start].trim();
+                        let is_async = header_part.contains("async");
+                        let vis = if header_part.contains("private") {
+                            "private".to_string()
+                        } else if header_part.contains("protected") {
+                            "protected".to_string()
+                        } else if header_part.contains("public") {
+                            "public".to_string()
+                        } else {
+                            String::new()
+                        };
+                        let method_text = body[line_start..=close_b].trim().to_string();
+                        let m_body = body[open_b + 1..close_b].to_string();
+                        let method_name = last_word.to_string();
+                        if methods.contains(&method_name) {
+                            moved_methods.insert(
+                                method_name,
+                                TsMethod {
+                                    vis,
+                                    is_async,
+                                    params,
+                                    ret_type,
+                                    full_text: method_text,
+                                    body: m_body,
+                                },
+                            );
+                        }
+                        offset = close_b + 1;
+                        continue;
+                    }
+                }
+            }
+        offset = paren_pos + 1;
+    }
+
+    for m in methods {
+        anyhow::ensure!(
+            moved_methods.contains_key(m),
+            "`{owner}` has no method `{m}`"
+        );
+    }
+
+    for (mname, minfo) in &moved_methods {
+        for (idx, _) in minfo.body.match_indices("this.") {
+            let after = &minfo.body[idx + 5..];
+            let ident: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if !ident.is_empty() && ident != "constructor" && !fields.contains(&ident) && !methods.contains(&ident) {
+                anyhow::bail!("`{mname}` uses `{ident}`, which does not move to `{helper}`");
+            }
+        }
+    }
+
+    // Build Helper class
+    let export_kw = if is_export { "export " } else { "" };
+    let mut helper_lines = Vec::new();
+    helper_lines.push(format!("{export_kw}class {helper} {{"));
+    for f in fields {
+        if is_js {
+            helper_lines.push(format!("    {f};"));
+        } else if let Some((_, Some(ty))) = field_decls.get(f) {
+            helper_lines.push(format!("    public {f}: {ty};"));
+        } else {
+            helper_lines.push(format!("    public {f}: any;"));
+        }
+    }
+    helper_lines.push(String::new());
+    let ctor_params = if is_js {
+        fields.join(", ")
+    } else {
+        fields
+            .iter()
+            .map(|f| {
+                if let Some((_, Some(ty))) = field_decls.get(f) {
+                    format!("{f}: {ty}")
+                } else {
+                    format!("{f}: any")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    helper_lines.push(format!("    constructor({ctor_params}) {{"));
+    for f in fields {
+        helper_lines.push(format!("        this.{f} = {f};"));
+    }
+    helper_lines.push("    }".to_string());
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        helper_lines.push(String::new());
+        let reindented = reindent(&minfo.full_text, "    ");
+        let pub_reindented = if reindented.trim_start().starts_with("private ") {
+            reindented.replacen("private ", "public ", 1)
+        } else if reindented.trim_start().starts_with("protected ") {
+            reindented.replacen("protected ", "public ", 1)
+        } else if !reindented.trim_start().starts_with("public ") && !is_js {
+            reindented.replacen("    ", "    public ", 1)
+        } else {
+            reindented
+        };
+        helper_lines.push(pub_reindented);
+    }
+    helper_lines.push("}".to_string());
+    let helper_text = helper_lines.join("\n");
+
+    // Rewrite Owner class
+    let mut new_body_lines = Vec::new();
+    let mut delegate_field_placed = false;
+    let mut inside_ctor = false;
+    let mut ctor_replaced = false;
+
+    let helper_init_args = fields
+        .iter()
+        .map(|f| {
+            if let Some(rhs) = ctor_assigned_fields.get(f) {
+                rhs.clone()
+            } else {
+                f.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let is_moved_field_decl = fields.iter().any(|f| {
+            if let Some((decl_line, _)) = field_decls.get(f) {
+                decl_line.trim() == trimmed
+            } else {
+                false
+            }
+        });
+
+        if is_moved_field_decl {
+            if !delegate_field_placed {
+                let vis = if is_js { "" } else { "public " };
+                let type_ann = if is_js { "" } else { ": " };
+                let type_name = if is_js { "" } else { helper };
+                new_body_lines.push(format!("    {vis}{field}{type_ann}{type_name};"));
+                delegate_field_placed = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("constructor") && trimmed.contains('{') {
+            inside_ctor = true;
+        }
+
+        if inside_ctor {
+            let is_moved_field_assign = fields.iter().any(|f| {
+                trimmed.starts_with(&format!("this.{f} =")) || trimmed.starts_with(&format!("this.{f}="))
+            });
+            if is_moved_field_assign {
+                if !ctor_replaced {
+                    new_body_lines.push(format!("        this.{field} = new {helper}({helper_init_args});"));
+                    ctor_replaced = true;
+                }
+                continue;
+            }
+            if trimmed.contains('}') {
+                inside_ctor = false;
+            }
+        }
+
+        let is_moved_method = moved_methods.values().any(|minfo| {
+            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
+        });
+        if is_moved_method {
+            continue;
+        }
+
+        new_body_lines.push(line.to_string());
+    }
+
+    if !delegate_field_placed {
+        let vis = if is_js { "" } else { "public " };
+        let type_ann = if is_js { "" } else { ": " };
+        let type_name = if is_js { "" } else { helper };
+        let init_val = format!(" = new {helper}()");
+        new_body_lines.insert(0, format!("    {vis}{field}{type_ann}{type_name}{init_val};"));
+    }
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        let arg_names = extract_param_names_ts(&minfo.params);
+        let ret_ann = if let Some(ret) = &minfo.ret_type {
+            format!(": {ret}")
+        } else {
+            String::new()
+        };
+        let async_kw = if minfo.is_async { "async " } else { "" };
+        let vis = if minfo.vis.is_empty() {
+            if is_js { String::new() } else { "public ".to_string() }
+        } else {
+            format!("{} ", minfo.vis)
+        };
+        let forwarding = format!(
+            "    {vis}{async_kw}{m}({}){ret_ann} {{\n        return this.{field}.{m}({});\n    }}",
+            minfo.params,
+            arg_names.join(", ")
+        );
+        new_body_lines.push(String::new());
+        new_body_lines.push(forwarding);
+    }
+
+    let new_body = new_body_lines.join("\n");
+    let mut out = text.to_string();
+    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
+    let final_text = format!("{helper_text}\n\n{out}");
+    Ok((final_text, owner))
+}
+
+pub fn restructure_py(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+) -> Result<(String, String)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut class_idx = None;
+    let mut owner_name = String::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") && trimmed.contains(':') {
+            let after = &trimmed[6..];
+            let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(sym) = symbol_opt && sym != name {
+                continue;
+            }
+            if let Some(l) = line_opt && l > 0 && l != (idx as u32 + 1) {
+                continue;
+            }
+            owner_name = name;
+            class_idx = Some(idx);
+            break;
+        }
+    }
+
+    let c_idx = class_idx.with_context(|| {
+        if let Some(sym) = symbol_opt {
+            format!("class `{sym}` not found")
+        } else {
+            "no class found at the specified location".to_string()
+        }
+    })?;
+
+    let class_line = lines[c_idx];
+    let class_indent = class_line.len() - class_line.trim_start().len();
+
+    let mut end_class_idx = lines.len();
+    for (idx, line) in lines.iter().enumerate().skip(c_idx + 1) {
+        if line.trim().is_empty() || line.trim_start().starts_with('#') {
+            continue;
+        }
+        let ind = line.len() - line.trim_start().len();
+        if ind <= class_indent {
+            end_class_idx = idx;
+            break;
+        }
+    }
+
+    let mut ctor_assigned_fields: BTreeMap<String, String> = BTreeMap::new();
+    let mut class_fields: BTreeMap<String, String> = BTreeMap::new();
+
+    struct PyMethod {
+        params: String,
+        full_text: String,
+        body: String,
+        start_line: usize,
+        end_line: usize,
+    }
+
+    let mut moved_methods: BTreeMap<String, PyMethod> = BTreeMap::new();
+    let mut idx = c_idx + 1;
+
+    while idx < end_class_idx {
+        let line = lines[idx];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+            let after_def = if let Some(s) = trimmed.strip_prefix("async def ") { s } else { &trimmed[4..] };
+            if let Some(p_open) = after_def.find('(') {
+                let mname = after_def[..p_open].trim().to_string();
+                if let Some(p_close) = after_def.rfind(')') {
+                    let params = after_def[p_open + 1..p_close].trim().to_string();
+                    let m_indent = line.len() - trimmed.len();
+                    let mut m_end = end_class_idx;
+                    for (k, ml) in lines.iter().enumerate().take(end_class_idx).skip(idx + 1) {
+                        if ml.trim().is_empty() || ml.trim_start().starts_with('#') {
+                            continue;
+                        }
+                        let mind = ml.len() - ml.trim_start().len();
+                        if mind <= m_indent {
+                            m_end = k;
+                            break;
+                        }
+                    }
+                    let m_lines = &lines[idx..m_end];
+                    let full_text = m_lines.join("\n");
+                    let body_lines = if m_lines.len() > 1 { &m_lines[1..] } else { &[] };
+                    let body = body_lines.join("\n");
+
+                    if mname == "__init__" {
+                        for bl in body_lines {
+                            let bt = bl.trim();
+                            if bt.starts_with("self.")
+                                && let Some((lhs, rhs)) = bt.split_once('=')
+                            {
+                                let fname = lhs.trim().trim_start_matches("self.").trim();
+                                if is_ident_str(fname) {
+                                    ctor_assigned_fields.insert(fname.to_string(), rhs.trim().to_string());
+                                }
+                            }
+                        }
+                    } else if methods.contains(&mname) {
+                        moved_methods.insert(
+                            mname.clone(),
+                            PyMethod {
+                                params,
+                                full_text,
+                                body,
+                                start_line: idx,
+                                end_line: m_end,
+                            },
+                        );
+                    }
+                    idx = m_end;
+                    continue;
+                }
+            }
+        } else if trimmed.contains('=') || trimmed.contains(':') {
+            let first = trimmed.split(&['=', ':'][..]).next().unwrap_or("").trim();
+            if is_ident_str(first) {
+                class_fields.insert(first.to_string(), trimmed.to_string());
+            }
+        }
+        idx += 1;
+    }
+
+    for f in fields {
+        anyhow::ensure!(
+            class_fields.contains_key(f) || ctor_assigned_fields.contains_key(f) || text.contains(&format!("self.{f}")),
+            "`{owner_name}` has no field `{f}`"
+        );
+    }
+    anyhow::ensure!(
+        !class_fields.contains_key(field) && !ctor_assigned_fields.contains_key(field),
+        "`{owner_name}` already has a field `{field}`"
+    );
+
+    for m in methods {
+        anyhow::ensure!(
+            moved_methods.contains_key(m),
+            "`{owner_name}` has no method `{m}`"
+        );
+    }
+
+    for (mname, minfo) in &moved_methods {
+        for (pos, _) in minfo.body.match_indices("self.") {
+            let after = &minfo.body[pos + 5..];
+            let ident: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if !ident.is_empty() && !fields.contains(&ident) && !methods.contains(&ident) {
+                anyhow::bail!("`{mname}` uses `{ident}`, which does not move to `{helper}`");
+            }
+        }
+    }
+
+    let mut helper_lines = Vec::new();
+    helper_lines.push(format!("class {helper}:"));
+    let helper_init_params = fields
+        .iter()
+        .map(|f| format!("{f}=None"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    helper_lines.push(format!("    def __init__(self, {helper_init_params}):"));
+    for f in fields {
+        helper_lines.push(format!("        self.{f} = {f}"));
+    }
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        helper_lines.push(String::new());
+        let reindented = reindent(&minfo.full_text, "    ");
+        helper_lines.push(reindented);
+    }
+    let helper_text = helper_lines.join("\n");
+
+    let mut new_class_lines = Vec::new();
+    let mut inside_init = false;
+    let mut init_replaced = false;
+
+    let owner_init_args = fields
+        .iter()
+        .map(|f| {
+            if let Some(rhs) = ctor_assigned_fields.get(f) {
+                rhs.clone()
+            } else {
+                f.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut k = c_idx;
+    while k < end_class_idx {
+        let line = lines[k];
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("def __init__") {
+            inside_init = true;
+            new_class_lines.push(line.to_string());
+            k += 1;
+            continue;
+        }
+
+        if inside_init {
+            if trimmed.starts_with("def ") {
+                inside_init = false;
+            } else {
+                let is_moved_assign = fields.iter().any(|f| {
+                    trimmed.starts_with(&format!("self.{f} =")) || trimmed.starts_with(&format!("self.{f}="))
+                });
+                if is_moved_assign {
+                    if !init_replaced {
+                        new_class_lines.push(format!("        self.{field} = {helper}({owner_init_args})"));
+                        init_replaced = true;
+                    }
+                    k += 1;
+                    continue;
+                }
+            }
+        }
+
+        let is_in_moved_method = moved_methods.values().any(|minfo| {
+            minfo.start_line <= k && k < minfo.end_line
+        });
+        if is_in_moved_method {
+            k += 1;
+            continue;
+        }
+
+        let is_moved_class_field = fields.iter().any(|f| {
+            trimmed.starts_with(&format!("{f} =")) || trimmed.starts_with(&format!("{f}:"))
+        });
+        if is_moved_class_field {
+            k += 1;
+            continue;
+        }
+
+        new_class_lines.push(line.to_string());
+        k += 1;
+    }
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        let arg_names = extract_param_names_py(&minfo.params);
+        let other_params = if minfo.params.is_empty() || minfo.params == "self" {
+            String::new()
+        } else {
+            let after_self = minfo.params.strip_prefix("self").unwrap_or(&minfo.params).trim();
+            if after_self.starts_with(',') {
+                after_self.to_string()
+            } else if !after_self.is_empty() {
+                format!(", {after_self}")
+            } else {
+                String::new()
+            }
+        };
+        new_class_lines.push(String::new());
+        new_class_lines.push(format!("    def {m}(self{other_params}):"));
+        new_class_lines.push(format!("        return self.{field}.{m}({})", arg_names.join(", ")));
+    }
+
+    let mut final_lines = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if i == c_idx {
+            final_lines.push(helper_text.clone());
+            final_lines.push(String::new());
+            final_lines.push(String::new());
+            for cl in &new_class_lines {
+                final_lines.push(cl.clone());
+            }
+        } else if i > c_idx && i < end_class_idx {
+            continue;
+        } else {
+            final_lines.push(line.to_string());
+        }
+    }
+
+    Ok((final_lines.join("\n"), owner_name))
+}
+
+pub fn restructure_cpp(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+) -> Result<(String, String)> {
+    let (open_brace, close_brace, owner) = {
+        let mut found = None;
+        for keyword in ["class ", "struct "] {
+            for (i, _) in text.match_indices(keyword) {
+                if i > 0 && text[..i].chars().next_back().is_some_and(is_ident) {
+                    continue;
+                }
+                let after = &text[i + keyword.len()..];
+                let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(sym) = symbol_opt && sym != name {
+                    continue;
+                }
+                let Some(open_rel) = after.find('{') else { continue };
+                let open = i + keyword.len() + open_rel;
+                let Some(close) = crate::parameter_object::matching_bracket(text, open) else { continue };
+                if let Some(l) = line_opt && l > 0 {
+                    let (sl, _) = crate::signature::position_at(text, i)?;
+                    let (el, _) = crate::signature::position_at(text, close)?;
+                    if l < sl || l > el {
+                        continue;
+                    }
+                }
+                found = Some((open, close, name));
+                break;
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found.with_context(|| {
+            if let Some(sym) = symbol_opt {
+                format!("class or struct `{sym}` not found")
+            } else {
+                "no class/struct found at the specified location".to_string()
+            }
+        })?
+    };
+
+    let body = &text[open_brace + 1..close_brace];
+
+    let mut field_decls: BTreeMap<String, String> = BTreeMap::new();
+    let mut field_types: BTreeMap<String, String> = BTreeMap::new();
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        if let Some(semi) = trimmed.strip_suffix(';') {
+            let decl = semi.trim();
+            if !decl.contains('(') {
+                let parts: Vec<&str> = decl.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let fname = parts.last().unwrap().trim_matches(|c| !is_ident(c));
+                    let ty = parts[..parts.len() - 1].join(" ");
+                    if is_ident_str(fname) {
+                        field_decls.insert(fname.to_string(), line.to_string());
+                        field_types.insert(fname.to_string(), ty);
+                    }
+                }
+            }
+        }
+    }
+
+    for f in fields {
+        anyhow::ensure!(
+            field_decls.contains_key(f),
+            "`{owner}` has no field `{f}`"
+        );
+    }
+    anyhow::ensure!(
+        !field_decls.contains_key(field),
+        "`{owner}` already has a field `{field}`"
+    );
+
+    struct CppMethod {
+        sig: String,
+        params: String,
+        full_text: String,
+        body: String,
+    }
+    let mut moved_methods: BTreeMap<String, CppMethod> = BTreeMap::new();
+    let mut offset = 0;
+    while offset < body.len() {
+        let slice = &body[offset..];
+        let Some(paren_rel) = slice.find('(') else { break };
+        let paren_pos = offset + paren_rel;
+        let before_paren = body[offset..paren_pos].trim();
+        let last_word = before_paren.split_whitespace().last().unwrap_or("");
+        if is_ident_str(last_word)
+            && last_word != owner
+            && last_word != "if"
+            && last_word != "while"
+            && last_word != "for"
+            && let Some(close_paren_rel) = body[paren_pos..].find(')')
+        {
+            let close_paren = paren_pos + close_paren_rel;
+            let params = body[paren_pos + 1..close_paren].trim().to_string();
+            if let Some(open_b_rel) = body[close_paren + 1..].find('{') {
+                let open_b = close_paren + 1 + open_b_rel;
+                if let Some(close_b_rel) = crate::parameter_object::matching_bracket(&body[open_b..], 0) {
+                    let close_b = open_b + close_b_rel;
+                    let line_start = body[..offset + slice[..paren_rel].rfind('\n').map_or(0, |x| x + 1)]
+                        .rfind('\n')
+                        .map_or(0, |x| x + 1);
+                    let sig = body[line_start..open_b].trim().to_string();
+                    let m_body = body[open_b + 1..close_b].to_string();
+                    let full_text = body[line_start..=close_b].trim().to_string();
+                    let mname = last_word.to_string();
+                    if methods.contains(&mname) {
+                        moved_methods.insert(
+                            mname,
+                            CppMethod {
+                                sig,
+                                params,
+                                full_text,
+                                body: m_body,
+                            },
+                        );
+                    }
+                    offset = close_b + 1;
+                    continue;
+                }
+            }
+        }
+        offset = paren_pos + 1;
+    }
+
+    for m in methods {
+        anyhow::ensure!(
+            moved_methods.contains_key(m),
+            "`{owner}` has no method `{m}`"
+        );
+    }
+
+    for (mname, minfo) in &moved_methods {
+        for fname in field_decls.keys() {
+            if !fields.contains(fname) {
+                let direct_use = minfo.body.contains(&format!("this->{fname}")) || minfo.body.contains(fname);
+                if direct_use {
+                    anyhow::bail!("`{mname}` uses `{fname}`, which does not move to `{helper}`");
+                }
+            }
+        }
+    }
+
+    let mut helper_lines = Vec::new();
+    helper_lines.push(format!("class {helper} {{"));
+    helper_lines.push("public:".to_string());
+    for f in fields {
+        let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("auto");
+        helper_lines.push(format!("    {ty} {f};"));
+    }
+    helper_lines.push(String::new());
+    helper_lines.push(format!("    {helper}() = default;"));
+    let ctor_params = fields
+        .iter()
+        .map(|f| {
+            let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("auto");
+            format!("{ty} {f}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ctor_init = fields
+        .iter()
+        .map(|f| format!("{f}({f})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    helper_lines.push(format!("    {helper}({ctor_params}) : {ctor_init} {{}}"));
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        helper_lines.push(String::new());
+        helper_lines.push(reindent(&minfo.full_text, "    "));
+    }
+    helper_lines.push("};".to_string());
+    let helper_text = helper_lines.join("\n");
+
+    let mut new_body_lines = Vec::new();
+    let mut delegate_placed = false;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let is_moved_field = fields.iter().any(|f| {
+            if let Some(decl) = field_decls.get(f) {
+                decl.trim() == trimmed
+            } else {
+                false
+            }
+        });
+        if is_moved_field {
+            if !delegate_placed {
+                new_body_lines.push(format!("    {helper} {field};"));
+                delegate_placed = true;
+            }
+            continue;
+        }
+
+        if trimmed.starts_with(':') || (trimmed.contains(':') && trimmed.contains('(')) {
+            let mut updated_line = line.to_string();
+            let mut init_args = Vec::new();
+            for f in fields {
+                if let Some(pos) = updated_line.find(&format!("{f}(")) {
+                    let after = &updated_line[pos + f.len() + 1..];
+                    if let Some(end) = after.find(')') {
+                        let arg = &after[..end];
+                        init_args.push(arg.to_string());
+                    }
+                }
+            }
+            if !init_args.is_empty() {
+                for f in fields {
+                    if let Some(pos) = updated_line.find(&format!("{f}(")) {
+                        let after = &updated_line[pos + f.len() + 1..];
+                        if let Some(end) = after.find(')') {
+                            let full_term = &updated_line[pos..pos + f.len() + 1 + end + 1];
+                            updated_line = updated_line.replace(full_term, "");
+                        }
+                    }
+                }
+                updated_line = updated_line.replace(", ,", ",");
+                if let Some(colon_pos) = updated_line.find(':') {
+                    let before_colon = &updated_line[..colon_pos + 1];
+                    let after_colon = updated_line[colon_pos + 1..].trim();
+                    let joined = init_args.join(", ");
+                    if after_colon.is_empty() || after_colon.starts_with('{') {
+                        updated_line = format!("{before_colon} {field}({joined}) {after_colon}");
+                    } else {
+                        updated_line = format!("{before_colon} {field}({joined}), {after_colon}");
+                    }
+                }
+            }
+            new_body_lines.push(updated_line);
+            continue;
+        }
+
+        let is_moved_method = moved_methods.values().any(|minfo| {
+            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
+        });
+        if is_moved_method {
+            continue;
+        }
+
+        new_body_lines.push(line.to_string());
+    }
+
+    if !delegate_placed {
+        new_body_lines.insert(0, format!("    {helper} {field};"));
+    }
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        let arg_names = extract_param_names_cpp(&minfo.params);
+        new_body_lines.push(String::new());
+        new_body_lines.push(format!("    {} {{\n        return {field}.{m}({});\n    }}", minfo.sig, arg_names.join(", ")));
+    }
+
+    let new_body = new_body_lines.join("\n");
+    let mut out = text.to_string();
+    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
+    let final_text = format!("{helper_text}\n\n{out}");
+    Ok((final_text, owner))
+}
+
+pub fn restructure_swift(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+) -> Result<(String, String)> {
+    let (open_brace, close_brace, owner) = {
+        let mut found = None;
+        for keyword in ["struct ", "class "] {
+            for (i, _) in text.match_indices(keyword) {
+                if i > 0 && text[..i].chars().next_back().is_some_and(is_ident) {
+                    continue;
+                }
+                let after = &text[i + keyword.len()..];
+                let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
+                if name.is_empty() {
+                    continue;
+                }
+                if let Some(sym) = symbol_opt && sym != name {
+                    continue;
+                }
+                let Some(open_rel) = after.find('{') else { continue };
+                let open = i + keyword.len() + open_rel;
+                let Some(close) = crate::parameter_object::matching_bracket(text, open) else { continue };
+                if let Some(l) = line_opt && l > 0 {
+                    let (sl, _) = crate::signature::position_at(text, i)?;
+                    let (el, _) = crate::signature::position_at(text, close)?;
+                    if l < sl || l > el {
+                        continue;
+                    }
+                }
+                found = Some((open, close, name));
+                break;
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        found.with_context(|| {
+            if let Some(sym) = symbol_opt {
+                format!("struct or class `{sym}` not found")
+            } else {
+                "no struct/class found at specified location".to_string()
+            }
+        })?
+    };
+
+    let body = &text[open_brace + 1..close_brace];
+    let mut prop_decls: BTreeMap<String, String> = BTreeMap::new();
+    let mut prop_types: BTreeMap<String, String> = BTreeMap::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+            continue;
+        }
+        if trimmed.contains("var ") || trimmed.contains("let ") {
+            let decl = trimmed.strip_prefix("public ").unwrap_or(trimmed);
+            let after_kw = if let Some(s) = decl.strip_prefix("var ") { s } else if let Some(s) = decl.strip_prefix("let ") { s } else { continue };
+            if let Some((lhs, ty_part)) = after_kw.split_once(':') {
+                let pname = lhs.trim();
+                let ty = ty_part.split('=').next().unwrap_or(ty_part).trim();
+                if is_ident_str(pname) {
+                    prop_decls.insert(pname.to_string(), line.to_string());
+                    prop_types.insert(pname.to_string(), ty.to_string());
+                }
+            }
+        }
+    }
+
+    for f in fields {
+        anyhow::ensure!(
+            prop_decls.contains_key(f) || body.contains(&format!("self.{f}")),
+            "`{owner}` has no field `{f}`"
+        );
+    }
+    anyhow::ensure!(
+        !prop_decls.contains_key(field),
+        "`{owner}` already has a field `{field}`"
+    );
+
+    struct SwiftMethod {
+        sig: String,
+        params: String,
+        full_text: String,
+        body: String,
+    }
+
+    let mut moved_methods: BTreeMap<String, SwiftMethod> = BTreeMap::new();
+    let mut offset = 0;
+    while offset < body.len() {
+        let slice = &body[offset..];
+        let Some(paren_rel) = slice.find('(') else { break };
+        let paren_pos = offset + paren_rel;
+        let before_paren = body[offset..paren_pos].trim();
+        let last_word = before_paren.split_whitespace().last().unwrap_or("");
+        if is_ident_str(last_word)
+            && last_word != "init"
+            && last_word != "if"
+            && last_word != "while"
+            && last_word != "for"
+            && let Some(close_paren_rel) = body[paren_pos..].find(')')
+        {
+            let close_paren = paren_pos + close_paren_rel;
+            let params = body[paren_pos + 1..close_paren].trim().to_string();
+            if let Some(open_b_rel) = body[close_paren + 1..].find('{') {
+                    let open_b = close_paren + 1 + open_b_rel;
+                    if let Some(close_b_rel) = crate::parameter_object::matching_bracket(&body[open_b..], 0) {
+                        let close_b = open_b + close_b_rel;
+                        let line_start = body[..offset + slice[..paren_rel].rfind('\n').map_or(0, |x| x + 1)]
+                            .rfind('\n')
+                            .map_or(0, |x| x + 1);
+                        let sig = body[line_start..open_b].trim().to_string();
+                        let m_body = body[open_b + 1..close_b].to_string();
+                        let full_text = body[line_start..=close_b].trim().to_string();
+                        let mname = last_word.to_string();
+                        if methods.contains(&mname) {
+                            moved_methods.insert(
+                                mname,
+                                SwiftMethod {
+                                    sig,
+                                    params,
+                                    full_text,
+                                    body: m_body,
+                                },
+                            );
+                        }
+                        offset = close_b + 1;
+                        continue;
+                    }
+                }
+            }
+        offset = paren_pos + 1;
+    }
+
+    for m in methods {
+        anyhow::ensure!(
+            moved_methods.contains_key(m),
+            "`{owner}` has no method `{m}`"
+        );
+    }
+
+    for (mname, minfo) in &moved_methods {
+        for (idx, _) in minfo.body.match_indices("self.") {
+            let after = &minfo.body[idx + 5..];
+            let ident: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if !ident.is_empty() && !fields.contains(&ident) && !methods.contains(&ident) {
+                anyhow::bail!("`{mname}` uses `{ident}`, which does not move to `{helper}`");
+            }
+        }
+    }
+
+    let mut helper_lines = Vec::new();
+    helper_lines.push(format!("public struct {helper} {{"));
+    for f in fields {
+        let ty = prop_types.get(f).map(|s| s.as_str()).unwrap_or("String");
+        helper_lines.push(format!("    public var {f}: {ty}"));
+    }
+    helper_lines.push(String::new());
+    let init_params = fields
+        .iter()
+        .map(|f| {
+            let ty = prop_types.get(f).map(|s| s.as_str()).unwrap_or("String");
+            format!("{f}: {ty}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    helper_lines.push(format!("    public init({init_params}) {{"));
+    for f in fields {
+        helper_lines.push(format!("        self.{f} = {f}"));
+    }
+    helper_lines.push("    }".to_string());
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        helper_lines.push(String::new());
+        helper_lines.push(reindent(&minfo.full_text, "    "));
+    }
+    helper_lines.push("}".to_string());
+    let helper_text = helper_lines.join("\n");
+
+    let mut new_body_lines = Vec::new();
+    let mut prop_placed = false;
+    let mut inside_init = false;
+    let mut init_replaced = false;
+
+    let init_call_args = fields
+        .iter()
+        .map(|f| format!("{f}: {f}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+        let is_moved_prop = fields.iter().any(|f| {
+            if let Some(decl) = prop_decls.get(f) {
+                decl.trim() == trimmed
+            } else {
+                false
+            }
+        });
+        if is_moved_prop {
+            if !prop_placed {
+                new_body_lines.push(format!("    public var {field}: {helper}"));
+                prop_placed = true;
+            }
+            continue;
+        }
+
+        if trimmed.contains("init(") && trimmed.contains('{') {
+            inside_init = true;
+        }
+
+        if inside_init {
+            let is_moved_assign = fields.iter().any(|f| {
+                trimmed.starts_with(&format!("self.{f} =")) || trimmed.starts_with(&format!("self.{f}="))
+            });
+            if is_moved_assign {
+                if !init_replaced {
+                    new_body_lines.push(format!("        self.{field} = {helper}({init_call_args})"));
+                    init_replaced = true;
+                }
+                continue;
+            }
+            if trimmed.contains('}') {
+                inside_init = false;
+            }
+        }
+
+        let is_moved_method = moved_methods.values().any(|minfo| {
+            minfo.full_text.lines().any(|ml| ml.trim() == trimmed)
+        });
+        if is_moved_method {
+            continue;
+        }
+
+        new_body_lines.push(line.to_string());
+    }
+
+    if !prop_placed {
+        new_body_lines.insert(0, format!("    public var {field}: {helper}"));
+    }
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        let arg_names = extract_param_names_swift(&minfo.params);
+        new_body_lines.push(String::new());
+        new_body_lines.push(format!("    {} {{\n        return {field}.{m}({})\n    }}", minfo.sig, arg_names.join(", ")));
+    }
+
+    let new_body = new_body_lines.join("\n");
+    let mut out = text.to_string();
+    out.replace_range(open_brace + 1..close_brace, &format!("\n{new_body}\n"));
+    let final_text = format!("{helper_text}\n\n{out}");
+    Ok((final_text, owner))
+}
+
+pub fn restructure_go(
+    text: &str,
+    symbol_opt: Option<&str>,
+    line_opt: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+) -> Result<(String, String)> {
+    let (struct_open, struct_close, owner) = {
+        let mut found = None;
+        for (i, _) in text.match_indices("type ") {
+            let after = &text[i + 5..];
+            let name: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(sym) = symbol_opt && sym != name {
+                continue;
+            }
+            let rest = after[name.len()..].trim_start();
+            if !rest.starts_with("struct") {
+                continue;
+            }
+            let Some(open_rel) = after.find('{') else { continue };
+            let open = i + 5 + open_rel;
+            let Some(close) = crate::parameter_object::matching_bracket(text, open) else { continue };
+            if let Some(l) = line_opt && l > 0 {
+                let (sl, _) = crate::signature::position_at(text, i)?;
+                let (el, _) = crate::signature::position_at(text, close)?;
+                if l < sl || l > el {
+                    continue;
+                }
+            }
+            found = Some((open, close, name));
+            break;
+        }
+        found.with_context(|| {
+            if let Some(sym) = symbol_opt {
+                format!("type `{sym}` struct not found")
+            } else {
+                "no struct found at specified location".to_string()
+            }
+        })?
+    };
+
+    let struct_body = &text[struct_open + 1..struct_close];
+    let mut field_decls: BTreeMap<String, String> = BTreeMap::new();
+    let mut field_types: BTreeMap<String, String> = BTreeMap::new();
+
+    for line in struct_body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.is_empty() {
+            continue;
+        }
+        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+        if parts.len() >= 2 {
+            let fname = parts[0];
+            let ftype = parts[1];
+            if is_ident_str(fname) {
+                field_decls.insert(fname.to_string(), line.to_string());
+                field_types.insert(fname.to_string(), ftype.to_string());
+            }
+        }
+    }
+
+    for f in fields {
+        anyhow::ensure!(
+            field_decls.contains_key(f),
+            "`{owner}` has no field `{f}`"
+        );
+    }
+    anyhow::ensure!(
+        !field_decls.contains_key(field),
+        "`{owner}` already has a field `{field}`"
+    );
+
+    struct GoMethod {
+        recv_var: String,
+        recv_is_ptr: bool,
+        params: String,
+        ret_type: String,
+        body: String,
+        start: usize,
+        end: usize,
+    }
+
+    let mut moved_methods: BTreeMap<String, GoMethod> = BTreeMap::new();
+    let mut offset = 0;
+    while offset < text.len() {
+        let slice = &text[offset..];
+        let Some(pos) = slice.find("func ") else { break };
+        let func_pos = offset + pos;
+        let after_func = &text[func_pos + 5..];
+        if after_func.starts_with('(') && let Some(close_recv) = after_func.find(')') {
+            let recv_slice = after_func[1..close_recv].trim();
+            let recv_parts: Vec<&str> = recv_slice.split_whitespace().collect();
+            if recv_parts.len() >= 2 {
+                let rvar = recv_parts[0];
+                let rty = recv_parts[1];
+                let is_ptr = rty.starts_with('*');
+                let rname = rty.trim_start_matches('*');
+                if rname == owner {
+                    let after_recv = after_func[close_recv + 1..].trim_start();
+                    let mname: String = after_recv.chars().take_while(|c| is_ident(*c)).collect();
+                    if !mname.is_empty()
+                        && methods.contains(&mname)
+                        && let Some(p_open) = after_recv.find('(')
+                        && let Some(p_close) = after_recv[p_open..].find(')')
+                    {
+                        let params = after_recv[p_open + 1..p_open + p_close].trim().to_string();
+                        let after_params = after_recv[p_open + p_close + 1..].trim_start();
+                        if let Some(b_open_rel) = after_params.find('{') {
+                            let b_open = func_pos + 5 + close_recv + 1 + (after_func[close_recv + 1..].len() - after_params.len()) + b_open_rel;
+                            let ret_type = after_params[..b_open_rel].trim().to_string();
+                            if let Some(b_close_rel) = crate::parameter_object::matching_bracket(text, b_open) {
+                                let body = text[b_open + 1..b_close_rel].to_string();
+                                moved_methods.insert(
+                                    mname,
+                                    GoMethod {
+                                        recv_var: rvar.to_string(),
+                                        recv_is_ptr: is_ptr,
+                                        params,
+                                        ret_type,
+                                        body,
+                                        start: func_pos,
+                                        end: b_close_rel + 1,
+                                    },
+                                );
+                                offset = b_close_rel + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        offset = func_pos + 5;
+    }
+
+    for m in methods {
+        anyhow::ensure!(
+            moved_methods.contains_key(m),
+            "`{owner}` has no method `{m}`"
+        );
+    }
+
+    for (mname, minfo) in &moved_methods {
+        let needle = format!("{}.", minfo.recv_var);
+        for (pos, _) in minfo.body.match_indices(&needle) {
+            let after = &minfo.body[pos + needle.len()..];
+            let ident: String = after.chars().take_while(|c| is_ident(*c)).collect();
+            if !ident.is_empty() && !fields.contains(&ident) && !methods.contains(&ident) {
+                anyhow::bail!("`{mname}` uses `{ident}`, which does not move to `{helper}`");
+            }
+        }
+    }
+
+    let mut helper_lines = Vec::new();
+    helper_lines.push(format!("type {helper} struct {{"));
+    for f in fields {
+        let ty = field_types.get(f).map(|s| s.as_str()).unwrap_or("string");
+        helper_lines.push(format!("    {f} {ty}"));
+    }
+    helper_lines.push("}".to_string());
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        helper_lines.push(String::new());
+        let r_ptr = if minfo.recv_is_ptr { "*" } else { "" };
+        let ret_sp = if minfo.ret_type.is_empty() { String::new() } else { format!(" {}", minfo.ret_type) };
+        let helper_method = format!(
+            "func ({} {r_ptr}{helper}) {m}({}){ret_sp} {{\n{}\n}}",
+            minfo.recv_var,
+            minfo.params,
+            minfo.body.trim()
+        );
+        helper_lines.push(helper_method);
+    }
+    let helper_text = helper_lines.join("\n");
+
+    let mut out = text.to_string();
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+
+    for m in methods {
+        let minfo = moved_methods.get(m).unwrap();
+        let arg_names = extract_param_names_go(&minfo.params);
+        let r_ptr = if minfo.recv_is_ptr { "*" } else { "" };
+        let ret_sp = if minfo.ret_type.is_empty() { String::new() } else { format!(" {}", minfo.ret_type) };
+        let ret_kw = if minfo.ret_type.is_empty() { "" } else { "return " };
+        let forwarding = format!(
+            "func ({} {r_ptr}{owner}) {m}({}){ret_sp} {{\n    {ret_kw}{}.{field}.{m}({})\n}}",
+            minfo.recv_var,
+            minfo.params,
+            minfo.recv_var,
+            arg_names.join(", ")
+        );
+        edits.push((minfo.start, minfo.end, forwarding));
+    }
+
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    for (s, e, repl) in edits {
+        out.replace_range(s..e, &repl);
+    }
+
+    let new_struct_open = out.find(&format!("type {owner} struct")).context("cannot re-find owner struct")?;
+    let b_open = out[new_struct_open..].find('{').map(|x| new_struct_open + x).unwrap();
+    let b_close = crate::parameter_object::matching_bracket(&out, b_open).unwrap();
+    let cur_struct_body = &out[b_open + 1..b_close];
+
+    let mut new_struct_body_lines = Vec::new();
+    let mut field_placed = false;
+
+    for line in cur_struct_body.lines() {
+        let trimmed = line.trim();
+        let is_moved = fields.iter().any(|f| {
+            if let Some(decl) = field_decls.get(f) {
+                decl.trim() == trimmed
+            } else {
+                false
+            }
+        });
+        if is_moved {
+            if !field_placed {
+                new_struct_body_lines.push(format!("    {field} {helper}"));
+                field_placed = true;
+            }
+            continue;
+        }
+        new_struct_body_lines.push(line.to_string());
+    }
+
+    if !field_placed {
+        new_struct_body_lines.insert(0, format!("    {field} {helper}"));
+    }
+
+    out.replace_range(b_open + 1..b_close, &format!("\n{}\n", new_struct_body_lines.join("\n")));
+
+    let final_pos = out.find(&format!("type {owner} struct")).unwrap();
+    out.insert_str(final_pos, &format!("{helper_text}\n\n"));
+    Ok((out, owner))
+}
+
+fn rewrite_go_literals(
+    text: &str,
+    owner: &str,
+    fields: &[String],
+    field: &str,
+    helper: &str,
+) -> String {
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    for (i, _) in text.match_indices(owner) {
+        let before = &text[..i];
+        if before.chars().next_back().is_some_and(is_ident)
+            || text[i + owner.len()..].chars().next().is_some_and(is_ident)
+            || before.trim_end().ends_with("type")
+        {
+            continue;
+        }
+        let rest = &text[i + owner.len()..];
+        let trimmed = rest.trim_start();
+        if !trimmed.starts_with('{') {
+            continue;
+        }
+        let open = i + owner.len() + (rest.len() - trimmed.len());
+        let Some(close) = crate::parameter_object::matching_bracket(text, open) else {
+            continue;
+        };
+        let body = &text[open + 1..close];
+        let entries: Vec<&str> = split_top(body, ',')
+            .into_iter()
+            .map(|(s, e)| body[s..e].trim())
+            .filter(|e| !e.is_empty())
+            .collect();
+        let key = |e: &str| -> String { e.split(':').next().unwrap_or(e).trim().to_string() };
+        let inner: Vec<&str> = entries
+            .iter()
+            .copied()
+            .filter(|e| fields.contains(&key(e)))
+            .collect();
+        if inner.is_empty() {
+            continue;
+        }
+        let indent: String = body
+            .trim_start_matches(['\n'])
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        let nested = format!("{field}: {helper}{{ {} }}", inner.join(", "));
+        let mut all: Vec<String> = Vec::new();
+        let mut placed = false;
+        for e in &entries {
+            if fields.contains(&key(e)) {
+                if !placed {
+                    all.push(nested.clone());
+                    placed = true;
+                }
+            } else {
+                all.push(e.to_string());
+            }
+        }
+        let new_body = if body.contains('\n') {
+            let close_indent: String = text[..close]
+                .rsplit('\n')
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+            format!(
+                "\n{indent}{},\n{close_indent}",
+                all.join(&format!(",\n{indent}"))
+            )
+        } else {
+            format!(" {} ", all.join(", "))
+        };
+        edits.push((open + 1, close, new_body));
+    }
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = text.to_string();
+    for (s, e, t) in edits {
+        out.replace_range(s..e, &t);
+    }
+    out
+}
+
+pub fn rewrite_external_file(
+    code: &str,
+    lang: Language,
+    owner: &str,
+    field: &str,
+    fields: &[String],
+    helper: &str,
+) -> (String, usize) {
+    let code_transformed;
+    let code = if lang == Language::Go {
+        code_transformed = rewrite_go_literals(code, owner, fields, field, helper);
+        &code_transformed
+    } else {
+        code
+    };
+    let mut out = String::new();
+    let mut accesses = 0;
+
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') || trimmed.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if trimmed.starts_with("import ") || trimmed.starts_with("from ") || trimmed.starts_with("package ") {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        let mut current_line = line.to_string();
+        for f in fields {
+            let needle = format!(".{f}");
+            if current_line.contains(&needle) {
+                let mut new_line = String::new();
+                let mut rest = current_line.as_str();
+                while let Some(pos) = rest.find(&needle) {
+                    let before = &rest[..pos];
+                    let after = &rest[pos + needle.len()..];
+                    let before_trimmed = before.trim_end();
+                    let is_inside_helper = before_trimmed.ends_with(helper)
+                        || (before_trimmed.ends_with("this") && current_line.contains(&format!("class {helper}")))
+                        || (before_trimmed.ends_with("self") && current_line.contains(&format!("class {helper}")));
+                    let is_method_call = after.trim_start().starts_with('(');
+                    let is_ident_continuation = after.chars().next().is_some_and(is_ident);
+
+                    if is_inside_helper || is_method_call || is_ident_continuation {
+                        new_line.push_str(&rest[..pos + needle.len()]);
+                        rest = after;
+                    } else {
+                        new_line.push_str(before);
+                        new_line.push_str(&format!(".{field}.{f}"));
+                        accesses += 1;
+                        rest = after;
+                    }
+                }
+                new_line.push_str(rest);
+                current_line = new_line;
+            }
+
+            if lang == Language::Cpp || lang == Language::C {
+                let arrow_needle = format!("->{f}");
+                if current_line.contains(&arrow_needle) {
+                    let mut new_line = String::new();
+                    let mut rest = current_line.as_str();
+                    while let Some(pos) = rest.find(&arrow_needle) {
+                        let before = &rest[..pos];
+                        let after = &rest[pos + arrow_needle.len()..];
+                        let is_method_call = after.trim_start().starts_with('(');
+                        let is_ident_continuation = after.chars().next().is_some_and(is_ident);
+
+                        if is_method_call || is_ident_continuation {
+                            new_line.push_str(&rest[..pos + arrow_needle.len()]);
+                            rest = after;
+                        } else {
+                            new_line.push_str(before);
+                            new_line.push_str(&format!("->{field}.{f}"));
+                            accesses += 1;
+                            rest = after;
+                        }
+                    }
+                    new_line.push_str(rest);
+                    current_line = new_line;
+                }
+            }
+        }
+
+        out.push_str(&current_line);
+        out.push('\n');
+    }
+
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, accesses)
+}
+
+/// Extracts `fields` and `methods` of the struct at `line`:`col` of `file` into `helper`, held
+/// in the new field `field` for Rust.
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_delegate_rust(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
-    line: u32,
-    col: u32,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
     fields: &[String],
     methods: &[String],
     helper: &str,
@@ -517,8 +2234,15 @@ pub async fn extract_delegate(
     anyhow::ensure!(!fields.is_empty(), "name at least one field");
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let at =
-        crate::signature::offset_of(&text, line, col).context("the position is not in the file")?;
+    let at = if let (Some(l), Some(c)) = (line, col) && l > 0 && c > 0 {
+        crate::signature::offset_of(&text, l, c).context("the position is not in the file")?
+    } else if let Some(sym) = symbol {
+        let needle = format!("struct {sym}");
+        text.find(&needle)
+            .with_context(|| format!("struct `{sym}` not found in {}", file.display()))?
+    } else {
+        anyhow::bail!("provide either line and character or symbol");
+    };
     let decl = parse_struct(&text, at)?;
     // Check the struct side first, so a wrong name fails before any analyzer query.
     restructure(&text, at, fields, methods, helper, field)?;
@@ -660,6 +2384,165 @@ pub async fn extract_delegate(
         diagnostics,
         applied,
     })
+}
+
+/// Extracts `fields` and `methods` of a struct or class across languages into `helper`, held
+/// in the new field `field`.
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_delegate_polyglot(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    apply: bool,
+    force: bool,
+    _verify: Option<&str>,
+) -> Result<Extracted> {
+    for n in [helper, field] {
+        anyhow::ensure!(
+            !n.is_empty() && n.chars().all(is_ident),
+            "`{n}` is not an identifier"
+        );
+    }
+    anyhow::ensure!(!fields.is_empty(), "name at least one field");
+
+    let lang = Language::of(file).with_context(|| format!("unsupported language for {}", file.display()))?;
+    if lang == Language::Rust {
+        return extract_delegate_rust(
+            remote,
+            root,
+            file,
+            symbol,
+            line,
+            col,
+            fields,
+            methods,
+            helper,
+            field,
+            apply,
+            force,
+        )
+        .await;
+    }
+
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+
+    let (restructured, owner) = match lang {
+        Language::TypeScript => restructure_ts(&text, symbol, line, fields, methods, helper, field, false)?,
+        Language::JavaScript => restructure_ts(&text, symbol, line, fields, methods, helper, field, true)?,
+        Language::Python => restructure_py(&text, symbol, line, fields, methods, helper, field)?,
+        Language::Cpp | Language::C => restructure_cpp(&text, symbol, line, fields, methods, helper, field)?,
+        Language::Swift => restructure_swift(&text, symbol, line, fields, methods, helper, field)?,
+        Language::Go => restructure_go(&text, symbol, line, fields, methods, helper, field)?,
+        Language::Rust => unreachable!(),
+    };
+
+    let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut accesses = 0;
+
+    files.insert(file.to_path_buf(), restructured);
+
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        let path = entry.path();
+        if path.is_file() && path != file && Language::of(path) == Some(lang)
+            && let Ok(content) = std::fs::read_to_string(path)
+            && fields.iter().any(|f| content.contains(f)) {
+                let (rewritten, acc) = rewrite_external_file(&content, lang, &owner, field, fields, helper);
+                if rewritten != content {
+                    files.insert(path.to_path_buf(), rewritten);
+                    accesses += acc;
+                }
+            }
+    }
+
+    files.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
+
+    let edits: Vec<(PathBuf, String)> = files.iter().map(|(p, t)| (p.clone(), t.clone())).collect();
+    let reports = crate::diagnostics::validate_texts(remote, root, &edits, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.message.lines().next().unwrap_or(""),
+                d.code
+                    .as_deref()
+                    .map(|c| format!(" [{c}]"))
+                    .unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    let mut applied = false;
+    if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files))?;
+        applied = true;
+    }
+
+    Ok(Extracted {
+        helper: helper.to_string(),
+        field: field.to_string(),
+        fields: fields.to_vec(),
+        methods: methods.to_vec(),
+        root: root.to_path_buf(),
+        rewritten: files
+            .into_iter()
+            .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
+            .collect(),
+        accesses,
+        diagnostics,
+        applied,
+    })
+}
+
+/// Backwards-compatible entry point for extract_delegate.
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_delegate(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+    fields: &[String],
+    methods: &[String],
+    helper: &str,
+    field: &str,
+    apply: bool,
+    force: bool,
+) -> Result<Extracted> {
+    extract_delegate_polyglot(
+        remote,
+        root,
+        file,
+        None,
+        Some(line),
+        Some(col),
+        fields,
+        methods,
+        helper,
+        field,
+        apply,
+        force,
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]

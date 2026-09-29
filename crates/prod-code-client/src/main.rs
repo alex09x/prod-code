@@ -672,19 +672,24 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Move some fields of a struct, with the methods that use only them, into a helper type it holds.
+    /// Move some fields of a struct or class, with the methods that use only them, into a helper type it holds.
     ExtractDelegate {
-        /// The file that declares the struct.
+        /// The file that declares the struct or class.
         file: PathBuf,
-        /// 1-based line of the `struct` keyword.
-        line: u32,
+        /// 1-based line of the `struct`/`class` keyword.
+        #[arg(default_value = None)]
+        line: Option<u32>,
         /// 1-based column on that line.
-        col: u32,
+        #[arg(default_value = None)]
+        col: Option<u32>,
+        /// Name of the struct or class (alternative to line/col).
+        #[arg(long, aliases = ["class", "type"])]
+        symbol: Option<String>,
         /// The fields that move, comma-separated.
         #[arg(long, value_delimiter = ',')]
         fields: Vec<String>,
         /// The methods that move with them, comma-separated.
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', default_value = "")]
         methods: Vec<String>,
         /// Name of the helper type.
         #[arg(long)]
@@ -692,6 +697,9 @@ enum Commands {
         /// Name of the field that holds it.
         #[arg(long)]
         field: String,
+        /// `compile`: also run compiler check on the result in a shadow of the workspace.
+        #[arg(long)]
+        verify: Option<String>,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -2161,30 +2169,38 @@ async fn main() -> Result<()> {
             file,
             line,
             col,
+            symbol,
             fields,
             methods,
             name,
             field,
+            verify,
             apply,
             force,
         } => {
             let abs = std::fs::canonicalize(&file).unwrap_or(file);
-            run_tool(
-                remote,
-                "code_extract_delegate",
-                serde_json::json!({
-                    "path": abs.to_string_lossy(),
-                    "line": line,
-                    "character": col,
-                    "fields": fields,
-                    "methods": methods,
-                    "name": name,
-                    "field": field,
-                    "apply": apply,
-                    "force": force,
-                }),
-            )
-            .await
+            let mut args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "fields": fields,
+                "methods": methods,
+                "name": name,
+                "field": field,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(l) = line {
+                args["line"] = serde_json::Value::Number(l.into());
+            }
+            if let Some(c) = col {
+                args["character"] = serde_json::Value::Number(c.into());
+            }
+            if let Some(s) = symbol {
+                args["symbol"] = serde_json::Value::String(s);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            run_tool(remote, "code_extract_delegate", args).await
         }
         Commands::ExtractTrait {
             file,
