@@ -294,6 +294,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         took_ms: 2,
                         error: None,
                         dense: None,
+                        graph_fused: None,
                     }))
                     .await?;
             }
@@ -4078,6 +4079,8 @@ async fn code_search_renders_hits() {
             container: None,
             signature: "pub fn foo()".to_string(),
             doc: "does the thing".to_string(),
+            score: None,
+            rank_reasons: None,
         }],
         ..Script::default()
     })

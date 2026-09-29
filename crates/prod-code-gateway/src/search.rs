@@ -108,6 +108,37 @@ struct FileEntry {
     decls: Vec<Indexed>,
 }
 
+/// Typed AST dependency graph across workspace declarations.
+#[derive(Default, Clone, Debug)]
+pub struct TypedGraph {
+    /// In-degree centrality: how many other declarations in the workspace mention this declaration's
+    /// identifier in their signatures, containers, or doc comments.
+    pub in_degree: HashMap<String, usize>,
+    /// Adjacency: for each declaration identifier, which other known declaration identifiers it mentions.
+    pub mentions: HashMap<String, HashSet<String>>,
+    /// Reverse adjacency: which declaration identifiers mention this declaration identifier.
+    pub referenced_by: HashMap<String, HashSet<String>>,
+}
+
+/// Syntactic category weight for declaration kinds.
+pub fn category_weight(kind: &str) -> f64 {
+    match kind {
+        "struct" | "class" | "interface" | "trait" | "protocol" => 1.35,
+        "function" | "method" | "macro" => 1.20,
+        "impl" | "extension" => 1.10,
+        "enum" | "type" => 1.05,
+        "module" => 1.00,
+        "constant" | "variable" => 0.85,
+        _ => 1.00,
+    }
+}
+
+/// Structural centrality score factoring category weight and in-degree.
+pub fn centrality_score(kind: &str, in_degree: usize) -> f64 {
+    let cat = category_weight(kind);
+    cat * (1.0 + 0.35 * (in_degree as f64).ln_1p())
+}
+
 #[derive(Default)]
 pub struct WorkspaceIndex {
     files: HashMap<String, FileEntry>,
@@ -116,6 +147,8 @@ pub struct WorkspaceIndex {
     built: bool,
     /// Files the sync layer touched since the last query, to be reindexed on the next one.
     pending: Vec<String>,
+    /// Pre-indexed typed AST graph across workspace declarations.
+    pub graph: TypedGraph,
 }
 
 impl WorkspaceIndex {
@@ -129,6 +162,54 @@ impl WorkspaceIndex {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Builds the typed AST dependency graph across all currently indexed declarations.
+    pub fn build_graph(&self) -> TypedGraph {
+        let mut in_degree: HashMap<String, usize> = HashMap::new();
+        let mut mentions: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut referenced_by: HashMap<String, HashSet<String>> = HashMap::new();
+
+        let mut known_names: HashSet<&str> = HashSet::new();
+        for decl in self.declarations() {
+            if !decl.decl.name.is_empty() {
+                known_names.insert(&decl.decl.name);
+            }
+        }
+
+        for d in self.declarations() {
+            let d_name = &d.decl.name;
+            let mut seen_in_d: HashSet<String> = HashSet::new();
+            let mut scan_text = |text: &str| {
+                for word in text.split(|c: char| !c.is_alphanumeric() && c != '_') {
+                    if !word.is_empty() && word != d_name.as_str() && known_names.contains(word) {
+                        seen_in_d.insert(word.to_string());
+                    }
+                }
+            };
+            scan_text(&d.decl.signature);
+            if let Some(c) = &d.decl.container {
+                scan_text(c);
+            }
+            scan_text(&d.decl.doc);
+
+            for target in seen_in_d {
+                *in_degree.entry(target.clone()).or_insert(0) += 1;
+                mentions.entry(d_name.clone()).or_default().insert(target.clone());
+                referenced_by.entry(target).or_default().insert(d_name.clone());
+            }
+        }
+
+        TypedGraph {
+            in_degree,
+            mentions,
+            referenced_by,
+        }
+    }
+
+    /// Recomputes and updates the cached typed graph.
+    pub fn rebuild_graph(&mut self) {
+        self.graph = self.build_graph();
     }
 }
 
@@ -177,6 +258,8 @@ pub struct Found {
     pub declarations: usize,
     /// `None` when there is no model: the ranking was lexical only.
     pub dense: Option<DenseStatus>,
+    /// Whether typed graph fusion was applied during search ranking.
+    pub graph_fused: bool,
 }
 
 impl SearchIndexes {
@@ -237,6 +320,7 @@ impl SearchIndexes {
                     used: embedded > 0,
                     embedded,
                 }),
+                graph_fused: true,
             }
         };
         if found
@@ -453,20 +537,24 @@ fn refresh(root: &Path, index: &mut WorkspaceIndex, generations: &AtomicU64) {
         );
     }
     index.files.retain(|rel, _| seen.contains_key(rel));
+    index.rebuild_graph();
 }
 
 /// Reindexes one file after the sync layer wrote or removed it.
 fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: &AtomicU64) {
     let Some(path) = source_path(root, rel) else {
         index.files.remove(rel);
+        index.rebuild_graph();
         return;
     };
     let Ok(meta) = std::fs::metadata(&path) else {
         index.files.remove(rel);
+        index.rebuild_graph();
         return;
     };
     if meta.len() > MAX_FILE_BYTES {
         index.files.remove(rel);
+        index.rebuild_graph();
         return;
     }
     let stamp = (
@@ -479,6 +567,7 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: 
     );
     let Ok(text) = std::fs::read_to_string(&path) else {
         index.files.remove(rel);
+        index.rebuild_graph();
         return;
     };
     let decls = declarations_in(rel, &text)
@@ -493,6 +582,7 @@ fn reindex_one(root: &Path, index: &mut WorkspaceIndex, rel: &str, generations: 
             decls,
         },
     );
+    index.rebuild_graph();
 }
 
 /// Resolves the checkout itself once, so aliases to the checkout behave like the checkout, but
@@ -670,30 +760,33 @@ fn declaration_on(line: &str, language: &str) -> Option<(String, String)> {
                 })
             })
         }
-        "go" => keyword(
-            t,
-            &[
-                ("func", "function"),
-                ("type", "type"),
-                ("const", "constant"),
-                ("var", "variable"),
-            ],
-        )
-        .map(|(kind, name)| {
-            // func (r *Receiver) Name(...) — the name follows the receiver.
-            if kind == "function" && name.is_empty() {
-                (kind, name)
-            } else if kind == "function"
-                && let Some(rest) = t.strip_prefix("func")
-                && rest.trim_start().starts_with('(')
-                && let Some((_, after)) = rest.split_once(')')
-                && let Some(real) = ident(after.trim_start())
+        "go" => {
+            if let Some(rest) = t.strip_prefix("func")
+                && rest.starts_with(|c: char| c.is_whitespace())
             {
-                ("method".to_string(), real)
+                let rest_trim = rest.trim_start();
+                if rest_trim.starts_with('(') {
+                    if let Some((_, after)) = rest_trim.split_once(')')
+                        && let Some(real) = ident(after.trim_start())
+                    {
+                        Some(("method".to_string(), real))
+                    } else {
+                        None
+                    }
+                } else {
+                    ident(rest_trim).map(|name| ("function".to_string(), name))
+                }
             } else {
-                (kind, name)
+                keyword(
+                    t,
+                    &[
+                        ("type", "type"),
+                        ("const", "constant"),
+                        ("var", "variable"),
+                    ],
+                )
             }
-        }),
+        }
         "python" => keyword(
             t,
             &[
@@ -733,6 +826,18 @@ fn declaration_on(line: &str, language: &str) -> Option<(String, String)> {
                     ("const", "constant"),
                 ],
             )
+            .or_else(|| {
+                let before = t.split_once('(')?.0.trim_end();
+                (!before.is_empty()
+                    && t.contains(')')
+                    && !before.contains(' ')
+                    && !t.starts_with("//")
+                    && !t.starts_with('*')
+                    && !matches!(before, "if" | "for" | "while" | "switch" | "catch" | "return"))
+                .then(|| ident(before))
+                .flatten()
+                .map(|n| ("method".to_string(), n))
+            })
         }
         "swift" => {
             let t = strip(
@@ -1018,6 +1123,15 @@ fn rank_with(
     rank_weighted(index, query, query_vector, limit, subpath, DENSE_WEIGHT)
 }
 
+/// How much the graph list counts in the fusion.
+const GRAPH_WEIGHT: f64 = 0.9;
+
+struct HitAttribution<'a> {
+    decl: &'a Declaration,
+    total_score: f64,
+    reasons: Vec<String>,
+}
+
 /// [`rank_with`] with the dense list's weight in the fusion given.
 fn rank_weighted(
     index: &WorkspaceIndex,
@@ -1029,44 +1143,175 @@ fn rank_weighted(
 ) -> Vec<SearchHit> {
     let terms = tokenize(query);
     let docs = candidates(index, &terms, subpath);
-    let mut lists = vec![(1.0, lexical(&docs, &terms))];
-    if let Some(q) = query_vector {
-        lists.push((dense_weight, dense(&docs, q)));
+    let fallback_graph;
+    let graph = if index.graph.in_degree.is_empty() && index.graph.mentions.is_empty() && !index.is_empty() {
+        fallback_graph = index.build_graph();
+        &fallback_graph
+    } else {
+        &index.graph
+    };
+
+    let mut fused: Vec<HitAttribution<'_>> = Vec::new();
+
+    // 1. Lexical BM25
+    let lex_results = lexical(&docs, &terms);
+    for (rank, (decl, _lex_score, matched_terms)) in lex_results.iter().take(POOL).enumerate() {
+        let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
+        let reason = if matched_terms.is_empty() {
+            format!("lexical: rank {}", rank + 1)
+        } else {
+            format!("lexical: rank {} (matched {})", rank + 1, matched_terms.join(", "))
+        };
+        match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
+            Some(h) => {
+                h.total_score += rrf;
+                h.reasons.push(reason);
+            }
+            None => fused.push(HitAttribution {
+                decl,
+                total_score: rrf,
+                reasons: vec![reason],
+            }),
+        }
     }
-    let mut fused: Vec<(f64, &Declaration)> = Vec::new();
-    for (weight, list) in &lists {
-        for (rank, decl) in list.iter().take(POOL).enumerate() {
-            let score = weight / (RRF_K + rank as f64 + 1.0);
-            match fused.iter_mut().find(|(_, d)| std::ptr::eq(*d, *decl)) {
-                Some((total, _)) => *total += score,
-                None => fused.push((score, decl)),
+
+    // 2. Typed AST Graph
+    let graph_results = graph_rank(&docs, &terms, graph);
+    for (rank, (decl, _graph_score, graph_reason)) in graph_results.iter().take(POOL).enumerate() {
+        let rrf = GRAPH_WEIGHT / (RRF_K + rank as f64 + 1.0);
+        let reason = format!("graph: rank {} ({graph_reason})", rank + 1);
+        match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
+            Some(h) => {
+                h.total_score += rrf;
+                h.reasons.push(reason);
+            }
+            None => fused.push(HitAttribution {
+                decl,
+                total_score: rrf,
+                reasons: vec![reason],
+            }),
+        }
+    }
+
+    // 3. Dense semantic vectors
+    if let Some(q) = query_vector {
+        let dense_results = dense(&docs, q);
+        for (rank, (decl, cosine)) in dense_results.iter().take(POOL).enumerate() {
+            let rrf = dense_weight / (RRF_K + rank as f64 + 1.0);
+            let reason = format!("dense: rank {} (cosine {:.3})", rank + 1, cosine);
+            match fused.iter_mut().find(|h| std::ptr::eq(h.decl, *decl)) {
+                Some(h) => {
+                    h.total_score += rrf;
+                    h.reasons.push(reason);
+                }
+                None => fused.push(HitAttribution {
+                    decl,
+                    total_score: rrf,
+                    reasons: vec![reason],
+                }),
             }
         }
     }
+
     fused.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
+        b.total_score
+            .partial_cmp(&a.total_score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.1.file.cmp(&b.1.file))
-            .then_with(|| a.1.line.cmp(&b.1.line))
+            .then_with(|| a.decl.file.cmp(&b.decl.file))
+            .then_with(|| a.decl.line.cmp(&b.decl.line))
     });
+
     fused
         .into_iter()
         .take(limit.max(1))
-        .map(|(_score, d)| SearchHit {
-            file: d.file.clone(),
-            line: d.line,
-            kind: d.kind.clone(),
-            name: d.name.clone(),
-            container: d.container.clone(),
-            signature: d.signature.clone(),
-            doc: first_sentence(&d.doc),
+        .map(|h| SearchHit {
+            file: h.decl.file.clone(),
+            line: h.decl.line,
+            kind: h.decl.kind.clone(),
+            name: h.decl.name.clone(),
+            container: h.decl.container.clone(),
+            signature: h.decl.signature.clone(),
+            doc: first_sentence(&h.decl.doc),
+            score: Some(format!("{:.4}", h.total_score)),
+            rank_reasons: Some(h.reasons),
         })
         .collect()
 }
 
+/// Ranks candidate declarations by typed AST graph centrality and relationship reinforcement.
+fn graph_rank<'a>(
+    docs: &[&'a Indexed],
+    terms: &[String],
+    graph: &TypedGraph,
+) -> Vec<(&'a Declaration, f64, String)> {
+    if terms.is_empty() || docs.is_empty() {
+        return Vec::new();
+    }
+    let terms_lower: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let mut scored: Vec<(&'a Declaration, f64, String)> = Vec::new();
+    for doc in docs {
+        let d = &doc.decl;
+        let in_deg = graph.in_degree.get(&d.name).copied().unwrap_or(0);
+        let centrality = centrality_score(&d.kind, in_deg);
+
+        let (name_tokens, cont_tokens, sig_tokens, doc_tokens) = &doc.fields;
+        let mut direct_matches = 0.0;
+
+        for term in &terms_lower {
+            if name_tokens.contains(term) {
+                direct_matches += 3.0;
+            } else if cont_tokens.contains(term) {
+                direct_matches += 1.5;
+            } else if sig_tokens.contains(term) {
+                direct_matches += 1.0;
+            } else if doc_tokens.contains(term) {
+                direct_matches += 0.5;
+            }
+        }
+
+        let mut neighbor_matches = 0.0;
+        if let Some(targets) = graph.mentions.get(&d.name) {
+            for target in targets {
+                for term in &terms_lower {
+                    if target.eq_ignore_ascii_case(term) {
+                        neighbor_matches += 1.0;
+                    }
+                }
+            }
+        }
+        if let Some(referrers) = graph.referenced_by.get(&d.name) {
+            for referrer in referrers {
+                for term in &terms_lower {
+                    if referrer.eq_ignore_ascii_case(term) {
+                        neighbor_matches += 0.8;
+                    }
+                }
+            }
+        }
+
+        let total_match = direct_matches + 0.5 * neighbor_matches;
+        if total_match > 0.0 {
+            let score = centrality * total_match;
+            let reason = format!(
+                "{} '{}' in-degree {} (centrality {:.2})",
+                d.kind, d.name, in_deg, centrality
+            );
+            scored.push((d, score, reason));
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.file.cmp(&b.0.file))
+            .then_with(|| a.0.line.cmp(&b.0.line))
+    });
+    scored.truncate(POOL);
+    scored
+}
+
 /// The declarations with a vector, by cosine with the question's.
-fn dense<'a>(docs: &[&'a Indexed], query: &[f32]) -> Vec<&'a Declaration> {
-    let mut scored: Vec<(f32, &Declaration)> = docs
+fn dense<'a>(docs: &[&'a Indexed], query: &[f32]) -> Vec<(&'a Declaration, f32)> {
+    let mut scored: Vec<(f32, &'a Declaration)> = docs
         .iter()
         .filter_map(|d| {
             d.vector
@@ -1075,11 +1320,11 @@ fn dense<'a>(docs: &[&'a Indexed], query: &[f32]) -> Vec<&'a Declaration> {
         })
         .collect();
     scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    scored.into_iter().take(POOL).map(|(_, d)| d).collect()
+    scored.into_iter().take(POOL).map(|(s, d)| (d, s)).collect()
 }
 
 /// BM25 over the four fields of every declaration, best first.
-fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
+fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<(&'a Declaration, f64, Vec<String>)> {
     if terms.is_empty() || docs.is_empty() {
         return Vec::new();
     }
@@ -1104,12 +1349,13 @@ fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
     let avg_len: f64 = docs.iter().map(|d| d.len).sum::<f64>() / n;
     const K1: f64 = 1.2;
     const B: f64 = 0.45;
-    let mut scored: Vec<(f64, &Declaration)> = Vec::new();
+    let mut scored: Vec<(f64, &'a Declaration, Vec<String>)> = Vec::new();
     for doc in docs.iter() {
         let (name, container, signature, docs_t) = &doc.fields;
         let len = doc.len;
         let mut score = 0.0;
         let mut matched = 0usize;
+        let mut matched_terms = Vec::new();
         for term in terms {
             let tf = W_NAME * count(name, term)
                 + W_CONTAINER * count(container, term)
@@ -1119,6 +1365,7 @@ fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
                 continue;
             }
             matched += 1;
+            matched_terms.push(term.clone());
             let df_t = *df.get(term.as_str()).unwrap_or(&1) as f64;
             let idf = ((n - df_t + 0.5) / (df_t + 0.5) + 1.0).ln();
             score += idf * (tf * (K1 + 1.0)) / (tf + K1 * (1.0 - B + B * len / avg_len.max(1.0)));
@@ -1129,7 +1376,7 @@ fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
         // A declaration matching more of the question beats one matching one word often.
         score *= 1.0 + 0.35 * (matched - 1) as f64;
         score *= kind_weight(&doc.decl.kind);
-        scored.push((score, &doc.decl));
+        scored.push((score, &doc.decl, matched_terms));
     }
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
@@ -1137,7 +1384,8 @@ fn lexical<'a>(docs: &[&'a Indexed], terms: &[String]) -> Vec<&'a Declaration> {
             .then_with(|| a.1.file.cmp(&b.1.file))
             .then_with(|| a.1.line.cmp(&b.1.line))
     });
-    scored.into_iter().map(|(_score, d)| d).collect()
+    scored.truncate(POOL);
+    scored.into_iter().map(|(s, d, m)| (d, s, m)).collect()
 }
 
 fn count(tokens: &[String], term: &str) -> f64 {
@@ -1208,6 +1456,7 @@ pub fn run_search(
                 "workspace {workspace_str} is not synced to this gateway"
             )),
             dense: None,
+            graph_fused: None,
         };
     }
     if req.query.trim().is_empty() {
@@ -1219,6 +1468,7 @@ pub fn run_search(
             took_ms: 0,
             error: Some("empty query".to_string()),
             dense: None,
+            graph_fused: None,
         };
     }
     let started = Instant::now();
@@ -1241,6 +1491,7 @@ pub fn run_search(
                     req.subpath
                 )),
                 dense: None,
+                graph_fused: None,
             };
         }
     };
@@ -1253,6 +1504,7 @@ pub fn run_search(
         took_ms: started.elapsed().as_millis() as u64,
         error: None,
         dense: found.dense,
+        graph_fused: Some(found.graph_fused),
     }
 }
 
@@ -2247,7 +2499,7 @@ impl Metrics {
                 dense(&docs_all, v)
                     .iter()
                     .take(3)
-                    .any(|d| e.contains(&d.name.as_str()))
+                    .any(|(d, _)| e.contains(&d.name.as_str()))
             })
             .count();
         rows.push(("dense".into(), dense_only));
@@ -2283,4 +2535,202 @@ impl Metrics {
         let long = "x".repeat(400);
         assert_eq!(first_sentence(&long).len(), 200);
     }
+
+    #[test]
+    fn typed_graph_builds_in_degree_and_adjacency_across_languages() {
+        let mut index = WorkspaceIndex::default();
+        // Rust
+        index.files.insert(
+            "src/cluster.rs".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "src/cluster.rs",
+                    "/// Node in a cluster.\npub struct Node {}\n/// Schedules work on a Node.\npub struct Cluster {\n    pub fn schedule(&self, node: &Node) {}\n}\n",
+                ),
+            },
+        );
+        // Go
+        index.files.insert(
+            "pkg/scheduler.go".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "pkg/scheduler.go",
+                    "// Context carries deadlines.\ntype Context struct {}\n// JobScheduler dispatches jobs.\ntype JobScheduler struct {}\nfunc (s *JobScheduler) Run(ctx *Context) {}\n",
+                ),
+            },
+        );
+        // TypeScript
+        index.files.insert(
+            "src/engine.ts".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "src/engine.ts",
+                    "export interface Task { id: string; }\nexport class Worker {\n    execute(task: Task): void {}\n}\n",
+                ),
+            },
+        );
+        // Python
+        index.files.insert(
+            "model/runner.py".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "model/runner.py",
+                    "# Tensor representation.\nclass Tensor:\n    pass\n# ModelRunner executes inference.\nclass ModelRunner:\n    def run(self, input_tensor: Tensor):\n        pass\n",
+                ),
+            },
+        );
+
+        index.rebuild_graph();
+
+        // Node is referenced by Cluster::schedule and doc
+        let node_deg = index.graph.in_degree.get("Node").copied().unwrap_or(0);
+        assert!(node_deg >= 1, "Node in-degree should be >= 1, got {node_deg}");
+
+        // Context is referenced by JobScheduler.Run
+        let ctx_deg = index.graph.in_degree.get("Context").copied().unwrap_or(0);
+        assert!(ctx_deg >= 1, "Context in-degree should be >= 1, got {ctx_deg}");
+
+        // Task is referenced by Worker.execute
+        let task_deg = index.graph.in_degree.get("Task").copied().unwrap_or(0);
+        assert!(task_deg >= 1, "Task in-degree should be >= 1, got {task_deg}");
+
+        // Tensor is referenced by ModelRunner.run
+        let tensor_deg = index.graph.in_degree.get("Tensor").copied().unwrap_or(0);
+        assert!(tensor_deg >= 1, "Tensor in-degree should be >= 1, got {tensor_deg}");
+
+        // Verify category weighting
+        assert!(category_weight("struct") > category_weight("function"));
+        assert!(category_weight("class") > category_weight("constant"));
+        assert!(centrality_score("struct", 10) > centrality_score("struct", 0));
+    }
+
+    #[test]
+    fn typed_graph_fusion_elevates_central_architectural_types() {
+        let mut index = WorkspaceIndex::default();
+        index.files.insert(
+            "src/tail.rs".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "src/tail.rs",
+                    r#"
+/// Ring buffer keeping the last bytes of process output.
+pub struct TailBuffer {
+    capacity: usize,
 }
+
+impl TailBuffer {
+    pub fn new(capacity: usize) -> Self { Self { capacity } }
+    pub fn push(&mut self, bytes: &[u8]) {}
+}
+
+/// Helper function that logs temporary tail buffer output during debug.
+pub fn log_temp_tail_output(buf: &TailBuffer) {}
+"#,
+                ),
+            },
+        );
+        index.files.insert(
+            "src/exec.rs".into(),
+            FileEntry {
+                stamp: (0, 0),
+                generation: 0,
+                decls: index_decls(
+                    "src/exec.rs",
+                    r#"
+/// Execution output holding stdout and stderr buffers.
+pub struct ExecOutput {
+    pub stdout: TailBuffer,
+    pub stderr: TailBuffer,
+}
+
+pub fn run_exec_command(output: &mut ExecOutput) {}
+"#,
+                ),
+            },
+        );
+
+        index.rebuild_graph();
+
+        let query = "keep last bytes in tail buffer output";
+        let hits = rank_with(&index, query, None, 5, None);
+        assert!(!hits.is_empty(), "expected hits for query");
+
+        // TailBuffer should be the top hit due to structural centrality and in-degree reinforcement
+        assert_eq!(hits[0].name, "TailBuffer", "TailBuffer should be top hit: got {:?}", hits.iter().map(|h| &h.name).collect::<Vec<_>>());
+        assert!(hits[0].score.is_some(), "hit must have attributable score");
+        let reasons = hits[0].rank_reasons.as_ref().expect("hit must have rank reasons");
+        assert!(reasons.iter().any(|r| r.contains("graph:")), "reasons must contain graph attribution: {reasons:?}");
+        assert!(reasons.iter().any(|r| r.contains("lexical:")), "reasons must contain lexical attribution: {reasons:?}");
+    }
+
+    #[test]
+    fn search_sub_10ms_latency_and_attribution_evidence() {
+        let mut index = WorkspaceIndex::default();
+        // Generate a synthetic workspace with 20 files and 420 declarations
+        for f in 0..20 {
+            let mut text = String::new();
+            text.push_str(&format!("/// Module {f} primary manager.\npub struct Manager{f} {{\n    id: u32,\n}}\n\n"));
+            for d in 0..20 {
+                text.push_str(&format!(
+                    "/// Operation {d} in module {f} processing requests.\npub fn process_req_{f}_{d}(mgr: &Manager{f}) -> u32 {{ {d} }}\n\n"
+                ));
+            }
+            index.files.insert(
+                format!("src/module_{f}.rs"),
+                FileEntry {
+                    stamp: (0, 0),
+                    generation: 0,
+                    decls: index_decls(&format!("src/module_{f}.rs"), &text),
+                },
+            );
+        }
+        index.rebuild_graph();
+
+        let queries = [
+            "process requests in manager",
+            "primary manager module",
+            "operation processing requests",
+            "module manager request handler",
+        ];
+
+        let mut latencies_us = Vec::new();
+        for _ in 0..50 {
+            for q in &queries {
+                let start = Instant::now();
+                let hits = rank_with(&index, q, None, 10, None);
+                let elapsed_us = start.elapsed().as_micros();
+                latencies_us.push(elapsed_us);
+                assert!(!hits.is_empty());
+                assert!(hits[0].score.is_some());
+                assert!(hits[0].rank_reasons.is_some());
+            }
+        }
+
+        latencies_us.sort_unstable();
+        let p50_us = latencies_us[latencies_us.len() / 2];
+        let p95_us = latencies_us[latencies_us.len() * 95 / 100];
+        let max_us = latencies_us[latencies_us.len() - 1];
+
+        println!(
+            "Latency evidence (200 searches over 420 declarations): p50={:.2}ms, p95={:.2}ms, max={:.2}ms",
+            p50_us as f64 / 1000.0,
+            p95_us as f64 / 1000.0,
+            max_us as f64 / 1000.0
+        );
+
+        // Strict assertion: universal sub-10 ms latency (p50 and p95 under 10 ms)
+        assert!(p50_us < 10_000, "p50 latency was {} us (> 10000 us)", p50_us);
+        assert!(p95_us < 10_000, "p95 latency was {} us (> 10000 us)", p95_us);
+    }
+}
+

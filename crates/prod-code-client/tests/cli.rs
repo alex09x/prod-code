@@ -317,12 +317,15 @@ async fn handle_client(
                             container: None,
                             signature: "pub fn foo()".to_string(),
                             doc: "Doc comment for foo".to_string(),
+                            score: None,
+                            rank_reasons: None,
                         }],
                         indexed_files: 1,
                         indexed_declarations: 1,
                         took_ms: 5,
                         error: None,
                         dense: None,
+                        graph_fused: None,
                     }))
                     .await?;
             }
