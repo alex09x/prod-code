@@ -81,6 +81,50 @@ const GROOVY_MARKERS: &[&str] = &["Jenkinsfile"];
 const ADA_MARKERS: &[&str] = &["default.gpr"];
 const V_MARKERS: &[&str] = &["v.mod"];
 const RACKET_MARKERS: &[&str] = &["info.rkt"];
+const TERRAFORM_MARKERS: &[&str] = &[
+    "main.tf",
+    "versions.tf",
+    "terraform.tf",
+    ".terraform.lock.hcl",
+];
+const NIX_MARKERS: &[&str] = &[
+    "flake.nix",
+    "default.nix",
+    "shell.nix",
+    "configuration.nix",
+];
+const MARKDOWN_MARKERS: &[&str] = &["README.md", ".marksman.toml"];
+const YAML_MARKERS: &[&str] = &[
+    ".yamllint",
+    ".yamllint.yml",
+    ".yamllint.yaml",
+    ".gitlab-ci.yml",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "compose.yaml",
+    "compose.yml",
+];
+const TOML_MARKERS: &[&str] = &["taplo.toml", ".taplo.toml"];
+const JSON_MARKERS: &[&str] = &[".jsonlintrc", "jsconfig.json"];
+const HTML_MARKERS: &[&str] = &["index.html", "htmlhint.json", ".htmlhintrc"];
+const CSS_MARKERS: &[&str] = &[
+    "stylelint.config.js",
+    "stylelint.config.cjs",
+    "stylelint.config.mjs",
+    ".stylelintrc",
+    ".stylelintrc.json",
+    ".stylelintrc.yml",
+    "styles.css",
+];
+const DOCKERFILE_MARKERS: &[&str] = &[
+    "Dockerfile",
+    "Containerfile",
+    ".hadolint.yaml",
+    ".hadolint.yml",
+];
+const SVELTE_MARKERS: &[&str] = &["svelte.config.js", "svelte.config.ts"];
+const VUE_MARKERS: &[&str] = &["vue.config.js", "vue.config.ts"];
+const ASSEMBLY_MARKERS: &[&str] = &[".asm-lsp.toml"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -400,6 +444,184 @@ pub fn has_racket_project(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A Terraform project (main.tf, versions.tf, *.tf, *.tofu, *.hcl) at the root.
+pub fn has_terraform_project(root: &Path) -> bool {
+    if TERRAFORM_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".tf") || name.ends_with(".tofu") || name.ends_with(".hcl")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Nix project (flake.nix, default.nix, shell.nix, *.nix) at the root.
+pub fn has_nix_project(root: &Path) -> bool {
+    if NIX_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".nix")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Markdown project (.marksman.toml, README.md, *.md, *.markdown) at the root.
+pub fn has_markdown_project(root: &Path) -> bool {
+    if MARKDOWN_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".md") || name.ends_with(".markdown")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A YAML project (.yamllint, compose.yaml, *.yaml, *.yml) at the root.
+pub fn has_yaml_project(root: &Path) -> bool {
+    if YAML_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".yaml") || name.ends_with(".yml")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A TOML project (taplo.toml, *.toml) at the root.
+pub fn has_toml_project(root: &Path) -> bool {
+    if TOML_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".toml")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A JSON project (.jsonlintrc, *.json, *.jsonc) at the root.
+pub fn has_json_project(root: &Path) -> bool {
+    if JSON_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".json") || name.ends_with(".jsonc")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An HTML project (index.html, *.html, *.htm) at the root.
+pub fn has_html_project(root: &Path) -> bool {
+    if HTML_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".html") || name.ends_with(".htm")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A CSS project (styles.css, *.css, *.scss, *.less) at the root.
+pub fn has_css_project(root: &Path) -> bool {
+    if CSS_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".css") || name.ends_with(".scss") || name.ends_with(".less")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Dockerfile project (Dockerfile, Containerfile, *.dockerfile) at the root.
+pub fn has_dockerfile_project(root: &Path) -> bool {
+    if DOCKERFILE_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("Dockerfile")
+                    || name.starts_with("Containerfile")
+                    || name.ends_with(".dockerfile")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Svelte project (svelte.config.js, *.svelte) at the root.
+pub fn has_svelte_project(root: &Path) -> bool {
+    if SVELTE_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".svelte")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Vue project (vue.config.js, *.vue) at the root.
+pub fn has_vue_project(root: &Path) -> bool {
+    if VUE_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".vue")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An Assembly project (*.s, *.asm, *.S) at the root.
+pub fn has_assembly_project(root: &Path) -> bool {
+    if ASSEMBLY_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".s") || name.ends_with(".asm") || name.ends_with(".S")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Detect the primary engine kind for the specified workspace path.
 ///
 /// Priority order:
@@ -547,6 +769,42 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_racket_project(root) {
         return EngineKind::Racket;
     }
+    if has_svelte_project(root) {
+        return EngineKind::Svelte;
+    }
+    if has_vue_project(root) {
+        return EngineKind::Vue;
+    }
+    if has_terraform_project(root) {
+        return EngineKind::Terraform;
+    }
+    if has_nix_project(root) {
+        return EngineKind::Nix;
+    }
+    if has_assembly_project(root) {
+        return EngineKind::Assembly;
+    }
+    if has_dockerfile_project(root) {
+        return EngineKind::Dockerfile;
+    }
+    if has_markdown_project(root) {
+        return EngineKind::Markdown;
+    }
+    if has_yaml_project(root) {
+        return EngineKind::Yaml;
+    }
+    if has_toml_project(root) {
+        return EngineKind::Toml;
+    }
+    if has_json_project(root) {
+        return EngineKind::Json;
+    }
+    if has_html_project(root) {
+        return EngineKind::Html;
+    }
+    if has_css_project(root) {
+        return EngineKind::Css;
+    }
     EngineKind::Generic
 }
 
@@ -664,6 +922,42 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_racket_project(root) {
         engines.push(EngineKind::Racket);
+    }
+    if has_terraform_project(root) {
+        engines.push(EngineKind::Terraform);
+    }
+    if has_nix_project(root) {
+        engines.push(EngineKind::Nix);
+    }
+    if has_markdown_project(root) {
+        engines.push(EngineKind::Markdown);
+    }
+    if has_yaml_project(root) {
+        engines.push(EngineKind::Yaml);
+    }
+    if has_toml_project(root) {
+        engines.push(EngineKind::Toml);
+    }
+    if has_json_project(root) {
+        engines.push(EngineKind::Json);
+    }
+    if has_html_project(root) {
+        engines.push(EngineKind::Html);
+    }
+    if has_css_project(root) {
+        engines.push(EngineKind::Css);
+    }
+    if has_dockerfile_project(root) {
+        engines.push(EngineKind::Dockerfile);
+    }
+    if has_svelte_project(root) {
+        engines.push(EngineKind::Svelte);
+    }
+    if has_vue_project(root) {
+        engines.push(EngineKind::Vue);
+    }
+    if has_assembly_project(root) {
+        engines.push(EngineKind::Assembly);
     }
 
     if engines.is_empty() {
@@ -998,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn test_universal_language_detection_matrix_all_40_languages() {
+    fn test_universal_language_detection_matrix_all_50_languages() {
         struct Case {
             lang: &'static str,
             files: &'static [(&'static str, &'static str)],
@@ -1043,6 +1337,18 @@ mod tests {
             Case { lang: "Ada", files: &[("default.gpr", "")], kind: EngineKind::Ada },
             Case { lang: "V", files: &[("v.mod", "")], kind: EngineKind::V },
             Case { lang: "Racket", files: &[("info.rkt", "")], kind: EngineKind::Racket },
+            Case { lang: "Terraform", files: &[("main.tf", "terraform {}")], kind: EngineKind::Terraform },
+            Case { lang: "Nix", files: &[("flake.nix", "{ description = \"test\"; }")], kind: EngineKind::Nix },
+            Case { lang: "Markdown", files: &[("README.md", "# Test")], kind: EngineKind::Markdown },
+            Case { lang: "Yaml", files: &[(".yamllint", "extends: default")], kind: EngineKind::Yaml },
+            Case { lang: "Toml", files: &[("taplo.toml", "")], kind: EngineKind::Toml },
+            Case { lang: "Json", files: &[(".jsonlintrc", "{}")], kind: EngineKind::Json },
+            Case { lang: "Html", files: &[("index.html", "<!doctype html>")], kind: EngineKind::Html },
+            Case { lang: "Css", files: &[("styles.css", "body {}")], kind: EngineKind::Css },
+            Case { lang: "Dockerfile", files: &[("Dockerfile", "FROM alpine")], kind: EngineKind::Dockerfile },
+            Case { lang: "Svelte", files: &[("svelte.config.js", "export default {};")], kind: EngineKind::Svelte },
+            Case { lang: "Vue", files: &[("vue.config.js", "module.exports = {};")], kind: EngineKind::Vue },
+            Case { lang: "Assembly", files: &[(".asm-lsp.toml", "")], kind: EngineKind::Assembly },
             Case { lang: "Generic", files: &[], kind: EngineKind::Generic },
         ];
 

@@ -1687,6 +1687,246 @@ impl WorkspaceManager {
                     }
                 }
             }
+            "terraform" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_terraform(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Terraform) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Terraform LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "nix" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_nix(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Nix) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Nix LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "markdown" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_markdown(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Markdown) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Markdown LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "yaml" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_yaml(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (YAML) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn YAML LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "toml" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_toml(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (TOML) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn TOML LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "json" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_json(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (JSON) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn JSON LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "html" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_html(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (HTML) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn HTML LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "css" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_css(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (CSS) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn CSS LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "dockerfile" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_dockerfile(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Dockerfile) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Dockerfile LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "svelte" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_svelte(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Svelte) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Svelte LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "vue" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_vue(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Vue) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Vue LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "assembly" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_assembly(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Assembly) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Assembly LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
             _ => {
                 backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
                     .await

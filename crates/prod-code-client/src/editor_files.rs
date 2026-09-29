@@ -71,6 +71,18 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "ada" | "adb" | "ads" => "ada",
         "v" | "vsh" => "v",
         "racket" | "rkt" => "racket",
+        "terraform" | "tf" | "tofu" | "hcl" => "terraform",
+        "nix" => "nix",
+        "markdown" | "md" => "markdown",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "json" | "jsonc" => "json",
+        "html" | "htm" => "html",
+        "css" | "scss" | "less" => "css",
+        "dockerfile" | "docker" | "containerfile" => "dockerfile",
+        "svelte" => "svelte",
+        "vue" => "vue",
+        "assembly" | "asm" | "s" => "assembly",
         _ => return None,
     })
 }
