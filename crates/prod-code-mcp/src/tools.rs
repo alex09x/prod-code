@@ -377,7 +377,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_inline_parameter".to_string(),
-            description: "Inline a parameter that every caller passes the same constant for: the value is bound at the top of the body (`let max: u32 = LIMIT;`), and the parameter leaves the declaration and its argument every call. Give the parameter's position. The value must mean the same in the body as at the call — a literal, a constant, or a path (`Mode::Fast`); a lowercase name may be a local of the caller and is refused, and so are calls that pass different values (each is listed). The function used as a value, or a call inside the function itself, blocks the write unless `force`. Type-checked in one overlay before anything is written. Rust only."
+            description: "Inline a parameter that every caller passes the same constant for: the value is bound at the top of the body (`let max: u32 = LIMIT;`), and the parameter leaves the declaration and its argument every call. Give the parameter's position, or `symbol` / `function` with `parameter`. The value must mean the same in the body as at the call — a literal, a constant, or a path (`Mode::Fast`, `Config.MAX`); a lowercase name may be a local of the caller and is refused, and so are calls that pass different values (each is listed). The function used as a value, or a call inside the function itself, blocks the write unless `force`. Type-checked in one overlay before anything is written. Rust, TypeScript, JavaScript, Python, C++, Swift, Go."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -385,10 +385,15 @@ pub fn list_tools() -> Vec<McpTool> {
                     "path": { "type": "string", "description": "File that declares the function" },
                     "line": { "type": "integer", "description": "1-based line of the parameter's name" },
                     "character": { "type": "integer", "description": "1-based column of the parameter's name" },
+                    "symbol": { "type": "string", "description": "Function name or symbol (`clamp`, `Math::clamp`, `Math.clamp`)" },
+                    "function": { "type": "string", "description": "Function name" },
+                    "parameter": { "type": "string", "description": "Name of parameter to inline" },
+                    "param": { "type": "string", "description": "Alternative alias for parameter" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile; a reference that is not a call still blocks the write" }
                 },
-                "required": ["path", "line", "character"]
+                "required": ["path"]
             }),
         },
         McpTool {
@@ -3630,33 +3635,83 @@ async fn handle_inline_parameter(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument"))
-    };
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let function = args
+        .get("function")
+        .or_else(|| args.get("symbol"))
+        .and_then(|v| v.as_str());
+    let param = args
+        .get("parameter")
+        .or_else(|| args.get("param"))
+        .and_then(|v| v.as_str());
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
     let file_path = resolve_file_path(workspace_root, path_str);
-    let done = crate::inline_parameter::inline_parameter(
-        remote,
-        workspace_root,
-        &file_path,
-        num("line")?,
-        num("character")?,
-        apply,
-        force,
-    )
-    .await?;
-    let text = done.render(6000);
-    Ok(
-        if done.diagnostics.is_empty() && done.unmatched.is_empty() {
-            McpToolCallResult::text(text)
-        } else {
-            McpToolCallResult::error(text)
-        },
-    )
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        let l = line.context("Missing 'line' argument for Rust inline_parameter")?;
+        let c = character.unwrap_or(1);
+        crate::inline_parameter::inline_parameter(
+            remote,
+            workspace_root,
+            &file_path,
+            l,
+            c,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        crate::inline_parameter::inline_parameter_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            line,
+            character,
+            function,
+            param,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
+
+    refuse_incomplete(apply, &done.unmatched)?;
+    let gate = if verify && (done.unmatched.is_empty() || force) {
+        let files = done.rewritten.clone();
+        Some(
+            compile_gate(
+                remote,
+                workspace_root,
+                &files,
+                done.diagnostics.is_empty(),
+                apply,
+                force,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    if gate.as_ref().is_some_and(|g| g.applied) {
+        done.applied = true;
+    }
+    let clean = done.diagnostics.is_empty()
+        && done.unmatched.is_empty()
+        && gate.as_ref().is_none_or(|g| g.passed);
+    let mut text = done.render(6000);
+    if let Some(gate) = &gate {
+        text.push_str(&gate.text);
+    }
+    Ok(if clean {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
 }
 
 async fn handle_extract_trait(
