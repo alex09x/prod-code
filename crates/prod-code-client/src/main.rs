@@ -843,6 +843,46 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Replace constructor and raw struct instantiations with a named static factory method.
+    ReplaceConstructorWithFactory {
+        /// File that declares the struct or class
+        file: PathBuf,
+        /// Name of the struct or class
+        #[arg(long)]
+        type_name: String,
+        /// Name of the factory method (default: language convention, e.g. "new", "create")
+        #[arg(long)]
+        name: Option<String>,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if analyzer warnings/errors occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    /// Replace constructor and raw struct instantiations with a fluent builder pattern.
+    ReplaceConstructorWithBuilder {
+        /// File that declares the struct or class
+        file: PathBuf,
+        /// Name of the struct or class
+        #[arg(long)]
+        type_name: String,
+        /// Name of the builder type (default: "<Type>Builder")
+        #[arg(long)]
+        name: Option<String>,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if analyzer warnings/errors occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a method into a field of its type, initialised wherever the
     /// type is built.
     ExtractField {
@@ -2092,6 +2132,74 @@ async fn main() -> Result<()> {
                 remote, symbol, line, character, path, by_value, verify, apply, force,
             )
             .await
+        }
+        Commands::ReplaceConstructorWithFactory {
+            file,
+            type_name,
+            name,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "type_name": type_name,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(n) = name {
+                args["factory_name"] = serde_json::Value::String(n);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_constructor_with_factory", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::ReplaceConstructorWithBuilder {
+            file,
+            type_name,
+            name,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "type_name": type_name,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(n) = name {
+                args["builder_name"] = serde_json::Value::String(n);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_constructor_with_builder", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Commands::ExtractField {
             file,

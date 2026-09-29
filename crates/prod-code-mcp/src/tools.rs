@@ -437,6 +437,40 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_replace_constructor_with_factory".to_string(),
+            description: "Replace raw struct/class instantiations with a named static factory method across the codebase (Roadmap 7.1.3). Generates the factory method declaration (`pub fn new(...) -> Self` in Rust, `func New<Type>(...) *<Type>` in Go, `static create(...)` in TS/JS/Python/C++/Swift) and rewrites raw instantiations (`Type { field1, field2 }`, `&Type{...}`, `new Type(...)`, `Type(...)`) into calls to the factory method, preserving argument evaluation order. Supports Rust, Go, TypeScript, JavaScript, Python, C++, and Swift. Type-checked via analyzer overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the struct or class" },
+                    "type_name": { "type": "string", "description": "Name of the struct or class" },
+                    "factory_name": { "type": "string", "description": "Name of the factory method (default: language convention, e.g. `new`, `New<Type>`, `create`)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["path", "type_name"]
+            }),
+        },
+        McpTool {
+            name: "code_replace_constructor_with_builder".to_string(),
+            description: "Replace raw struct/class instantiations with a fluent builder pattern across the codebase (Roadmap 7.1.3). Generates a builder type (`<Type>Builder`) with fluent setter methods and a `build()` method, generates `<Type>::builder()` / `New<Type>Builder()`, and rewrites raw instantiations (`Type { field1: val1, ... }`) into builder chains (`Type::builder().field1(val1)...build()`). Supports Rust, Go, TypeScript, JavaScript, Python, C++, and Swift. Type-checked via analyzer overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that declares the struct or class" },
+                    "type_name": { "type": "string", "description": "Name of the struct or class" },
+                    "builder_name": { "type": "string", "description": "Name of the builder type (default: `<Type>Builder`)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["path", "type_name"]
+            }),
+        },
+        McpTool {
             name: "code_extract_function".to_string(),
             description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
                 .to_string(),
@@ -1309,6 +1343,20 @@ pub async fn execute_tool(
             })
         }
         "code_extract_trait" => handle_extract_trait(remote, workspace_root, &args).await,
+        "code_replace_constructor_with_factory" => {
+            handle_replace_constructor_with_factory(remote, workspace_root, &args).await
+        }
+        "code_replace_constructor_with_builder" => {
+            handle_replace_constructor_with_builder(remote, workspace_root, &args).await
+        }
+        "code_replace_constructor" => {
+            let mode = args.get("mode").and_then(|m| m.as_str()).unwrap_or("factory");
+            if mode == "builder" {
+                handle_replace_constructor_with_builder(remote, workspace_root, &args).await
+            } else {
+                handle_replace_constructor_with_factory(remote, workspace_root, &args).await
+            }
+        }
         "code_extract_delegate" => {
             let path_str = args
                 .get("path")
@@ -3448,6 +3496,80 @@ async fn handle_extract_trait(
     )
     .await?;
     let text = done.render();
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_replace_constructor_with_factory(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let type_name = args
+        .get("type_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'type_name' argument")?;
+    let factory_name = args.get("factory_name").and_then(|v| v.as_str());
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::replace_constructor::replace_constructor_with_factory(
+        remote,
+        workspace_root,
+        &file_path,
+        type_name,
+        factory_name,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_replace_constructor_with_builder(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let type_name = args
+        .get("type_name")
+        .and_then(|v| v.as_str())
+        .context("Missing 'type_name' argument")?;
+    let builder_name = args.get("builder_name").and_then(|v| v.as_str());
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let done = crate::replace_constructor::replace_constructor_with_builder(
+        remote,
+        workspace_root,
+        &file_path,
+        type_name,
+        builder_name,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+    let text = done.render(2048);
     Ok(if done.diagnostics.is_empty() {
         McpToolCallResult::text(text)
     } else {
@@ -6003,6 +6125,9 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_safe_delete",
     "code_assists",
     "code_assist",
+    "code_replace_constructor_with_factory",
+    "code_replace_constructor_with_builder",
+    "code_replace_constructor",
 ];
 
 /// One `workspace/symbol` hit, positioned on the symbol's name (1-based).
