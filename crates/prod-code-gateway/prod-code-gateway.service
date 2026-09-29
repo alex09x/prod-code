@@ -1,0 +1,19 @@
+[Unit]
+Description=prod-code Remote Code Intelligence Gateway
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/prod-code-server
+Restart=always
+RestartSec=5s
+LimitNOFILE=65536
+KillMode=mixed
+TimeoutStopSec=30s
+StandardOutput=journal
+StandardError=journal
+Environment=RUST_BACKTRACE=1
+
+[Install]
+WantedBy=multi-user.target

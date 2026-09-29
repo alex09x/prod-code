@@ -17,6 +17,8 @@ use tokio::io::BufReader;
 use tokio_util::codec::Framed;
 use url::Url;
 
+mod update;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "prod-code",
@@ -1464,6 +1466,19 @@ enum Commands {
         #[arg(long, default_value_t = 4)]
         worktrees: usize,
     },
+    /// Check for and install updates to prod-code from GitHub releases
+    #[command(alias = "self-update")]
+    Update {
+        /// Only check for updates without installing
+        #[arg(long)]
+        check: bool,
+        /// Force re-installation even if the latest version is already installed
+        #[arg(long)]
+        force: bool,
+        /// Install a specific version / tag (e.g. v0.3.19)
+        #[arg(long)]
+        tag: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -1636,6 +1651,11 @@ async fn main() -> Result<()> {
             },
         )
         .await;
+    }
+    // Update needs no workspace or cluster connection: it interacts with GitHub releases.
+    if let Some(Commands::Update { check, force, tag }) = cli.command {
+        startup.report();
+        return update::run_update(check, force, tag).await;
     }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
@@ -3025,6 +3045,7 @@ async fn main() -> Result<()> {
             })
             .await
         }
+        Commands::Update { check, force, tag } => update::run_update(check, force, tag).await,
     }
 }
 

@@ -320,6 +320,11 @@ mod tests {
             "private_ref",
             "never put private details",
             "labels",
+            "code_change_signature",
+            "code_replace_constructor_with_builder",
+            "code_shadow_run",
+            "code_validate_edits",
+            "code_prune_orphans",
         ] {
             assert!(
                 instructions.contains(needed),
