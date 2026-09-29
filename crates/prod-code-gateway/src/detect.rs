@@ -31,6 +31,11 @@ const TYPESCRIPT_MARKERS: &[&str] = &[
     "deno.json",
     "deno.jsonc",
 ];
+const JAVA_MARKERS: &[&str] = &["pom.xml", "build.gradle"];
+const KOTLIN_MARKERS: &[&str] = &["build.gradle.kts", "settings.gradle.kts"];
+const CSHARP_MARKERS: &[&str] = &["global.json"];
+const PHP_MARKERS: &[&str] = &["composer.json"];
+const RUBY_MARKERS: &[&str] = &["Gemfile"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -79,6 +84,22 @@ pub fn has_swift_project(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// A C# project (.csproj, .sln) or global.json configuration at the root.
+pub fn has_csharp_project(root: &Path) -> bool {
+    if CSHARP_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.ends_with(".csproj") || name.ends_with(".sln")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Detect the primary engine kind for the specified workspace path.
 ///
 /// Priority order:
@@ -89,7 +110,12 @@ pub fn has_swift_project(root: &Path) -> bool {
 /// 5. Python (`pyproject.toml`, `requirements.txt`, `setup.py`, etc.)
 /// 6. TypeScript / JavaScript (`tsconfig.json`, `package.json`, etc.)
 /// 7. C/C++ built with Make (a Makefile next to C sources)
-/// 8. Generic LSP fallback
+/// 8. Kotlin (`build.gradle.kts`, `settings.gradle.kts`)
+/// 9. Java (`pom.xml`, `build.gradle`)
+/// 10. C# (`*.csproj`, `*.sln`, `global.json`)
+/// 11. PHP (`composer.json`)
+/// 12. Ruby (`Gemfile`)
+/// 13. Generic LSP fallback
 pub fn detect_engine(root: &Path) -> EngineKind {
     for marker in RUST_MARKERS {
         if root.join(marker).exists() {
@@ -122,6 +148,27 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if is_make_cpp_project(root) {
         return EngineKind::Cpp;
     }
+    if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Kotlin;
+    }
+    for marker in JAVA_MARKERS {
+        if root.join(marker).exists() {
+            return EngineKind::Java;
+        }
+    }
+    if has_csharp_project(root) {
+        return EngineKind::Csharp;
+    }
+    for marker in PHP_MARKERS {
+        if root.join(marker).exists() {
+            return EngineKind::Php;
+        }
+    }
+    for marker in RUBY_MARKERS {
+        if root.join(marker).exists() {
+            return EngineKind::Ruby;
+        }
+    }
     EngineKind::Generic
 }
 
@@ -146,6 +193,21 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_swift_project(root) {
         engines.push(EngineKind::Swift);
+    }
+    if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Kotlin);
+    }
+    if JAVA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Java);
+    }
+    if has_csharp_project(root) {
+        engines.push(EngineKind::Csharp);
+    }
+    if PHP_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Php);
+    }
+    if RUBY_MARKERS.iter().any(|m| root.join(m).exists()) {
+        engines.push(EngineKind::Ruby);
     }
 
     if engines.is_empty() {
@@ -319,5 +381,33 @@ mod tests {
             resolve_engine(dir.path(), Some("python")),
             EngineKind::Python
         );
+    }
+
+    #[test]
+    fn test_detect_additional_languages() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("pom.xml"), "<project></project>").unwrap();
+        assert_eq!(detect_engine(dir.path()), EngineKind::Java);
+        assert_eq!(detect_all_engines(dir.path()), vec![EngineKind::Java]);
+
+        let dir_kt = tempdir().unwrap();
+        std::fs::write(dir_kt.path().join("build.gradle.kts"), "").unwrap();
+        assert_eq!(detect_engine(dir_kt.path()), EngineKind::Kotlin);
+        assert_eq!(detect_all_engines(dir_kt.path()), vec![EngineKind::Kotlin]);
+
+        let dir_cs = tempdir().unwrap();
+        std::fs::write(dir_cs.path().join("App.csproj"), "<Project></Project>").unwrap();
+        assert_eq!(detect_engine(dir_cs.path()), EngineKind::Csharp);
+        assert_eq!(detect_all_engines(dir_cs.path()), vec![EngineKind::Csharp]);
+
+        let dir_php = tempdir().unwrap();
+        std::fs::write(dir_php.path().join("composer.json"), "{}").unwrap();
+        assert_eq!(detect_engine(dir_php.path()), EngineKind::Php);
+        assert_eq!(detect_all_engines(dir_php.path()), vec![EngineKind::Php]);
+
+        let dir_rb = tempdir().unwrap();
+        std::fs::write(dir_rb.path().join("Gemfile"), "source 'https://rubygems.org'").unwrap();
+        assert_eq!(detect_engine(dir_rb.path()), EngineKind::Ruby);
+        assert_eq!(detect_all_engines(dir_rb.path()), vec![EngineKind::Ruby]);
     }
 }

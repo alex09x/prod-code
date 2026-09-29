@@ -7362,6 +7362,26 @@ mod tests {
         let ts_temp = tempfile::tempdir().unwrap();
         std::fs::write(ts_temp.path().join("package.json"), "").unwrap();
         assert_eq!(detect_engine(ts_temp.path()), EngineKind::TypeScript);
+
+        let java_temp = tempfile::tempdir().unwrap();
+        std::fs::write(java_temp.path().join("pom.xml"), "").unwrap();
+        assert_eq!(detect_engine(java_temp.path()), EngineKind::Java);
+
+        let kt_temp = tempfile::tempdir().unwrap();
+        std::fs::write(kt_temp.path().join("build.gradle.kts"), "").unwrap();
+        assert_eq!(detect_engine(kt_temp.path()), EngineKind::Kotlin);
+
+        let cs_temp = tempfile::tempdir().unwrap();
+        std::fs::write(cs_temp.path().join("App.csproj"), "").unwrap();
+        assert_eq!(detect_engine(cs_temp.path()), EngineKind::Csharp);
+
+        let php_temp = tempfile::tempdir().unwrap();
+        std::fs::write(php_temp.path().join("composer.json"), "").unwrap();
+        assert_eq!(detect_engine(php_temp.path()), EngineKind::Php);
+
+        let rb_temp = tempfile::tempdir().unwrap();
+        std::fs::write(rb_temp.path().join("Gemfile"), "").unwrap();
+        assert_eq!(detect_engine(rb_temp.path()), EngineKind::Ruby);
     }
 
     #[tokio::test]

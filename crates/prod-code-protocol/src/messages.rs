@@ -93,6 +93,11 @@ pub enum EngineKind {
     TypeScript,
     Cpp,
     Swift,
+    Java,
+    Kotlin,
+    Csharp,
+    Php,
+    Ruby,
     Generic,
 }
 
@@ -105,6 +110,11 @@ impl EngineKind {
             EngineKind::TypeScript => "typescript",
             EngineKind::Cpp => "cpp",
             EngineKind::Swift => "swift",
+            EngineKind::Java => "java",
+            EngineKind::Kotlin => "kotlin",
+            EngineKind::Csharp => "csharp",
+            EngineKind::Php => "php",
+            EngineKind::Ruby => "ruby",
             EngineKind::Generic => "generic",
         }
     }
@@ -126,6 +136,11 @@ impl std::str::FromStr for EngineKind {
             "typescript" | "ts" | "javascript" | "js" => EngineKind::TypeScript,
             "cpp" | "c++" | "c" | "cxx" | "clangd" => EngineKind::Cpp,
             "swift" => EngineKind::Swift,
+            "java" => EngineKind::Java,
+            "kotlin" | "kt" => EngineKind::Kotlin,
+            "csharp" | "cs" | "c#" | "dotnet" => EngineKind::Csharp,
+            "php" => EngineKind::Php,
+            "ruby" | "rb" => EngineKind::Ruby,
             _ => EngineKind::Generic,
         })
     }

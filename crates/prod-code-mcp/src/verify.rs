@@ -1047,6 +1047,16 @@ fn plan_command_basic(
         ("go", VerifyKind::Test) => vec!["go", "test", "-json", "./..."],
         ("swift", VerifyKind::Check) => vec!["swift", "build"],
         ("swift", VerifyKind::Test) => vec!["swift", "test"],
+        ("csharp", VerifyKind::Check) => vec!["dotnet", "build"],
+        ("csharp", VerifyKind::Test) => vec!["dotnet", "test"],
+        ("java", VerifyKind::Check) => vec!["mvn", "test-compile"],
+        ("java", VerifyKind::Test) => vec!["mvn", "test"],
+        ("kotlin", VerifyKind::Check) => vec!["gradle", "compileKotlin"],
+        ("kotlin", VerifyKind::Test) => vec!["gradle", "test"],
+        ("php", VerifyKind::Check) => vec!["php", "-l"],
+        ("php", VerifyKind::Test) => vec!["phpunit"],
+        ("ruby", VerifyKind::Check) => vec!["bundle", "exec", "rake", "test"],
+        ("ruby", VerifyKind::Test) => vec!["bundle", "exec", "rake", "test"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1065,6 +1075,21 @@ fn plan_command_basic(
                 cmd.push(filter.to_string());
             }
             ("swift", VerifyKind::Test) => {
+                cmd.push("--filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("csharp", VerifyKind::Test) => {
+                cmd.push("--filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("java", VerifyKind::Test) => {
+                cmd.push(format!("-Dtest={}", filter));
+            }
+            ("kotlin", VerifyKind::Test) => {
+                cmd.push("--tests".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("php", VerifyKind::Test) => {
                 cmd.push("--filter".to_string());
                 cmd.push(filter.to_string());
             }
@@ -2821,7 +2846,11 @@ expected 42, got 43\n\
             plan_command("go", VerifyKind::Test, Some("TestA")).unwrap()[3..],
             ["./...", "-run", "TestA"]
         );
-        assert!(plan_command("ruby", VerifyKind::Check, None).is_err());
+        assert_eq!(
+            plan_command("ruby", VerifyKind::Check, None).unwrap(),
+            vec!["bundle", "exec", "rake", "test"]
+        );
+        assert!(plan_command("fortran", VerifyKind::Check, None).is_err());
         let report = VerifyReport {
             kind: VerifyKind::Test,
             language: "rust".into(),

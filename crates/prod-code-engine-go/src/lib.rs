@@ -401,9 +401,21 @@ impl GoEngine {
             cmd.env(k, v);
         }
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("Failed to spawn gopls binary: {:?}", gopls_bin))?;
+        let mut attempts = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(err) if err.raw_os_error() == Some(26) && attempts < 10 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!("Failed to spawn gopls binary: {:?}", gopls_bin)
+                    })
+                }
+            }
+        };
 
         let stdin = child
             .stdin

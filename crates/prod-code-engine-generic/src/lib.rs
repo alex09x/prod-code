@@ -126,6 +126,11 @@ impl GenericLspConfig {
             "swift" => Self::for_swift(),
             "python" => Self::for_python(),
             "typescript" => Self::for_typescript(),
+            "java" => Self::for_java(),
+            "kotlin" => Self::for_kotlin(),
+            "csharp" => Self::for_csharp(),
+            "php" => Self::for_php(),
+            "ruby" => Self::for_ruby(),
             _ => return None,
         };
         let command = Path::new(&config.command);
@@ -308,6 +313,115 @@ impl GenericLspConfig {
             initialization_options,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Java language servers (jdtls).
+    pub fn for_java() -> Self {
+        let (cmd, args) = if which_bin("jdtls").is_ok() {
+            ("jdtls".to_string(), vec![])
+        } else if which_bin("java-language-server").is_ok() {
+            ("java-language-server".to_string(), vec![])
+        } else {
+            ("jdtls".to_string(), vec![])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Kotlin language servers.
+    pub fn for_kotlin() -> Self {
+        Self {
+            command: "kotlin-language-server".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for C# language servers.
+    pub fn for_csharp() -> Self {
+        let (cmd, args) = if which_bin("csharp-ls").is_ok() {
+            ("csharp-ls".to_string(), vec![])
+        } else if which_bin("omnisharp").is_ok() {
+            ("omnisharp".to_string(), vec!["-lsp".to_string()])
+        } else {
+            ("csharp-ls".to_string(), vec![])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for PHP language servers.
+    pub fn for_php() -> Self {
+        let (cmd, args) = if which_bin("phpactor").is_ok() {
+            ("phpactor".to_string(), vec!["language-server".to_string()])
+        } else {
+            ("intelephense".to_string(), vec!["--stdio".to_string()])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Ruby language servers.
+    pub fn for_ruby() -> Self {
+        let (cmd, args) = if which_bin("ruby-lsp").is_ok() {
+            ("ruby-lsp".to_string(), vec![])
+        } else {
+            ("solargraph".to_string(), vec!["stdio".to_string()])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
             max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
@@ -702,12 +816,24 @@ impl GenericLspEngine {
             cmd.env(k, v);
         }
 
-        let mut child = cmd.spawn().with_context(|| {
-            format!(
-                "Failed to execute command: {} {:?}",
-                config.command, config.args
-            )
-        })?;
+        let mut attempts = 0;
+        let mut child = loop {
+            match cmd.spawn() {
+                Ok(child) => break child,
+                Err(err) if err.raw_os_error() == Some(26) && attempts < 10 => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "Failed to execute command: {} {:?}",
+                            config.command, config.args
+                        )
+                    })
+                }
+            }
+        };
 
         let stdin = child
             .stdin
