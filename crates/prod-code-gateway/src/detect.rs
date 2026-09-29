@@ -125,6 +125,30 @@ const DOCKERFILE_MARKERS: &[&str] = &[
 const SVELTE_MARKERS: &[&str] = &["svelte.config.js", "svelte.config.ts"];
 const VUE_MARKERS: &[&str] = &["vue.config.js", "vue.config.ts"];
 const ASSEMBLY_MARKERS: &[&str] = &[".asm-lsp.toml"];
+const POWERSHELL_MARKERS: &[&str] = &[
+    "PSScriptAnalyzerSettings.psd1",
+    "profile.ps1",
+];
+const STARLARK_MARKERS: &[&str] = &[
+    "BUILD.bazel",
+    "WORKSPACE.bazel",
+    "MODULE.bazel",
+    "BUILD",
+    "WORKSPACE",
+    "Tiltfile",
+];
+const HCL_MARKERS: &[&str] = &[
+    "terragrunt.hcl",
+    ".tflint.hcl",
+    "packer.pkr.hcl",
+];
+const TYPST_MARKERS: &[&str] = &["typst.toml"];
+const WAT_MARKERS: &[&str] = &["wat.json"];
+const SYSTEMVERILOG_MARKERS: &[&str] = &["verilator.f", "filelist.f"];
+const VHDL_MARKERS: &[&str] = &["vunit.py", "ghdl.flags"];
+const BALLERINA_MARKERS: &[&str] = &["Ballerina.toml", "Dependencies.toml"];
+const JSONNET_MARKERS: &[&str] = &["jsonnetfile.json", "jsonnetfile.lock.json"];
+const CUE_MARKERS: &[&str] = &["cue.mod"];
 
 /// The names a Makefile goes by.
 const MAKEFILES: &[&str] = &["Makefile", "makefile", "GNUmakefile"];
@@ -444,7 +468,7 @@ pub fn has_racket_project(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// A Terraform project (main.tf, versions.tf, *.tf, *.tofu, *.hcl) at the root.
+/// A Terraform project (main.tf, versions.tf, *.tf, *.tofu) at the root.
 pub fn has_terraform_project(root: &Path) -> bool {
     if TERRAFORM_MARKERS.iter().any(|m| root.join(m).exists()) {
         return true;
@@ -453,7 +477,7 @@ pub fn has_terraform_project(root: &Path) -> bool {
         .map(|entries| {
             entries.flatten().any(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                name.ends_with(".tf") || name.ends_with(".tofu") || name.ends_with(".hcl")
+                name.ends_with(".tf") || name.ends_with(".tofu")
             })
         })
         .unwrap_or(false)
@@ -591,6 +615,152 @@ pub fn has_assembly_project(root: &Path) -> bool {
             entries.flatten().any(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
                 name.ends_with(".s") || name.ends_with(".asm") || name.ends_with(".S")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A PowerShell project (PSScriptAnalyzerSettings.psd1, *.ps1, *.psm1, *.psd1) at the root.
+pub fn has_powershell_project(root: &Path) -> bool {
+    if POWERSHELL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".ps1") || name.ends_with(".psm1") || name.ends_with(".psd1")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Starlark / Bazel project (BUILD.bazel, WORKSPACE, *.bzl, Tiltfile, etc.) at the root.
+pub fn has_starlark_project(root: &Path) -> bool {
+    if STARLARK_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".bzl") || name.ends_with(".star")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// An HCL / Terragrunt project (terragrunt.hcl, .tflint.hcl, *.hcl) at the root.
+pub fn has_hcl_project(root: &Path) -> bool {
+    if HCL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".hcl")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Typst project (typst.toml, *.typ) at the root.
+pub fn has_typst_project(root: &Path) -> bool {
+    if TYPST_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".typ")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A WebAssembly Text / WAT project (wat.json, *.wat, *.wast) at the root.
+pub fn has_wat_project(root: &Path) -> bool {
+    if WAT_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".wat") || name.ends_with(".wast")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A SystemVerilog / Verilog project (verilator.f, *.sv, *.svh) at the root.
+pub fn has_systemverilog_project(root: &Path) -> bool {
+    if SYSTEMVERILOG_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".sv") || name.ends_with(".svh")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A VHDL project (vunit.py, *.vhd, *.vhdl) at the root.
+pub fn has_vhdl_project(root: &Path) -> bool {
+    if VHDL_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".vhd") || name.ends_with(".vhdl")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Ballerina project (Ballerina.toml, *.bal) at the root.
+pub fn has_ballerina_project(root: &Path) -> bool {
+    if BALLERINA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".bal")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Jsonnet project (jsonnetfile.json, *.jsonnet, *.libsonnet) at the root.
+pub fn has_jsonnet_project(root: &Path) -> bool {
+    if JSONNET_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.ends_with(".jsonnet") || name.ends_with(".libsonnet")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// A Cue project (cue.mod, *.cue) at the root.
+pub fn has_cue_project(root: &Path) -> bool {
+    if CUE_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return true;
+    }
+    std::fs::read_dir(root)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name().to_string_lossy().ends_with(".cue")
             })
         })
         .unwrap_or(false)
@@ -779,6 +949,36 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if has_css_project(root) {
         return EngineKind::Css;
     }
+    if has_powershell_project(root) {
+        return EngineKind::Powershell;
+    }
+    if has_starlark_project(root) {
+        return EngineKind::Starlark;
+    }
+    if has_hcl_project(root) {
+        return EngineKind::Hcl;
+    }
+    if has_typst_project(root) {
+        return EngineKind::Typst;
+    }
+    if has_wat_project(root) {
+        return EngineKind::Wat;
+    }
+    if has_systemverilog_project(root) {
+        return EngineKind::SystemVerilog;
+    }
+    if has_vhdl_project(root) {
+        return EngineKind::Vhdl;
+    }
+    if has_ballerina_project(root) {
+        return EngineKind::Ballerina;
+    }
+    if has_jsonnet_project(root) {
+        return EngineKind::Jsonnet;
+    }
+    if has_cue_project(root) {
+        return EngineKind::Cue;
+    }
     EngineKind::Generic
 }
 
@@ -932,6 +1132,36 @@ pub fn detect_all_engines(root: &Path) -> Vec<EngineKind> {
     }
     if has_assembly_project(root) {
         engines.push(EngineKind::Assembly);
+    }
+    if has_powershell_project(root) {
+        engines.push(EngineKind::Powershell);
+    }
+    if has_starlark_project(root) {
+        engines.push(EngineKind::Starlark);
+    }
+    if has_hcl_project(root) {
+        engines.push(EngineKind::Hcl);
+    }
+    if has_typst_project(root) {
+        engines.push(EngineKind::Typst);
+    }
+    if has_wat_project(root) {
+        engines.push(EngineKind::Wat);
+    }
+    if has_systemverilog_project(root) {
+        engines.push(EngineKind::SystemVerilog);
+    }
+    if has_vhdl_project(root) {
+        engines.push(EngineKind::Vhdl);
+    }
+    if has_ballerina_project(root) {
+        engines.push(EngineKind::Ballerina);
+    }
+    if has_jsonnet_project(root) {
+        engines.push(EngineKind::Jsonnet);
+    }
+    if has_cue_project(root) {
+        engines.push(EngineKind::Cue);
     }
 
     if engines.is_empty() {
@@ -1270,7 +1500,7 @@ mod tests {
     }
 
     #[test]
-    fn test_universal_language_detection_matrix_all_50_languages() {
+    fn test_universal_language_detection_matrix_all_60_languages() {
         struct Case {
             lang: &'static str,
             files: &'static [(&'static str, &'static str)],
@@ -1327,6 +1557,16 @@ mod tests {
             Case { lang: "Svelte", files: &[("svelte.config.js", "export default {};")], kind: EngineKind::Svelte },
             Case { lang: "Vue", files: &[("vue.config.js", "module.exports = {};")], kind: EngineKind::Vue },
             Case { lang: "Assembly", files: &[(".asm-lsp.toml", "")], kind: EngineKind::Assembly },
+            Case { lang: "Powershell", files: &[("scripts.ps1", "Write-Output 'hi'")], kind: EngineKind::Powershell },
+            Case { lang: "Starlark", files: &[("BUILD.bazel", "load(':rules.bzl', 'rule')")], kind: EngineKind::Starlark },
+            Case { lang: "Hcl", files: &[("terragrunt.hcl", "include { path = find_in_parent_folders() }")], kind: EngineKind::Hcl },
+            Case { lang: "Typst", files: &[("paper.typ", "#set text(font: 'PT Serif')")], kind: EngineKind::Typst },
+            Case { lang: "Wat", files: &[("main.wat", "(module (func (export \"run\")))")], kind: EngineKind::Wat },
+            Case { lang: "SystemVerilog", files: &[("core.sv", "module cpu; endmodule")], kind: EngineKind::SystemVerilog },
+            Case { lang: "Vhdl", files: &[("alu.vhd", "entity alu is end entity;")], kind: EngineKind::Vhdl },
+            Case { lang: "Ballerina", files: &[("Ballerina.toml", "[package]\nname = \"demo\"")], kind: EngineKind::Ballerina },
+            Case { lang: "Jsonnet", files: &[("service.jsonnet", "local config = {}; config")], kind: EngineKind::Jsonnet },
+            Case { lang: "Cue", files: &[("cue.mod", "module: \"example.com\"")], kind: EngineKind::Cue },
             Case { lang: "Generic", files: &[], kind: EngineKind::Generic },
         ];
 
