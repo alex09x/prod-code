@@ -552,6 +552,26 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_extract_interface".to_string(),
+            description: "Extract an interface, protocol, or abstract class from a class or struct across TypeScript/JavaScript, Go, Python, C++, Swift, and Rust (Roadmap 7.1). Extracts selected public method contracts, generates the interface definition, and updates the class/struct to implement or conform to it. Type-checked via analyzer overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the class or struct" },
+                    "symbol": { "type": "string", "description": "Name of the class, struct, or type to extract an interface from" },
+                    "interface_name": { "type": "string", "description": "Name of the new interface, protocol, or abstract class" },
+                    "methods": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of method names to include in the interface (defaults to all public methods)" },
+                    "line": { "type": "integer", "description": "Optional 1-based line of the type declaration" },
+                    "character": { "type": "integer", "description": "Optional 1-based column of the type declaration" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["symbol", "interface_name"]
+            }),
+        },
+        McpTool {
             name: "code_extract_function".to_string(),
             description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
                 .to_string(),
@@ -1445,6 +1465,9 @@ pub async fn execute_tool(
         }
         "code_replace_conditional_with_polymorphism" | "code_replace_conditional" => {
             handle_replace_conditional_with_polymorphism(remote, workspace_root, &args).await
+        }
+        "code_extract_interface" => {
+            handle_extract_interface(remote, workspace_root, &args).await
         }
         "code_extract_delegate" => {
             let path_str = args
@@ -3853,6 +3876,60 @@ async fn handle_replace_conditional_with_polymorphism(
         &params,
         return_type,
         target_var,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_extract_interface(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let symbol = args
+        .get("symbol")
+        .or_else(|| args.get("type_name"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'symbol' argument")?;
+    let interface_name = args
+        .get("interface_name")
+        .or_else(|| args.get("name"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'interface_name' argument")?;
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let methods: Vec<String> = args
+        .get("methods")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let col = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let done = crate::extract_interface::extract_interface_impl(
+        remote,
+        workspace_root,
+        &file_path,
+        symbol,
+        interface_name,
+        &methods,
+        line,
+        col,
         apply,
         force,
         verify,
@@ -6422,6 +6499,7 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_push_down",
     "code_replace_inheritance_with_delegation",
     "code_replace_conditional_with_polymorphism",
+    "code_extract_interface",
 ];
 
 /// One `workspace/symbol` hit, positioned on the symbol's name (1-based).
