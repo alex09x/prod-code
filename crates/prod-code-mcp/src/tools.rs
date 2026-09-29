@@ -639,7 +639,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_wrap_return".to_string(),
-            description: "Wrap what a function returns across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.4). Supports `promise` (adds `async`, rewrites callers to `await`), `option`/`nullable` (`Optional`, `std::optional`, `T?`, `T | null`), `result`/`expected` (`Result`, `std::expected`, `(T, error)`), and `pointer` (`*T`). rust-analyzer assists are used for Rust with `?` propagation. Callers that cannot propagate the wrapped type are reported as blocked and require a decision (or `force`). Addressable by `symbol` or `line`/`character`."
+            description: "Wrap what a function returns across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.4). Supports `promise` (adds `async`, rewrites callers to `await`), `option`/`nullable` (`Optional`, `std::optional`, `T?`, `T | null`), `result`/`expected` (`Result`, `std::expected`, `(T, error)`), `pointer` (`*T`), and custom envelope types (e.g. `Response`, `CustomEnvelope`). Optional `constructor` specifies a custom factory or constructor expression (e.g. `Response::ok`, `new Response`, `Response(val)`). Callers that cannot propagate the wrapped type are reported as blocked and require a decision (or `force`). Addressable by `symbol` or `line`/`character`."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -648,7 +648,8 @@ pub fn list_tools() -> Vec<McpTool> {
                     "symbol": { "type": "string", "description": "Function or method name to wrap (alternative to line and character)" },
                     "line": { "type": "integer", "description": "1-based line of the function's declaration" },
                     "character": { "type": "integer", "description": "1-based column of the function's declaration" },
-                    "wrapper": { "type": "string", "description": "What the return type becomes wrapped in: `promise`, `option`/`nullable`, `result`/`expected`/`error`, `pointer`" },
+                    "wrapper": { "type": "string", "description": "What the return type becomes wrapped in: `promise`, `option`/`nullable`, `result`/`expected`/`error`, `pointer`, or a custom envelope type name" },
+                    "constructor": { "type": "string", "description": "Optional constructor or factory expression for wrapping return expressions (e.g. `Response::ok`, `new Response`, `Response(val)`)" },
                     "error": { "type": "string", "description": "For `result`: the error type, such as `anyhow::Error`, `Error`, or `std::string`" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
@@ -4538,8 +4539,9 @@ async fn handle_wrap_return(
     let wrapper = crate::wrap_return::Wrapper::parse(
         args.get("wrapper")
             .and_then(|v| v.as_str())
-            .context("Missing 'wrapper' argument: `option`, `result`, `promise`, or `pointer`")?,
+            .context("Missing 'wrapper' argument: `option`, `result`, `promise`, `pointer`, or custom envelope")?,
     )?;
+    let constructor = args.get("constructor").and_then(|v| v.as_str());
     let error = args.get("error").and_then(|v| v.as_str());
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -4564,7 +4566,7 @@ async fn handle_wrap_return(
         anyhow::bail!("Missing 'path' or 'symbol' argument");
     };
 
-    let mut done = crate::wrap_return::wrap_polyglot(
+    let mut done = crate::wrap_return::wrap_polyglot_ext(
         remote,
         workspace_root,
         &file_path,
@@ -4572,6 +4574,7 @@ async fn handle_wrap_return(
         line,
         character,
         wrapper,
+        constructor,
         error,
         apply && !verify,
         force,

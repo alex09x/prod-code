@@ -24,27 +24,46 @@ use std::path::{Path, PathBuf};
 use crate::parameter_object::Language;
 
 /// Which wrapper the return type gets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wrapper {
     Option,
     Result,
     Promise,
     Pointer,
+    Custom(String),
+}
+
+impl serde::Serialize for Wrapper {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Option => serializer.serialize_str("option"),
+            Self::Result => serializer.serialize_str("result"),
+            Self::Promise => serializer.serialize_str("promise"),
+            Self::Pointer => serializer.serialize_str("pointer"),
+            Self::Custom(name) => serializer.serialize_str(name),
+        }
+    }
 }
 
 impl Wrapper {
     pub fn parse(text: &str) -> Result<Self> {
-        match text.trim().to_ascii_lowercase().as_str() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("wrapper cannot be empty: use `option`, `result`, `promise`, `pointer`, or a custom envelope type name");
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
             "option" | "optional" | "nullable" => Ok(Self::Option),
             "result" | "expected" | "error" => Ok(Self::Result),
             "promise" | "future" | "async" => Ok(Self::Promise),
             "pointer" | "ptr" => Ok(Self::Pointer),
-            other => anyhow::bail!("`{other}` is not a wrapper: use `option`, `result`, `promise`, or `pointer`"),
+            _ => Ok(Self::Custom(trimmed.to_string())),
         }
     }
 
-    pub fn assist_id(self) -> &'static str {
+    pub fn assist_id(&self) -> &'static str {
         match self {
             Self::Option => "wrap_return_type_in_option",
             Self::Result => "wrap_return_type_in_result",
@@ -52,12 +71,13 @@ impl Wrapper {
         }
     }
 
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Self::Option => "Option",
             Self::Result => "Result",
             Self::Promise => "Promise",
             Self::Pointer => "Pointer",
+            Self::Custom(name) => name.as_str(),
         }
     }
 }
@@ -85,8 +105,10 @@ impl WrappedReturn {
     pub fn render(&self, diff_budget: usize) -> String {
         let prop_note = if self.now.starts_with("Promise") {
             format!("{} call site(s) propagate with `await`", self.propagated)
-        } else {
+        } else if self.now.starts_with("Option") || self.now.starts_with("Result") {
             format!("{} call site(s) propagate with `?`", self.propagated)
+        } else {
+            format!("{} call site(s) propagate", self.propagated)
         };
         let mut out = format!(
             "`{}` ({})\n\n- returned: `{}`\n- now returns: `{}`\n- {}\n\n",
@@ -234,14 +256,215 @@ pub fn enclosing_return_type(text: &str, at: usize) -> Option<String> {
 }
 
 /// Whether a function returning `ty` can apply `?` to a value wrapped in `wrapper`.
-pub fn propagates(ty: &str, wrapper: Wrapper) -> bool {
+/// Whether a function returning `ty` can apply `?` (or propagate) a value wrapped in `wrapper`.
+pub fn propagates(ty: &str, wrapper: &Wrapper) -> bool {
     let head = ty.trim().split('<').next().unwrap_or("").trim();
+    let head = head.split('[').next().unwrap_or(head).trim();
     let last = head.rsplit("::").next().unwrap_or(head);
+    let last = last.rsplit('.').next().unwrap_or(last).trim();
     match wrapper {
-        Wrapper::Option => last == "Option",
-        Wrapper::Result => last == "Result",
-        Wrapper::Promise | Wrapper::Pointer => false,
+        Wrapper::Option => {
+            last == "Option"
+                || last == "Optional"
+                || ty.trim().ends_with('?')
+                || ty.trim().contains("| null")
+                || ty.trim().contains("| None")
+                || ty.trim().starts_with('*')
+        }
+        Wrapper::Result => last == "Result" || last == "expected" || last == "error",
+        Wrapper::Promise => last == "Promise" || last == "Future",
+        Wrapper::Pointer => ty.trim().starts_with('*'),
+        Wrapper::Custom(custom_name) => {
+            let custom_head = custom_name.trim().split('<').next().unwrap_or(custom_name).trim();
+            let custom_head = custom_head.split('[').next().unwrap_or(custom_head).trim();
+            let custom_last = custom_head.rsplit("::").next().unwrap_or(custom_head);
+            let custom_last = custom_last.rsplit('.').next().unwrap_or(custom_last).trim();
+            last == custom_last || ty.contains(custom_last)
+        }
     }
+}
+
+/// Formats a constructor or factory call for a wrapped return expression.
+fn format_constructor_call(
+    constructor: Option<&str>,
+    default_base: &str,
+    expr: &str,
+    lang: Language,
+    was: &str,
+) -> String {
+    let expr = expr.trim();
+    if let Some(ctor) = constructor {
+        let ctor = ctor.trim();
+        if ctor.contains("{expr}") {
+            return ctor.replace("{expr}", expr);
+        }
+        if ctor.contains("{}") {
+            return ctor.replace("{}", expr);
+        }
+        if expr.is_empty() {
+            return format!("{ctor}()");
+        }
+        return format!("{ctor}({expr})");
+    }
+
+    match lang {
+        Language::Rust => {
+            if expr.is_empty() {
+                format!("{default_base}::new()")
+            } else {
+                format!("{default_base}::new({expr})")
+            }
+        }
+        Language::TypeScript | Language::JavaScript => {
+            if expr.is_empty() {
+                format!("new {default_base}()")
+            } else {
+                format!("new {default_base}({expr})")
+            }
+        }
+        Language::Python => {
+            if expr.is_empty() {
+                format!("{default_base}()")
+            } else {
+                format!("{default_base}({expr})")
+            }
+        }
+        Language::Cpp | Language::C => {
+            if expr.is_empty() {
+                format!("{default_base}()")
+            } else if !was.is_empty() && was != "void" {
+                format!("{default_base}<{was}>({expr})")
+            } else {
+                format!("{default_base}({expr})")
+            }
+        }
+        Language::Swift => {
+            if expr.is_empty() {
+                format!("{default_base}()")
+            } else {
+                format!("{default_base}({expr})")
+            }
+        }
+        Language::Go => {
+            let clean_base = default_base.trim_start_matches('*');
+            if expr.is_empty() {
+                format!("&{clean_base}{{}}")
+            } else {
+                format!("&{clean_base}{{Data: {expr}}}")
+            }
+        }
+    }
+}
+
+/// Rewrites explicit return statements and the trailing expression in a Rust function body.
+fn rewrite_rust_body(
+    body: &str,
+    constructor: Option<&str>,
+    envelope_base: &str,
+    was: &str,
+) -> String {
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'r' if body[i..].starts_with("return") => {
+                let before = if i > 0 { bytes[i - 1] as char } else { ' ' };
+                let after = if i + 6 < bytes.len() { bytes[i + 6] as char } else { ' ' };
+                if !is_ident(before) && !is_ident(after) {
+                    let end_stmt = body[i..].find(';').map_or(body.len(), |e| i + e);
+                    let ret_stmt = &body[i..end_stmt];
+                    let expr = ret_stmt.strip_prefix("return").unwrap().trim();
+                    let wrapped = format_constructor_call(constructor, envelope_base, expr, Language::Rust, was);
+                    edits.push((i, end_stmt - i, format!("return {wrapped}")));
+                    i = end_stmt;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // Check if the body has a tail expression (not terminated by semicolon)
+    let trimmed_body = body.trim_end();
+    if !trimmed_body.is_empty() && !trimmed_body.ends_with(';') {
+        let mut last_boundary = 0;
+        let mut d = 0;
+        let end_idx = trimmed_body.len();
+        let mut in_str = false;
+        let mut in_line_comment = false;
+        let mut in_block_comment = false;
+        let mut escape = false;
+
+        for (idx, &b) in bytes.iter().enumerate().take(end_idx) {
+            if in_line_comment {
+                if b == b'\n' {
+                    in_line_comment = false;
+                }
+                continue;
+            }
+            if in_block_comment {
+                if b == b'/' && idx > 0 && bytes[idx - 1] == b'*' {
+                    in_block_comment = false;
+                }
+                continue;
+            }
+            if in_str {
+                if escape {
+                    escape = false;
+                } else if b == b'\\' {
+                    escape = true;
+                } else if b == b'"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            if b == b'"' {
+                in_str = true;
+                continue;
+            }
+            if b == b'/' && idx + 1 < end_idx {
+                if bytes[idx + 1] == b'/' {
+                    in_line_comment = true;
+                    continue;
+                } else if bytes[idx + 1] == b'*' {
+                    in_block_comment = true;
+                    continue;
+                }
+            }
+            match b {
+                b'{' => d += 1,
+                b'}' => {
+                    d -= 1;
+                    if d == 0 && idx + 1 < end_idx {
+                        last_boundary = idx + 1;
+                    }
+                }
+                b';' if d == 0 => {
+                    last_boundary = idx + 1;
+                }
+                _ => {}
+            }
+        }
+        let tail_slice = &body[last_boundary..end_idx];
+        let tail_trimmed = tail_slice.trim();
+        if !tail_trimmed.is_empty() && !tail_trimmed.starts_with("return") {
+            let lead_ws = tail_slice.len() - tail_slice.trim_start().len();
+            let tail_start = last_boundary + lead_ws;
+            let tail_end = tail_start + tail_trimmed.len();
+            let wrapped = format_constructor_call(constructor, envelope_base, tail_trimmed, Language::Rust, was);
+            edits.push((tail_start, tail_end - tail_start, wrapped));
+        }
+    }
+
+    let mut out = body.to_string();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    for (start, len, repl) in edits {
+        out.replace_range(start..start + len, &repl);
+    }
+    out
 }
 
 /// Wraps the return type of the function declared at `line`:`col` (or `symbol`) of `file` for Rust.
@@ -258,10 +481,37 @@ pub async fn wrap_rust(
     apply: bool,
     force: bool,
 ) -> Result<WrappedReturn> {
-    anyhow::ensure!(
-        matches!(wrapper, Wrapper::Option | Wrapper::Result),
-        "Rust wrap_return supports `option` and `result`"
-    );
+    wrap_rust_ext(
+        remote,
+        root,
+        file,
+        symbol,
+        line,
+        col,
+        wrapper,
+        None,
+        error,
+        apply,
+        force,
+    )
+    .await
+}
+
+/// Wraps the return type of a Rust function with optional custom constructor.
+#[allow(clippy::too_many_arguments)]
+pub async fn wrap_rust_ext(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: u32,
+    col: u32,
+    wrapper: Wrapper,
+    constructor: Option<&str>,
+    error: Option<&str>,
+    apply: bool,
+    force: bool,
+) -> Result<WrappedReturn> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     let at = if line > 0 && col > 0 {
@@ -294,61 +544,86 @@ pub async fn wrap_rust(
     })?;
     let was = text[ret_start..ret_end].to_string();
     anyhow::ensure!(
-        !propagates(&was, wrapper),
+        !propagates(&was, &wrapper),
         "`{name}` already returns a `{}`",
         wrapper.name()
     );
-    let error =
-        match wrapper {
-            Wrapper::Result => Some(error.map(str::trim).filter(|e| !e.is_empty()).context(
-                "pass `error`: the type a `Result` fails with, such as `anyhow::Error`",
-            )?),
-            _ => None,
-        };
-
-    // rust-analyzer's half: the signature and every returned value.
-    let (rl, rc) = crate::signature::position_at(&text, ret_start)?;
-    let uri = url::Url::from_file_path(file)
-        .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
-        .to_string();
-    let edit = crate::tools::execute_lsp_query(
-        remote,
-        root,
-        file,
-        "prodCode/applyAssist",
-        serde_json::json!({
-            "textDocument": { "uri": uri },
-            "range": {
-                "start": { "line": rl - 1, "character": rc - 1 },
-                "end": { "line": rl - 1, "character": rc - 1 }
-            },
-            "id": wrapper.assist_id(),
-        }),
-    )
-    .await
-    .with_context(|| format!("rust-analyzer does not wrap the return type of `{name}` here"))?;
-    let (planned, _) = crate::refactor::planned_texts(root, &edit)?;
     let canonical = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let mut new_decl = planned
-        .into_iter()
-        .find(|(p, _)| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical)
-        .map(|(_, t)| t)
-        .context("the assist did not rewrite the declaring file")?;
-    // `Result<T, _>` gets the error type it was given.
-    let now = match error {
-        Some(error) => {
-            let sig_at = new_decl.find(&format!("fn {name}")).unwrap_or(0);
-            let body_at = new_decl[sig_at..]
+
+    let (new_decl, now) = match &wrapper {
+        Wrapper::Custom(custom_name) => {
+            let base_name = custom_name.split(['<', '[']).next().unwrap_or(custom_name).trim();
+            let base_name = base_name.rsplit("::").next().unwrap_or(base_name).trim();
+            let now = if custom_name.contains('<') {
+                custom_name.replace("<T>", &format!("<{was}>")).replace("<>", &format!("<{was}>"))
+            } else {
+                format!("{custom_name}<{was}>")
+            };
+            let body_open = text[close..]
                 .find('{')
-                .map_or(new_decl.len(), |i| sig_at + i);
-            let hole = new_decl[sig_at..body_at]
-                .rfind(", _>")
-                .map(|i| sig_at + i)
-                .context("the wrapped signature has no `_` error type to fill in")?;
-            new_decl.replace_range(hole..hole + ", _>".len(), &format!(", {error}>"));
-            format!("Result<{was}, {error}>")
+                .map(|i| close + i)
+                .context("function declaration has no body")?;
+            let body_close = crate::parameter_object::matching_bracket(&text, body_open)
+                .context("unmatched bracket in function body")?;
+            let body_text = &text[body_open + 1..body_close];
+            let rewritten_body = rewrite_rust_body(body_text, constructor, base_name, &was);
+            let mut new_text = text.clone();
+            new_text.replace_range(body_open + 1..body_close, &rewritten_body);
+            new_text.replace_range(ret_start..ret_end, &now);
+            (new_text, now)
         }
-        None => format!("Option<{was}>"),
+        Wrapper::Option | Wrapper::Result => {
+            let error = match wrapper {
+                Wrapper::Result => Some(error.map(str::trim).filter(|e| !e.is_empty()).context(
+                    "pass `error`: the type a `Result` fails with, such as `anyhow::Error`",
+                )?),
+                _ => None,
+            };
+
+            let (rl, rc) = crate::signature::position_at(&text, ret_start)?;
+            let uri = url::Url::from_file_path(file)
+                .map_err(|_| anyhow::anyhow!("invalid path {:?}", file))?
+                .to_string();
+            let edit = crate::tools::execute_lsp_query(
+                remote,
+                root,
+                file,
+                "prodCode/applyAssist",
+                serde_json::json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": rl - 1, "character": rc - 1 },
+                        "end": { "line": rl - 1, "character": rc - 1 }
+                    },
+                    "id": wrapper.assist_id(),
+                }),
+            )
+            .await
+            .with_context(|| format!("rust-analyzer does not wrap the return type of `{name}` here"))?;
+            let (planned, _) = crate::refactor::planned_texts(root, &edit)?;
+            let mut decl_text = planned
+                .into_iter()
+                .find(|(p, _)| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == canonical)
+                .map(|(_, t)| t)
+                .context("the assist did not rewrite the declaring file")?;
+            let now = match error {
+                Some(error) => {
+                    let sig_at = decl_text.find(&format!("fn {name}")).unwrap_or(0);
+                    let body_at = decl_text[sig_at..]
+                        .find('{')
+                        .map_or(decl_text.len(), |i| sig_at + i);
+                    let hole = decl_text[sig_at..body_at]
+                        .rfind(", _>")
+                        .map(|i| sig_at + i)
+                        .context("the wrapped signature has no `_` error type to fill in")?;
+                    decl_text.replace_range(hole..hole + ", _>".len(), &format!(", {error}>"));
+                    format!("Result<{was}, {error}>")
+                }
+                None => format!("Option<{was}>"),
+            };
+            (decl_text, now)
+        }
+        _ => anyhow::bail!("Rust wrap_return supports `option`, `result`, or a custom envelope type"),
     };
 
     // Where the declaring file did not change, a position means the same thing before and after.
@@ -378,9 +653,36 @@ pub async fn wrap_rust(
     let mut blocked = Vec::new();
     let mut unmatched = Vec::new();
     let (nl, nc) = crate::signature::position_at(&text, start)?;
-    let refs = crate::signature::references(remote, root, file, nl, nc)
+    let mut refs = crate::signature::references(remote, root, file, nl, nc)
         .await
-        .with_context(|| format!("cannot find the callers of `{name}`; nothing was planned"))?;
+        .unwrap_or_default();
+
+    if refs.is_empty() {
+        for entry in ignore::WalkBuilder::new(root).build().flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && p.extension().is_some_and(|ext| ext == "rs")
+                && let Ok(content) = std::fs::read_to_string(p)
+                && content.contains(&name)
+            {
+                for (idx, _) in content.match_indices(&name) {
+                    if idx > 0 && is_ident(content[..idx].chars().next_back().unwrap()) {
+                        continue;
+                    }
+                    if content[idx + name.len()..].starts_with(is_ident) {
+                        continue;
+                    }
+                    if p == file && idx >= start && idx <= close {
+                        continue;
+                    }
+                    if let Ok((l, c)) = crate::signature::position_at(&content, idx) {
+                        refs.push((p.to_path_buf(), l, c));
+                    }
+                }
+            }
+        }
+    }
+
     for (path, l, c) in refs {
         let body = crate::refactor::referenced_text(&mut texts, &path)?.clone();
         let site = format!("{}:{l}:{c}", display(root, &path));
@@ -394,6 +696,12 @@ pub async fn wrap_rust(
             ));
             continue;
         }
+        if crate::inline_parameter::is_in_comment(&body, at, Language::Rust) {
+            continue;
+        }
+        if crate::inline_parameter::is_import_or_export_context(&body, at, Language::Rust) {
+            continue;
+        }
         let Some((_, args_end)) = crate::parameter_object::call_args_span(&body, at + name.len())
         else {
             unmatched.push(format!("{site} (not a call: a function used as a value)"));
@@ -402,12 +710,12 @@ pub async fn wrap_rust(
         let same_file = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone()) == canonical;
         if same_file && start < at && at < own_end {
             unmatched.push(format!(
-                "{site} (a call inside `{name}` itself: add `?` there by hand)"
+                "{site} (a call inside `{name}` itself: add wrapper there by hand)"
             ));
             continue;
         }
         let caller = enclosing_return_type(&body, at).unwrap_or_else(|| "()".to_string());
-        if !propagates(&caller, wrapper) {
+        if !propagates(&caller, &wrapper) {
             let line_text = body[body[..at].rfind('\n').map_or(0, |i| i + 1)..]
                 .lines()
                 .next()
@@ -419,19 +727,21 @@ pub async fn wrap_rust(
             ));
             continue;
         }
-        let insert_at = args_end + 1;
-        // Elsewhere, and before the part the assist rewrote, a position is unchanged.
-        let mapped = if !same_file || insert_at <= prefix {
-            insert_at
-        } else if insert_at >= text.len() - suffix {
-            (insert_at as isize + delta) as usize
-        } else {
-            unmatched.push(format!(
-                "{site} (a call inside `{name}` itself: add `?` there by hand)"
-            ));
-            continue;
-        };
-        edits.entry(path.clone()).or_default().push(mapped);
+        if matches!(wrapper, Wrapper::Option | Wrapper::Result) {
+            let insert_at = args_end + 1;
+            // Elsewhere, and before the part the assist rewrote, a position is unchanged.
+            let mapped = if !same_file || insert_at <= prefix {
+                insert_at
+            } else if insert_at >= text.len() - suffix {
+                (insert_at as isize + delta) as usize
+            } else {
+                unmatched.push(format!(
+                    "{site} (a call inside `{name}` itself: add `?` there by hand)"
+                ));
+                continue;
+            };
+            edits.entry(path.clone()).or_default().push(mapped);
+        }
         propagated += 1;
     }
 
@@ -482,7 +792,7 @@ pub async fn wrap_rust(
     if apply {
         anyhow::ensure!(
             blocked.is_empty() || force,
-            "{} call site(s) cannot propagate with `?`; nothing was written:\n  {}",
+            "{} call site(s) cannot propagate; nothing was written:\n  {}",
             blocked.len(),
             blocked.join("\n  ")
         );
@@ -776,16 +1086,19 @@ pub fn find_polyglot_decl(
 }
 
 /// Rewrites return statements in function body.
-fn rewrite_body_returns(body: &str, lang: Language, wrapper: Wrapper) -> String {
+fn rewrite_body_returns(
+    body: &str,
+    lang: Language,
+    wrapper: &Wrapper,
+    constructor: Option<&str>,
+    was: &str,
+) -> String {
     let mut edits: Vec<(usize, usize, String)> = Vec::new();
     let bytes = body.as_bytes();
     let mut i = 0;
-    let mut depth = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            b'r' if depth <= 1 && body[i..].starts_with("return") => {
+            b'r' if body[i..].starts_with("return") => {
                 let before = if i > 0 { body.as_bytes()[i - 1] as char } else { ' ' };
                 let after = if i + 6 < bytes.len() { body.as_bytes()[i + 6] as char } else { ' ' };
                 if !is_ident(before) && !is_ident(after) {
@@ -793,39 +1106,53 @@ fn rewrite_body_returns(body: &str, lang: Language, wrapper: Wrapper) -> String 
                     let ret_stmt = &body[i..end_stmt];
                     let expr = ret_stmt.strip_prefix("return").unwrap().trim();
                     let semi = if ret_stmt.ends_with(';') { ";" } else { "" };
-                    match (wrapper, lang) {
-                        (Wrapper::Result, Language::Go) => {
-                            if expr.is_empty() {
-                                edits.push((i, end_stmt - i, format!("return nil{semi}")));
-                            } else {
-                                edits.push((i, end_stmt - i, format!("return {expr}, nil{semi}")));
-                            }
+                    let expr_clean = expr.strip_suffix(';').unwrap_or(expr).trim();
+                    match wrapper {
+                        Wrapper::Custom(custom_name) => {
+                            let base = custom_name.split(['<', '[']).next().unwrap_or(custom_name).trim();
+                            let base = base.rsplit("::").next().unwrap_or(base);
+                            let base = base.rsplit('.').next().unwrap_or(base).trim();
+                            let wrapped = format_constructor_call(constructor, base, expr_clean, lang, was);
+                            edits.push((i, end_stmt - i, format!("return {wrapped}{semi}")));
                         }
-                        (Wrapper::Result, Language::Swift) => {
-                            if expr.is_empty() {
-                                edits.push((i, end_stmt - i, format!("return .success(()){semi}")));
-                            } else {
-                                edits.push((i, end_stmt - i, format!("return .success({expr}){semi}")));
+                        Wrapper::Result => match lang {
+                            Language::Go => {
+                                if expr_clean.is_empty() {
+                                    edits.push((i, end_stmt - i, format!("return nil{semi}")));
+                                } else {
+                                    edits.push((i, end_stmt - i, format!("return {expr_clean}, nil{semi}")));
+                                }
                             }
-                        }
-                        (Wrapper::Result, Language::Python) => {
-                            if expr.is_empty() {
-                                edits.push((i, end_stmt - i, format!("return Ok(None){semi}")));
-                            } else {
-                                edits.push((i, end_stmt - i, format!("return Ok({expr}){semi}")));
+                            Language::Swift => {
+                                if expr_clean.is_empty() {
+                                    edits.push((i, end_stmt - i, format!("return .success(()){semi}")));
+                                } else {
+                                    edits.push((i, end_stmt - i, format!("return .success({expr_clean}){semi}")));
+                                }
                             }
-                        }
-                        (Wrapper::Result, Language::TypeScript | Language::JavaScript) => {
-                            if expr.is_empty() {
-                                edits.push((i, end_stmt - i, format!("return {{ ok: true, value: undefined }}{semi}")));
-                            } else {
-                                edits.push((i, end_stmt - i, format!("return {{ ok: true, value: {expr} }}{semi}")));
+                            Language::Python => {
+                                if expr_clean.is_empty() {
+                                    edits.push((i, end_stmt - i, format!("return Ok(None){semi}")));
+                                } else {
+                                    edits.push((i, end_stmt - i, format!("return Ok({expr_clean}){semi}")));
+                                }
                             }
-                        }
-                        (Wrapper::Pointer | Wrapper::Option, Language::Go)
-                            if !expr.starts_with('&') && !expr.is_empty() && expr != "nil" =>
+                            Language::TypeScript | Language::JavaScript => {
+                                if expr_clean.is_empty() {
+                                    edits.push((i, end_stmt - i, format!("return {{ ok: true, value: undefined }}{semi}")));
+                                } else {
+                                    edits.push((i, end_stmt - i, format!("return {{ ok: true, value: {expr_clean} }}{semi}")));
+                                }
+                            }
+                            _ => {}
+                        },
+                        Wrapper::Pointer | Wrapper::Option
+                            if lang == Language::Go
+                                && !expr_clean.starts_with('&')
+                                && !expr_clean.is_empty()
+                                && expr_clean != "nil" =>
                         {
-                            edits.push((i, end_stmt - i, format!("return &{expr}{semi}")));
+                            edits.push((i, end_stmt - i, format!("return &{expr_clean}{semi}")));
                         }
                         _ => {}
                     }
@@ -851,7 +1178,8 @@ pub fn restructure_declaring_file(
     text: &str,
     lang: Language,
     decl: &PolyglotFuncDecl,
-    wrapper: Wrapper,
+    wrapper: &Wrapper,
+    constructor: Option<&str>,
     error: Option<&str>,
 ) -> Result<(String, String)> {
     let was = &decl.was;
@@ -919,6 +1247,24 @@ pub fn restructure_declaring_file(
                     }
                     now
                 }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split('<').next().unwrap_or(custom_name).trim();
+                    let now = if custom_name.contains('<') {
+                        custom_name.replace("<T>", &format!("<{was}>")).replace("<>", &format!("<{was}>"))
+                    } else if was.is_empty() || was == "void" {
+                        if is_ts { format!("{base}<void>") } else { base.to_string() }
+                    } else {
+                        if is_ts { format!("{base}<{was}>") } else { base.to_string() }
+                    };
+                    if is_ts {
+                        if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                            out.replace_range(s..e, &now);
+                        } else {
+                            out.insert_str(decl.close_paren + 1, &format!(": {now}"));
+                        }
+                    }
+                    now
+                }
                 Wrapper::Pointer => anyhow::bail!("Pointer wrapper is not supported for TypeScript/JavaScript"),
             }
         }
@@ -951,6 +1297,22 @@ pub fn restructure_declaring_file(
                     }
                     now
                 }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split('[').next().unwrap_or(custom_name).trim();
+                    let now = if custom_name.contains('[') {
+                        custom_name.replace("[T]", &format!("[{was}]")).replace("[]", &format!("[{was}]"))
+                    } else if was.is_empty() || was == "None" {
+                        format!("{base}[Any]")
+                    } else {
+                        format!("{base}[{was}]")
+                    };
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now}"));
+                    }
+                    now
+                }
                 Wrapper::Promise | Wrapper::Pointer => anyhow::bail!("{wrapper:?} wrapper is not supported for Python"),
             }
         }
@@ -966,6 +1328,20 @@ pub fn restructure_declaring_file(
                 Wrapper::Result => {
                     let err_ty = error.unwrap_or("std::string");
                     let now = format!("std::expected<{was}, {err_ty}>");
+                    if let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    }
+                    now
+                }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split('<').next().unwrap_or(custom_name).trim();
+                    let now = if custom_name.contains('<') {
+                        custom_name.replace("<T>", &format!("<{was}>")).replace("<>", &format!("<{was}>"))
+                    } else if was.is_empty() || was == "void" {
+                        base.to_string()
+                    } else {
+                        format!("{base}<{was}>")
+                    };
                     if let Some((s, e)) = decl.ret_span {
                         out.replace_range(s..e, &now);
                     }
@@ -988,6 +1364,22 @@ pub fn restructure_declaring_file(
                 Wrapper::Result => {
                     let err_ty = error.unwrap_or("Error");
                     let now = format!("Result<{was}, {err_ty}>");
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now} "));
+                    }
+                    now
+                }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split('<').next().unwrap_or(custom_name).trim();
+                    let now = if custom_name.contains('<') {
+                        custom_name.replace("<T>", &format!("<{was}>")).replace("<>", &format!("<{was}>"))
+                    } else if was.is_empty() || was == "Void" {
+                        format!("{base}<Void>")
+                    } else {
+                        format!("{base}<{was}>")
+                    };
                     if decl.has_return_type && let Some((s, e)) = decl.ret_span {
                         out.replace_range(s..e, &now);
                     } else {
@@ -1025,6 +1417,24 @@ pub fn restructure_declaring_file(
                     }
                     now
                 }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split('[').next().unwrap_or(custom_name).trim();
+                    let now = if custom_name.contains('[') {
+                        custom_name.replace("[T]", &format!("[{was}]")).replace("[]", &format!("[{was}]"))
+                    } else if custom_name.starts_with('*') {
+                        custom_name.to_string()
+                    } else if was.is_empty() {
+                        base.to_string()
+                    } else {
+                        format!("{base}[{was}]")
+                    };
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" {now} "));
+                    }
+                    now
+                }
                 Wrapper::Promise => anyhow::bail!("Promise wrapper is not supported for Go"),
             }
         }
@@ -1042,7 +1452,7 @@ pub fn restructure_declaring_file(
     };
 
     let body_text = &out[new_body_open + 1..new_body_close];
-    let rewritten_body = rewrite_body_returns(body_text, lang, wrapper);
+    let rewritten_body = rewrite_body_returns(body_text, lang, wrapper, constructor, was);
     out.replace_range(new_body_open + 1..new_body_close, &rewritten_body);
 
     Ok((out, now))
@@ -1170,9 +1580,40 @@ pub async fn wrap_polyglot(
     apply: bool,
     force: bool,
 ) -> Result<WrappedReturn> {
+    wrap_polyglot_ext(
+        remote,
+        root,
+        file,
+        symbol,
+        line,
+        col,
+        wrapper,
+        None,
+        error,
+        apply,
+        force,
+    )
+    .await
+}
+
+/// Unified wrap_return refactoring with optional custom constructor across Rust, TypeScript, JavaScript, Python, C++, Swift, and Go.
+#[allow(clippy::too_many_arguments)]
+pub async fn wrap_polyglot_ext(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    wrapper: Wrapper,
+    constructor: Option<&str>,
+    error: Option<&str>,
+    apply: bool,
+    force: bool,
+) -> Result<WrappedReturn> {
     let lang = Language::of(file).with_context(|| format!("unsupported language for {}", file.display()))?;
     if lang == Language::Rust {
-        return wrap_rust(
+        return wrap_rust_ext(
             remote,
             root,
             file,
@@ -1180,6 +1621,7 @@ pub async fn wrap_polyglot(
             line.unwrap_or(0),
             col.unwrap_or(0),
             wrapper,
+            constructor,
             error,
             apply,
             force,
@@ -1195,7 +1637,7 @@ pub async fn wrap_polyglot(
     let was = decl.was.clone();
 
     // Check already wrapped
-    match wrapper {
+    match &wrapper {
         Wrapper::Promise => {
             anyhow::ensure!(
                 !was.contains("Promise<") && (!decl.is_async || !was.is_empty()),
@@ -1232,9 +1674,18 @@ pub async fn wrap_polyglot(
                 "`{name}` already returns a `Pointer`"
             );
         }
+        Wrapper::Custom(custom_name) => {
+            let base = custom_name.split(['<', '[']).next().unwrap_or(custom_name).trim();
+            let base = base.rsplit("::").next().unwrap_or(base);
+            let base = base.rsplit('.').next().unwrap_or(base).trim();
+            anyhow::ensure!(
+                !was.contains(base),
+                "`{name}` already returns a `{base}`"
+            );
+        }
     }
 
-    let (new_decl_file, now) = restructure_declaring_file(&text, lang, &decl, wrapper, error)?;
+    let (new_decl_file, now) = restructure_declaring_file(&text, lang, &decl, &wrapper, constructor, error)?;
 
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), new_decl_file.clone());
@@ -1298,7 +1749,13 @@ pub async fn wrap_polyglot(
             }
 
             // C++ prototype in header
-            if matches!(lang, Language::Cpp | Language::C) && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, decl.close_paren) {
+            let proto_close_paren = other_content[at + name.len()..]
+                .find('(')
+                .and_then(|open| crate::parameter_object::matching_bracket(&other_content, at + name.len() + open));
+            if matches!(lang, Language::Cpp | Language::C)
+                && let Some(cp) = proto_close_paren
+                && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, cp)
+            {
                 if let Some(ret_start) = other_content[..at].rfind(&was) {
                     file_edits.push((ret_start, was.len(), now.clone()));
                 }
@@ -1314,7 +1771,7 @@ pub async fn wrap_polyglot(
             let caller_info = enclosing_polyglot_info(&other_content, at, lang);
             let (caller_ret, caller_is_async) = caller_info.unwrap_or_else(|| (String::new(), false));
 
-            match wrapper {
+            match &wrapper {
                 Wrapper::Promise => {
                     if caller_is_async {
                         let before_call = other_content[..at].trim_end();
@@ -1389,6 +1846,24 @@ pub async fn wrap_polyglot(
                         Language::Go => caller_ret.starts_with('*'),
                         _ => caller_ret.contains('*'),
                     };
+                    if can_propagate {
+                        propagated += 1;
+                    } else {
+                        let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let desc = if caller_ret.is_empty() { "none" } else { &caller_ret };
+                        blocked.push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                    }
+                }
+                Wrapper::Custom(custom_name) => {
+                    let base = custom_name.split(['<', '[']).next().unwrap_or(custom_name).trim();
+                    let base = base.rsplit("::").next().unwrap_or(base);
+                    let base = base.rsplit('.').next().unwrap_or(base).trim();
+                    let can_propagate = caller_ret.contains(base);
                     if can_propagate {
                         propagated += 1;
                     } else {
@@ -1500,7 +1975,7 @@ pub async fn wrap(
     apply: bool,
     force: bool,
 ) -> Result<WrappedReturn> {
-    wrap_polyglot(
+    wrap_polyglot_ext(
         remote,
         root,
         file,
@@ -1508,6 +1983,7 @@ pub async fn wrap(
         Some(line),
         Some(col),
         wrapper,
+        None,
         error,
         apply,
         force,
@@ -1525,7 +2001,8 @@ mod tests {
         assert_eq!(Wrapper::parse("Result").unwrap(), Wrapper::Result);
         assert_eq!(Wrapper::parse("promise").unwrap(), Wrapper::Promise);
         assert_eq!(Wrapper::parse("pointer").unwrap(), Wrapper::Pointer);
-        assert!(Wrapper::parse("either").is_err());
+        assert_eq!(Wrapper::parse("Response").unwrap(), Wrapper::Custom("Response".into()));
+        assert!(Wrapper::parse("").is_err());
         assert_eq!(Wrapper::Option.assist_id(), "wrap_return_type_in_option");
         assert_eq!(Wrapper::Result.assist_id(), "wrap_return_type_in_result");
     }
@@ -1557,13 +2034,16 @@ mod tests {
 
     #[test]
     fn only_a_matching_wrapper_can_propagate() {
-        assert!(propagates("Option<u32>", Wrapper::Option));
-        assert!(propagates("std::option::Option<u32>", Wrapper::Option));
-        assert!(propagates("anyhow::Result<()>", Wrapper::Result));
-        assert!(propagates("Result<u32, String>", Wrapper::Result));
-        assert!(!propagates("Result<u32, String>", Wrapper::Option));
-        assert!(!propagates("u32", Wrapper::Result));
-        assert!(!propagates("()", Wrapper::Option));
+        assert!(propagates("Option<u32>", &Wrapper::Option));
+        assert!(propagates("std::option::Option<u32>", &Wrapper::Option));
+        assert!(propagates("anyhow::Result<()>", &Wrapper::Result));
+        assert!(propagates("Result<u32, String>", &Wrapper::Result));
+        assert!(propagates("Response<u32>", &Wrapper::Custom("Response".into())));
+        assert!(propagates("my_mod::Response<u32>", &Wrapper::Custom("Response".into())));
+        assert!(!propagates("Result<u32, String>", &Wrapper::Option));
+        assert!(!propagates("u32", &Wrapper::Result));
+        assert!(!propagates("u32", &Wrapper::Custom("Response".into())));
+        assert!(!propagates("()", &Wrapper::Option));
     }
 
     fn report() -> WrappedReturn {

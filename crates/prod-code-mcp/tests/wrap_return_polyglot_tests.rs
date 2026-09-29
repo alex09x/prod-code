@@ -1,4 +1,4 @@
-use prod_code_mcp::wrap_return::{wrap_polyglot, Wrapper};
+use prod_code_mcp::wrap_return::{wrap_polyglot, wrap_polyglot_ext, Wrapper};
 use prod_code_testkit::{answers, ScriptedGateway, Workspace};
 use std::fs;
 
@@ -522,4 +522,512 @@ func GetErr() (string, error) {
     .await
     .unwrap_err();
     assert!(err4.to_string().contains("already returns a `Result`"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_rust_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/math.rs",
+            r#"pub fn calculate(x: u32) -> u32 {
+    let y = x * 2;
+    y + 1
+}
+"#,
+        ),
+        (
+            "src/client.rs",
+            r#"use crate::math::calculate;
+
+pub fn run() -> Response<u32> {
+    calculate(5)
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("src/math.rs");
+    let client_file = root.join("src/client.rs");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("calculate"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "calculate");
+    assert_eq!(res.was, "u32");
+    assert_eq!(res.now, "Response<u32>");
+    assert_eq!(res.propagated, 1);
+    assert!(res.blocked.is_empty());
+    assert!(res.applied);
+
+    let math_content = fs::read_to_string(&math_file).unwrap();
+    assert!(math_content.contains("pub fn calculate(x: u32) -> Response<u32> {"));
+    assert!(math_content.contains("Response::new(y + 1)"));
+
+    let client_content = fs::read_to_string(&client_file).unwrap();
+    assert!(client_content.contains("calculate(5)"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_rust_custom_constructor_and_explicit_return() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/service.rs",
+            r#"pub fn fetch_data(id: u32) -> String {
+    if id == 0 {
+        return "empty".to_string();
+    }
+    format!("data-{id}")
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let service_file = root.join("src/service.rs");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &service_file,
+        Some("fetch_data"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        Some("Response::ok"),
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "fetch_data");
+    assert_eq!(res.was, "String");
+    assert_eq!(res.now, "Response<String>");
+    assert!(res.applied);
+
+    let service_content = fs::read_to_string(&service_file).unwrap();
+    assert!(service_content.contains("pub fn fetch_data(id: u32) -> Response<String> {"));
+    assert!(service_content.contains("return Response::ok(\"empty\".to_string())"));
+    assert!(service_content.contains("Response::ok(format!(\"data-{id}\"))"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_rust_blocked_caller_refusal() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/math.rs",
+            r#"pub fn compute(x: u32) -> u32 {
+    x * 2
+}
+"#,
+        ),
+        (
+            "src/client.rs",
+            r#"use crate::math::compute;
+
+pub fn run() -> u32 {
+    compute(5)
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("src/math.rs");
+    let gw = fake_gateway().await;
+
+    let err = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("1 call site(s) cannot propagate"));
+
+    // With force: true, the edit succeeds
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        true,
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(res.applied);
+    assert_eq!(res.blocked.len(), 1);
+}
+
+#[tokio::test]
+async fn test_wrap_return_typescript_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "math.ts",
+            r#"export function calculate(x: number): number {
+    return x * 2;
+}
+"#,
+        ),
+        (
+            "client.ts",
+            r#"import { calculate } from "./math";
+
+export function run(): Response<number> {
+    return calculate(5);
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("math.ts");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("calculate"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "calculate");
+    assert_eq!(res.was, "number");
+    assert_eq!(res.now, "Response<number>");
+    assert_eq!(res.propagated, 1);
+    assert!(res.applied);
+
+    let math_content = fs::read_to_string(&math_file).unwrap();
+    assert!(math_content.contains("export function calculate(x: number): Response<number> {"));
+    assert!(math_content.contains("return new Response(x * 2);"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_typescript_custom_constructor() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "math.ts",
+            r#"export function calculate(x: number): number {
+    return x * 2;
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let math_file = root.join("math.ts");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &math_file,
+        Some("calculate"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        Some("Response.ok"),
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.now, "Response<number>");
+    let math_content = fs::read_to_string(&math_file).unwrap();
+    assert!(math_content.contains("return Response.ok(x * 2);"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_python_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "calc.py",
+            r#"def compute(x: int) -> int:
+    return x * 2
+"#,
+        ),
+        (
+            "client.py",
+            r#"from calc import compute
+
+def run() -> Response[int]:
+    return compute(10)
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let calc_file = root.join("calc.py");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &calc_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        Some("Response.create"),
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "compute");
+    assert_eq!(res.was, "int");
+    assert_eq!(res.now, "Response[int]");
+    assert_eq!(res.propagated, 1);
+    assert!(res.applied);
+
+    let calc_content = fs::read_to_string(&calc_file).unwrap();
+    assert!(calc_content.contains("def compute(x: int) -> Response[int]:"));
+    assert!(calc_content.contains("return Response.create(x * 2)"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_cpp_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "calc.hpp",
+            r#"int compute(int x);
+"#,
+        ),
+        (
+            "calc.cpp",
+            r#"#include "calc.hpp"
+
+int compute(int x) {
+    return x * 2;
+}
+"#,
+        ),
+        (
+            "client.cpp",
+            r#"#include "calc.hpp"
+
+Response<int> run() {
+    return compute(5);
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let calc_file = root.join("calc.cpp");
+    let header_file = root.join("calc.hpp");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &calc_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "compute");
+    assert_eq!(res.was, "int");
+    assert_eq!(res.now, "Response<int>");
+    assert_eq!(res.propagated, 1);
+    assert!(res.applied);
+
+    let cpp_content = fs::read_to_string(&calc_file).unwrap();
+    assert!(cpp_content.contains("Response<int> compute(int x) {"));
+    assert!(cpp_content.contains("return Response<int>(x * 2);"));
+
+    let hpp_content = fs::read_to_string(&header_file).unwrap();
+    assert!(hpp_content.contains("Response<int> compute(int x);"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_swift_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "calc.swift",
+            r#"func compute(x: Int) -> Int {
+    return x * 2
+}
+"#,
+        ),
+        (
+            "client.swift",
+            r#"func run() -> Response<Int> {
+    return compute(x: 5)
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let calc_file = root.join("calc.swift");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &calc_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        Some("Response.success"),
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "compute");
+    assert_eq!(res.was, "Int");
+    assert_eq!(res.now, "Response<Int>");
+    assert_eq!(res.propagated, 1);
+    assert!(res.applied);
+
+    let swift_content = fs::read_to_string(&calc_file).unwrap();
+    assert!(swift_content.contains("func compute(x: Int) -> Response<Int> {"));
+    assert!(swift_content.contains("return Response.success(x * 2)"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_go_custom_envelope() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "calc.go",
+            r#"package calc
+
+func Compute(x int) int {
+    return x * 2
+}
+"#,
+        ),
+        (
+            "client.go",
+            r#"package calc
+
+func Run() Response[int] {
+    return Compute(5)
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let calc_file = root.join("calc.go");
+    let gw = fake_gateway().await;
+
+    let res = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &calc_file,
+        Some("Compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        Some("NewResponse"),
+        None,
+        true,
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(res.function, "Compute");
+    assert_eq!(res.was, "int");
+    assert_eq!(res.now, "Response[int]");
+    assert_eq!(res.propagated, 1);
+    assert!(res.applied);
+
+    let go_content = fs::read_to_string(&calc_file).unwrap();
+    assert!(go_content.contains("func Compute(x int) Response[int] {"));
+    assert!(go_content.contains("return NewResponse(x * 2)"));
+}
+
+#[tokio::test]
+async fn test_wrap_return_custom_already_wrapped_refusal() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "calc.ts",
+            r#"export function compute(x: number): Response<number> {
+    return new Response(x * 2);
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let calc_file = root.join("calc.ts");
+    let gw = fake_gateway().await;
+
+    let err = wrap_polyglot_ext(
+        gw.addr(),
+        &root,
+        &calc_file,
+        Some("compute"),
+        None,
+        None,
+        Wrapper::Custom("Response".into()),
+        None,
+        None,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("already returns a `Response`"));
 }
