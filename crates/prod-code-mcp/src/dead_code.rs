@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::net::SocketAddr;
 use std::path::Path;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DeadItem {
     pub name: String,
     pub kind: String,
@@ -22,6 +22,35 @@ pub struct DeadItem {
     pub col: u32,
     /// Exported / public: nothing in this checkout uses it, but something outside might.
     pub exported: bool,
+}
+
+/// Options controlling dead-code and reachability scanning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeadCodeOptions {
+    pub include_exported: bool,
+    pub max_files: usize,
+    pub reachability: bool,
+}
+
+impl Default for DeadCodeOptions {
+    fn default() -> Self {
+        Self {
+            include_exported: false,
+            max_files: 400,
+            reachability: false,
+        }
+    }
+}
+
+/// Candidate symbol extracted from document symbols with exact declaration range coordinates.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line: u32,
+    pub col: u32,
+    pub range_start: (u32, u32),
+    pub range_end: (u32, u32),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -40,10 +69,19 @@ pub struct DeadCodeReport {
     /// none is listed as dead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unverified: Vec<Unverified>,
+    /// Whole-program reachability summary metrics (when reachability analysis is enabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reachability: Option<crate::reachability::ReachabilitySummary>,
+    /// Unreachable call clusters and circular dead cycles detected by reachability analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unreachable_clusters: Vec<crate::reachability::UnreachableCluster>,
+    /// Root entry points identified for reachability analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub root_entry_points: Vec<DeadItem>,
 }
 
 /// A file whose symbols, or a symbol whose references, the analyzer did not establish.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct Unverified {
     pub file: String,
     /// The symbol; `None` when the file's symbols could not be listed at all.
@@ -63,13 +101,25 @@ impl DeadCodeReport {
     }
 
     pub fn render(&self) -> String {
-        let mut out = format!(
-            "dead code scan ({}): {} file(s), {} symbol(s) checked, {} unreferenced\n",
-            self.language,
-            self.files_scanned,
-            self.symbols_checked,
-            self.dead.len()
-        );
+        let mut out = if let Some(ref r) = self.reachability {
+            format!(
+                "whole-program reachability scan ({}): {} file(s), {} symbol(s) checked, {} root(s), {} reachable, {} unreachable\n",
+                self.language,
+                self.files_scanned,
+                self.symbols_checked,
+                r.roots_count,
+                r.reachable_count,
+                r.unreachable_count,
+            )
+        } else {
+            format!(
+                "dead code scan ({}): {} file(s), {} symbol(s) checked, {} unreferenced\n",
+                self.language,
+                self.files_scanned,
+                self.symbols_checked,
+                self.dead.len()
+            )
+        };
         for item in &self.dead {
             out.push_str(&format!(
                 "  • {} {}{}  {}:{}:{}\n",
@@ -80,6 +130,31 @@ impl DeadCodeReport {
                 item.line,
                 item.col
             ));
+        }
+        if !self.unreachable_clusters.is_empty() {
+            out.push_str(&format!(
+                "unreachable circular dead clusters ({}):\n",
+                self.unreachable_clusters.len()
+            ));
+            for cluster in &self.unreachable_clusters {
+                out.push_str(&format!(
+                    "  • cluster ({} symbols{}, calls: {}):\n",
+                    cluster.symbols.len(),
+                    if cluster.cycle { ", cycle detected" } else { "" },
+                    cluster
+                        .internal_calls
+                        .iter()
+                        .map(|(from, to)| format!("{from} -> {to}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                for item in &cluster.symbols {
+                    out.push_str(&format!(
+                        "    - {} {}  {}:{}:{}\n",
+                        item.kind, item.name, item.file, item.line, item.col
+                    ));
+                }
+            }
         }
         if !self.methods_unreferenced.is_empty() {
             out.push_str(&format!(
@@ -207,9 +282,10 @@ fn in_trait_impl(container: &str) -> bool {
 /// symbol (no name or kind, a container name or children of the wrong shape, a candidate
 /// without a readable position) is an error: skipped, it would leave a symbol unjudged in a
 /// scan that claims to be complete.
-fn collect(
+/// The candidates among a document's symbols, children included, with full declaration spans.
+pub fn collect_candidates(
     symbols: &[serde_json::Value],
-    out: &mut Vec<(String, String, u32, u32)>,
+    out: &mut Vec<CandidateSymbol>,
 ) -> std::result::Result<(), String> {
     for sym in symbols {
         let malformed = || crate::impact::unreadable("textDocument/documentSymbol", sym);
@@ -248,19 +324,59 @@ fn collect(
                         .zip(crate::impact::one_based(start, "character"))
                 })
                 .ok_or_else(malformed)?;
+
+            let range_val = sym
+                .get("range")
+                .or_else(|| sym.get("location").and_then(|l| l.get("range")));
+            let range_start = range_val
+                .and_then(|r| r.get("start"))
+                .and_then(|s| {
+                    crate::impact::one_based(s, "line")
+                        .zip(crate::impact::one_based(s, "character"))
+                })
+                .unwrap_or((line, col));
+            let range_end = range_val
+                .and_then(|r| r.get("end"))
+                .and_then(|e| {
+                    crate::impact::one_based(e, "line")
+                        .zip(crate::impact::one_based(e, "character"))
+                })
+                .unwrap_or((line, col));
+
             let kind_name = if kind_name == "method" && in_trait_impl(&container) {
                 "trait-method"
             } else {
                 kind_name
             };
-            out.push((name.to_string(), kind_name.to_string(), line, col));
+            out.push(CandidateSymbol {
+                name: name.to_string(),
+                kind: kind_name.to_string(),
+                line,
+                col,
+                range_start,
+                range_end,
+            });
         }
         match sym.get("children") {
             None | Some(serde_json::Value::Null) => {}
-            Some(serde_json::Value::Array(children)) => collect(children, out)?,
+            Some(serde_json::Value::Array(children)) => collect_candidates(children, out)?,
             Some(_) => return Err(malformed()),
         }
     }
+    Ok(())
+}
+
+fn collect(
+    symbols: &[serde_json::Value],
+    out: &mut Vec<(String, String, u32, u32)>,
+) -> std::result::Result<(), String> {
+    let mut detailed = Vec::new();
+    collect_candidates(symbols, &mut detailed)?;
+    out.extend(
+        detailed
+            .into_iter()
+            .map(|c| (c.name, c.kind, c.line, c.col)),
+    );
     Ok(())
 }
 
@@ -270,6 +386,25 @@ pub async fn find_dead_code(
     root: &Path,
     include_exported: bool,
     max_files: usize,
+) -> Result<DeadCodeReport> {
+    find_dead_code_opts(
+        remote,
+        root,
+        DeadCodeOptions {
+            include_exported,
+            max_files,
+            reachability: false,
+        },
+    )
+    .await
+}
+
+/// Scans the checkout at `root` (placed on `remote`) with configurable options
+/// (including whole-program graph reachability analysis from entry points).
+pub async fn find_dead_code_opts(
+    remote: SocketAddr,
+    root: &Path,
+    options: DeadCodeOptions,
 ) -> Result<DeadCodeReport> {
     let language = crate::sync::expected_engine(root)
         .ok_or_else(|| anyhow!("no project manifest at {}", root.display()))?
@@ -287,8 +422,8 @@ pub async fn find_dead_code(
         .filter(|p| !is_test_path(&language, p))
         .collect();
     files.sort();
-    let truncated = files.len() > max_files;
-    files.truncate(max_files);
+    let truncated = files.len() > options.max_files;
+    files.truncate(options.max_files);
 
     let mut session = LspSession::open(remote, root, None).await?;
     let mut report = DeadCodeReport {
@@ -300,6 +435,9 @@ pub async fn find_dead_code(
         exported_unreferenced: 0,
         truncated,
         unverified: Vec::new(),
+        reachability: None,
+        unreachable_clusters: Vec::new(),
+        root_entry_points: Vec::new(),
     };
     let whole_file = |file: &str, reason: String| Unverified {
         file: file.to_string(),
@@ -308,106 +446,292 @@ pub async fn find_dead_code(
         col: 0,
         reason,
     };
-    for rel in &files {
-        let abs = root.join(rel);
-        let text = match std::fs::read_to_string(&abs) {
-            Ok(text) => text,
-            Err(e) => {
-                report
-                    .unverified
-                    .push(whole_file(rel, format!("it cannot be read: {e}")));
-                continue;
-            }
-        };
-        let lines: Vec<&str> = text.lines().collect();
-        let uri = session.uri_for(&abs)?;
-        let symbols = match session
-            .query(
-                &abs,
-                "textDocument/documentSymbol",
-                serde_json::json!({ "textDocument": { "uri": uri } }),
-            )
-            .await
-        {
-            Ok(serde_json::Value::Array(symbols)) => symbols,
-            // The protocol's "no result": it does not say the file has no symbols.
-            Ok(serde_json::Value::Null) => {
-                let reason =
-                    "textDocument/documentSymbol answered null, so its symbols are unknown";
-                report.unverified.push(whole_file(rel, reason.to_string()));
-                continue;
-            }
-            Ok(other) => {
-                let reason = crate::impact::unreadable("textDocument/documentSymbol", &other);
+
+    if options.reachability {
+        let mut graph = crate::reachability::ReachabilityGraph::new();
+        struct CandidateMeta {
+            rel: String,
+            abs: std::path::PathBuf,
+            name: String,
+            line: u32,
+            col: u32,
+            graph_idx: usize,
+        }
+        let mut all_candidates: Vec<CandidateMeta> = Vec::new();
+
+        // Pass 1: Parse symbols from files and populate symbol declarations in reachability graph
+        for rel in &files {
+            let abs = root.join(rel);
+            let text = match std::fs::read_to_string(&abs) {
+                Ok(text) => text,
+                Err(e) => {
+                    report
+                        .unverified
+                        .push(whole_file(rel, format!("it cannot be read: {e}")));
+                    continue;
+                }
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            let uri = session.uri_for(&abs)?;
+            let symbols = match session
+                .query(
+                    &abs,
+                    "textDocument/documentSymbol",
+                    serde_json::json!({ "textDocument": { "uri": uri } }),
+                )
+                .await
+            {
+                Ok(serde_json::Value::Array(symbols)) => symbols,
+                Ok(serde_json::Value::Null) => {
+                    let reason =
+                        "textDocument/documentSymbol answered null, so its symbols are unknown";
+                    report.unverified.push(whole_file(rel, reason.to_string()));
+                    continue;
+                }
+                Ok(other) => {
+                    let reason = crate::impact::unreadable("textDocument/documentSymbol", &other);
+                    report.unverified.push(whole_file(rel, reason));
+                    continue;
+                }
+                Err(e) => {
+                    report.unverified.push(whole_file(rel, format!("{e:#}")));
+                    continue;
+                }
+            };
+            let mut candidates = Vec::new();
+            if let Err(reason) = collect_candidates(&symbols, &mut candidates) {
                 report.unverified.push(whole_file(rel, reason));
                 continue;
             }
-            Err(e) => {
-                report.unverified.push(whole_file(rel, format!("{e:#}")));
-                continue;
+            report.files_scanned += 1;
+
+            for cand in candidates {
+                let bare = cand.name.split('(').next().unwrap_or(&cand.name);
+                let source_line = lines.get(cand.line as usize - 1).copied().unwrap_or("");
+                let exported = is_exported(&language, bare, source_line);
+                let (is_root, root_reason) = crate::reachability::is_root_entry_point(
+                    &language,
+                    rel,
+                    &cand.name,
+                    &cand.kind,
+                    exported,
+                    options.include_exported,
+                );
+
+                let decl = crate::reachability::SymbolDecl {
+                    key: crate::reachability::SymbolKey::new(rel, &cand.name, cand.line, cand.col),
+                    kind: cand.kind.clone(),
+                    range_start: cand.range_start,
+                    range_end: cand.range_end,
+                    exported,
+                    is_root,
+                    root_reason,
+                };
+                let graph_idx = graph.add_symbol(decl);
+
+                all_candidates.push(CandidateMeta {
+                    rel: rel.clone(),
+                    abs: abs.clone(),
+                    name: cand.name,
+                    line: cand.line,
+                    col: cand.col,
+                    graph_idx,
+                });
             }
-        };
-        let mut candidates = Vec::new();
-        if let Err(reason) = collect(&symbols, &mut candidates) {
-            report.unverified.push(whole_file(rel, reason));
-            continue;
         }
-        report.files_scanned += 1;
-        for (name, kind, line, col) in candidates {
-            let bare = name.split('(').next().unwrap_or(&name);
-            if matches!(
-                bare,
-                "main" | "init" | "new" | "default" | "drop" | "fmt" | "eq" | "hash" | "clone"
-            ) || bare.starts_with("test")
-                || bare.starts_with("Test")
-                || bare.starts_with("__")
-            {
-                continue;
-            }
-            let source_line = lines.get(line as usize - 1).copied().unwrap_or("");
-            let exported = is_exported(&language, bare, source_line);
+
+        // Pass 2: Query references and record dependency edges
+        for cand in &all_candidates {
             report.symbols_checked += 1;
             let refs = session
                 .query(
-                    &abs,
+                    &cand.abs,
                     "textDocument/references",
                     serde_json::json!({
-                        "textDocument": { "uri": session.uri_for(&abs)? },
-                        "position": { "line": line - 1, "character": col - 1 },
+                        "textDocument": { "uri": session.uri_for(&cand.abs)? },
+                        "position": { "line": cand.line - 1, "character": cand.col - 1 },
                         "context": { "includeDeclaration": false }
                     }),
                 )
                 .await;
-            let count = match reference_count(refs) {
-                Ok(count) => count,
-                Err(reason) => {
-                    report.unverified.push(Unverified {
-                        file: rel.clone(),
-                        name: Some(name),
-                        line,
-                        col,
-                        reason,
+
+            match refs {
+                Ok(serde_json::Value::Array(found)) => {
+                    let mut ref_locs = Vec::with_capacity(found.len());
+                    for r in &found {
+                        let uri_opt = r.get("uri").and_then(|u| u.as_str());
+                        let (r_line, r_col) = r
+                            .get("range")
+                            .and_then(|range| range.get("start"))
+                            .and_then(|s| {
+                                crate::impact::one_based(s, "line")
+                                    .zip(crate::impact::one_based(s, "character"))
+                            })
+                            .unwrap_or((0, 0));
+                        if let Some(uri) = uri_opt {
+                            let path_str = crate::remote_fs::uri_to_path(uri);
+                            let rel = Path::new(&path_str)
+                                .strip_prefix(root)
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or(path_str);
+                            ref_locs.push((rel, r_line, r_col));
+                        }
+                    }
+                    graph.record_references(cand.graph_idx, &ref_locs, |ref_file, _line| {
+                        is_test_path(&language, ref_file)
                     });
+                }
+                Ok(serde_json::Value::Null) => {
+                    report.unverified.push(Unverified {
+                        file: cand.rel.clone(),
+                        name: Some(cand.name.clone()),
+                        line: cand.line,
+                        col: cand.col,
+                        reason: "textDocument/references answered null".to_string(),
+                    });
+                    graph.mark_unverified(cand.graph_idx);
+                }
+                Ok(other) => {
+                    report.unverified.push(Unverified {
+                        file: cand.rel.clone(),
+                        name: Some(cand.name.clone()),
+                        line: cand.line,
+                        col: cand.col,
+                        reason: crate::impact::unreadable("textDocument/references", &other),
+                    });
+                    graph.mark_unverified(cand.graph_idx);
+                }
+                Err(e) => {
+                    report.unverified.push(Unverified {
+                        file: cand.rel.clone(),
+                        name: Some(cand.name.clone()),
+                        line: cand.line,
+                        col: cand.col,
+                        reason: format!("{e:#}"),
+                    });
+                    graph.mark_unverified(cand.graph_idx);
+                }
+            }
+        }
+
+        // Pass 3: Compute graph reachability from all roots
+        let reach_result = graph.compute_reachability();
+        report.reachability = Some(reach_result.summary);
+        report.root_entry_points = reach_result.roots;
+        report.unreachable_clusters = reach_result.unreachable_clusters;
+
+        for item in reach_result.unreachable_items {
+            if item.kind == "trait-method" || (item.kind == "method" && language != "rust") {
+                report.methods_unreferenced.push(item);
+            } else if item.exported && !options.include_exported {
+                report.exported_unreferenced += 1;
+            } else {
+                report.dead.push(item);
+            }
+        }
+    } else {
+        // Single-pass reference counting scan
+        for rel in &files {
+            let abs = root.join(rel);
+            let text = match std::fs::read_to_string(&abs) {
+                Ok(text) => text,
+                Err(e) => {
+                    report
+                        .unverified
+                        .push(whole_file(rel, format!("it cannot be read: {e}")));
                     continue;
                 }
             };
-            if count == 0 {
-                let item = DeadItem {
-                    name,
-                    kind: kind.clone(),
-                    file: rel.clone(),
-                    line,
-                    col,
-                    exported,
+            let lines: Vec<&str> = text.lines().collect();
+            let uri = session.uri_for(&abs)?;
+            let symbols = match session
+                .query(
+                    &abs,
+                    "textDocument/documentSymbol",
+                    serde_json::json!({ "textDocument": { "uri": uri } }),
+                )
+                .await
+            {
+                Ok(serde_json::Value::Array(symbols)) => symbols,
+                // The protocol's "no result": it does not say the file has no symbols.
+                Ok(serde_json::Value::Null) => {
+                    let reason =
+                        "textDocument/documentSymbol answered null, so its symbols are unknown";
+                    report.unverified.push(whole_file(rel, reason.to_string()));
+                    continue;
+                }
+                Ok(other) => {
+                    let reason = crate::impact::unreadable("textDocument/documentSymbol", &other);
+                    report.unverified.push(whole_file(rel, reason));
+                    continue;
+                }
+                Err(e) => {
+                    report.unverified.push(whole_file(rel, format!("{e:#}")));
+                    continue;
+                }
+            };
+            let mut candidates = Vec::new();
+            if let Err(reason) = collect(&symbols, &mut candidates) {
+                report.unverified.push(whole_file(rel, reason));
+                continue;
+            }
+            report.files_scanned += 1;
+            for (name, kind, line, col) in candidates {
+                let bare = name.split('(').next().unwrap_or(&name);
+                if matches!(
+                    bare,
+                    "main" | "init" | "new" | "default" | "drop" | "fmt" | "eq" | "hash" | "clone"
+                ) || bare.starts_with("test")
+                    || bare.starts_with("Test")
+                    || bare.starts_with("__")
+                {
+                    continue;
+                }
+                let source_line = lines.get(line as usize - 1).copied().unwrap_or("");
+                let exported = is_exported(&language, bare, source_line);
+                report.symbols_checked += 1;
+                let refs = session
+                    .query(
+                        &abs,
+                        "textDocument/references",
+                        serde_json::json!({
+                            "textDocument": { "uri": session.uri_for(&abs)? },
+                            "position": { "line": line - 1, "character": col - 1 },
+                            "context": { "includeDeclaration": false }
+                        }),
+                    )
+                    .await;
+                let count = match reference_count(refs) {
+                    Ok(count) => count,
+                    Err(reason) => {
+                        report.unverified.push(Unverified {
+                            file: rel.clone(),
+                            name: Some(name),
+                            line,
+                            col,
+                            reason,
+                        });
+                        continue;
+                    }
                 };
-                // Rust inherent methods are checked like functions; trait-impl methods and
-                // methods in languages with interfaces/protocols go to the "maybe" bucket.
-                if kind == "trait-method" || (kind == "method" && language != "rust") {
-                    report.methods_unreferenced.push(item);
-                } else if exported && !include_exported {
-                    report.exported_unreferenced += 1;
-                } else {
-                    report.dead.push(item);
+                if count == 0 {
+                    let item = DeadItem {
+                        name,
+                        kind: kind.clone(),
+                        file: rel.clone(),
+                        line,
+                        col,
+                        exported,
+                    };
+                    // Rust inherent methods are checked like functions; trait-impl methods and
+                    // methods in languages with interfaces/protocols go to the "maybe" bucket.
+                    if kind == "trait-method" || (kind == "method" && language != "rust") {
+                        report.methods_unreferenced.push(item);
+                    } else if exported && !options.include_exported {
+                        report.exported_unreferenced += 1;
+                    } else {
+                        report.dead.push(item);
+                    }
                 }
             }
         }

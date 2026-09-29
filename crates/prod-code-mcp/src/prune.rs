@@ -197,7 +197,30 @@ pub async fn prune_orphans(
     apply: bool,
     force: bool,
 ) -> Result<Pruned> {
-    let report = crate::dead_code::find_dead_code(remote, root, false, max_files).await?;
+    prune_orphans_opts(
+        remote,
+        root,
+        crate::dead_code::DeadCodeOptions {
+            include_exported: false,
+            max_files,
+            reachability: false,
+        },
+        apply,
+        force,
+    )
+    .await
+}
+
+/// Removes every orphan found in the checkout at `root` using the specified options
+/// (including whole-program reachability analysis).
+pub async fn prune_orphans_opts(
+    remote: SocketAddr,
+    root: &Path,
+    options: crate::dead_code::DeadCodeOptions,
+    apply: bool,
+    force: bool,
+) -> Result<Pruned> {
+    let report = crate::dead_code::find_dead_code_opts(remote, root, options).await?;
     let mut merged: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     let mut removed = Vec::new();
     let mut skipped = Vec::new();
