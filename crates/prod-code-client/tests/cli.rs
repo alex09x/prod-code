@@ -2408,10 +2408,20 @@ async fn every_subcommand_has_its_own_help_line() {
     let out = run_cli(&ws, "127.0.0.1:1".parse().unwrap(), &["--help"]).await;
     let text = stdout_of(&out);
     let line_of = |name: &str| {
-        text.lines()
-            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
-            .unwrap_or_default()
-            .to_string()
+        let lines: Vec<&str> = text.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let trimmed = l.trim_start();
+            if trimmed.starts_with(&format!("{name} ")) {
+                return trimmed.to_string();
+            }
+            if trimmed == name {
+                return lines
+                    .get(i + 1)
+                    .map(|next| format!("{trimmed} {}", next.trim_start()))
+                    .unwrap_or_default();
+            }
+        }
+        String::new()
     };
     assert!(
         line_of("change-signature").contains("Change what a function takes"),

@@ -43,21 +43,108 @@ pub struct EncapsulatedField {
 impl EncapsulatedField {
     /// The report: the accessors, the rewritten accesses, and what could not be rewritten.
     pub fn render(&self, diff_budget: usize) -> String {
-        let getter = if self.by_value {
-            self.ty.clone()
+        let mut out = if self.file.ends_with(".ts")
+            || self.file.ends_with(".tsx")
+            || self.file.ends_with(".js")
+            || self.file.ends_with(".jsx")
+        {
+            let pascal = to_pascal_case(&self.field);
+            let mut s = format!(
+                "`{}.{}` ({})\n\n- the field becomes private\n- getter: `get{}(): {}`\n",
+                self.owner, self.field, self.file, pascal, self.ty
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `set{}({}: {}): void`\n",
+                    pascal, self.field, self.ty
+                ));
+            }
+            s
+        } else if self.file.ends_with(".py") {
+            let snake = to_snake_case(&self.field);
+            let mut s = format!(
+                "`{}.{}` ({})\n\n- the field becomes private\n- getter: `def get_{}(self) -> {}`\n",
+                self.owner, self.field, self.file, snake, self.ty
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `def set_{}(self, {}: {}) -> None`\n",
+                    snake, self.field, self.ty
+                ));
+            }
+            s
+        } else if self.file.ends_with(".cpp")
+            || self.file.ends_with(".cc")
+            || self.file.ends_with(".cxx")
+            || self.file.ends_with(".h")
+            || self.file.ends_with(".hpp")
+        {
+            let snake = to_snake_case(&self.field);
+            let ret_ty = if self.by_value {
+                self.ty.clone()
+            } else {
+                format!("const {}&", self.ty)
+            };
+            let param_ty = if self.by_value {
+                self.ty.clone()
+            } else {
+                format!("const {}&", self.ty)
+            };
+            let mut s = format!(
+                "`{}::{}` ({})\n\n- the field becomes private\n- getter: `{} get_{}() const`\n",
+                self.owner, self.field, self.file, ret_ty, snake
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `void set_{}({} {})`\n",
+                    snake, param_ty, self.field
+                ));
+            }
+            s
+        } else if self.file.ends_with(".swift") {
+            let pascal = to_pascal_case(&self.field);
+            let mut s = format!(
+                "`{}.{}` ({})\n\n- the field becomes private\n- getter: `func get{}() -> {}`\n",
+                self.owner, self.field, self.file, pascal, self.ty
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `func set{}(_: {})`\n",
+                    pascal, self.ty
+                ));
+            }
+            s
+        } else if self.file.ends_with(".go") {
+            let pascal = to_pascal_case(&self.field);
+            let mut s = format!(
+                "`{}.{}` ({})\n\n- the field becomes private\n- getter: `func (s *{}) {}() {}`\n",
+                self.owner, self.field, self.file, self.owner, pascal, self.ty
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `func (s *{}) Set{}({} {})`\n",
+                    self.owner, pascal, self.field, self.ty
+                ));
+            }
+            s
         } else {
-            format!("&{}", self.ty)
+            let getter = if self.by_value {
+                self.ty.clone()
+            } else {
+                format!("&{}", self.ty)
+            };
+            let mut s = format!(
+                "`{}.{}` ({})\n\n- the field becomes private\n- getter: `fn {}(&self) -> {getter}`\n",
+                self.owner, self.field, self.file, self.field
+            );
+            if self.writes > 0 {
+                s.push_str(&format!(
+                    "- setter: `fn set_{}(&mut self, {}: {})`\n",
+                    self.field, self.field, self.ty
+                ));
+            }
+            s
         };
-        let mut out = format!(
-            "`{}.{}` ({})\n\n- the field becomes private\n- getter: `fn {}(&self) -> {getter}`\n",
-            self.owner, self.field, self.file, self.field
-        );
-        if self.writes > 0 {
-            out.push_str(&format!(
-                "- setter: `fn set_{}(&mut self, {}: {})`\n",
-                self.field, self.field, self.ty
-            ));
-        }
         out.push_str(&format!(
             "- {} read(s) and {} write(s) outside {} rewritten; {} reference(s) inside it left \
              as they are, because a private field is still visible there\n\n",
@@ -707,6 +794,1118 @@ pub async fn encapsulate(
     })
 }
 
+/// Helper to convert a string to PascalCase.
+pub fn to_pascal_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize = true;
+    for c in s.chars() {
+        if c == '_' {
+            capitalize = true;
+        } else if capitalize {
+            result.extend(c.to_uppercase());
+            capitalize = false;
+        } else {
+            result.push(c);
+        }
+    }
+    if result.is_empty() {
+        s.to_string()
+    } else {
+        result
+    }
+}
+
+/// Helper to convert a string to snake_case.
+pub fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in s.char_indices() {
+        if c.is_uppercase() {
+            if i > 0 && !result.ends_with('_') {
+                result.push('_');
+            }
+            result.extend(c.to_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Helper to lowercase the first character of a string.
+pub fn lowercase_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+    }
+}
+
+/// Extract the field name at a 1-based line and column in text.
+pub fn field_at_line_col(text: &str, line: u32, col: u32) -> Option<String> {
+    if line == 0 {
+        return None;
+    }
+    let target_line = text.lines().nth((line - 1) as usize)?;
+    let col_idx = (col.saturating_sub(1) as usize).min(target_line.len());
+    let start = target_line[..col_idx]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric() || *c == '_')
+        .last()
+        .map_or(col_idx, |(i, _)| i);
+    let end = target_line[col_idx..]
+        .char_indices()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
+        .map_or(target_line.len(), |(i, _)| col_idx + i);
+    let name = &target_line[start..end];
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    TypeScript,
+    Python,
+    Cpp,
+    Swift,
+    Go,
+}
+
+impl Language {
+    pub fn from_path(path: &Path) -> Option<Self> {
+        match path.extension().and_then(|s| s.to_str()) {
+            Some("ts" | "tsx" | "js" | "jsx") => Some(Self::TypeScript),
+            Some("py") => Some(Self::Python),
+            Some("cpp" | "cc" | "cxx" | "h" | "hpp") => Some(Self::Cpp),
+            Some("swift") => Some(Self::Swift),
+            Some("go") => Some(Self::Go),
+            _ => None,
+        }
+    }
+
+    pub fn matches_extension(&self, path: &Path) -> bool {
+        Self::from_path(path) == Some(*self)
+    }
+}
+
+fn replace_line_this(line: &str, field: &str) -> (String, usize) {
+    let mut out = String::new();
+    let mut count = 0;
+    let mut rest = line;
+    let needle = format!("this.{field}");
+    while let Some(pos) = rest.find(&needle) {
+        let after_pos = pos + needle.len();
+        let after_char = rest[after_pos..].chars().next();
+        if after_char.is_none_or(|c| !c.is_alphanumeric() && c != '_') {
+            out.push_str(&rest[..pos]);
+            out.push_str(&format!("this._{field}"));
+            count += 1;
+            rest = &rest[after_pos..];
+        } else {
+            out.push_str(&rest[..after_pos]);
+            rest = &rest[after_pos..];
+        }
+    }
+    out.push_str(rest);
+    (out, count)
+}
+
+fn replace_line_self(line: &str, field: &str) -> (String, usize) {
+    let mut out = String::new();
+    let mut count = 0;
+    let mut rest = line;
+    let needle = format!("self.{field}");
+    while let Some(pos) = rest.find(&needle) {
+        let after_pos = pos + needle.len();
+        let after_char = rest[after_pos..].chars().next();
+        if after_char.is_none_or(|c| !c.is_alphanumeric() && c != '_') {
+            out.push_str(&rest[..pos]);
+            out.push_str(&format!("self._{field}"));
+            count += 1;
+            rest = &rest[after_pos..];
+        } else {
+            out.push_str(&rest[..after_pos]);
+            rest = &rest[after_pos..];
+        }
+    }
+    out.push_str(rest);
+    (out, count)
+}
+
+pub fn rewrite_external_ts(code: &str, field: &str) -> (String, usize, usize) {
+    let pascal = to_pascal_case(field);
+    let mut reads = 0;
+    let mut writes = 0;
+    let mut out = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let needle = format!(".{field}");
+        if !line.contains(&needle) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut new_line = String::new();
+        let mut rest = line;
+        while let Some(pos) = rest.find(&needle) {
+            let before = &rest[..pos];
+            let after = &rest[pos + needle.len()..];
+            let before_trimmed = before.trim_end();
+            if before_trimmed.ends_with("this") || before_trimmed.ends_with("this._") {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            if let Some(c) = after.chars().next()
+                && (c.is_alphanumeric() || c == '_') {
+                    new_line.push_str(&rest[..pos + needle.len()]);
+                    rest = after;
+                    continue;
+                }
+            if trimmed_after.starts_with('=') && !trimmed_after.starts_with("==") && !trimmed_after.starts_with("=>") {
+                writes += 1;
+                let rhs_with_sep = trimmed_after[1..].trim_start();
+                let (rhs, sep) = if let Some(semi_pos) = rhs_with_sep.find(';') {
+                    (&rhs_with_sep[..semi_pos], &rhs_with_sep[semi_pos..])
+                } else {
+                    (rhs_with_sep, "")
+                };
+                new_line.push_str(before);
+                new_line.push_str(&format!(".set{pascal}({rhs}){sep}"));
+                rest = "";
+                break;
+            } else {
+                reads += 1;
+                new_line.push_str(before);
+                new_line.push_str(&format!(".get{pascal}()"));
+                rest = after;
+            }
+        }
+        new_line.push_str(rest);
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, reads, writes)
+}
+
+pub fn rewrite_external_py(code: &str, field: &str) -> (String, usize, usize) {
+    let snake = to_snake_case(field);
+    let mut reads = 0;
+    let mut writes = 0;
+    let mut out = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let needle = format!(".{field}");
+        if !line.contains(&needle) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut new_line = String::new();
+        let mut rest = line;
+        while let Some(pos) = rest.find(&needle) {
+            let before = &rest[..pos];
+            let after = &rest[pos + needle.len()..];
+            let before_trimmed = before.trim_end();
+            if before_trimmed.ends_with("self") || before_trimmed.ends_with("self._") {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            if let Some(c) = after.chars().next()
+                && (c.is_alphanumeric() || c == '_') {
+                    new_line.push_str(&rest[..pos + needle.len()]);
+                    rest = after;
+                    continue;
+                }
+            if trimmed_after.starts_with('=') && !trimmed_after.starts_with("==") {
+                writes += 1;
+                let rhs = trimmed_after[1..].trim();
+                new_line.push_str(before);
+                new_line.push_str(&format!(".set_{snake}({rhs})"));
+                rest = "";
+                break;
+            } else {
+                reads += 1;
+                new_line.push_str(before);
+                new_line.push_str(&format!(".get_{snake}()"));
+                rest = after;
+            }
+        }
+        new_line.push_str(rest);
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, reads, writes)
+}
+
+pub fn rewrite_external_cpp(code: &str, field: &str) -> (String, usize, usize) {
+    let snake = to_snake_case(field);
+    let mut reads = 0;
+    let mut writes = 0;
+    let mut out = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let dot_needle = format!(".{field}");
+        let arrow_needle = format!("->{field}");
+        if !line.contains(&dot_needle) && !line.contains(&arrow_needle) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut new_line = String::new();
+        let mut rest = line;
+        while let Some(pos) = rest.find(&dot_needle).or_else(|| rest.find(&arrow_needle)) {
+            let is_arrow = rest[pos..].starts_with("->");
+            let op_len = if is_arrow { 2 } else { 1 };
+            let total_len = op_len + field.len();
+            let before = &rest[..pos];
+            let after = &rest[pos + total_len..];
+            let before_trimmed = before.trim_end();
+            if before_trimmed.ends_with("this") {
+                new_line.push_str(&rest[..pos + total_len]);
+                rest = after;
+                continue;
+            }
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                new_line.push_str(&rest[..pos + total_len]);
+                rest = after;
+                continue;
+            }
+            if let Some(c) = after.chars().next()
+                && (c.is_alphanumeric() || c == '_') {
+                    new_line.push_str(&rest[..pos + total_len]);
+                    rest = after;
+                    continue;
+                }
+            let op_str = if is_arrow { "->" } else { "." };
+            if trimmed_after.starts_with('=') && !trimmed_after.starts_with("==") {
+                writes += 1;
+                let rhs_with_sep = trimmed_after[1..].trim_start();
+                let (rhs, sep) = if let Some(semi_pos) = rhs_with_sep.find(';') {
+                    (&rhs_with_sep[..semi_pos], &rhs_with_sep[semi_pos..])
+                } else {
+                    (rhs_with_sep, "")
+                };
+                new_line.push_str(before);
+                new_line.push_str(&format!("{op_str}set_{snake}({rhs}){sep}"));
+                rest = "";
+                break;
+            } else {
+                reads += 1;
+                new_line.push_str(before);
+                new_line.push_str(&format!("{op_str}get_{snake}()"));
+                rest = after;
+            }
+        }
+        new_line.push_str(rest);
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, reads, writes)
+}
+
+pub fn rewrite_external_swift(code: &str, field: &str) -> (String, usize, usize) {
+    let pascal = to_pascal_case(field);
+    let mut reads = 0;
+    let mut writes = 0;
+    let mut out = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let needle = format!(".{field}");
+        if !line.contains(&needle) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut new_line = String::new();
+        let mut rest = line;
+        while let Some(pos) = rest.find(&needle) {
+            let before = &rest[..pos];
+            let after = &rest[pos + needle.len()..];
+            let before_trimmed = before.trim_end();
+            if before_trimmed.ends_with("self") || before_trimmed.ends_with("self._") {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            if let Some(c) = after.chars().next()
+                && (c.is_alphanumeric() || c == '_') {
+                    new_line.push_str(&rest[..pos + needle.len()]);
+                    rest = after;
+                    continue;
+                }
+            if trimmed_after.starts_with('=') && !trimmed_after.starts_with("==") {
+                writes += 1;
+                let rhs_with_sep = trimmed_after[1..].trim_start();
+                let (rhs, sep) = if let Some(semi_pos) = rhs_with_sep.find(';') {
+                    (&rhs_with_sep[..semi_pos], &rhs_with_sep[semi_pos..])
+                } else {
+                    (rhs_with_sep, "")
+                };
+                new_line.push_str(before);
+                new_line.push_str(&format!(".set{pascal}({rhs}){sep}"));
+                rest = "";
+                break;
+            } else {
+                reads += 1;
+                new_line.push_str(before);
+                new_line.push_str(&format!(".get{pascal}()"));
+                rest = after;
+            }
+        }
+        new_line.push_str(rest);
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, reads, writes)
+}
+
+pub fn rewrite_external_go(code: &str, field: &str) -> (String, usize, usize) {
+    let pascal = to_pascal_case(field);
+    let mut reads = 0;
+    let mut writes = 0;
+    let mut out = String::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let needle_pascal = format!(".{pascal}");
+        let needle_orig = format!(".{field}");
+        let needle = if line.contains(&needle_pascal) {
+            needle_pascal
+        } else if line.contains(&needle_orig) {
+            needle_orig
+        } else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let mut new_line = String::new();
+        let mut rest = line;
+        while let Some(pos) = rest.find(&needle) {
+            let before = &rest[..pos];
+            let after = &rest[pos + needle.len()..];
+            let trimmed_after = after.trim_start();
+            if trimmed_after.starts_with('(') {
+                new_line.push_str(&rest[..pos + needle.len()]);
+                rest = after;
+                continue;
+            }
+            if let Some(c) = after.chars().next()
+                && (c.is_alphanumeric() || c == '_') {
+                    new_line.push_str(&rest[..pos + needle.len()]);
+                    rest = after;
+                    continue;
+                }
+            if trimmed_after.starts_with('=') && !trimmed_after.starts_with("==") {
+                writes += 1;
+                let rhs = trimmed_after[1..].trim();
+                new_line.push_str(before);
+                new_line.push_str(&format!(".Set{pascal}({rhs})"));
+                rest = "";
+                break;
+            } else {
+                reads += 1;
+                new_line.push_str(before);
+                new_line.push_str(&format!(".{pascal}()"));
+                rest = after;
+            }
+        }
+        new_line.push_str(rest);
+        out.push_str(&new_line);
+        out.push('\n');
+    }
+    if !code.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, reads, writes)
+}
+
+pub fn encapsulate_field_ts(
+    text: &str,
+    target_class: Option<&str>,
+    target_field: &str,
+) -> Result<(String, String, String, usize, usize, usize)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("export class ") || trimmed.starts_with("export default class ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if *w == "class" && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches('{').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in file")?;
+    let c_end = class_end.context("Could not find closing brace of class")?;
+
+    let mut field_line_idx = None;
+    let mut field_type = String::new();
+    let mut field_default = None;
+    let mut field_indent = "    ".to_string();
+
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        let is_match = words.iter().any(|w| {
+            let clean = w.trim_matches(|c| c == ':' || c == ';' || c == '=');
+            clean == target_field
+        });
+        if is_match && !trimmed.contains('(') {
+            field_line_idx = Some(idx);
+            let indent_len = line.len() - trimmed.len();
+            field_indent = line[..indent_len].to_string();
+            if let Some(colon_pos) = trimmed.find(':') {
+                let after_colon = &trimmed[colon_pos + 1..];
+                let ty_end = after_colon.find('=').or_else(|| after_colon.find(';')).unwrap_or(after_colon.len());
+                field_type = after_colon[..ty_end].trim().to_string();
+            }
+            if let Some(eq_pos) = trimmed.find('=') {
+                let after_eq = &trimmed[eq_pos + 1..];
+                let def_end = after_eq.find(';').unwrap_or(after_eq.len());
+                field_default = Some(after_eq[..def_end].trim().to_string());
+            }
+            break;
+        }
+    }
+
+    let f_idx = field_line_idx.with_context(|| format!("Field `{target_field}` not found in class `{class_name}`"))?;
+    let type_colon = if field_type.is_empty() { String::new() } else { format!(": {field_type}") };
+    let default_eq = field_default.map(|d| format!(" = {d}")).unwrap_or_default();
+    let new_field_line = format!("{field_indent}private _{target_field}{type_colon}{default_eq};");
+
+    let pascal = to_pascal_case(target_field);
+    let accessors = format!(
+        "\n{field_indent}public get{pascal}(){type_colon} {{\n{field_indent}    return this._{target_field};\n{field_indent}}}\n\n{field_indent}public set{pascal}({target_field}{type_colon}): void {{\n{field_indent}    this._{target_field} = {target_field};\n{field_indent}}}\n"
+    );
+
+    let mut out_lines = Vec::new();
+    let mut left_direct = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == f_idx {
+            out_lines.push(new_field_line.clone());
+        } else if idx > c_start && idx < c_end {
+            let (replaced_line, count) = replace_line_this(line, target_field);
+            left_direct += count;
+            out_lines.push(replaced_line);
+        } else if idx == c_end {
+            out_lines.push(accessors.clone());
+            out_lines.push(line.to_string());
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = out_lines.join("\n");
+    let (final_code, reads, writes) = rewrite_external_ts(&intermediate, target_field);
+    Ok((class_name, field_type, final_code, reads, writes, left_direct))
+}
+
+pub fn encapsulate_field_py(
+    text: &str,
+    target_class: Option<&str>,
+    target_field: &str,
+) -> Result<(String, String, String, usize, usize, usize)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut class_start = None;
+    let mut class_name = String::new();
+    let mut class_end = lines.len();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("class ") {
+            let name = rest
+                .split(['(', ':'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class in Python file")?;
+    for (idx, line) in lines.iter().enumerate().skip(c_start + 1) {
+        if !line.trim().is_empty() && !line.starts_with(' ') && !line.starts_with('\t') {
+            class_end = idx;
+            break;
+        }
+    }
+
+    let mut field_type = String::new();
+    let mut indent = "    ".to_string();
+    let mut left_direct = 0;
+    let mut out_lines = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        if idx > c_start && idx < class_end {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("def ") {
+                let cur_indent_len = line.len() - trimmed.len();
+                indent = line[..cur_indent_len].to_string();
+            }
+            let self_needle = format!("self.{target_field}");
+            if line.contains(&self_needle) {
+                let (replaced, cnt) = replace_line_self(line, target_field);
+                left_direct += cnt;
+                if trimmed.contains(&format!("self.{target_field}:"))
+                    && let Some(pos) = trimmed.find(':') {
+                        let after = &trimmed[pos + 1..];
+                        let ty_end = after.find('=').unwrap_or(after.len());
+                        field_type = after[..ty_end].trim().to_string();
+                    }
+                out_lines.push(replaced);
+            } else if trimmed.starts_with(&format!("{target_field}:")) || trimmed.starts_with(&format!("{target_field} =")) {
+                let cur_indent_len = line.len() - trimmed.len();
+                let cur_indent = &line[..cur_indent_len];
+                if let Some(pos) = trimmed.find(':') {
+                    let after = &trimmed[pos + 1..];
+                    let ty_end = after.find('=').unwrap_or(after.len());
+                    field_type = after[..ty_end].trim().to_string();
+                }
+                let rest_of_line = &trimmed[target_field.len()..];
+                out_lines.push(format!("{cur_indent}_{target_field}{rest_of_line}"));
+                left_direct += 1;
+            } else {
+                out_lines.push(line.to_string());
+            }
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    if field_type.is_empty() {
+        for line in &lines[c_start..class_end] {
+            if let Some(pos) = line.find(&format!("{target_field}:")) {
+                let after = &line[pos + target_field.len() + 1..];
+                let ty_end = after
+                    .find([',', ')', '=', '#', '\n'])
+                    .unwrap_or(after.len());
+                let found = after[..ty_end].trim();
+                if !found.is_empty() {
+                    field_type = found.to_string();
+                    break;
+                }
+            }
+        }
+    }
+
+    let snake = to_snake_case(target_field);
+    let ret_annot = if field_type.is_empty() { String::new() } else { format!(" -> {field_type}") };
+    let param_annot = if field_type.is_empty() { String::new() } else { format!(": {field_type}") };
+    let accessors = format!(
+        "\n{indent}def get_{snake}(self){ret_annot}:\n{indent}    return self._{target_field}\n\n{indent}def set_{snake}(self, {target_field}{param_annot}) -> None:\n{indent}    self._{target_field} = {target_field}\n"
+    );
+
+    out_lines.insert(class_end, accessors);
+
+    let intermediate = out_lines.join("\n");
+    let (final_code, reads, writes) = rewrite_external_py(&intermediate, target_field);
+    Ok((class_name, field_type, final_code, reads, writes, left_direct))
+}
+
+pub fn encapsulate_field_cpp(
+    text: &str,
+    target_class: Option<&str>,
+    target_field: &str,
+    by_value: Option<bool>,
+) -> Result<(String, String, String, usize, usize, usize)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class or struct in C++ file")?;
+    let c_end = class_end.context("Could not find closing brace of C++ class")?;
+
+    let mut field_line_idx = None;
+    let mut field_type = String::new();
+    let mut field_indent = "    ".to_string();
+
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if trimmed.contains('(') {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        let is_match = words.iter().any(|w| {
+            let clean = w.trim_matches(|c| c == ';' || c == '=');
+            clean == target_field
+        });
+        if is_match {
+            field_line_idx = Some(idx);
+            let indent_len = line.len() - trimmed.len();
+            field_indent = line[..indent_len].to_string();
+            if let Some(pos) = line.find(target_field) {
+                let ty_part = line[..pos].trim_start();
+                let clean_ty = ty_part
+                    .trim_start_matches("public:")
+                    .trim_start_matches("private:")
+                    .trim_start_matches("protected:")
+                    .trim();
+                field_type = clean_ty.to_string();
+            }
+            break;
+        }
+    }
+
+    let f_idx = field_line_idx.with_context(|| format!("Field `{target_field}` not found in class `{class_name}`"))?;
+    let is_primitive = matches!(
+        field_type.as_str(),
+        "int" | "long" | "short" | "float" | "double" | "bool" | "char" | "size_t" | "int32_t" | "int64_t" | "uint32_t" | "uint64_t"
+    );
+    let ret_by_val = by_value.unwrap_or(is_primitive);
+    let ret_ty = if ret_by_val { field_type.clone() } else { format!("const {}&", field_type) };
+    let param_ty = if ret_by_val { field_type.clone() } else { format!("const {}&", field_type) };
+    let snake = to_snake_case(target_field);
+
+    let accessors = format!(
+        "\npublic:\n{field_indent}{ret_ty} get_{snake}() const {{\n{field_indent}    return {target_field}_;\n{field_indent}}}\n\n{field_indent}void set_{snake}({param_ty} {target_field}) {{\n{field_indent}    {target_field}_ = {target_field};\n{field_indent}}}\n\nprivate:\n{field_indent}{field_type} {target_field}_;\n"
+    );
+
+    let mut out_lines = Vec::new();
+    let mut left_direct = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == f_idx {
+            continue;
+        } else if idx > c_start && idx < c_end {
+            let arrow_needle = format!("this->{target_field}");
+            let replaced = if line.contains(&arrow_needle) {
+                left_direct += 1;
+                line.replace(&arrow_needle, &format!("this->{target_field}_"))
+            } else {
+                line.to_string()
+            };
+            out_lines.push(replaced);
+        } else if idx == c_end {
+            out_lines.push(accessors.clone());
+            out_lines.push(line.to_string());
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = out_lines.join("\n");
+    let (final_code, reads, writes) = rewrite_external_cpp(&intermediate, target_field);
+    Ok((class_name, field_type, final_code, reads, writes, left_direct))
+}
+
+pub fn encapsulate_field_swift(
+    text: &str,
+    target_class: Option<&str>,
+    target_field: &str,
+) -> Result<(String, String, String, usize, usize, usize)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut class_start = None;
+    let mut class_end = None;
+    let mut class_name = String::new();
+    let mut is_struct = false;
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("class ") || trimmed.starts_with("struct ") || trimmed.starts_with("public class ") || trimmed.starts_with("public struct ") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            let mut name = "";
+            for (w_idx, w) in words.iter().enumerate() {
+                if (*w == "class" || *w == "struct") && w_idx + 1 < words.len() {
+                    name = words[w_idx + 1].trim_matches(|c| c == '{' || c == ':').trim();
+                    is_struct = *w == "struct";
+                    break;
+                }
+            }
+            if target_class.is_none() || target_class == Some(name) {
+                class_start = Some(idx);
+                class_name = name.to_string();
+                brace_depth = 0;
+            }
+        }
+        if class_start.is_some() && class_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                class_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let c_start = class_start.context("Could not find class or struct in Swift file")?;
+    let c_end = class_end.context("Could not find closing brace of Swift class")?;
+
+    let mut field_line_idx = None;
+    let mut field_type = String::new();
+    let mut field_indent = "    ".to_string();
+
+    for (idx, line) in lines.iter().enumerate().take(c_end).skip(c_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        if trimmed.contains('(') {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        let is_match = words.iter().any(|w| {
+            let clean = w.trim_matches(|c| c == ':' || c == '=');
+            clean == target_field
+        });
+        if is_match && (trimmed.starts_with("var ") || trimmed.starts_with("let ") || trimmed.starts_with("public var ") || trimmed.starts_with("public let ")) {
+            field_line_idx = Some(idx);
+            let indent_len = line.len() - trimmed.len();
+            field_indent = line[..indent_len].to_string();
+            if let Some(colon_pos) = trimmed.find(':') {
+                let after = &trimmed[colon_pos + 1..];
+                let ty_end = after.find('=').unwrap_or(after.len());
+                field_type = after[..ty_end].trim().to_string();
+            }
+            break;
+        }
+    }
+
+    let f_idx = field_line_idx.with_context(|| format!("Field `{target_field}` not found in Swift type `{class_name}`"))?;
+    let pascal = to_pascal_case(target_field);
+    let mut_kw = if is_struct { "mutating " } else { "" };
+    let accessors = format!(
+        "\n{field_indent}func get{pascal}() -> {field_type} {{\n{field_indent}    return _{target_field}\n{field_indent}}}\n\n{field_indent}{mut_kw}func set{pascal}(_ {target_field}: {field_type}) {{\n{field_indent}    _{target_field} = {target_field}\n{field_indent}}}\n"
+    );
+
+    let new_field_decl = format!("{field_indent}private var _{target_field}: {field_type}");
+
+    let mut out_lines = Vec::new();
+    let mut left_direct = 0;
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == f_idx {
+            out_lines.push(new_field_decl.clone());
+        } else if idx > c_start && idx < c_end {
+            let (replaced, cnt) = replace_line_self(line, target_field);
+            left_direct += cnt;
+            out_lines.push(replaced);
+        } else if idx == c_end {
+            out_lines.push(accessors.clone());
+            out_lines.push(line.to_string());
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = out_lines.join("\n");
+    let (final_code, reads, writes) = rewrite_external_swift(&intermediate, target_field);
+    Ok((class_name, field_type, final_code, reads, writes, left_direct))
+}
+
+pub fn encapsulate_field_go(
+    text: &str,
+    target_class: Option<&str>,
+    target_field: &str,
+) -> Result<(String, String, String, usize, usize, usize)> {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut struct_start = None;
+    let mut struct_end = None;
+    let mut struct_name = String::new();
+    let mut brace_depth = 0i32;
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("type ") && trimmed.contains(" struct") {
+            let words: Vec<&str> = trimmed.split_whitespace().collect();
+            if words.len() >= 2 {
+                let name = words[1];
+                if target_class.is_none() || target_class == Some(name) {
+                    struct_start = Some(idx);
+                    struct_name = name.to_string();
+                    brace_depth = 0;
+                }
+            }
+        }
+        if struct_start.is_some() && struct_end.is_none() {
+            brace_depth += line.chars().filter(|&c| c == '{').count() as i32;
+            brace_depth -= line.chars().filter(|&c| c == '}').count() as i32;
+            if brace_depth == 0 && line.contains('}') {
+                struct_end = Some(idx);
+                break;
+            }
+        }
+    }
+
+    let s_start = struct_start.context("Could not find struct in Go file")?;
+    let s_end = struct_end.context("Could not find closing brace of Go struct")?;
+
+    let mut field_line_idx = None;
+    let mut field_type = String::new();
+    let mut field_indent = "\t".to_string();
+
+    let target_unexported = lowercase_first(target_field);
+    let target_pascal = to_pascal_case(target_field);
+
+    for (idx, line) in lines.iter().enumerate().take(s_end).skip(s_start + 1) {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        let words: Vec<&str> = trimmed.split_whitespace().collect();
+        if !words.is_empty() {
+            let fld = words[0];
+            if fld == target_field || fld == target_pascal || fld == target_unexported {
+                field_line_idx = Some(idx);
+                let indent_len = line.len() - trimmed.len();
+                field_indent = line[..indent_len].to_string();
+                if words.len() >= 2 {
+                    field_type = words[1].to_string();
+                }
+                break;
+            }
+        }
+    }
+
+    let f_idx = field_line_idx.with_context(|| format!("Field `{target_field}` not found in struct `{struct_name}`"))?;
+    let unexported_field = if target_pascal.chars().all(|c| c.is_ascii_uppercase()) {
+        target_pascal.to_lowercase()
+    } else {
+        lowercase_first(&target_pascal)
+    };
+    let new_field_line = format!("{field_indent}{unexported_field} {field_type}");
+
+    let recv = struct_name.chars().next().unwrap_or('s').to_lowercase().to_string();
+    let accessors = format!(
+        "\nfunc ({recv} *{struct_name}) {target_pascal}() {field_type} {{\n\treturn {recv}.{unexported_field}\n}}\n\nfunc ({recv} *{struct_name}) Set{target_pascal}({unexported_field} {field_type}) {{\n\t{recv}.{unexported_field} = {unexported_field}\n}}\n"
+    );
+
+    let mut out_lines = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == f_idx {
+            out_lines.push(new_field_line.clone());
+        } else if idx == s_end {
+            out_lines.push(line.to_string());
+            out_lines.push(accessors.clone());
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+
+    let intermediate = out_lines.join("\n");
+    let (final_code, reads, writes) = rewrite_external_go(&intermediate, target_field);
+    Ok((struct_name, field_type, final_code, reads, writes, 0))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn encapsulate_polyglot(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    file_path: &Path,
+    class_name: Option<&str>,
+    field_name: &str,
+    by_value: Option<bool>,
+    apply: bool,
+    force: bool,
+) -> Result<EncapsulatedField> {
+    let content = std::fs::read_to_string(file_path)
+        .with_context(|| format!("Cannot read {}", file_path.display()))?;
+    let lang = Language::from_path(file_path)
+        .with_context(|| format!("Unsupported language for file: {}", file_path.display()))?;
+
+    let (owner, ty, new_content, file_reads, file_writes, left_in_file) = match lang {
+        Language::TypeScript => encapsulate_field_ts(&content, class_name, field_name)?,
+        Language::Python => encapsulate_field_py(&content, class_name, field_name)?,
+        Language::Cpp => encapsulate_field_cpp(&content, class_name, field_name, by_value)?,
+        Language::Swift => encapsulate_field_swift(&content, class_name, field_name)?,
+        Language::Go => encapsulate_field_go(&content, class_name, field_name)?,
+    };
+
+    let mut rewritten = vec![(file_path.to_string_lossy().to_string(), new_content)];
+    let mut total_reads = file_reads;
+    let mut total_writes = file_writes;
+
+    for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+        let path = entry.path();
+        if path.is_file() && path != file_path && lang.matches_extension(path)
+            && let Ok(other_content) = std::fs::read_to_string(path)
+                && other_content.contains(field_name) {
+                    let (new_other, r, w) = match lang {
+                        Language::TypeScript => rewrite_external_ts(&other_content, field_name),
+                        Language::Python => rewrite_external_py(&other_content, field_name),
+                        Language::Cpp => rewrite_external_cpp(&other_content, field_name),
+                        Language::Swift => rewrite_external_swift(&other_content, field_name),
+                        Language::Go => rewrite_external_go(&other_content, field_name),
+                    };
+                    if new_other != other_content {
+                        rewritten.push((path.to_string_lossy().to_string(), new_other));
+                        total_reads += r;
+                        total_writes += w;
+                    }
+                }
+    }
+
+    let to_check: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (PathBuf::from(p), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, workspace_root, &to_check, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.source
+                    .as_deref()
+                    .map(|s| format!("[{s}] "))
+                    .unwrap_or_default(),
+                d.message,
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    if apply && (diagnostics.is_empty() || force) {
+        let rewritten_map: BTreeMap<PathBuf, String> = rewritten
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        let edit = crate::signature::whole_file_edit(&rewritten_map);
+        crate::refactor::apply_workspace_edit(workspace_root, &edit)?;
+    }
+
+    let rel_file = display(workspace_root, file_path);
+    Ok(EncapsulatedField {
+        owner,
+        root: workspace_root.to_path_buf(),
+        file: rel_file,
+        field: field_name.to_string(),
+        ty,
+        by_value: by_value.unwrap_or(false),
+        reads: total_reads,
+        writes: total_writes,
+        chained_reads: 0,
+        left_in_file,
+        blocked: vec![],
+        unmatched: vec![],
+        rewritten,
+        diagnostics,
+        applied: apply,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -893,5 +2092,150 @@ mod tests {
         assert!(text.contains("0 errors"), "{text}");
         assert!(text.contains("diff truncated"), "{text}");
         assert!(text.contains("[applied to 1 file(s)]"), "{text}");
+    }
+
+    #[test]
+    fn test_encapsulate_field_ts() {
+        let ts = r#"export class UserService {
+    public username: string;
+    public age: number;
+
+    constructor(username: string, age: number) {
+        this.username = username;
+        this.age = age;
+    }
+}
+
+export function testUser(svc: UserService) {
+    svc.username = "alice";
+    console.log(svc.username);
+}
+"#;
+        let (owner, ty, res, reads, writes, left) =
+            encapsulate_field_ts(ts, Some("UserService"), "username").unwrap();
+        assert_eq!(owner, "UserService");
+        assert_eq!(ty, "string");
+        assert_eq!(reads, 1);
+        assert_eq!(writes, 1);
+        assert_eq!(left, 1);
+        assert!(res.contains("private _username: string;"));
+        assert!(res.contains("public getUsername(): string {"));
+        assert!(res.contains("return this._username;"));
+        assert!(res.contains("public setUsername(username: string): void {"));
+        assert!(res.contains("this._username = username;"));
+        assert!(res.contains("svc.setUsername(\"alice\");"));
+        assert!(res.contains("console.log(svc.getUsername());"));
+    }
+
+    #[test]
+    fn test_encapsulate_field_python() {
+        let py = r#"class Account:
+    def __init__(self, balance: float):
+        self.balance = balance
+
+    def deposit(self, amount: float):
+        self.balance += amount
+
+def audit_account(acc: Account):
+    acc.balance = 100.0
+    print(acc.balance)
+"#;
+        let (owner, _ty, res, reads, writes, left) =
+            encapsulate_field_py(py, Some("Account"), "balance").unwrap();
+        assert_eq!(owner, "Account");
+        assert_eq!(reads, 1);
+        assert_eq!(writes, 1);
+        assert_eq!(left, 2);
+        assert!(res.contains("self._balance = balance"));
+        assert!(res.contains("self._balance += amount"));
+        assert!(res.contains("def get_balance(self)"));
+        assert!(res.contains("return self._balance"));
+        assert!(res.contains("def set_balance(self, balance"));
+        assert!(res.contains("acc.set_balance(100.0)"));
+        assert!(res.contains("print(acc.get_balance())"));
+    }
+
+    #[test]
+    fn test_encapsulate_field_cpp() {
+        let cpp = r#"class User {
+public:
+    std::string name;
+    int age;
+};
+
+void update_user(User* u) {
+    u->name = "Alice";
+    std::cout << u->name << std::endl;
+}
+"#;
+        let (owner, ty, res, reads, writes, _left) =
+            encapsulate_field_cpp(cpp, Some("User"), "name", None).unwrap();
+        assert_eq!(owner, "User");
+        assert_eq!(ty, "std::string");
+        assert_eq!(reads, 1);
+        assert_eq!(writes, 1);
+        assert!(res.contains("const std::string& get_name() const"));
+        assert!(res.contains("void set_name(const std::string& name)"));
+        assert!(res.contains("std::string name_;"));
+        assert!(res.contains("u->set_name(\"Alice\");"));
+        assert!(res.contains("std::cout << u->get_name() << std::endl;"));
+    }
+
+    #[test]
+    fn test_encapsulate_field_swift() {
+        let swift = r#"class User {
+    var name: String
+    var age: Int
+
+    init(name: String, age: Int) {
+        self.name = name
+        self.age = age
+    }
+}
+
+func checkUser(u: User) {
+    u.name = "Alice"
+    print(u.name)
+}
+"#;
+        let (owner, ty, res, reads, writes, left) =
+            encapsulate_field_swift(swift, Some("User"), "name").unwrap();
+        assert_eq!(owner, "User");
+        assert_eq!(ty, "String");
+        assert_eq!(reads, 1);
+        assert_eq!(writes, 1);
+        assert_eq!(left, 1);
+        assert!(res.contains("private var _name: String"));
+        assert!(res.contains("func getName() -> String"));
+        assert!(res.contains("func setName(_ name: String)"));
+        assert!(res.contains("u.setName(\"Alice\")"));
+        assert!(res.contains("print(u.getName())"));
+    }
+
+    #[test]
+    fn test_encapsulate_field_go() {
+        let go = r#"package user
+
+type User struct {
+	Name string
+	Age  int
+}
+
+func ProcessUser(u *User) {
+	u.Name = "Alice"
+	println(u.Name)
+}
+"#;
+        let (owner, ty, res, reads, writes, _) =
+            encapsulate_field_go(go, Some("User"), "Name").unwrap();
+        assert_eq!(owner, "User");
+        assert_eq!(ty, "string");
+        assert_eq!(reads, 1);
+        assert_eq!(writes, 1);
+        assert!(res.contains("name string"));
+        assert!(res.contains("func (u *User) Name() string"));
+        assert!(res.contains("func (u *User) SetName(name string)"));
+        assert!(res.contains("u.SetName(\"Alice\")"));
+        assert!(res.contains("println(u.Name())"));
     }
 }
