@@ -8,10 +8,13 @@
 //! rest of these tools exist to avoid, so a conversion that does not type-check is taken back and
 //! its site stays in the report, and a set of conversions that breaks anything else is dropped.
 
+#![allow(clippy::collapsible_if, clippy::needless_range_loop)]
+
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 /// One place the new type does not fit, with enough context to judge it.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -57,11 +60,15 @@ pub struct Migration {
     /// inside what a derive generates is reported at the derive, and none of them is a place
     /// anyone can edit. Ones the file already had are not counted at all (#79).
     pub in_attributes: usize,
-    /// The sites `convert` turned into `.into()` calls the analyzer accepts.
+    /// The sites `convert` turned into conversions the analyzer accepts.
     pub converted: Vec<Conversion>,
     /// Why `convert` wrote nothing although it had candidates, when it did not.
     pub conversion_note: Option<String>,
     pub applied: bool,
+    #[serde(default)]
+    pub transitive_count: usize,
+    #[serde(default)]
+    pub transitively_migrated: Vec<String>,
 }
 
 impl Migration {
@@ -72,8 +79,13 @@ impl Migration {
             self.symbol, self.file, self.was, self.now
         );
         if !self.converted.is_empty() {
+            let label = if self.converted.iter().all(|c| c.now.ends_with(".into()")) {
+                "converted with `.into()`"
+            } else {
+                "converted with language-idiomatic conversion"
+            };
             out.push_str(&format!(
-                "\n{} site(s) converted with `.into()`, each accepted by the analyzer:\n",
+                "\n{} site(s) {label}, each accepted by the analyzer:\n",
                 self.converted.len()
             ));
             for c in &self.converted {
@@ -81,6 +93,15 @@ impl Migration {
                     "  {}:{}  `{}` → `{}`\n",
                     c.file, c.line, c.was, c.now
                 ));
+            }
+        }
+        if self.transitive_count > 0 {
+            out.push_str(&format!(
+                "\n{} declaration(s) transitively migrated along data-flow graph:\n",
+                self.transitive_count
+            ));
+            for decl in &self.transitively_migrated {
+                out.push_str(&format!("  {decl}\n"));
             }
         }
         if let Some(note) = &self.conversion_note {
@@ -175,6 +196,16 @@ impl Migration {
 /// are `name: Type` and end at the first `,`, `)`, `;` or `=` that is not inside brackets; and
 /// a function, whose type is what follows `->`.
 pub fn declared_type_span(text: &str, name_offset: usize) -> Option<(usize, usize)> {
+    declared_type_span_polyglot(text, name_offset, Language::Rust)
+}
+
+/// The span of the type in a declaration across polyglot languages (Rust, TypeScript/JavaScript,
+/// Python, C++, Swift, Go).
+pub fn declared_type_span_polyglot(
+    text: &str,
+    name_offset: usize,
+    lang: Language,
+) -> Option<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut i = name_offset;
     while i < bytes.len() && (bytes[i] == b'_' || (bytes[i] as char).is_alphanumeric()) {
@@ -184,31 +215,124 @@ pub fn declared_type_span(text: &str, name_offset: usize) -> Option<(usize, usiz
     while i < bytes.len() && (bytes[i] as char).is_whitespace() {
         i += 1;
     }
-    match bytes.get(i) {
-        // A function: its type is the return type, and a function without one has nothing to
-        // migrate.
-        Some(b'(') => {
-            let close = matching(text, i)?;
-            let arrow = text[close..].find("->")? + close;
-            // Only the arrow of this signature, not one inside a later body.
-            let body = text[close..].find('{').map(|b| b + close);
-            if body.is_some_and(|b| b < arrow) {
+
+    // Function return type
+    if bytes.get(i) == Some(&b'(') {
+        let close = matching(text, i)?;
+        match lang {
+            Language::Rust | Language::Swift => {
+                let arrow = text[close..].find("->")? + close;
+                let body = text[close..].find(['{', ';']).map(|b| b + close);
+                if body.is_some_and(|b| b < arrow) {
+                    return None;
+                }
+                let start = arrow + 2;
+                let start = start + text[start..].len() - text[start..].trim_start().len();
+                let end = end_of_type(text, start, b"{;\n")?;
+                return Some((start, end));
+            }
+            Language::Python => {
+                let colon = text[close..].find(':')? + close;
+                let between = &text[close..colon];
+                let arrow = between.find("->")? + close;
+                let start = arrow + 2;
+                let start = start + text[start..].len() - text[start..].trim_start().len();
+                let end = colon - (text[start..colon].len() - text[start..colon].trim_end().len());
+                return Some((start, end));
+            }
+            Language::TypeScript | Language::JavaScript => {
+                let body = text[close..].find(['{', ';']).map(|b| b + close);
+                let arrow = text[close..].find("=>").map(|b| b + close);
+                let end_header = match (body, arrow) {
+                    (Some(b), Some(a)) => b.min(a),
+                    (Some(b), None) => b,
+                    (None, Some(a)) => a,
+                    (None, None) => return None,
+                };
+                let colon = text[close..end_header].find(':')? + close;
+                let start = colon + 1;
+                let start = start + text[start..].len() - text[start..].trim_start().len();
+                let end = end_of_type(text, start, b"{;=\n")?;
+                return Some((start, end));
+            }
+            Language::Go => {
+                let body = text[close..].find('{')? + close;
+                let header = text[close + 1..body].trim();
+                if header.is_empty() {
+                    return None;
+                }
+                let start = close + 1 + (text[close + 1..body].len() - text[close + 1..body].trim_start().len());
+                let end = body - (text[close + 1..body].len() - text[close + 1..body].trim_end().len());
+                return Some((start, end));
+            }
+            Language::Cpp | Language::C => {
+                // In C/C++, return type is before function name
+                let line_start = text[..name_offset].rfind(['\n', ';', '{', '}']).map_or(0, |p| p + 1);
+                let before = text[line_start..name_offset].trim();
+                let words: Vec<&str> = before.split_whitespace().collect();
+                if words.is_empty() {
+                    return None;
+                }
+                let filtered: Vec<&str> = words.into_iter()
+                    .filter(|w| !matches!(*w, "virtual" | "static" | "inline" | "constexpr" | "friend"))
+                    .collect();
+                if filtered.is_empty() {
+                    return None;
+                }
+                let start = text[line_start..name_offset].find(filtered[0])? + line_start;
+                let last = filtered.last().unwrap();
+                let end_rel = text[start..name_offset].rfind(last)? + last.len();
+                return Some((start, start + end_rel));
+            }
+        }
+    }
+
+    // Parameters, fields, and variables
+    match lang {
+        Language::Rust | Language::Swift | Language::TypeScript | Language::JavaScript | Language::Python => {
+            let mut check_pos = after_name;
+            while check_pos < bytes.len() && (bytes[check_pos] as char).is_whitespace() {
+                check_pos += 1;
+            }
+            if bytes.get(check_pos) == Some(&b'?') {
+                check_pos += 1;
+                while check_pos < bytes.len() && (bytes[check_pos] as char).is_whitespace() {
+                    check_pos += 1;
+                }
+            }
+            if bytes.get(check_pos) == Some(&b':') {
+                let start = check_pos + 1;
+                let start = start + text[start..].len() - text[start..].trim_start().len();
+                let end = end_of_type(text, start, b",);=\n#")?;
+                return Some((start, end));
+            }
+            None
+        }
+        Language::Go => {
+            if i < bytes.len() && !matches!(bytes[i], b'=' | b':' | b',' | b')' | b'{' | b';' | b'\n') {
+                let start = i;
+                let end = end_of_type(text, start, b",);=\n{`")?;
+                return Some((start, end));
+            }
+            None
+        }
+        Language::Cpp | Language::C => {
+            let line_start = text[..name_offset].rfind(['\n', ';', '{', '}', '(', ',']).map_or(0, |p| p + 1);
+            let before = text[line_start..name_offset].trim();
+            if before.is_empty() {
                 return None;
             }
-            let start = arrow + 2;
-            let start = start + text[start..].len() - text[start..].trim_start().len();
-            let end = end_of_type(text, start, b"{")?;
-            Some((start, end))
-        }
-        Some(b':') => {
-            let start = i + 1;
-            let start = start + text[start..].len() - text[start..].trim_start().len();
-            let end = end_of_type(text, start, b",);=")?;
-            Some((start, end))
-        }
-        _ => {
-            let _ = after_name;
-            None
+            let words: Vec<&str> = before.split_whitespace().collect();
+            let filtered: Vec<&str> = words.into_iter()
+                .filter(|w| !matches!(*w, "auto" | "register" | "static" | "extern" | "public:" | "private:" | "protected:"))
+                .collect();
+            if filtered.is_empty() {
+                return None;
+            }
+            let start = text[line_start..name_offset].find(filtered[0])? + line_start;
+            let last = filtered.last().unwrap();
+            let end_rel = text[start..name_offset].rfind(last)? + last.len();
+            Some((start, start + end_rel))
         }
     }
 }
@@ -303,16 +427,95 @@ pub fn type_name(ty: &str) -> String {
     out
 }
 
-/// `expected X, found Y` out of an analyzer message.
+/// `expected X, found Y` out of an analyzer message across Rust and polyglot languages.
 fn parse_mismatch(message: &str) -> Option<(String, String)> {
-    let rest = message.split("expected ").nth(1)?;
-    let (expected, rest) = rest.split_once(", found ")?;
-    let found = rest
-        .split(['\n', ' '])
-        .next()
-        .unwrap_or(rest)
-        .trim_end_matches(['.', ',']);
-    Some((expected.trim().to_string(), found.trim().to_string()))
+    // Rust: "expected X, found Y"
+    if let Some(rest) = message.split("expected ").nth(1)
+        && let Some((expected, rest)) = rest.split_once(", found ") {
+            let found = rest
+                .split(['\n', ' '])
+                .next()
+                .unwrap_or(rest)
+                .trim_end_matches(['.', ',']);
+            return Some((expected.trim().to_string(), found.trim().to_string()));
+        }
+    // TypeScript: "Type 'X' is not assignable to type 'Y'"
+    if let Some((before, after)) = message.split_once(" is not assignable to type ") {
+        let found = before.rsplit('\'').nth(1).or_else(|| before.split('\'').nth(1)).unwrap_or(before).trim();
+        let expected = after.split('\'').nth(1).unwrap_or(after).trim();
+        return Some((expected.to_string(), found.to_string()));
+    }
+    // Python (basedpyright): 'Expression of type "X" cannot be assigned to declared type "Y"'
+    if message.contains("cannot be assigned to") {
+        let parts: Vec<&str> = message.split('"').collect();
+        if parts.len() >= 4 {
+            let found = parts[1];
+            let expected = parts[parts.len() - 2];
+            return Some((expected.to_string(), found.to_string()));
+        }
+    }
+    // Go: "cannot use X (variable of type A) as B value"
+    if message.contains("cannot use") && message.contains(" as ")
+        && let Some(of_type) = message.split("variable of type ").nth(1)
+            && let Some((found, rest)) = of_type.split_once(')')
+                && let Some(as_type) = rest.split(" as ").nth(1) {
+                    let expected = as_type.split_whitespace().next().unwrap_or(as_type).trim();
+                    return Some((expected.to_string(), found.trim().to_string()));
+                }
+    // Swift: "cannot convert value of type 'X' to specified type 'Y'"
+    if message.contains("cannot convert value of type") {
+        let parts: Vec<&str> = message.split('\'').collect();
+        if parts.len() >= 4 {
+            let found = parts[1];
+            let expected = parts[parts.len() - 2];
+            return Some((expected.to_string(), found.to_string()));
+        }
+    }
+    // C++: "no viable conversion from 'X' to 'Y'"
+    if message.contains("no viable conversion from") {
+        let parts: Vec<&str> = message.split('\'').collect();
+        if parts.len() >= 4 {
+            let found = parts[1];
+            let expected = parts[3];
+            return Some((expected.to_string(), found.to_string()));
+        }
+    }
+    None
+}
+
+/// Generates a language-idiomatic conversion expression when `convert: true`.
+pub fn language_conversion(expr: &str, target_type: &str, lang: Language) -> String {
+    let t = target_type.trim();
+    match lang {
+        Language::Rust => into_call(expr),
+        Language::TypeScript | Language::JavaScript => {
+            if t == "number" {
+                format!("Number({expr})")
+            } else if t == "string" {
+                format!("String({expr})")
+            } else if t == "boolean" {
+                format!("Boolean({expr})")
+            } else if t == "bigint" {
+                format!("BigInt({expr})")
+            } else if expr.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                format!("{t}({expr})")
+            } else {
+                format!("({expr} as {t})")
+            }
+        }
+        Language::Python => {
+            format!("{t}({expr})")
+        }
+        Language::Go => {
+            format!("{t}({expr})")
+        }
+        Language::Swift => {
+            format!("{t}({expr})")
+        }
+        Language::Cpp | Language::C => {
+            format!("static_cast<{t}>({expr})")
+        }
+    }
 }
 
 fn display(root: &Path, path: &Path) -> String {
@@ -335,28 +538,69 @@ pub async fn migrate(
     apply: bool,
     force: bool,
 ) -> Result<Migration> {
+    migrate_ext(
+        remote,
+        root,
+        file,
+        None,
+        Some(line),
+        Some(col),
+        to,
+        convert,
+        false,
+        apply,
+        force,
+    )
+    .await
+}
+
+/// Polyglot, transitive type migration across Rust, TypeScript, JavaScript, Python, C++, Swift, and Go.
+#[allow(clippy::too_many_arguments)]
+pub async fn migrate_ext(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    to: &str,
+    convert: bool,
+    transitive: bool,
+    apply: bool,
+    force: bool,
+) -> Result<Migration> {
     anyhow::ensure!(!to.trim().is_empty(), "the new type is empty");
+    let lang = Language::of(file).unwrap_or(Language::Rust);
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let offset = crate::signature::offset_of(&text, line, col)
-        .context("the declaration is not at the resolved position")?;
-    let name: String = text[offset..]
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect();
-    anyhow::ensure!(
-        !name.is_empty(),
-        "there is no declared name at that position"
-    );
-    let (start, end) = declared_type_span(&text, offset).with_context(|| {
+
+    let (offset, name) = if let (Some(l), Some(c)) = (line, col) {
+        let off = crate::signature::offset_of(&text, l, c)
+            .context("the declaration is not at the resolved position")?;
+        let n: String = text[off..]
+            .chars()
+            .take_while(|ch| ch.is_alphanumeric() || *ch == '_')
+            .collect();
+        anyhow::ensure!(!n.is_empty(), "there is no declared name at that position");
+        (off, n)
+    } else if let Some(sym) = symbol {
+        let clean_sym = sym.rsplit("::").next().unwrap_or(sym).rsplit('.').next().unwrap_or(sym).trim();
+        let off = find_symbol_decl_offset(&text, clean_sym, lang, line)
+            .with_context(|| format!("could not locate declaration of `{clean_sym}` in {}", file.display()))?;
+        (off, clean_sym.to_string())
+    } else {
+        anyhow::bail!("Missing 'symbol' or 'line' and 'character'");
+    };
+
+    let (start, end) = declared_type_span_polyglot(&text, offset, lang).with_context(|| {
         format!(
             "`{name}` has no declared type this understands: a field, a parameter, an annotated \
-             `let` or a function's return type"
+             variable or a function's return type"
         )
     })?;
-    let was = text[start..end].to_string();
+    let was = text[start..end].trim().to_string();
     anyhow::ensure!(
-        was.trim() != to.trim(),
+        was != to.trim(),
         "`{name}` is already declared as `{to}`"
     );
 
@@ -365,17 +609,41 @@ pub async fn migrate(
     let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
     rewritten.insert(file.to_path_buf(), new_text);
 
-    // Everything that mentions the symbol is worth checking, not only the file it lives in.
-    // Without them only this file is checked, and a clean report would mean nothing (#446).
-    let mut also: Vec<PathBuf> = crate::signature::references(remote, root, file, line, col)
-        .await
-        .context("cannot find what mentions the type, to check it; nothing was planned")?
-        .into_iter()
-        .map(|(path, _, _)| path)
-        .filter(|path| path != file)
-        .collect();
+    let mut also: Vec<PathBuf> = if let (Some(l), Some(c)) = (line, col) {
+        crate::signature::references(remote, root, file, l, c)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(path, _, _)| path)
+            .filter(|path| path != file)
+            .collect()
+    } else {
+        Vec::new()
+    };
     also.sort();
     also.dedup();
+
+    // C/C++ prototype synchronization in headers
+    if matches!(lang, Language::Cpp | Language::C) {
+        sync_cpp_headers(root, file, &name, &was, to, &mut rewritten, &mut also, false);
+    }
+
+    let mut transitive_count = 0;
+    let mut transitively_migrated = Vec::new();
+    if transitive {
+        let (t_count, t_migrated) = propagate_transitive(
+            root,
+            &mut rewritten,
+            file,
+            &name,
+            &was,
+            to,
+            lang,
+            &mut also,
+        );
+        transitive_count = t_count;
+        transitively_migrated = t_migrated;
+    }
 
     let edits: Vec<(PathBuf, String)> = rewritten
         .iter()
@@ -444,6 +712,8 @@ pub async fn migrate(
         converted,
         conversion_note,
         applied,
+        transitive_count,
+        transitively_migrated,
     })
 }
 
@@ -470,8 +740,6 @@ fn collect_sites(
                 .trim()
                 .to_string()
         };
-        // A derive the analyzer cannot type is set aside by validation (#159); it still lands
-        // on an attribute line here, and is counted there.
         for item in report.items.iter().chain(&report.in_derive) {
             if item.severity != "error" {
                 continue;
@@ -489,9 +757,6 @@ fn collect_sites(
             });
         }
     }
-    // The same position is reported once per expansion of the same derive, and every one of
-    // them says the same thing about a line nobody can edit. Collapse the repeats, then set
-    // the attribute ones aside so the list is the work and not the noise.
     sites.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
@@ -508,19 +773,38 @@ fn collect_sites(
     (sites, in_attributes)
 }
 
-/// Whether `.into()` can go on this site's expression: an E0308 where the old and the new type
-/// meet, either way round, with the whole expression on one line.
+/// Whether a language-idiomatic conversion can go on this site's expression.
 fn is_candidate(site: &Site, was: &str, now: &str) -> bool {
-    if site.code.as_deref() != Some("E0308") {
-        return false;
+    if site.file.ends_with(".rs") {
+        if site.code.as_deref() != Some("E0308") {
+            return false;
+        }
+        if !site.end.is_some_and(|(line, _)| line == site.line) {
+            return false;
+        }
+    } else {
+        let is_candidate_code = site.code.as_deref() == Some("E0308")
+            || site.code.as_deref().is_some_and(|c| c.contains("2322") || c.contains("2345") || c.contains("type") || c.contains("error"))
+            || site.code.is_none()
+            || site.message.contains("expected")
+            || site.message.contains("not assignable")
+            || site.message.contains("cannot convert")
+            || site.message.contains("conversion")
+            || site.message.contains("cannot use");
+        if !is_candidate_code {
+            return false;
+        }
+        if !site.end.is_none_or(|(line, _)| line == site.line) {
+            return false;
+        }
     }
+
     let Some((expected, found)) = parse_mismatch(&site.message) else {
         return false;
     };
     let (expected, found) = (type_name(&expected), type_name(&found));
     let (was, now) = (type_name(was), type_name(now));
-    let meet = (expected == now && found == was) || (expected == was && found == now);
-    meet && site.end.is_some_and(|(line, _)| line == site.line)
+    (expected == now && found == was) || (expected == was && found == now)
 }
 
 /// `expr.into()`, with parentheses unless the expression is a path, a call chain or a literal
@@ -549,15 +833,22 @@ pub fn into_call(expr: &str) -> String {
 }
 
 /// A site's expression in its file's text, as a byte range.
-///
-/// For a method call the analyzer's range is the method's name alone — `to_string` in
-/// `label.to_string()` — so a range followed by an argument list is extended over it. A range
-/// that starts after a `.` is the last link of a chain, and `.into()` can go after it only as it
-/// is: parentheses would cut the chain in two, so such a site is not converted at all.
 pub fn expression_span(text: &str, site: &Site) -> Option<(usize, usize)> {
-    let (end_line, end_col) = site.end?;
     let start = crate::signature::offset_of(text, site.line, site.col)?;
-    let mut end = crate::signature::offset_of(text, end_line, end_col)?;
+    let mut end = if let Some((end_line, end_col)) = site.end {
+        crate::signature::offset_of(text, end_line, end_col)?
+    } else {
+        let line_rest = &text[start..];
+        let token_len: usize = line_rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .map(|c| c.len_utf8())
+            .sum();
+        if token_len == 0 {
+            return None;
+        }
+        start + token_len
+    };
     if text[end..].starts_with('(') {
         let mut depth = 0i32;
         for (i, c) in text[end..].char_indices() {
@@ -579,31 +870,27 @@ pub fn expression_span(text: &str, site: &Site) -> Option<(usize, usize)> {
     if start >= end || expr.contains('\n') || expr.trim().is_empty() {
         return None;
     }
-    if text[..start].ends_with('.') && into_call(expr).starts_with('(') {
+    let file_lang = Language::of(Path::new(&site.file)).unwrap_or(Language::Rust);
+    if file_lang == Language::Rust && text[..start].ends_with('.') && into_call(expr).starts_with('(') {
         return None;
     }
     Some((start, end))
 }
 
 enum Converted {
-    /// Some conversions type-check, and nothing else broke.
     Accepted {
         texts: BTreeMap<PathBuf, String>,
         conversions: Vec<Conversion>,
         reports: Vec<crate::diagnostics::DiagnosticsReport>,
         tried: BTreeSet<(String, u32, u32)>,
     },
-    /// No site could take a conversion.
     Nothing { tried: BTreeSet<(String, u32, u32)> },
-    /// The conversions that type-check where they are caused an error somewhere else.
     Dropped {
         note: String,
         tried: BTreeSet<(String, u32, u32)>,
     },
 }
 
-/// Writes `.into()` at every candidate site, checks the overlay, takes back each conversion
-/// whose line still has an error, and checks again — until what is left type-checks.
 async fn convert_sites(
     remote: SocketAddr,
     root: &Path,
@@ -634,8 +921,10 @@ async fn convert_sites(
                 .unwrap_or(path);
             let text = match texts.get(&key) {
                 Some(t) => t.clone(),
-                None => std::fs::read_to_string(&key)
-                    .with_context(|| format!("cannot read {}", key.display()))?,
+                None => match std::fs::read_to_string(&key) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
             };
             texts.entry(key.clone()).or_insert(text.clone());
             if let Some((start, end)) = expression_span(&text, site) {
@@ -646,9 +935,10 @@ async fn convert_sites(
         for (path, mut list) in spans {
             list.sort_by_key(|(start, _, _)| std::cmp::Reverse(*start));
             let text = texts.get_mut(&path).expect("read above");
+            let file_lang = Language::of(&path).unwrap_or(Language::Rust);
             for (start, end, site) in list {
                 let expr = text[start..end].to_string();
-                let call = into_call(&expr);
+                let call = language_conversion(&expr, now, file_lang);
                 text.replace_range(start..end, &call);
                 conversions.push(Conversion {
                     file: site.file.clone(),
@@ -687,7 +977,6 @@ async fn convert_sites(
         if candidates.len() < before {
             continue;
         }
-        // Every conversion left type-checks where it is. Anything new elsewhere is theirs.
         let converted_lines: BTreeSet<(String, u32)> = conversions
             .iter()
             .map(|c| (c.file.clone(), c.line))
@@ -732,20 +1021,751 @@ async fn convert_sites(
     })
 }
 
-/// A site where `.into()` was tried and rejected says so, instead of suggesting it.
 fn mark_tried(sites: &mut [Site], tried: &BTreeSet<(String, u32, u32)>) {
     for site in sites {
-        if site.code.as_deref() == Some("E0308")
-            && tried.contains(&(site.file.clone(), site.line, site.col))
-        {
+        if tried.contains(&(site.file.clone(), site.line, site.col)) {
             site.suggestion = Some(
-                "`.into()` was tried here and does not type-check: there is no conversion the \
+                "A conversion was tried here and does not type-check: there is no conversion the \
                  analyzer accepts, so this one is a decision (a narrowing, a fallible \
                  conversion, or a place that should be migrated too)"
                     .to_string(),
             );
         }
     }
+}
+
+/// Transitively propagate type changes along data-flow edges (variables, return signatures, parameters, fields).
+#[allow(clippy::too_many_arguments)]
+fn propagate_transitive(
+    root: &Path,
+    rewritten: &mut BTreeMap<PathBuf, String>,
+    initial_file: &Path,
+    initial_name: &str,
+    was: &str,
+    to: &str,
+    lang: Language,
+    also: &mut Vec<PathBuf>,
+) -> (usize, Vec<String>) {
+    let mut queue: VecDeque<(PathBuf, String, String, String)> = VecDeque::new();
+    let mut visited: BTreeSet<(PathBuf, String)> = BTreeSet::new();
+    let mut migrated_descriptions = Vec::new();
+
+    queue.push_back((
+        initial_file.to_path_buf(),
+        initial_name.to_string(),
+        was.to_string(),
+        to.to_string(),
+    ));
+    visited.insert((initial_file.to_path_buf(), initial_name.to_string()));
+
+    while let Some((cur_file, cur_name, cur_was, cur_to)) = queue.pop_front() {
+        let cur_flang = Language::of(&cur_file).unwrap_or(lang);
+        let text = match rewritten.get(&cur_file) {
+            Some(t) => t.clone(),
+            None => match std::fs::read_to_string(&cur_file) {
+                Ok(t) => {
+                    rewritten.insert(cur_file.clone(), t.clone());
+                    t
+                }
+                Err(_) => continue,
+            },
+        };
+
+        // 1. Downstream variable bindings in cur_file
+        let var_matches = find_matching_vars(&text, &cur_name, &cur_was, cur_flang);
+        if !var_matches.is_empty() {
+            let mut updated_text = text.clone();
+            let mut sorted_vars = var_matches;
+            sorted_vars.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+            for (s, e, var_name) in sorted_vars {
+                updated_text.replace_range(s..e, &cur_to);
+                migrated_descriptions.push(format!(
+                    "{}:{var_name} (var {cur_was} → {cur_to})",
+                    display(root, &cur_file)
+                ));
+                if !visited.contains(&(cur_file.clone(), var_name.clone())) {
+                    visited.insert((cur_file.clone(), var_name.clone()));
+                    queue.push_back((
+                        cur_file.clone(),
+                        var_name,
+                        cur_was.clone(),
+                        cur_to.clone(),
+                    ));
+                }
+            }
+            rewritten.insert(cur_file.clone(), updated_text);
+        }
+
+        // 2. Return statements in cur_file
+        let text_after_vars = rewritten.get(&cur_file).cloned().unwrap_or(text);
+        if let Some((s, e, fn_name)) = find_matching_return(&text_after_vars, &cur_name, &cur_was, cur_flang) {
+            let mut updated_text = text_after_vars.clone();
+            updated_text.replace_range(s..e, &cur_to);
+            rewritten.insert(cur_file.clone(), updated_text);
+            migrated_descriptions.push(format!(
+                "{}:{fn_name} (return {cur_was} → {cur_to})",
+                display(root, &cur_file)
+            ));
+
+            if matches!(cur_flang, Language::Cpp | Language::C) {
+                sync_cpp_headers(root, &cur_file, &fn_name, &cur_was, &cur_to, rewritten, also, true);
+            }
+
+            if !visited.contains(&(cur_file.clone(), fn_name.clone())) {
+                visited.insert((cur_file.clone(), fn_name.clone()));
+                queue.push_back((
+                    cur_file.clone(),
+                    fn_name,
+                    cur_was.clone(),
+                    cur_to.clone(),
+                ));
+            }
+        }
+
+        // 3. Call sites across workspace passing cur_name as argument to another function
+        let candidate_files = collect_candidate_files(root, rewritten, &cur_name);
+        for f in candidate_files {
+            let f_text = match rewritten.get(&f) {
+                Some(t) => t.clone(),
+                None => match std::fs::read_to_string(&f) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+            };
+            let f_lang = Language::of(&f).unwrap_or(lang);
+
+            let call_param_matches = find_matching_call_params(
+                root,
+                &f_text,
+                &cur_name,
+                &cur_was,
+                f_lang,
+                rewritten,
+            );
+            for (callee_file, p_start, p_end, param_name, callee_name) in call_param_matches {
+                let mut c_text = match rewritten.get(&callee_file) {
+                    Some(t) => t.clone(),
+                    None => match std::fs::read_to_string(&callee_file) {
+                        Ok(t) => t,
+                        Err(_) => continue,
+                    },
+                };
+                c_text.replace_range(p_start..p_end, &cur_to);
+                rewritten.insert(callee_file.clone(), c_text);
+                if !also.contains(&callee_file) {
+                    also.push(callee_file.clone());
+                }
+                migrated_descriptions.push(format!(
+                    "{}:{callee_name}({param_name}) (param {cur_was} → {cur_to})",
+                    display(root, &callee_file)
+                ));
+
+                let c_lang = Language::of(&callee_file).unwrap_or(lang);
+                if matches!(c_lang, Language::Cpp | Language::C) {
+                    sync_cpp_headers(root, &callee_file, &callee_name, &cur_was, &cur_to, rewritten, also, false);
+                }
+
+                if !visited.contains(&(callee_file.clone(), param_name.clone())) {
+                    visited.insert((callee_file.clone(), param_name.clone()));
+                    queue.push_back((
+                        callee_file.clone(),
+                        param_name,
+                        cur_was.clone(),
+                        cur_to.clone(),
+                    ));
+                }
+            }
+
+            // Callers assigning return value of cur_name
+            let caller_var_matches = find_matching_caller_vars(&f_text, &cur_name, &cur_was, f_lang);
+            if !caller_var_matches.is_empty() {
+                let mut f_updated = f_text.clone();
+                let mut sorted_cv = caller_var_matches;
+                sorted_cv.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
+                for (s, e, var_name) in sorted_cv {
+                    f_updated.replace_range(s..e, &cur_to);
+                    migrated_descriptions.push(format!(
+                        "{}:{var_name} (caller var {cur_was} → {cur_to})",
+                        display(root, &f)
+                    ));
+                    if !visited.contains(&(f.clone(), var_name.clone())) {
+                        visited.insert((f.clone(), var_name.clone()));
+                        queue.push_back((
+                            f.clone(),
+                            var_name,
+                            cur_was.clone(),
+                            cur_to.clone(),
+                        ));
+                    }
+                }
+                rewritten.insert(f.clone(), f_updated);
+                if !also.contains(&f) {
+                    also.push(f.clone());
+                }
+            }
+        }
+    }
+
+    let count = migrated_descriptions.len();
+    (count, migrated_descriptions)
+}
+
+fn contains_ident(haystack: &str, ident: &str) -> bool {
+    for (idx, _) in haystack.match_indices(ident) {
+        let before_ok = idx == 0 || !haystack[..idx].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        let after_idx = idx + ident.len();
+        let after_ok = after_idx == haystack.len() || !haystack[after_idx..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        if before_ok && after_ok {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_valid_ident(s: &str) -> bool {
+    !s.is_empty()
+        && (s.chars().next().unwrap().is_alphabetic() || s.starts_with('_'))
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+fn find_matching_vars(
+    text: &str,
+    sym: &str,
+    old_ty: &str,
+    lang: Language,
+) -> Vec<(usize, usize, String)> {
+    let mut results = Vec::new();
+    let old_ty_norm = type_name(old_ty);
+
+    for (line_no, line) in text.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
+            continue;
+        }
+        if !contains_ident(line, sym) {
+            continue;
+        }
+        let line_offset = text.lines().take(line_no).map(|l| l.len() + 1).sum::<usize>();
+
+        match lang {
+            Language::Rust => {
+                if let Some(rest) = trimmed.strip_prefix("let ") {
+                    let rest = rest.strip_prefix("mut ").unwrap_or(rest);
+                    if let Some(colon) = rest.find(':') {
+                        let var_name = rest[..colon].trim().to_string();
+                        if let Some(eq) = rest.find('=')
+                            && colon < eq {
+                                let raw_ty = &rest[colon + 1..eq];
+                                let ty_str = raw_ty.trim();
+                                if type_name(ty_str) == old_ty_norm && contains_ident(&rest[eq + 1..], sym)
+                                    && let Some(rel) = line.find(raw_ty) {
+                                        let s_rel = rel + (raw_ty.len() - raw_ty.trim_start().len());
+                                        let s = line_offset + s_rel;
+                                        let e = s + ty_str.len();
+                                        results.push((s, e, var_name));
+                                    }
+                            }
+                    }
+                }
+            }
+            Language::TypeScript | Language::JavaScript => {
+                let rest_opt = trimmed.strip_prefix("const ")
+                    .or_else(|| trimmed.strip_prefix("let "))
+                    .or_else(|| trimmed.strip_prefix("var "));
+                if let Some(rest) = rest_opt
+                    && let Some(colon) = rest.find(':') {
+                        let var_name = rest[..colon].trim().to_string();
+                        if let Some(eq) = rest.find('=')
+                            && colon < eq {
+                                let raw_ty = &rest[colon + 1..eq];
+                                let ty_str = raw_ty.trim();
+                                if type_name(ty_str) == old_ty_norm && contains_ident(&rest[eq + 1..], sym)
+                                    && let Some(rel) = line.find(raw_ty) {
+                                        let s_rel = rel + (raw_ty.len() - raw_ty.trim_start().len());
+                                        let s = line_offset + s_rel;
+                                        let e = s + ty_str.len();
+                                        results.push((s, e, var_name));
+                                    }
+                            }
+                    }
+            }
+            Language::Python => {
+                if let Some(colon) = trimmed.find(':') {
+                    let var_name = trimmed[..colon].trim().to_string();
+                    if !var_name.contains(' ') && is_valid_ident(&var_name)
+                        && let Some(eq) = trimmed.find('=')
+                            && colon < eq {
+                                let raw_ty = &trimmed[colon + 1..eq];
+                                let ty_str = raw_ty.trim();
+                                if type_name(ty_str) == old_ty_norm && contains_ident(&trimmed[eq + 1..], sym)
+                                    && let Some(rel) = line.find(raw_ty) {
+                                        let s_rel = rel + (raw_ty.len() - raw_ty.trim_start().len());
+                                        let s = line_offset + s_rel;
+                                        let e = s + ty_str.len();
+                                        results.push((s, e, var_name));
+                                    }
+                            }
+                }
+            }
+            Language::Swift => {
+                let rest_opt = trimmed.strip_prefix("let ")
+                    .or_else(|| trimmed.strip_prefix("var "));
+                if let Some(rest) = rest_opt
+                    && let Some(colon) = rest.find(':') {
+                        let var_name = rest[..colon].trim().to_string();
+                        if let Some(eq) = rest.find('=')
+                            && colon < eq {
+                                let raw_ty = &rest[colon + 1..eq];
+                                let ty_str = raw_ty.trim();
+                                if type_name(ty_str) == old_ty_norm && contains_ident(&rest[eq + 1..], sym)
+                                    && let Some(rel) = line.find(raw_ty) {
+                                        let s_rel = rel + (raw_ty.len() - raw_ty.trim_start().len());
+                                        let s = line_offset + s_rel;
+                                        let e = s + ty_str.len();
+                                        results.push((s, e, var_name));
+                                    }
+                            }
+                    }
+            }
+            Language::Go => {
+                if let Some(rest) = trimmed.strip_prefix("var ")
+                    && let Some(eq) = rest.find('=') {
+                        let before_eq = rest[..eq].trim();
+                        let parts: Vec<&str> = before_eq.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let var_name = parts[0].to_string();
+                            let ty_str = parts[1..].join(" ");
+                            if type_name(&ty_str) == old_ty_norm && contains_ident(&rest[eq + 1..], sym)
+                                && let Some(var_pos) = line.find(&var_name) {
+                                    let after_var = var_pos + var_name.len();
+                                    if let Some(rel) = line[after_var..].find(&ty_str) {
+                                        let s_rel = after_var + rel;
+                                        let s = line_offset + s_rel;
+                                        let e = s + ty_str.len();
+                                        results.push((s, e, var_name));
+                                    }
+                                }
+                        }
+                    }
+            }
+            Language::Cpp | Language::C => {
+                if let Some(eq) = trimmed.find('=') {
+                    let before_eq = trimmed[..eq].trim();
+                    let parts: Vec<&str> = before_eq.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        let var_name = parts.last().unwrap().to_string();
+                        let ty_str = parts[..parts.len() - 1].join(" ");
+                        if type_name(&ty_str) == old_ty_norm && contains_ident(&trimmed[eq + 1..], sym)
+                            && let Some(s_rel) = line.find(&ty_str) {
+                                let s = line_offset + s_rel;
+                                let e = s + ty_str.len();
+                                results.push((s, e, var_name));
+                            }
+                    }
+                }
+            }
+        }
+    }
+
+    results
+}
+
+struct EnclosingFn {
+    name: String,
+    return_type: String,
+    ret_start: usize,
+    ret_end: usize,
+}
+
+fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option<EnclosingFn> {
+    let prefix = &text[..at];
+    match lang {
+        Language::Rust => {
+            let fn_idx = prefix.rfind("fn ")?;
+            let header = &text[fn_idx..at];
+            let open_p = fn_idx + 3 + header[3..].find('(')?;
+            let close_p = matching(text, open_p)?;
+            let name = text[fn_idx + 3..open_p].trim().to_string();
+            let body_open = text[close_p..at].find('{')? + close_p;
+            let arrow = text[close_p..body_open].find("->")? + close_p;
+            let start = arrow + 2;
+            let start = start + text[start..body_open].len() - text[start..body_open].trim_start().len();
+            let end = body_open - (text[start..body_open].len() - text[start..body_open].trim_end().len());
+            let return_type = text[start..end].trim().to_string();
+            Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
+        }
+        Language::Swift => {
+            let fn_idx = prefix.rfind("func ")?;
+            let header = &text[fn_idx..at];
+            let open_p = fn_idx + 5 + header[5..].find('(')?;
+            let close_p = matching(text, open_p)?;
+            let name = text[fn_idx + 5..open_p].trim().to_string();
+            let body_open = text[close_p..at].find('{')? + close_p;
+            let arrow = text[close_p..body_open].find("->")? + close_p;
+            let start = arrow + 2;
+            let start = start + text[start..body_open].len() - text[start..body_open].trim_start().len();
+            let end = body_open - (text[start..body_open].len() - text[start..body_open].trim_end().len());
+            let return_type = text[start..end].trim().to_string();
+            Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
+        }
+        Language::Python => {
+            let fn_idx = prefix.rfind("def ")?;
+            let header = &text[fn_idx..at];
+            let open_p = fn_idx + 4 + header[4..].find('(')?;
+            let close_p = matching(text, open_p)?;
+            let name = text[fn_idx + 4..open_p].trim().to_string();
+            let colon = text[close_p..at].find(':')? + close_p;
+            let between = &text[close_p..colon];
+            let arrow = between.find("->")? + close_p;
+            let start = arrow + 2;
+            let start = start + text[start..].len() - text[start..].trim_start().len();
+            let end = colon - (text[start..colon].len() - text[start..colon].trim_end().len());
+            let return_type = text[start..end].trim().to_string();
+            Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
+        }
+        Language::TypeScript | Language::JavaScript => {
+            let fn_idx = prefix.rfind("function ").or_else(|| prefix.rfind("const ")).or_else(|| prefix.rfind("let "))?;
+            let header = &text[fn_idx..at];
+            let open_p = fn_idx + header.find('(')?;
+            let close_p = matching(text, open_p)?;
+            let name_part = if prefix[fn_idx..].starts_with("function ") {
+                &text[fn_idx + 9..open_p]
+            } else {
+                let eq = header.find('=')?;
+                header[..eq].split_whitespace().last()?
+            };
+            let name = name_part.trim().to_string();
+            let body_open = text[close_p..at].find('{')? + close_p;
+            let colon = text[close_p..body_open].find(':')? + close_p;
+            let start = colon + 1;
+            let start = start + text[start..body_open].len() - text[start..body_open].trim_start().len();
+            let end = body_open - (text[start..body_open].len() - text[start..body_open].trim_end().len());
+            let return_type = text[start..end].trim().to_string();
+            Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
+        }
+        Language::Go => {
+            let fn_idx = prefix.rfind("func ")?;
+            let header = &text[fn_idx..at];
+            let open_p = fn_idx + 5 + header[5..].find('(')?;
+            let close_p = matching(text, open_p)?;
+            let body_open = text[close_p..at].find('{')? + close_p;
+            let between = &text[close_p + 1..body_open];
+            let name = text[fn_idx + 5..open_p].trim().to_string();
+            let start = close_p + 1 + (between.len() - between.trim_start().len());
+            let end = body_open - (between.len() - between.trim_end().len());
+            let return_type = text[start..end].trim().to_string();
+            Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
+        }
+        Language::Cpp | Language::C => {
+            let body_open = prefix.rfind('{')?;
+            let prev_close = text[..body_open].rfind(['}', ';']).map_or(0, |p| p + 1);
+            let header = &text[prev_close..body_open];
+            let open_p = prev_close + header.find('(')?;
+            let seg_start = text[prev_close..open_p].rfind(['\n', ';', '}']).map_or(prev_close, |p| prev_close + p + 1);
+            let before_paren = text[seg_start..open_p].trim();
+            let words: Vec<&str> = before_paren.split_whitespace().collect();
+            if words.len() < 2 {
+                return None;
+            }
+            let name = words.last().unwrap().to_string();
+            let ty_words = &words[..words.len() - 1];
+            let ty_str = ty_words.join(" ");
+            let start = text[seg_start..open_p].find(ty_words[0])? + seg_start;
+            let last = ty_words.last().unwrap();
+            let end_rel = text[start..open_p].rfind(last)? + last.len();
+            Some(EnclosingFn { name, return_type: ty_str, ret_start: start, ret_end: start + end_rel })
+        }
+    }
+}
+
+fn find_matching_return(
+    text: &str,
+    sym: &str,
+    old_ty: &str,
+    lang: Language,
+) -> Option<(usize, usize, String)> {
+    let old_ty_norm = type_name(old_ty);
+
+    for (idx, _) in text.match_indices(sym) {
+        if !contains_ident(&text[idx..idx + sym.len()], sym) {
+            continue;
+        }
+        let line_start = text[..idx].rfind('\n').map_or(0, |p| p + 1);
+        let before = text[line_start..idx].trim();
+        let line_end = text[idx..].find('\n').map_or(text.len(), |p| idx + p);
+        let is_return = before.starts_with("return")
+            || (lang == Language::Rust && {
+                let after = text[idx + sym.len()..line_end].trim();
+                after.is_empty() || after == "}"
+            });
+        if !is_return {
+            continue;
+        }
+
+        if let Some(fn_decl) = find_enclosing_fn(text, idx, lang)
+            && type_name(&fn_decl.return_type) == old_ty_norm {
+                return Some((fn_decl.ret_start, fn_decl.ret_end, fn_decl.name));
+            }
+    }
+    None
+}
+
+struct ParamInfo {
+    name: String,
+    ty: String,
+    start: usize,
+    end: usize,
+}
+
+fn extract_param_info(text: &str, fn_name: &str, arg_index: usize, lang: Language) -> Option<ParamInfo> {
+    for (fn_idx, _) in text.match_indices(fn_name) {
+        if !contains_ident(&text[fn_idx..fn_idx + fn_name.len()], fn_name) {
+            continue;
+        }
+        let after_name = &text[fn_idx + fn_name.len()..];
+        let trimmed = after_name.trim_start();
+        if !trimmed.starts_with('(') {
+            continue;
+        }
+        let open_p = fn_idx + fn_name.len() + (after_name.len() - trimmed.len());
+        let close_p = matching(text, open_p)?;
+        let params_text = &text[open_p + 1..close_p];
+        let params: Vec<&str> = params_text.split(',').collect();
+        if arg_index >= params.len() {
+            return None;
+        }
+        let target_param = params[arg_index].trim();
+        let param_offset = open_p + 1 + text[open_p + 1..close_p].find(target_param)?;
+        let (s, e) = declared_type_span_polyglot(text, param_offset, lang)?;
+        let name: String = target_param.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        return Some(ParamInfo {
+            name,
+            ty: text[s..e].trim().to_string(),
+            start: s,
+            end: e,
+        });
+    }
+    None
+}
+
+fn find_matching_call_params(
+    root: &Path,
+    text: &str,
+    sym: &str,
+    old_ty: &str,
+    lang: Language,
+    rewritten: &BTreeMap<PathBuf, String>,
+) -> Vec<(PathBuf, usize, usize, String, String)> {
+    let mut results = Vec::new();
+    let old_ty_norm = type_name(old_ty);
+
+    for (idx, _) in text.match_indices(sym) {
+        if !contains_ident(&text[idx..idx + sym.len()], sym) {
+            continue;
+        }
+        let prefix = &text[..idx];
+        let Some(open_p) = prefix.rfind('(') else { continue };
+        let before_p = text[..open_p].trim_end();
+        let callee_name: String = before_p
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        if callee_name.is_empty() {
+            continue;
+        }
+
+        let args_slice = &text[open_p + 1..idx];
+        let arg_index = args_slice.split(',').count() - 1;
+
+        let candidate_files = collect_candidate_files(root, rewritten, &callee_name);
+        for cf in candidate_files {
+            let cf_text = match rewritten.get(&cf) {
+                Some(t) => t.clone(),
+                None => match std::fs::read_to_string(&cf) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+            };
+            let cf_lang = Language::of(&cf).unwrap_or(lang);
+            if let Some(param_info) = extract_param_info(&cf_text, &callee_name, arg_index, cf_lang)
+                && type_name(&param_info.ty) == old_ty_norm {
+                    results.push((cf.clone(), param_info.start, param_info.end, param_info.name, callee_name.clone()));
+                }
+        }
+    }
+    results
+}
+
+fn find_matching_caller_vars(
+    text: &str,
+    fn_name: &str,
+    old_ty: &str,
+    lang: Language,
+) -> Vec<(usize, usize, String)> {
+    let mut results = Vec::new();
+
+    for (idx, _) in text.match_indices(fn_name) {
+        if !contains_ident(&text[idx..idx + fn_name.len()], fn_name) {
+            continue;
+        }
+        let after = text[idx + fn_name.len()..].trim_start();
+        if !after.starts_with('(') {
+            continue;
+        }
+        let line_start = text[..idx].rfind('\n').map_or(0, |p| p + 1);
+        let line_end = text[idx..].find('\n').map_or(text.len(), |p| idx + p);
+        let line = &text[line_start..line_end];
+        let vars = find_matching_vars(line, fn_name, old_ty, lang);
+        for (s_rel, e_rel, var_name) in vars {
+            results.push((line_start + s_rel, line_start + e_rel, var_name));
+        }
+    }
+    results
+}
+
+fn collect_candidate_files(
+    root: &Path,
+    rewritten: &BTreeMap<PathBuf, String>,
+    name: &str,
+) -> Vec<PathBuf> {
+    let mut files = BTreeSet::new();
+    for p in rewritten.keys() {
+        files.insert(p.clone());
+    }
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        let p = entry.path();
+        if p.is_file() {
+            let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
+            if matches!(ext, "rs" | "ts" | "js" | "tsx" | "jsx" | "py" | "go" | "cpp" | "c" | "h" | "hpp" | "swift")
+                && let Ok(content) = std::fs::read_to_string(p)
+                && content.contains(name)
+            {
+                files.insert(p.to_path_buf());
+            }
+        }
+    }
+    files.into_iter().collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sync_cpp_headers(
+    root: &Path,
+    source_file: &Path,
+    fn_name: &str,
+    was: &str,
+    to: &str,
+    rewritten: &mut BTreeMap<PathBuf, String>,
+    also: &mut Vec<PathBuf>,
+    _is_return: bool,
+) {
+    let header_candidates = [
+        source_file.with_extension("h"),
+        source_file.with_extension("hpp"),
+    ];
+    for h in &header_candidates {
+        let h_path = if h.exists() {
+            Some(h.clone())
+        } else {
+            let stem = source_file.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let inc_h = root.join("include").join(format!("{stem}.h"));
+            if inc_h.exists() {
+                Some(inc_h)
+            } else {
+                None
+            }
+        };
+        if let Some(h_file) = h_path {
+            let h_text = match rewritten.get(&h_file) {
+                Some(t) => t.clone(),
+                None => match std::fs::read_to_string(&h_file) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+            };
+            for (idx, _) in h_text.match_indices(fn_name) {
+                if let Some((start, end)) = declared_type_span_polyglot(&h_text, idx, Language::Cpp)
+                    && h_text[start..end].trim() == was.trim() {
+                        let mut updated_h = h_text.clone();
+                        updated_h.replace_range(start..end, to);
+                        rewritten.insert(h_file.clone(), updated_h);
+                        if !also.contains(&h_file) {
+                            also.push(h_file);
+                        }
+                        break;
+                    }
+            }
+        }
+    }
+}
+
+fn is_import_line(content: &str, at: usize, lang: Language) -> bool {
+    let line_start = content[..at].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = content[at..].find('\n').map_or(content.len(), |p| at + p);
+    let line = content[line_start..line_end].trim();
+    match lang {
+        Language::Python => line.starts_with("import ") || line.starts_with("from "),
+        Language::TypeScript | Language::JavaScript => {
+            line.starts_with("import ") || line.starts_with("import{") || line.contains(" from ") || line.contains("require(")
+        }
+        Language::Go => line.starts_with("import ") || line.starts_with("import ("),
+        Language::Cpp | Language::C => line.starts_with("#include") || line.starts_with("using "),
+        Language::Swift => line.starts_with("import "),
+        Language::Rust => {
+            let without_pub = line.strip_prefix("pub ").or_else(|| line.strip_prefix("pub(crate) ")).unwrap_or(line);
+            without_pub.starts_with("use ")
+        }
+    }
+}
+
+pub fn find_symbol_decl_offset(
+    text: &str,
+    clean_name: &str,
+    lang: Language,
+    prefer_line: Option<u32>,
+) -> Option<usize> {
+    if let Some(l) = prefer_line {
+        let lines: Vec<&str> = text.lines().collect();
+        if l > 0 && (l as usize) <= lines.len() {
+            let target_idx = (l - 1) as usize;
+            let start_idx = target_idx.saturating_sub(2);
+            let end_idx = (target_idx + 2).min(lines.len().saturating_sub(1));
+            for i in start_idx..=end_idx {
+                let line_str = lines[i];
+                if let Some(pos) = line_str.find(clean_name) {
+                    let line_start = text.lines().take(i).map(|l| l.len() + 1).sum::<usize>();
+                    let abs_offset = line_start + pos;
+                    if declared_type_span_polyglot(text, abs_offset, lang).is_some() {
+                        return Some(abs_offset);
+                    }
+                }
+            }
+        }
+    }
+
+    for (idx, _) in text.match_indices(clean_name) {
+        if idx > 0 && text[..idx].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let after = &text[idx + clean_name.len()..];
+        if after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        if crate::inline_parameter::is_in_comment(text, idx, lang) {
+            continue;
+        }
+        if is_import_line(text, idx, lang) {
+            continue;
+        }
+        if declared_type_span_polyglot(text, idx, lang).is_some() {
+            return Some(idx);
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -830,6 +1850,8 @@ mod tests {
             in_attributes: 0,
             converted: Vec::new(),
             conversion_note: None,
+            transitive_count: 0,
+            transitively_migrated: Vec::new(),
             applied: false,
         };
         let text = migration.render(50);
@@ -876,6 +1898,8 @@ mod tests {
             in_attributes: 0,
             converted: Vec::new(),
             conversion_note: None,
+            transitive_count: 0,
+            transitively_migrated: Vec::new(),
             applied: false,
         };
         let text = migration.render(3);
@@ -959,6 +1983,8 @@ mod tests {
                 now: "secs.into()".into(),
             }],
             conversion_note: Some("a note".into()),
+            transitive_count: 0,
+            transitively_migrated: Vec::new(),
             applied: true,
         };
         let text = migration.render(10);
@@ -1007,5 +2033,114 @@ mod tests {
         assert!(expression_span(text, &site(2, 10, 15)).is_none());
         let (s, e) = expression_span(text, &site(2, 8, 11)).expect("a span");
         assert_eq!(&text[s..e], "a.b");
+    }
+
+    #[test]
+    fn polyglot_declared_type_span_found_in_all_languages() {
+        // TypeScript
+        let ts_text = "function compute(val: number): number {\n  const doubled: number = val * 2;\n  return doubled;\n}";
+        let val_at = ts_text.find("val").unwrap();
+        let (s, e) = declared_type_span_polyglot(ts_text, val_at, Language::TypeScript).expect("ts param");
+        assert_eq!(&ts_text[s..e], "number");
+
+        let fn_at = ts_text.find("compute").unwrap();
+        let (s, e) = declared_type_span_polyglot(ts_text, fn_at, Language::TypeScript).expect("ts ret");
+        assert_eq!(&ts_text[s..e], "number");
+
+        let d_at = ts_text.find("doubled").unwrap();
+        let (s, e) = declared_type_span_polyglot(ts_text, d_at, Language::TypeScript).expect("ts var");
+        assert_eq!(&ts_text[s..e], "number");
+
+        // Python
+        let py_text = "def compute(val: int) -> int:\n    doubled: int = val * 2\n    return doubled\n";
+        let val_at = py_text.find("val").unwrap();
+        let (s, e) = declared_type_span_polyglot(py_text, val_at, Language::Python).expect("py param");
+        assert_eq!(&py_text[s..e], "int");
+
+        let fn_at = py_text.find("compute").unwrap();
+        let (s, e) = declared_type_span_polyglot(py_text, fn_at, Language::Python).expect("py ret");
+        assert_eq!(&py_text[s..e], "int");
+
+        let d_at = py_text.find("doubled").unwrap();
+        let (s, e) = declared_type_span_polyglot(py_text, d_at, Language::Python).expect("py var");
+        assert_eq!(&py_text[s..e], "int");
+
+        // Go
+        let go_text = "func compute(val int32) int32 {\n    var doubled int32 = val * 2\n    return doubled\n}\n";
+        let val_at = go_text.find("val").unwrap();
+        let (s, e) = declared_type_span_polyglot(go_text, val_at, Language::Go).expect("go param");
+        assert_eq!(&go_text[s..e], "int32");
+
+        let fn_at = go_text.find("compute").unwrap();
+        let (s, e) = declared_type_span_polyglot(go_text, fn_at, Language::Go).expect("go ret");
+        assert_eq!(&go_text[s..e], "int32");
+
+        let d_at = go_text.find("doubled").unwrap();
+        let (s, e) = declared_type_span_polyglot(go_text, d_at, Language::Go).expect("go var");
+        assert_eq!(&go_text[s..e], "int32");
+
+        // Swift
+        let sw_text = "func compute(val: Int) -> Int {\n    let doubled: Int = val * 2\n    return doubled\n}\n";
+        let val_at = sw_text.find("val").unwrap();
+        let (s, e) = declared_type_span_polyglot(sw_text, val_at, Language::Swift).expect("swift param");
+        assert_eq!(&sw_text[s..e], "Int");
+
+        let fn_at = sw_text.find("compute").unwrap();
+        let (s, e) = declared_type_span_polyglot(sw_text, fn_at, Language::Swift).expect("swift ret");
+        assert_eq!(&sw_text[s..e], "Int");
+
+        let d_at = sw_text.find("doubled").unwrap();
+        let (s, e) = declared_type_span_polyglot(sw_text, d_at, Language::Swift).expect("swift var");
+        assert_eq!(&sw_text[s..e], "Int");
+
+        // C++
+        let cpp_text = "int compute(int val) {\n    int doubled = val * 2;\n    return doubled;\n}\n";
+        let val_at = cpp_text.find("val").unwrap();
+        let (s, e) = declared_type_span_polyglot(cpp_text, val_at, Language::Cpp).expect("cpp param");
+        assert_eq!(&cpp_text[s..e], "int");
+
+        let fn_at = cpp_text.find("compute").unwrap();
+        let (s, e) = declared_type_span_polyglot(cpp_text, fn_at, Language::Cpp).expect("cpp ret");
+        assert_eq!(&cpp_text[s..e], "int");
+
+        let d_at = cpp_text.find("doubled").unwrap();
+        let (s, e) = declared_type_span_polyglot(cpp_text, d_at, Language::Cpp).expect("cpp var");
+        assert_eq!(&cpp_text[s..e], "int");
+    }
+
+    #[test]
+    fn language_conversion_syntax_across_polyglot() {
+        assert_eq!(language_conversion("x", "u64", Language::Rust), "x.into()");
+        assert_eq!(language_conversion("x", "number", Language::TypeScript), "Number(x)");
+        assert_eq!(language_conversion("x", "MyType", Language::TypeScript), "MyType(x)");
+        assert_eq!(language_conversion("x + 1", "MyType", Language::TypeScript), "(x + 1 as MyType)");
+        assert_eq!(language_conversion("x", "int", Language::Python), "int(x)");
+        assert_eq!(language_conversion("x", "int64", Language::Go), "int64(x)");
+        assert_eq!(language_conversion("x", "Int64", Language::Swift), "Int64(x)");
+        assert_eq!(language_conversion("x", "int64_t", Language::Cpp), "static_cast<int64_t>(x)");
+    }
+
+    #[test]
+    fn parse_mismatch_polyglot_messages() {
+        assert_eq!(
+            parse_mismatch("Type 'string' is not assignable to type 'number'"),
+            Some(("number".to_string(), "string".to_string()))
+        );
+        assert_eq!(
+            parse_mismatch("Expression of type \"str\" cannot be assigned to declared type \"int\""),
+            Some(("int".to_string(), "str".to_string()))
+        );
+        assert_eq!(
+            parse_mismatch("cannot use x (variable of type int32) as int64 value"),
+            Some(("int64".to_string(), "int32".to_string()))
+        );
+        assert_eq!(
+            parse_mismatch("cannot convert value of type 'Int' to specified type 'Int64'"),
+            Some(("Int64".to_string(), "Int".to_string()))
+        );
+        assert_eq!(
+            parse_mismatch("no viable conversion from 'int' to 'double'"),
+            Some(("double".to_string(), "int".to_string()))
+        );
     }
 }
