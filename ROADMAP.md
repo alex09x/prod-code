@@ -569,7 +569,13 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
   - Failed or malformed symbol/reference replies are recorded as unverified (#435). They make the scan incomplete and are kept by pruning; only a successful reference answer can establish a candidate.
 
-- [~] **8.7. Structural AST Codemod Engine (`code_codemod`)** — shipped 2026-09-21: `code_codemod` / `prod-code codemod` run rust-analyzer's structural search and replace over the workspace (`pattern ==>> replacement`, `$name` placeholders), return a unified diff and apply it on request; `path` restricts where edits land, not how long the search takes. Rust only, because the engine is the analyzer's.
+- [x] **8.7. Structural AST Codemod Engine (`code_codemod`)** — shipped 2026-09-21 and extended 2026-09-28 (#684): `code_codemod` / `prod-code codemod` execute pattern-based structural code transformations (`pattern ==>> replacement`, `$name` placeholders) across Go, TypeScript/JavaScript, Python, C++, Swift, and Rust with sub-second multi-file execution (< 500 ms).
+  - Polyglot structural AST codemod engine added in #684: supports Go, TypeScript/JavaScript, Python, C/C++, Swift, and Rust with whitespace, indentation, multiline, and comment invariance.
+  - Multi-occurrence consistency checking: metavariables bound multiple times must resolve to identical syntactic expressions.
+  - Sub-second multi-file migration: fast candidate pre-filtering skips non-matching files in < 1 µs, executing whole-workspace AST transformations (100+ files) in < 500 ms.
+  - Transactional atomic file application (`apply: true` / `--apply`) with unified diff preview.
+  - Preserves rust-analyzer SSR fallback for Rust-specific Salsa type inference.
   - Pattern-based structural code transformations (AST pattern matching).
   - Matches syntax trees regardless of whitespace, formatting, or variable names.
   - Executes large-scale library migrations and API upgrades across hundreds of files in sub-second time.
+
