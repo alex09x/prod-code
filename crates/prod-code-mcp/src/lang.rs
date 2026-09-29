@@ -40,6 +40,7 @@ pub fn language_id_for_path(path: &Path) -> &'static str {
         "jl" => "julia",
         "r" | "R" | "Rmd" => "r",
         "erl" | "hrl" => "erlang",
+        "fs" | "fsi" | "fsx" => "fsharp",
         "pl" | "pm" => "perl",
         "sol" => "solidity",
         "nim" | "nims" | "nimble" => "nim",
@@ -51,6 +52,7 @@ pub fn language_id_for_path(path: &Path) -> &'static str {
         "v" | "vh" => "v",
         "rkt" => "racket",
         "tf" | "tfvars" => "terraform",
+        "hcl" => "hcl",
         "nix" => "nix",
         "s" | "S" | "asm" => "assembly",
         "sql" => "sql",
@@ -62,6 +64,17 @@ pub fn language_id_for_path(path: &Path) -> &'static str {
         "yaml" | "yml" => "yaml",
         "md" | "markdown" => "markdown",
         "sh" | "bash" | "zsh" => "shellscript",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "bzl" | "star" => "starlark",
+        "typ" => "typst",
+        "wat" | "wast" => "wat",
+        "wasm" => "wasm",
+        "sv" | "svh" => "systemverilog",
+        "vhd" | "vhdl" => "vhdl",
+        "bal" => "ballerina",
+        "jsonnet" | "libsonnet" => "jsonnet",
+        "cue" => "cue",
+        _ if matches!(name, "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "Tiltfile") => "starlark",
         _ if name == "CMakeLists.txt" || path.extension().and_then(|e| e.to_str()) == Some("cmake") => "cmake",
         _ if name == "Dockerfile" || name == "Containerfile" => "dockerfile",
         _ if name == "Makefile" || name == "makefile" || name == "GNUmakefile" => "makefile",
@@ -123,6 +136,19 @@ mod tests {
         assert_eq!(language_id_for_path(Path::new("CMakeLists.txt")), "cmake");
         assert_eq!(language_id_for_path(Path::new("Dockerfile")), "dockerfile");
         assert_eq!(language_id_for_path(Path::new("Makefile")), "makefile");
+        assert_eq!(language_id_for_path(Path::new("src/main.fs")), "fsharp");
+        assert_eq!(language_id_for_path(Path::new("scripts/setup.ps1")), "powershell");
+        assert_eq!(language_id_for_path(Path::new("BUILD.bazel")), "starlark");
+        assert_eq!(language_id_for_path(Path::new("rules/def.bzl")), "starlark");
+        assert_eq!(language_id_for_path(Path::new("terragrunt.hcl")), "hcl");
+        assert_eq!(language_id_for_path(Path::new("paper.typ")), "typst");
+        assert_eq!(language_id_for_path(Path::new("module.wat")), "wat");
+        assert_eq!(language_id_for_path(Path::new("module.wasm")), "wasm");
+        assert_eq!(language_id_for_path(Path::new("core.sv")), "systemverilog");
+        assert_eq!(language_id_for_path(Path::new("alu.vhd")), "vhdl");
+        assert_eq!(language_id_for_path(Path::new("main.bal")), "ballerina");
+        assert_eq!(language_id_for_path(Path::new("service.jsonnet")), "jsonnet");
+        assert_eq!(language_id_for_path(Path::new("config.cue")), "cue");
         assert_eq!(language_id_for_path(Path::new("README")), "plaintext");
     }
 }
