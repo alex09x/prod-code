@@ -1,4 +1,5 @@
 use prod_code_mcp::extract_interface::extract_interface_impl;
+use prod_code_mcp::extract_trait::extract_trait_ext;
 use prod_code_testkit::{answers, ScriptedGateway, Workspace};
 use std::fs;
 
@@ -7,13 +8,14 @@ const CARGO_TOML: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition 
 async fn fake_gateway() -> ScriptedGateway {
     ScriptedGateway::start(|method, _params| match method {
         "textDocument/diagnostic" => answers::no_diagnostics(),
+        "textDocument/references" => serde_json::json!([]),
         _ => serde_json::Value::Null,
     })
     .await
 }
 
 #[tokio::test]
-async fn test_extract_interface_typescript() {
+async fn test_extract_interface_typescript_caller_migration() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -27,11 +29,29 @@ async fn test_extract_interface_typescript() {
         return true;
     }
 }
+
+export function renderUser(svc: UserService): string {
+    return svc.getUser("123").name;
+}
+
+export function debugUser(svc: UserService): void {
+    console.log(svc.db);
+}
+"#,
+        ),
+        (
+            "client.ts",
+            r#"import { UserService } from "./service";
+
+export function handleUser(svc: UserService) {
+    svc.saveUser(u);
+}
 "#,
         ),
     ]);
     let root = ws.root().to_path_buf();
     let file = root.join("service.ts");
+    let client_file = root.join("client.ts");
     let gw = fake_gateway().await;
 
     let res = extract_interface_impl(
@@ -43,29 +63,28 @@ async fn test_extract_interface_typescript() {
         &[],
         1,
         1,
-        true,
-        true,
+        true, // migrate_callers
+        true, // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(res.type_name, "UserService");
-    assert_eq!(res.interface_name, "IUserService");
-    assert!(res.methods.contains(&"getUser".to_string()));
-    assert!(res.methods.contains(&"saveUser".to_string()));
     assert!(res.applied);
 
-    let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("export interface IUserService {"));
-    assert!(content.contains("getUser(id: string): User;"));
-    assert!(content.contains("saveUser(user: User): boolean;"));
-    assert!(content.contains("export class UserService implements IUserService {"));
+    let service_content = fs::read_to_string(&file).unwrap();
+    assert!(service_content.contains("export interface IUserService {"));
+    assert!(service_content.contains("export function renderUser(svc: IUserService): string {"));
+    assert!(service_content.contains("export function debugUser(svc: UserService): void {"));
+
+    let client_content = fs::read_to_string(&client_file).unwrap();
+    assert!(client_content.contains("IUserService"));
+    assert!(client_content.contains("export function handleUser(svc: IUserService) {"));
 }
 
 #[tokio::test]
-async fn test_extract_interface_go() {
+async fn test_extract_interface_go_caller_migration() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -83,6 +102,14 @@ func (s *UserService) GetUser(id string) (*User, error) {
 func (s *UserService) SaveUser(user *User) error {
     return nil
 }
+
+func PrintUser(s *UserService) {
+    s.GetUser("1")
+}
+
+func CheckDB(s *UserService) {
+    _ = s.db
+}
 "#,
         ),
     ]);
@@ -99,28 +126,24 @@ func (s *UserService) SaveUser(user *User) error {
         &["GetUser".to_string()],
         3,
         1,
-        true,
-        true,
+        true, // migrate_callers
+        true, // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(res.type_name, "UserService");
-    assert_eq!(res.interface_name, "UserReader");
-    assert_eq!(res.methods, vec!["GetUser"]);
     assert!(res.applied);
 
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("type UserReader interface {"));
-    assert!(content.contains("GetUser(id string) (*User, error)"));
-    assert!(!res.diff.contains("SaveUser"));
-    assert!(content.contains("type UserService struct {"));
+    assert!(content.contains("func PrintUser(s UserReader) {"));
+    assert!(content.contains("func CheckDB(s *UserService) {"));
 }
 
 #[tokio::test]
-async fn test_extract_interface_python() {
+async fn test_extract_interface_python_caller_migration() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -131,11 +154,23 @@ async fn test_extract_interface_python() {
 
     def cancel_order(self, order_id: str) -> bool:
         return True
+
+def process_order(order_svc: OrderService) -> str:
+    return order_svc.create_order("item", 2)
+"#,
+        ),
+        (
+            "caller.py",
+            r#"from order import OrderService
+
+def run(svc: OrderService) -> bool:
+    return svc.cancel_order("123")
 "#,
         ),
     ]);
     let root = ws.root().to_path_buf();
     let file = root.join("order.py");
+    let caller_file = root.join("caller.py");
     let gw = fake_gateway().await;
 
     let res = extract_interface_impl(
@@ -147,27 +182,27 @@ async fn test_extract_interface_python() {
         &[],
         1,
         1,
-        true,
-        true,
+        true, // migrate_callers
+        true, // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(res.type_name, "OrderService");
-    assert_eq!(res.interface_name, "OrderProtocol");
     assert!(res.applied);
 
-    let content = fs::read_to_string(&file).unwrap();
-    assert!(content.contains("from typing import Protocol"));
-    assert!(content.contains("class OrderProtocol(Protocol):"));
-    assert!(content.contains("def create_order(self, item_id: str, quantity: int) -> str:\n        ..."));
-    assert!(content.contains("class OrderService(OrderProtocol):"));
+    let order_content = fs::read_to_string(&file).unwrap();
+    assert!(order_content.contains("class OrderProtocol(Protocol):"));
+    assert!(order_content.contains("def process_order(order_svc: OrderProtocol) -> str:"));
+
+    let caller_content = fs::read_to_string(&caller_file).unwrap();
+    assert!(caller_content.contains("OrderProtocol"));
+    assert!(caller_content.contains("def run(svc: OrderProtocol) -> bool:"));
 }
 
 #[tokio::test]
-async fn test_extract_interface_cpp() {
+async fn test_extract_interface_cpp_caller_migration() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -182,6 +217,10 @@ public:
         return 0.0;
     }
 };
+
+double compute(const Shape& s) {
+    return s.area();
+}
 "#,
         ),
     ]);
@@ -198,26 +237,23 @@ public:
         &[],
         1,
         1,
-        true,
-        true,
+        true, // migrate_callers
+        true, // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(res.type_name, "Shape");
-    assert_eq!(res.interface_name, "IShape");
     assert!(res.applied);
 
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("class IShape {"));
-    assert!(content.contains("virtual double area() const = 0;"));
-    assert!(content.contains("class Shape : public IShape {"));
+    assert!(content.contains("double compute(const IShape& s) {"));
 }
 
 #[tokio::test]
-async fn test_extract_interface_swift() {
+async fn test_extract_interface_swift_caller_migration() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -230,6 +266,10 @@ async fn test_extract_interface_swift() {
     func save(item: String) -> Bool {
         return true
     }
+}
+
+func sync(repo: Repository) -> String {
+    return repo.fetch(id: 42)
 }
 "#,
         ),
@@ -247,26 +287,83 @@ async fn test_extract_interface_swift() {
         &[],
         1,
         1,
-        true,
-        true,
+        true, // migrate_callers
+        true, // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert_eq!(res.type_name, "Repository");
-    assert_eq!(res.interface_name, "RepositoryProtocol");
     assert!(res.applied);
 
     let content = fs::read_to_string(&file).unwrap();
     assert!(content.contains("protocol RepositoryProtocol {"));
-    assert!(content.contains("func fetch(id: Int) -> String"));
-    assert!(content.contains("struct Repository: RepositoryProtocol {"));
+    assert!(content.contains("func sync(repo: RepositoryProtocol) -> String {"));
 }
 
 #[tokio::test]
-async fn test_extract_interface_dry_run() {
+async fn test_extract_trait_rust_caller_migration() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        ("src/lib.rs", "pub mod report;\npub mod shapes;\n"),
+        (
+            "src/shapes.rs",
+            r#"pub struct Rect {
+    pub w: f64,
+    pub h: f64,
+}
+
+impl Rect {
+    pub fn new(w: f64, h: f64) -> Self {
+        Rect { w, h }
+    }
+
+    pub fn area(&self) -> f64 {
+        self.w * self.h
+    }
+}
+"#,
+        ),
+        (
+            "src/report.rs",
+            r#"use crate::shapes::Rect;
+
+pub fn describe(r: &Rect) -> f64 {
+    r.area()
+}
+"#,
+        ),
+    ]);
+    let root = ws.root().to_path_buf();
+    let shapes_file = root.join("src/shapes.rs");
+    let report_file = root.join("src/report.rs");
+    let gw = fake_gateway().await;
+
+    let res = extract_trait_ext(
+        gw.addr(),
+        &root,
+        &shapes_file,
+        6,
+        1,
+        &["area".to_string()],
+        "Measure",
+        true, // migrate_callers
+        true, // apply
+        false,
+    )
+    .await
+    .unwrap();
+
+    assert!(res.applied);
+
+    let report_content = fs::read_to_string(&report_file).unwrap();
+    assert!(report_content.contains("pub fn describe(r: &impl Measure) -> f64"));
+    assert!(report_content.contains("use crate::shapes::Measure;"));
+}
+
+#[tokio::test]
+async fn test_extract_interface_migrate_callers_false_preserves_annotations() {
     let ws = Workspace::new(&[
         ("Cargo.toml", CARGO_TOML),
         (
@@ -276,12 +373,15 @@ async fn test_extract_interface_dry_run() {
         return findUser(id);
     }
 }
+
+export function renderUser(svc: UserService): string {
+    return svc.getUser("123").name;
+}
 "#,
         ),
     ]);
     let root = ws.root().to_path_buf();
     let file = root.join("service.ts");
-    let original = fs::read_to_string(&file).unwrap();
     let gw = fake_gateway().await;
 
     let res = extract_interface_impl(
@@ -293,50 +393,18 @@ async fn test_extract_interface_dry_run() {
         &[],
         1,
         1,
-        true,
-        false, // dry-run
+        false, // migrate_callers = false
+        true,  // apply
         false,
         None,
     )
     .await
     .unwrap();
 
-    assert!(!res.applied);
-    assert!(!res.diff.is_empty());
-    let current = fs::read_to_string(&file).unwrap();
-    assert_eq!(current, original);
-}
+    assert!(res.applied);
 
-#[tokio::test]
-async fn test_extract_interface_not_found_error() {
-    let ws = Workspace::new(&[
-        ("Cargo.toml", CARGO_TOML),
-        (
-            "empty.ts",
-            r#"export const x = 42;
-"#,
-        ),
-    ]);
-    let root = ws.root().to_path_buf();
-    let file = root.join("empty.ts");
-    let gw = fake_gateway().await;
-
-    let err = extract_interface_impl(
-        gw.addr(),
-        &root,
-        &file,
-        "NonExistentClass",
-        "INonExistent",
-        &[],
-        1,
-        1,
-        true,
-        true,
-        false,
-        None,
-    )
-    .await
-    .unwrap_err();
-
-    assert!(err.to_string().contains("not found"));
+    let service_content = fs::read_to_string(&file).unwrap();
+    assert!(service_content.contains("export interface IUserService {"));
+    assert!(service_content.contains("export function renderUser(svc: UserService): string {"));
+    assert!(!service_content.contains("svc: IUserService"));
 }

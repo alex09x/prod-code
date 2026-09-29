@@ -425,7 +425,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_trait".to_string(),
-            description: "Extract a trait from the methods you name of an inherent `impl Type` block (rust-analyzer's `generate_trait_from_impl` takes every method, keeps the trait private and leaves callers in other modules without it in scope). The named methods move into `trait Name` and `impl Name for Type`; the rest stay inherent (the block goes when it empties). Doc comments go to the trait's declarations, attributes stay on the implementation, and the trait is as visible as the widest moved method. Every other file that references a moved method gets `use …::Name;`. Type-checked in one overlay before anything is written. Ordinary Rust inherent lifetime/type/const parameters, bounds and where clauses are preserved, including method generics and concrete Self returns. Attributed impls, conditional methods, Self-dependent impl bounds, opaque impl Trait return types, macros, specialization and existing trait impls are refused, including with force. Caller type annotations are not migrated. Rust only."
+            description: "Extract a trait from the methods you name of an inherent `impl Type` block (rust-analyzer's `generate_trait_from_impl` takes every method, keeps the trait private and leaves callers in other modules without it in scope). The named methods move into `trait Name` and `impl Name for Type`; the rest stay inherent (the block goes when it empties). Doc comments go to the trait's declarations, attributes stay on the implementation, and the trait is as visible as the widest moved method. Every other file that references a moved method gets `use …::Name;`. Type-checked in one overlay before anything is written. Caller type annotations are migrated across the workspace where safe unless `migrate_callers: false`. Generic impl blocks and trait implementations are refused. Rust only."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -435,6 +435,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "character": { "type": "integer", "description": "1-based column on that line" },
                     "methods": { "type": "array", "items": { "type": "string" }, "description": "Names of the methods that move into the trait" },
                     "name": { "type": "string", "description": "Name of the new trait" },
+                    "migrate_callers": { "type": "boolean", "description": "Whether to migrate caller parameter and variable type annotations from concrete type to extracted trait when caller only uses extracted methods (default true)" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
@@ -575,7 +576,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_interface".to_string(),
-            description: "Extract an interface, protocol, or abstract class from a class or struct across TypeScript/JavaScript, Go, Python, C++, Swift, and Rust (Roadmap 7.1). Extracts selected public method contracts, generates the interface definition, and updates the class/struct to implement or conform to it. Type-checked via analyzer overlays before writing."
+            description: "Extract an interface, protocol, or abstract class from a class or struct across TypeScript/JavaScript, Go, Python, C++, Swift, and Rust (Roadmap 7.1). Extracts selected public method contracts, generates the interface definition, updates the class/struct to implement or conform to it, and migrates caller type annotations across the workspace where safe unless migrate_callers: false. Type-checked via analyzer overlays before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -586,6 +587,7 @@ pub fn list_tools() -> Vec<McpTool> {
                     "methods": { "type": "array", "items": { "type": "string" }, "description": "Optional subset of method names to include in the interface (defaults to all public methods)" },
                     "line": { "type": "integer", "description": "Optional 1-based line of the type declaration" },
                     "character": { "type": "integer", "description": "Optional 1-based column of the type declaration" },
+                    "migrate_callers": { "type": "boolean", "description": "Update caller functions/methods across the workspace that accept the concrete class/struct to accept the new interface/trait when safe (default true)" },
                     "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
                     "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
@@ -3912,10 +3914,14 @@ async fn handle_extract_trait(
             .map(|v| v as u32)
             .with_context(|| format!("Missing '{key}' argument"))
     };
+    let migrate_callers = args
+        .get("migrate_callers")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let file_path = resolve_file_path(workspace_root, path_str);
-    let done = crate::extract_trait::extract_trait(
+    let done = crate::extract_trait::extract_trait_ext(
         remote,
         workspace_root,
         &file_path,
@@ -3923,6 +3929,7 @@ async fn handle_extract_trait(
         num("character")?,
         &methods,
         name,
+        migrate_callers,
         apply,
         force,
     )
@@ -4237,6 +4244,10 @@ async fn handle_extract_interface(
         .unwrap_or_default();
     let line = args.get("line").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
     let col = args.get("character").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+    let migrate_callers = args
+        .get("migrate_callers")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
     let verify = args.get("verify").and_then(|v| v.as_str());
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -4250,6 +4261,7 @@ async fn handle_extract_interface(
         &methods,
         line,
         col,
+        migrate_callers,
         apply,
         force,
         verify,

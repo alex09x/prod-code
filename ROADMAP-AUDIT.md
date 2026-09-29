@@ -108,13 +108,16 @@ evidence remain above; the original mechanism or required scope remains open.
   artifact cache.
 - **7.1 `extract_function`**: polyglot function extraction and automatic workspace-wide structural duplicate detection across TypeScript/JavaScript, Python, Go, C++, Swift, and Rust implemented in #722: detects free variables and infers parameter/return types, preserves indentation and receiver context, parameterizes differing literals (`parameterize: true`), and discovers and rewrites structural duplicates workspace-wide (`other_files: true`) with automatic relative import insertion.
 - **7.1 `extract_trait` / `extract_interface`**: #505 supports ordinary Rust inherent lifetime,
-  type and const parameters with bounds, but imports for moved methods still do not update caller
-  type annotations. Attributed impls, conditional methods, `Self`-dependent impl bounds, opaque
+  type and const parameters with bounds. Attributed impls, conditional methods, `Self`-dependent impl bounds, opaque
   `impl Trait` returns, macro/specialized shapes remain unsupported in Rust. #509 fixes
   Unicode header slicing; #510 refuses opaque returns whose capture contract can change. #514
   selects the enclosing impl at method-body cursors after opaque argument syntax, including
   local impls in block expressions, while preserving macro and trait-impl refusals. Polyglot
   `refactor.extract_interface` across TypeScript/JavaScript, Go, Python, C++, and Swift implemented in #698.
+  Caller type-annotation migration across TypeScript/JavaScript, Python, Go, C++, Swift, and Rust implemented in #724:
+  analyzes caller functions workspace-wide, safely migrates parameters/variables using only extracted methods to the
+  interface/trait while injecting required imports, rejects unextracted member uses or whole-object passing, and supports
+  disabling via `migrate_callers: false` / `--no-migrate-callers`.
 - **7.1 `encapsulate_field`**: polyglot field encapsulation across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #700.
 - **7.1 `inline_parameter`**: polyglot parameter inlining across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #704.
 - **7.1 `extract_field`**: polyglot field extraction across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #708.

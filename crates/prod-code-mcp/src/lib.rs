@@ -1,6 +1,7 @@
 //! Native Model Context Protocol (MCP) server for prod-code AI agent fleets.
 
 pub mod call_tree;
+pub mod caller_migration;
 pub mod cluster;
 pub mod codemod;
 pub mod compile_check;

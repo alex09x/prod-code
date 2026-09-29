@@ -1133,6 +1133,26 @@ pub async fn extract_trait(
     apply: bool,
     force: bool,
 ) -> Result<Extracted> {
+    extract_trait_ext(
+        remote, root, file, line, col, methods, name, false, apply, force,
+    )
+    .await
+}
+
+/// Extracts `trait {name}` with optional caller type annotation migration.
+#[allow(clippy::too_many_arguments)]
+pub async fn extract_trait_ext(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+    methods: &[String],
+    name: &str,
+    migrate_callers: bool,
+    apply: bool,
+    force: bool,
+) -> Result<Extracted> {
     anyhow::ensure!(valid_ident(name), "`{name}` is not a valid Rust identifier");
     anyhow::ensure!(!methods.is_empty(), "name at least one method");
     for method in methods {
@@ -1151,7 +1171,7 @@ pub async fn extract_trait(
     // Every file outside this one that calls a moved method needs the trait in scope.
     let (_, module) = crate::move_item::module_of(file)?;
     let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();
-    files.insert(file.to_path_buf(), new_text);
+    files.insert(file.to_path_buf(), new_text.clone());
     let mut imports = Vec::new();
     for item in imp
         .items
@@ -1181,6 +1201,34 @@ pub async fn extract_trait(
             if updated != current {
                 imports.push((path.clone(), use_line));
                 files.insert(path, updated);
+            }
+        }
+    }
+
+    if migrate_callers {
+        let current_text = files.get(file).cloned().unwrap_or(new_text);
+        let modified_files = crate::caller_migration::migrate_callers_in_workspace(
+            root,
+            file,
+            &current_text,
+            &imp.self_ty,
+            name,
+            methods,
+            crate::parameter_object::Language::Rust,
+        )?;
+        for (p, t) in modified_files {
+            if p != file {
+                let caller_crate = crate::move_item::module_of(&p)
+                    .map(|(_, m)| m.krate)
+                    .unwrap_or_else(|_| module.krate.clone());
+                let use_line = format!("use {}::{name};", module.spelled_from(&caller_crate));
+                let updated = crate::move_item::add_import(&t, &use_line);
+                if updated != t && !imports.iter().any(|(imp_p, _)| imp_p == &p) {
+                    imports.push((p.clone(), use_line));
+                }
+                files.insert(p, updated);
+            } else {
+                files.insert(p, t);
             }
         }
     }
