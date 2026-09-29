@@ -732,6 +732,9 @@ enum Commands {
         /// Name of the new trait.
         #[arg(long)]
         name: String,
+        /// Do not migrate caller type annotations from concrete type to extracted trait.
+        #[arg(long = "no-migrate-callers", default_value_t = false)]
+        no_migrate_callers: bool,
         /// Write the change instead of only reporting.
         #[arg(long, default_value_t = false)]
         apply: bool,
@@ -1078,6 +1081,9 @@ enum Commands {
         /// 1-based column of the type declaration
         #[arg(long, default_value_t = 0)]
         character: u32,
+        /// Do not migrate caller type annotations across the workspace to the extracted interface
+        #[arg(long = "no-migrate-callers", default_value_t = false)]
+        no_migrate_callers: bool,
         /// Verify with compiler check
         #[arg(long)]
         verify: Option<String>,
@@ -2238,6 +2244,7 @@ async fn main() -> Result<()> {
             col,
             methods,
             name,
+            no_migrate_callers,
             apply,
             force,
         } => {
@@ -2251,6 +2258,7 @@ async fn main() -> Result<()> {
                     "character": col,
                     "methods": methods,
                     "name": name,
+                    "migrate_callers": !no_migrate_callers,
                     "apply": apply,
                     "force": force,
                 }),
@@ -2695,6 +2703,7 @@ async fn main() -> Result<()> {
             methods,
             line,
             character,
+            no_migrate_callers,
             verify,
             apply,
             force,
@@ -2707,6 +2716,7 @@ async fn main() -> Result<()> {
                 "interface_name": name,
                 "line": line,
                 "character": character,
+                "migrate_callers": !no_migrate_callers,
                 "apply": apply,
                 "force": force,
             });

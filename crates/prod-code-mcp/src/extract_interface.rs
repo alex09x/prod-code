@@ -555,6 +555,7 @@ pub async fn extract_interface_impl(
     methods: &[String],
     line: u32,
     col: u32,
+    migrate_callers: bool,
     apply: bool,
     force: bool,
     verify: Option<&str>,
@@ -563,7 +564,7 @@ pub async fn extract_interface_impl(
 
     // If Rust, dispatch to existing extract_trait
     if language == "rust" {
-        let res = crate::extract_trait::extract_trait(
+        let res = crate::extract_trait::extract_trait_ext(
             remote,
             root,
             file,
@@ -571,18 +572,26 @@ pub async fn extract_interface_impl(
             col,
             methods,
             interface_name,
+            migrate_callers,
             apply,
             force,
         )
         .await?;
 
         let diff = res.render();
+        let files_modified: Vec<String> = res.rewritten.iter().map(|(p, _)| p.clone()).collect();
+        let overlays: Vec<(PathBuf, String)> = res
+            .rewritten
+            .into_iter()
+            .map(|(p, t)| (PathBuf::from(p), t))
+            .collect();
+
         return Ok(ExtractInterfaceResult {
             type_name: res.type_name,
             interface_name: res.trait_name,
             methods: res.methods,
-            files_modified: vec![file.to_string_lossy().into_owned()],
-            overlays: Vec::new(),
+            files_modified,
+            overlays,
             diff,
             applied: res.applied,
             verified: true,
@@ -593,7 +602,7 @@ pub async fn extract_interface_impl(
     let file_text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read file {}", file.display()))?;
 
-    let (transformed_text, extracted_methods) = match language.as_str() {
+    let (mut transformed_text, extracted_methods) = match language.as_str() {
         "typescript" | "javascript" => {
             extract_interface_ts(&file_text, symbol, interface_name, methods)?
         }
@@ -604,13 +613,51 @@ pub async fn extract_interface_impl(
         other => bail!("unsupported language for extract_interface: {other}"),
     };
 
-    let diff = similar::TextDiff::from_lines(&file_text, &transformed_text)
-        .unified_diff()
-        .context_radius(2)
-        .header(&file.to_string_lossy(), &file.to_string_lossy())
-        .to_string();
+    let mut overlays: Vec<(PathBuf, String)> = Vec::new();
+    let mut files_modified: Vec<String> = Vec::new();
 
-    let overlays = vec![(file.to_path_buf(), transformed_text.clone())];
+    if migrate_callers {
+        let lang = crate::parameter_object::Language::of(file)
+            .unwrap_or(crate::parameter_object::Language::TypeScript);
+        let modified_files = crate::caller_migration::migrate_callers_in_workspace(
+            root,
+            file,
+            &transformed_text,
+            symbol,
+            interface_name,
+            &extracted_methods,
+            lang,
+        )?;
+        for (p, t) in modified_files {
+            if p == *file {
+                transformed_text = t.clone();
+            }
+            files_modified.push(p.to_string_lossy().into_owned());
+            overlays.push((p, t));
+        }
+    }
+
+    if overlays.is_empty() {
+        overlays.push((file.to_path_buf(), transformed_text.clone()));
+        files_modified.push(file.to_string_lossy().into_owned());
+    }
+
+    let mut diff = String::new();
+    for (p, new_t) in &overlays {
+        let orig = if *p == *file {
+            file_text.clone()
+        } else {
+            std::fs::read_to_string(p).unwrap_or_default()
+        };
+        let d = similar::TextDiff::from_lines(&orig, new_t)
+            .unified_diff()
+            .context_radius(2)
+            .header(&p.to_string_lossy(), &p.to_string_lossy())
+            .to_string();
+        if !d.is_empty() {
+            diff.push_str(&d);
+        }
+    }
 
     // Overlay validation
     let reports = crate::diagnostics::validate_texts(remote, root, &overlays, &[])
@@ -660,7 +707,9 @@ pub async fn extract_interface_impl(
 
     let applied = if apply {
         let mut file_map = BTreeMap::new();
-        file_map.insert(file.to_path_buf(), transformed_text);
+        for (p, t) in &overlays {
+            file_map.insert(p.clone(), t.clone());
+        }
         let edit = crate::signature::whole_file_edit(&file_map);
         crate::refactor::apply_workspace_edit(root, &edit)?;
         true
@@ -672,7 +721,7 @@ pub async fn extract_interface_impl(
         type_name: symbol.to_string(),
         interface_name: interface_name.to_string(),
         methods: extracted_methods,
-        files_modified: vec![file.to_string_lossy().into_owned()],
+        files_modified,
         overlays,
         diff,
         applied,

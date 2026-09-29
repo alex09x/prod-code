@@ -683,7 +683,7 @@ fn top_import_insertion_pos(content: &str) -> usize {
     pos.min(content.len())
 }
 
-fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (String, bool) {
+pub(crate) fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (String, bool) {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("import ") && trimmed.contains(rel_path) {
@@ -714,7 +714,7 @@ fn insert_or_merge_ts_import(content: &str, sym: &str, rel_path: &str) -> (Strin
     (out, true)
 }
 
-fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (String, bool) {
+pub(crate) fn insert_or_merge_py_import(content: &str, sym: &str, mod_spec: &str) -> (String, bool) {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("from ") && trimmed.contains(mod_spec) && trimmed.contains(" import ") {
