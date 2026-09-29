@@ -60,15 +60,20 @@ pub async fn search(
 }
 
 /// How the ranking was made: by words only, or by words and meaning, and how much of the
-/// index has its vectors yet.
+/// index has its vectors yet, plus typed graph fusion when applied.
 fn ranking(resp: &SearchResponse) -> String {
+    let graph_note = if resp.graph_fused.unwrap_or(false) {
+        " and typed graph"
+    } else {
+        ""
+    };
     match resp.dense {
-        None => "lexical only: the gateway has no embedding model, so a question sharing no words with the code or its comments finds nothing".to_string(),
+        None => format!("lexical{graph_note} only: the gateway has no embedding model, so a question sharing no words with the code or its comments finds nothing"),
         Some(d) if d.embedded >= resp.indexed_declarations => {
-            "ranked by words and by meaning".to_string()
+            format!("ranked by words{graph_note} and by meaning")
         }
         Some(d) => format!(
-            "ranked by words{}; {} of {} declarations embedded so far, the rest in the background",
+            "ranked by words{graph_note}{}; {} of {} declarations embedded so far, the rest in the background",
             if d.used { " and by meaning" } else { " only" },
             d.embedded,
             resp.indexed_declarations
@@ -76,7 +81,7 @@ fn ranking(resp: &SearchResponse) -> String {
     }
 }
 
-/// One line per hit, best first, with the doc sentence that earned it.
+/// One line per hit, best first, with the doc sentence that earned it and attributable rank reasons.
 pub fn render(resp: &SearchResponse, query: &str) -> String {
     if resp.hits.is_empty() {
         return format!(
@@ -114,6 +119,14 @@ pub fn render(resp: &SearchResponse, query: &str) -> String {
         if !hit.doc.is_empty() {
             out.push_str(&format!("    {}\n", hit.doc));
         }
+        if let Some(reasons) = &hit.rank_reasons && !reasons.is_empty() {
+            let score_str = hit
+                .score
+                .as_deref()
+                .map(|s| format!(" [score {s}]"))
+                .unwrap_or_default();
+            out.push_str(&format!("    attribution{score_str}: {}\n", reasons.join("; ")));
+        }
     }
     out.trim_end().to_string()
 }
@@ -132,6 +145,7 @@ mod tests {
             took_ms: 7,
             error: None,
             dense: None,
+            graph_fused: None,
         }
     }
 
@@ -146,6 +160,8 @@ mod tests {
                 container: Some("ServerState".into()),
                 signature: "pub fn place(&self, name: &str) -> Option<Node>".into(),
                 doc: "Decides which node runs a workspace.".into(),
+                score: None,
+                rank_reasons: None,
             }]),
             "which node runs a workspace",
         );
@@ -158,6 +174,28 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("2400 declarations, 120 files"), "{text}");
+    }
+
+    #[test]
+    fn renders_hits_with_attribution_and_graph_fusion() {
+        let mut r = resp(vec![SearchHit {
+            file: "src/search.rs".into(),
+            line: 112,
+            kind: "struct".into(),
+            name: "WorkspaceIndex".into(),
+            container: None,
+            signature: "pub struct WorkspaceIndex".into(),
+            doc: "Primary workspace declaration index.".into(),
+            score: Some("0.0385".into()),
+            rank_reasons: Some(vec![
+                "lexical: matched 'workspace'".into(),
+                "graph: struct in-degree 12 (centrality 1.76)".into(),
+            ]),
+        }]);
+        r.graph_fused = Some(true);
+        let text = render(&r, "workspace index");
+        assert!(text.contains("lexical and typed graph only"), "{text}");
+        assert!(text.contains("attribution [score 0.0385]: lexical: matched 'workspace'; graph: struct in-degree 12 (centrality 1.76)"), "{text}");
     }
 
     #[test]
@@ -201,6 +239,8 @@ mod tests {
                 container: None,
                 signature: "pub fn free_fn()".into(),
                 doc: String::new(),
+                score: None,
+                rank_reasons: None,
             }]),
             "free function",
         );

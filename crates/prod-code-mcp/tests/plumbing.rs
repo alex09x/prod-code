@@ -370,12 +370,15 @@ async fn search_returns_the_gateways_hits() {
                     container: None,
                     signature: "fn place()".to_string(),
                     doc: String::new(),
+                    score: None,
+                    rank_reasons: None,
                 }],
                 indexed_files: 3,
                 indexed_declarations: 12,
                 took_ms: 4,
                 error: None,
                 dense: None,
+                graph_fused: None,
             }))
             .await
             .unwrap();
@@ -420,6 +423,7 @@ async fn search_reports_when_the_gateway_refuses_the_query() {
                 took_ms: 0,
                 error: Some("index not ready".to_string()),
                 dense: None,
+                graph_fused: None,
             }))
             .await
             .unwrap();

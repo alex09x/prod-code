@@ -1115,6 +1115,12 @@ pub struct SearchHit {
     /// First sentence of the doc comment attached to the declaration.
     #[serde(default)]
     pub doc: String,
+    /// Attributable ranking score formatted as a string (e.g. "0.0345").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<String>,
+    /// Attributable ranking breakdown reasons (e.g. lexical BM25, typed graph centrality, dense similarity).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rank_reasons: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1130,6 +1136,9 @@ pub struct SearchResponse {
     /// ranking was lexical only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dense: Option<DenseStatus>,
+    /// Whether typed graph fusion was applied during search ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_fused: Option<bool>,
 }
 
 /// How far the dense half of a search had got.
@@ -1327,4 +1336,59 @@ mod wire_tests {
             assert_eq!(name.parse::<EngineKind>().unwrap(), kind);
         }
     }
+
+    #[test]
+    fn search_response_survives_wire_trip_and_older_payloads() {
+        let hit = SearchHit {
+            file: "src/search.rs".into(),
+            line: 42,
+            kind: "struct".into(),
+            name: "WorkspaceIndex".into(),
+            container: None,
+            signature: "pub struct WorkspaceIndex".into(),
+            doc: "Primary workspace declaration index.".into(),
+            score: Some("0.0385".into()),
+            rank_reasons: Some(vec![
+                "lexical: matched 'workspace'".into(),
+                "graph: struct in-degree 12 (centrality 1.76)".into(),
+            ]),
+        };
+        let response = SearchResponse {
+            server_workspace_root: "/srv/w".into(),
+            hits: vec![hit.clone()],
+            indexed_files: 10,
+            indexed_declarations: 200,
+            took_ms: 3,
+            error: None,
+            dense: Some(DenseStatus {
+                used: true,
+                embedded: 200,
+            }),
+            graph_fused: Some(true),
+        };
+        let encoded = serde_json::to_string(&response).expect("serialize response");
+        let decoded: SearchResponse = serde_json::from_str(&encoded).expect("deserialize response");
+        assert_eq!(response, decoded);
+
+        // Older payload without score, rank_reasons, or graph_fused still decodes cleanly
+        let old_json = r#"{
+            "server_workspace_root": "/srv/w",
+            "hits": [{
+                "file": "src/search.rs",
+                "line": 42,
+                "kind": "struct",
+                "name": "WorkspaceIndex",
+                "signature": "pub struct WorkspaceIndex",
+                "doc": "Primary index."
+            }],
+            "indexed_files": 10,
+            "indexed_declarations": 200,
+            "took_ms": 3
+        }"#;
+        let old_decoded: SearchResponse = serde_json::from_str(old_json).expect("older payload");
+        assert_eq!(old_decoded.hits[0].score, None);
+        assert_eq!(old_decoded.hits[0].rank_reasons, None);
+        assert_eq!(old_decoded.graph_fused, None);
+    }
 }
+
