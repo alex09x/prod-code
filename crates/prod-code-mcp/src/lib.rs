@@ -31,6 +31,7 @@ pub mod make_static;
 pub mod move_item;
 pub mod move_method;
 pub mod move_module;
+pub mod move_polyglot;
 pub mod parameter_object;
 pub mod patch;
 pub mod protocol;

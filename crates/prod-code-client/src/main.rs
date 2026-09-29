@@ -1192,19 +1192,19 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Move a declaration into another module, with the imports that keep it compiling.
+    /// Move a declaration into another module across polyglot languages, with the imports that keep it compiling.
     Move {
-        /// The item, by name (`snake_case`, `Session::open_text`).
+        /// The item, by name (`snake_case`, `Session::open_text`, `calculate`).
         symbol: String,
-        /// The target module's file, e.g. `crates/x/src/fixture.rs`. A file that does not exist
-        /// yet is created and declared in its parent module.
+        /// The target module's file, e.g. `crates/x/src/fixture.rs` or `src/helpers.ts`. A file that does not exist
+        /// yet is created and initialized.
         #[arg(long = "to")]
         to: String,
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace, and write
-        /// only if the compiler accepts it too. Seconds rather than milliseconds.
+        /// `compile`: also run compiler check on the result in a shadow of the workspace, and write
+        /// only if the compiler accepts it too (Rust only; seconds rather than milliseconds).
         #[arg(long)]
         verify: Option<String>,
         /// Write the move instead of only reporting it.

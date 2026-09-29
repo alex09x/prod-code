@@ -427,7 +427,7 @@ fn format_polyglot_param(name: &str, ty: &str, value: &str, lang: Language) -> S
     }
 }
 
-fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
+pub(crate) fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
     };
@@ -491,7 +491,7 @@ fn is_c_cpp_prototype(content: &str, at: usize, _args_start: usize, args_end: us
     true
 }
 
-fn collect_workspace_sources(root: &Path, lang: Language) -> Vec<PathBuf> {
+pub(crate) fn collect_workspace_sources(root: &Path, lang: Language) -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
