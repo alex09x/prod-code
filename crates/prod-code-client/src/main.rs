@@ -832,23 +832,29 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
-    /// Wrap what a function returns in Option or Result; callers that can propagate get `?`.
+    /// Wrap what a function returns in Option, Result, Promise, or Pointer across languages; callers that can propagate get `?` or `await`.
     WrapReturn {
         /// The function by name, or a file with `--line`.
         symbol: String,
-        /// `option` or `result`.
+        /// `option`, `result`, `promise`, or `pointer`.
         #[arg(long)]
         wrapper: String,
-        /// For `result`: the error type, such as `anyhow::Error`.
+        /// For `result`: the error type, such as `anyhow::Error` or `Error`.
         #[arg(long)]
         error: Option<String>,
+        /// The file that declares it.
+        #[arg(long)]
+        path: Option<String>,
+        /// Optional function name (when symbol argument is a file).
+        #[arg(long)]
+        function: Option<String>,
         /// 1-based line, when the first argument is a file path.
         #[arg(long)]
         line: Option<u32>,
         /// 1-based column of the function's name, with `--line`.
         #[arg(long, default_value_t = 1)]
         character: u32,
-        /// `compile`: also run `cargo check` on the result in a shadow of the workspace.
+        /// `compile`: also run compiler check on the result in a shadow of the workspace.
         #[arg(long)]
         verify: Option<String>,
         /// Write the change instead of only reporting.
@@ -2360,6 +2366,8 @@ async fn main() -> Result<()> {
             symbol,
             wrapper,
             error,
+            path,
+            function,
             line,
             character,
             verify,
@@ -2368,13 +2376,26 @@ async fn main() -> Result<()> {
         } => {
             let mut args =
                 serde_json::json!({ "wrapper": wrapper, "apply": apply, "force": force });
-            match line {
-                Some(line) => {
-                    args["path"] = serde_json::Value::String(symbol);
-                    args["line"] = serde_json::Value::from(line);
-                    args["character"] = serde_json::Value::from(character);
+            if let Some(p) = path {
+                args["path"] = serde_json::Value::String(p);
+                args["symbol"] = serde_json::Value::String(function.unwrap_or(symbol));
+            } else if let Some(line) = line {
+                args["path"] = serde_json::Value::String(symbol);
+                args["line"] = serde_json::Value::from(line);
+                args["character"] = serde_json::Value::from(character);
+                if let Some(f) = function {
+                    args["symbol"] = serde_json::Value::String(f);
                 }
-                None => args["symbol"] = serde_json::Value::String(symbol),
+            } else {
+                let p = Path::new(&symbol);
+                if p.extension().is_some() {
+                    args["path"] = serde_json::Value::String(symbol);
+                    if let Some(f) = function {
+                        args["symbol"] = serde_json::Value::String(f);
+                    }
+                } else {
+                    args["symbol"] = serde_json::Value::String(symbol);
+                }
             }
             if let Some(error) = error {
                 args["error"] = serde_json::Value::String(error);

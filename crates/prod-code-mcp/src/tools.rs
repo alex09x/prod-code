@@ -635,17 +635,18 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_wrap_return".to_string(),
-            description: "Wrap what a function returns in `Option` or `Result`, with every caller. Give the function's name position (or `symbol`) and `wrapper` (`option` or `result`; for `result` also `error`, the type it fails with, such as `anyhow::Error`). rust-analyzer's assist rewrites the signature and every returned value; this does the callers it leaves broken: a caller that itself returns an `Option` (or a `Result`) gets `?` after the call, and any other caller is reported with its line, because turning a `None` or an error into something else there is a decision. Nothing is written while such a caller remains, unless `force`. The whole change is type-checked in one overlay; `verify: \"compile\"` adds `cargo check`. Rust only."
+            description: "Wrap what a function returns across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.4). Supports `promise` (adds `async`, rewrites callers to `await`), `option`/`nullable` (`Optional`, `std::optional`, `T?`, `T | null`), `result`/`expected` (`Result`, `std::expected`, `(T, error)`), and `pointer` (`*T`). rust-analyzer assists are used for Rust with `?` propagation. Callers that cannot propagate the wrapped type are reported as blocked and require a decision (or `force`). Addressable by `symbol` or `line`/`character`."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File that declares the function" },
-                    "line": { "type": "integer", "description": "1-based line of the function's name" },
-                    "character": { "type": "integer", "description": "1-based column of the function's name" },
-                    "wrapper": { "type": "string", "enum": ["option", "result"], "description": "What the return type becomes wrapped in" },
-                    "error": { "type": "string", "description": "For `result`: the error type, such as `anyhow::Error` or `String`" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it" },
+                    "path": { "type": "string", "description": "File that declares the function (optional if symbol is unique)" },
+                    "symbol": { "type": "string", "description": "Function or method name to wrap (alternative to line and character)" },
+                    "line": { "type": "integer", "description": "1-based line of the function's declaration" },
+                    "character": { "type": "integer", "description": "1-based column of the function's declaration" },
+                    "wrapper": { "type": "string", "description": "What the return type becomes wrapped in: `promise`, `option`/`nullable`, `result`/`expected`/`error`, `pointer`" },
+                    "error": { "type": "string", "description": "For `result`: the error type, such as `anyhow::Error`, `Error`, or `std::string`" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler check on the result in a shadow of the workspace before writing it" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when a caller cannot propagate or the result does not compile" }
                 },
@@ -4463,30 +4464,54 @@ async fn handle_wrap_return(
 ) -> Result<McpToolCallResult> {
     let path_str = args
         .get("path")
-        .and_then(|v| v.as_str())
-        .context("Missing 'path' argument (or `symbol`)")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
-    };
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str());
+    let symbol = args
+        .get("symbol")
+        .or_else(|| args.get("function"))
+        .and_then(|v| v.as_str());
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args
+        .get("character")
+        .or_else(|| args.get("col"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     let wrapper = crate::wrap_return::Wrapper::parse(
         args.get("wrapper")
             .and_then(|v| v.as_str())
-            .context("Missing 'wrapper' argument: `option` or `result`")?,
+            .context("Missing 'wrapper' argument: `option`, `result`, `promise`, or `pointer`")?,
     )?;
     let error = args.get("error").and_then(|v| v.as_str());
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-    let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::wrap_return::wrap(
+
+    let file_path = if let Some(p) = path_str {
+        resolve_file_path(workspace_root, p)
+    } else if let Some(sym) = symbol {
+        let mut found = None;
+        for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && let Ok(content) = std::fs::read_to_string(p)
+                && content.contains(sym)
+            {
+                found = Some(p.to_path_buf());
+                break;
+            }
+        }
+        found.with_context(|| format!("could not find file declaring symbol `{sym}`"))?
+    } else {
+        anyhow::bail!("Missing 'path' or 'symbol' argument");
+    };
+
+    let mut done = crate::wrap_return::wrap_polyglot(
         remote,
         workspace_root,
         &file_path,
-        num("line")?,
-        num("character")?,
+        symbol,
+        line,
+        character,
         wrapper,
         error,
         apply && !verify,
