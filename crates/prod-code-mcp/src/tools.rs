@@ -1344,6 +1344,31 @@ pub async fn execute_tool(
         let dirs = dirs.clone();
         return references_across(remote, workspace_root, args, &dirs).await;
     }
+    // Normalize path parameter across aliases: path, file_path, file (#673)
+    let mut args = args;
+    let initial_path = args
+        .get("path")
+        .or_else(|| args.get("file_path"))
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    if let Some(ref p) = initial_path
+        && let Some(obj) = args.as_object_mut()
+        && !obj.contains_key("path")
+    {
+        obj.insert("path".into(), serde_json::Value::String(p.clone()));
+    }
+
+    // A path in a nested project of another language goes to a node that serves it (#125, #673).
+    // Route before resolving symbols so cross-language symbol lookups hit the right language engine.
+    let remote = crate::cluster::route_for_path(
+        remote,
+        workspace_root,
+        initial_path.as_deref(),
+    )
+    .await?;
+
     // `symbol` instead of line/character: resolve the name through the workspace symbol
     // index, then run the tool at that position.
     let args = if SYMBOL_ADDRESSABLE.contains(&tool_name)
@@ -5360,12 +5385,18 @@ async fn handle_diagnose_failure(
     workspace_root: &Path,
     args: &serde_json::Value,
 ) -> Result<McpToolCallResult> {
+    let hint_str = args
+        .get("path")
+        .or_else(|| args.get("file_path"))
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str());
+    let hint_path = hint_str.map(Path::new);
     let filter = args.get("filter").and_then(|v| v.as_str());
     let timeout_secs = args
         .get("timeout_secs")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    let report = crate::dossier::diagnose(remote, workspace_root, filter, timeout_secs).await?;
+    let report = crate::dossier::diagnose(remote, workspace_root, hint_path, filter, timeout_secs).await?;
     let text = report.render();
     Ok(
         if report.tests_failed == 0 && report.build_errors.is_empty() {
@@ -5607,6 +5638,8 @@ async fn handle_definition(
 ) -> Result<McpToolCallResult> {
     let path_str = args
         .get("path")
+        .or_else(|| args.get("file_path"))
+        .or_else(|| args.get("file"))
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
     let line = args
@@ -5784,8 +5817,10 @@ async fn outlined_range(
 ) -> Option<(usize, usize)> {
     let uri = Url::from_file_path(path).ok()?;
     let params = serde_json::json!({ "textDocument": { "uri": uri.to_string() } });
-    let outline = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params)
+    let query = execute_lsp_query(remote, root, path, "textDocument/documentSymbol", params);
+    let outline = tokio::time::timeout(std::time::Duration::from_millis(1500), query)
         .await
+        .ok()?
         .ok()?;
     let mut best: Option<Span> = None;
     innermost_holding(&outline, (line, col), &mut best);

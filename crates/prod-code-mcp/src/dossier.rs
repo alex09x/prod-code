@@ -369,13 +369,15 @@ pub fn suggested(fixes: &[crate::fixit::Fix]) -> Vec<String> {
 pub async fn diagnose(
     remote: SocketAddr,
     root: &Path,
+    hint: Option<&Path>,
     filter: Option<&str>,
     timeout_secs: u64,
 ) -> Result<DossierReport> {
+    let project_hint = hint.or(Some(root));
     let report: VerifyReport = run_verify(
         remote,
         root,
-        Some(root),
+        project_hint,
         VerifyKind::Test,
         filter,
         timeout_secs,
@@ -404,7 +406,7 @@ pub async fn diagnose(
         run_verify(
             remote,
             root,
-            Some(root),
+            project_hint,
             VerifyKind::Check,
             None,
             timeout_secs,

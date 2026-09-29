@@ -56,7 +56,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 7;
+pub const RELEVANCE_VERSION: u32 = 8;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1406,9 +1406,12 @@ fn parse_name_status(output: &[u8], paths: &mut BTreeMap<String, bool>) {
     while let Some(status) = fields.next() {
         let status = String::from_utf8_lossy(status);
         let Some(path) = fields.next() else { break };
-        if status.starts_with('R') || status.starts_with('C') {
+        if status.starts_with('R') {
             let Some(new_path) = fields.next() else { break };
             paths.insert(String::from_utf8_lossy(path).to_string(), true);
+            paths.insert(String::from_utf8_lossy(new_path).to_string(), false);
+        } else if status.starts_with('C') {
+            let Some(new_path) = fields.next() else { break };
             paths.insert(String::from_utf8_lossy(new_path).to_string(), false);
         } else {
             paths.insert(
@@ -1429,9 +1432,11 @@ fn parse_porcelain_status(output: &[u8], paths: &mut BTreeMap<String, bool>) {
         }
         let status = &entry[..2];
         let path = String::from_utf8_lossy(&entry[3..]).to_string();
-        if status.contains(&b'R') || status.contains(&b'C') {
+        if status.contains(&b'R') {
             let Some(old_path) = fields.next() else { break };
             paths.insert(String::from_utf8_lossy(old_path).to_string(), true);
+        } else if status.contains(&b'C') {
+            let Some(_) = fields.next() else { break };
         }
         paths.insert(path, status.contains(&b'D'));
     }
@@ -1451,7 +1456,12 @@ impl SyncPathFilter {
                     root.join(path)
                 };
                 let path = std::fs::canonicalize(&path).unwrap_or(path);
-                Some(path.strip_prefix(root)?.to_path_buf())
+                let canon_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                Some(
+                    path.strip_prefix(&canon_root)
+                        .or_else(|_| path.strip_prefix(root))?
+                        .to_path_buf(),
+                )
             }
             None => None,
         };
@@ -1510,7 +1520,20 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
             if s.starts_with('.') && s != ".cargo" {
                 return false;
             }
-            if matches!(s.as_ref(), "crates" | "packages" | "src") {
+            if matches!(
+                s.as_ref(),
+                "crates"
+                    | "packages"
+                    | "src"
+                    | "internal"
+                    | "pkg"
+                    | "cmd"
+                    | "api"
+                    | "Sources"
+                    | "Tests"
+                    | "include"
+                    | "lib"
+            ) {
                 under_code_dir = true;
             }
             if !under_code_dir
@@ -1590,6 +1613,7 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "mts"
                 | "cts"
                 | "tsx"
+                | "astro"
                 | "vue"
                 | "svelte"
                 | "c"
@@ -1605,8 +1629,63 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "kt"
                 | "kts"
                 | "scala"
+                | "sc"
                 | "cs"
                 | "swift"
+                | "php"
+                | "phtml"
+                | "rb"
+                | "erb"
+                | "rake"
+                | "gemspec"
+                | "zig"
+                | "zon"
+                | "dart"
+                | "lua"
+                | "hs"
+                | "lhs"
+                | "ml"
+                | "mli"
+                | "ex"
+                | "exs"
+                | "clj"
+                | "cljs"
+                | "cljc"
+                | "edn"
+                | "jl"
+                | "r"
+                | "erl"
+                | "hrl"
+                | "pl"
+                | "pm"
+                | "sol"
+                | "nim"
+                | "nims"
+                | "nimble"
+                | "d"
+                | "di"
+                | "f"
+                | "for"
+                | "f90"
+                | "f95"
+                | "f03"
+                | "f08"
+                | "cr"
+                | "groovy"
+                | "gvy"
+                | "gy"
+                | "gsh"
+                | "gradle"
+                | "adb"
+                | "ads"
+                | "v"
+                | "vh"
+                | "rkt"
+                | "tf"
+                | "tfvars"
+                | "nix"
+                | "s"
+                | "asm"
                 | "proto"
                 | "thrift"
                 | "graphql"
@@ -1615,6 +1694,15 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                 | "sh"
                 | "bash"
                 | "zsh"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "sass"
+                | "less"
+                | "xml"
+                | "svg"
+                | "cmake"
                 | "toml"
                 | "lock" // Cargo.lock, yarn.lock, poetry.lock: pin what the server builds
                 | "yaml"
@@ -1666,7 +1754,20 @@ pub fn is_synced_git_path(rel_path: &str) -> bool {
         if dir == ".git" {
             return false;
         }
-        if matches!(dir.as_ref(), "crates" | "packages" | "src") {
+        if matches!(
+            dir.as_ref(),
+            "crates"
+                | "packages"
+                | "src"
+                | "internal"
+                | "pkg"
+                | "cmd"
+                | "api"
+                | "Sources"
+                | "Tests"
+                | "include"
+                | "lib"
+        ) {
             under_code_dir = true;
         }
         if matches!(dir.as_ref(), "target" | "node_modules" | "__pycache__") {
