@@ -41,6 +41,7 @@ pub mod remote_fs;
 pub mod rename_accessors;
 pub mod rename_mentions;
 pub mod replace_constructor;
+pub mod replace_inheritance;
 pub mod report;
 pub mod safe_delete_go;
 pub mod safe_delete_typescript;
