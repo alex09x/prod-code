@@ -97,6 +97,13 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "julia" => from(GenericLspConfig::for_julia()),
         "shell" => from(GenericLspConfig::for_shell()),
         "r" => from(GenericLspConfig::for_r()),
+        "erlang" => from(GenericLspConfig::for_erlang()),
+        "fsharp" => from(GenericLspConfig::for_fsharp()),
+        "perl" => from(GenericLspConfig::for_perl()),
+        "solidity" => from(GenericLspConfig::for_solidity()),
+        "nim" => from(GenericLspConfig::for_nim()),
+        "d" => from(GenericLspConfig::for_d()),
+        "fortran" => from(GenericLspConfig::for_fortran()),
         _ => return None,
     };
     let installed = if engine == "rust" {

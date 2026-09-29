@@ -56,6 +56,13 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "julia" | "jl" => "julia",
         "shell" | "sh" | "bash" | "zsh" => "shell",
         "r" | "rstats" => "r",
+        "erlang" | "erl" => "erlang",
+        "fsharp" | "fs" | "f#" => "fsharp",
+        "perl" | "pl" | "pm" => "perl",
+        "solidity" | "sol" => "solidity",
+        "nim" => "nim",
+        "d" | "dlang" => "d",
+        "fortran" | "f90" | "f95" => "fortran",
         _ => return None,
     })
 }

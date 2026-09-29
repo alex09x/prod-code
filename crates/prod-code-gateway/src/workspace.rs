@@ -1387,6 +1387,146 @@ impl WorkspaceManager {
                     }
                 }
             }
+            "erlang" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_erlang(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Erlang) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Erlang LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "fsharp" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_fsharp(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (F#) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn F# LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "perl" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_perl(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Perl) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Perl LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "solidity" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_solidity(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Solidity) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Solidity LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "nim" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_nim(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Nim) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Nim LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "d" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_d(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (D) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn D LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
+            "fortran" => {
+                match prod_code_engine_generic::GenericLspEngine::spawn(
+                    workspace_root,
+                    prod_code_engine_generic::GenericLspConfig::for_fortran(),
+                )
+                .await
+                {
+                    Ok(generic_eng) => {
+                        tracing::info!(workspace = ?workspace_root, "Supervised GenericLspEngine (Fortran) active");
+                        generic_engine = Some(Arc::new(generic_eng));
+                    }
+                    Err(err) => {
+                        tracing::warn!(error = %err, workspace = ?workspace_root, "Failed to spawn Fortran LSP; falling back to subprocess");
+                        backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
+                            .await
+                            .ok()
+                            .map(Arc::new);
+                    }
+                }
+            }
             _ => {
                 backend = crate::backend::BackendWorker::spawn(workspace_root, engine)
                     .await
