@@ -1109,6 +1109,30 @@ fn plan_command_basic(
         ("v", VerifyKind::Test) => vec!["v", "test", "."],
         ("racket", VerifyKind::Check) => vec!["raco", "make"],
         ("racket", VerifyKind::Test) => vec!["raco", "test", "."],
+        ("terraform", VerifyKind::Check) => vec!["terraform", "validate"],
+        ("terraform", VerifyKind::Test) => vec!["terraform", "test"],
+        ("nix", VerifyKind::Check) => vec!["nix", "flake", "check"],
+        ("nix", VerifyKind::Test) => vec!["nix", "flake", "check"],
+        ("markdown", VerifyKind::Check) => vec!["markdownlint", "."],
+        ("markdown", VerifyKind::Test) => vec!["markdownlint", "."],
+        ("yaml", VerifyKind::Check) => vec!["yamllint", "."],
+        ("yaml", VerifyKind::Test) => vec!["yamllint", "."],
+        ("toml", VerifyKind::Check) => vec!["taplo", "check"],
+        ("toml", VerifyKind::Test) => vec!["taplo", "check"],
+        ("json", VerifyKind::Check) => vec!["jsonlint", "."],
+        ("json", VerifyKind::Test) => vec!["jsonlint", "."],
+        ("html", VerifyKind::Check) => vec!["htmlhint", "."],
+        ("html", VerifyKind::Test) => vec!["htmlhint", "."],
+        ("css", VerifyKind::Check) => vec!["stylelint", "**/*.css"],
+        ("css", VerifyKind::Test) => vec!["stylelint", "**/*.css"],
+        ("dockerfile", VerifyKind::Check) => vec!["hadolint", "Dockerfile"],
+        ("dockerfile", VerifyKind::Test) => vec!["hadolint", "Dockerfile"],
+        ("svelte", VerifyKind::Check) => vec!["svelte-check"],
+        ("svelte", VerifyKind::Test) => vec!["svelte-check"],
+        ("vue", VerifyKind::Check) => vec!["vue-tsc", "--noEmit"],
+        ("vue", VerifyKind::Test) => vec!["vue-tsc", "--noEmit"],
+        ("assembly", VerifyKind::Check) => vec!["nasm", "-f", "elf64"],
+        ("assembly", VerifyKind::Test) => vec!["nasm", "-f", "elf64"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1217,6 +1241,40 @@ fn plan_command_basic(
                 cmd.push(filter.to_string());
             }
             ("racket", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("terraform", VerifyKind::Test) => {
+                cmd.push("-filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("markdown", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("yaml", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("toml", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("json", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("html", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("css", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("dockerfile", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("svelte", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("vue", VerifyKind::Test) => {
+                cmd.push(filter.to_string());
+            }
+            ("assembly", VerifyKind::Test) => {
                 cmd.push(filter.to_string());
             }
             ("rust", VerifyKind::Bench) => cmd.push(filter.to_string()),
@@ -3338,6 +3396,58 @@ expected 42, got 43\n\
             plan_command("racket", VerifyKind::Test, Some("foo-test.rkt")).unwrap(),
             ["raco", "test", ".", "foo-test.rkt"]
         );
+        assert_eq!(
+            plan_command("terraform", VerifyKind::Check, None).unwrap(),
+            ["terraform", "validate"]
+        );
+        assert_eq!(
+            plan_command("terraform", VerifyKind::Test, Some("tests/unit")).unwrap(),
+            ["terraform", "test", "-filter", "tests/unit"]
+        );
+        assert_eq!(
+            plan_command("nix", VerifyKind::Check, None).unwrap(),
+            ["nix", "flake", "check"]
+        );
+        assert_eq!(
+            plan_command("markdown", VerifyKind::Check, None).unwrap(),
+            ["markdownlint", "."]
+        );
+        assert_eq!(
+            plan_command("yaml", VerifyKind::Check, None).unwrap(),
+            ["yamllint", "."]
+        );
+        assert_eq!(
+            plan_command("toml", VerifyKind::Check, None).unwrap(),
+            ["taplo", "check"]
+        );
+        assert_eq!(
+            plan_command("json", VerifyKind::Check, None).unwrap(),
+            ["jsonlint", "."]
+        );
+        assert_eq!(
+            plan_command("html", VerifyKind::Check, None).unwrap(),
+            ["htmlhint", "."]
+        );
+        assert_eq!(
+            plan_command("css", VerifyKind::Check, None).unwrap(),
+            ["stylelint", "**/*.css"]
+        );
+        assert_eq!(
+            plan_command("dockerfile", VerifyKind::Check, None).unwrap(),
+            ["hadolint", "Dockerfile"]
+        );
+        assert_eq!(
+            plan_command("svelte", VerifyKind::Check, None).unwrap(),
+            ["svelte-check"]
+        );
+        assert_eq!(
+            plan_command("vue", VerifyKind::Check, None).unwrap(),
+            ["vue-tsc", "--noEmit"]
+        );
+        assert_eq!(
+            plan_command("assembly", VerifyKind::Check, None).unwrap(),
+            ["nasm", "-f", "elf64"]
+        );
     }
 
     #[test]
@@ -3347,7 +3457,8 @@ expected 42, got 43\n\
             "dart", "zig", "elixir", "scala", "lua", "haskell", "ocaml", "clojure",
             "julia", "shell", "r", "erlang", "fsharp", "perl", "solidity", "nim",
             "d", "fortran", "sql", "graphql", "protobuf", "crystal", "groovy", "ada",
-            "v", "racket",
+            "v", "racket", "terraform", "nix", "markdown", "yaml", "toml", "json",
+            "html", "css", "dockerfile", "svelte", "vue", "assembly",
         ];
 
         for lang in languages {

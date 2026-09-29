@@ -112,6 +112,18 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "ada" => from(GenericLspConfig::for_ada()),
         "v" => from(GenericLspConfig::for_v()),
         "racket" => from(GenericLspConfig::for_racket()),
+        "terraform" => from(GenericLspConfig::for_terraform()),
+        "nix" => from(GenericLspConfig::for_nix()),
+        "markdown" => from(GenericLspConfig::for_markdown()),
+        "yaml" => from(GenericLspConfig::for_yaml()),
+        "toml" => from(GenericLspConfig::for_toml()),
+        "json" => from(GenericLspConfig::for_json()),
+        "html" => from(GenericLspConfig::for_html()),
+        "css" => from(GenericLspConfig::for_css()),
+        "dockerfile" => from(GenericLspConfig::for_dockerfile()),
+        "svelte" => from(GenericLspConfig::for_svelte()),
+        "vue" => from(GenericLspConfig::for_vue()),
+        "assembly" => from(GenericLspConfig::for_assembly()),
         _ => return None,
     };
     let installed = if engine == "rust" {
