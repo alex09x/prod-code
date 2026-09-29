@@ -499,6 +499,15 @@ enum Commands {
         /// The file that declares it, when the name is ambiguous.
         #[arg(long)]
         path: Option<String>,
+        /// Generate realistic non-zero dummy test data instead of default empty/zero values.
+        #[arg(long, default_value_t = false)]
+        randomized: bool,
+        /// Generate a test mock implementation with call tracking for an interface, trait, protocol or struct.
+        #[arg(long, default_value_t = false, conflicts_with = "builder")]
+        mock: bool,
+        /// Explicit target language: rust, go, typescript, python, cpp, swift.
+        #[arg(long = "lang")]
+        language: Option<String>,
     },
     /// Rename a schema field across every language that spells it.
     SchemaRename {
@@ -1742,6 +1751,9 @@ async fn main() -> Result<()> {
             path,
             builder,
             builder_name,
+            randomized,
+            mock,
+            language,
         } => {
             run_fixture_cli(
                 remote,
@@ -1751,6 +1763,9 @@ async fn main() -> Result<()> {
                 path,
                 builder,
                 builder_name,
+                randomized,
+                mock,
+                language,
             )
             .await
         }
@@ -4262,7 +4277,8 @@ async fn run_fix(
     std::process::exit(if fixed.ok() { 0 } else { 1 });
 }
 
-/// Print a value fixture or builder preview, preserving an unsuccessful verification status.
+/// Print a value fixture, mock, or builder preview, preserving an unsuccessful verification status.
+#[allow(clippy::too_many_arguments)]
 async fn run_fixture_cli(
     remote: SocketAddr,
     symbol: String,
@@ -4271,6 +4287,9 @@ async fn run_fixture_cli(
     path: Option<String>,
     builder: bool,
     builder_name: Option<String>,
+    randomized: bool,
+    mock: bool,
+    language: Option<String>,
 ) -> Result<()> {
     let cwd = env::current_dir().context("Failed to get current working directory")?;
     let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
@@ -4301,9 +4320,31 @@ async fn run_fixture_cli(
         );
         return Ok(());
     }
-    let fixture =
-        prod_code_mcp::fixture::generate(remote, &root, &symbol, depth, verify, hint.as_deref())
-            .await?;
+    let parsed_lang = language.as_deref().and_then(|l| match l.to_ascii_lowercase().as_str() {
+        "rust" | "rs" => Some(prod_code_mcp::parameter_object::Language::Rust),
+        "go" | "golang" => Some(prod_code_mcp::parameter_object::Language::Go),
+        "typescript" | "ts" => Some(prod_code_mcp::parameter_object::Language::TypeScript),
+        "javascript" | "js" => Some(prod_code_mcp::parameter_object::Language::JavaScript),
+        "python" | "py" => Some(prod_code_mcp::parameter_object::Language::Python),
+        "c" => Some(prod_code_mcp::parameter_object::Language::C),
+        "cpp" | "c++" => Some(prod_code_mcp::parameter_object::Language::Cpp),
+        "swift" => Some(prod_code_mcp::parameter_object::Language::Swift),
+        _ => None,
+    });
+    let fixture = prod_code_mcp::fixture::generate_with_options(
+        remote,
+        &root,
+        &symbol,
+        prod_code_mcp::fixture::FixtureOptions {
+            depth,
+            verify,
+            hint,
+            randomized,
+            mock,
+            language: parsed_lang,
+        },
+    )
+    .await?;
     println!("{}", fixture.render());
     if !fixture.diagnostics.is_empty() {
         std::process::exit(1);
