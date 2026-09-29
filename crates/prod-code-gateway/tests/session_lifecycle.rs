@@ -422,6 +422,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
             client_agent: None,
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+            redirect_count: 0,
         }))
         .await
         .unwrap();
@@ -477,6 +478,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
             client_agent: None,
             client_host: None,
             purpose: Some(prod_code_protocol::PURPOSE_VALIDATION.to_string()),
+            redirect_count: 0,
         }))
         .await
         .unwrap();
@@ -539,6 +541,7 @@ impl WireSession {
                 client_agent: None,
                 client_host: None,
                 purpose: None,
+                redirect_count: 0,
             }))
             .await
             .unwrap();

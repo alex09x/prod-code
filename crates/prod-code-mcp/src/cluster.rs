@@ -138,10 +138,23 @@ async fn default_serves(node: SocketAddr, engine: &str) -> bool {
         .is_ok_and(|status| supports_engine(&status, engine))
 }
 
-/// Parses `host:port[,host:port...]` (spaces allowed) into resolved addresses, in order.
+/// Parses `host:port[,host:port...]` (spaces allowed) or `auto` into resolved addresses, in order.
 pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return resolve_auto_remotes();
+    }
     let mut nodes = Vec::new();
-    for item in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+    for item in trimmed.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        if item.eq_ignore_ascii_case("auto") {
+            let auto_nodes = resolve_auto_remotes()?;
+            for a in auto_nodes {
+                if !nodes.contains(&a) {
+                    nodes.push(a);
+                }
+            }
+            continue;
+        }
         let addr = item
             .to_socket_addrs()
             .with_context(|| format!("cannot resolve gateway address {item}"))?
@@ -153,6 +166,43 @@ pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
     }
     if nodes.is_empty() {
         return Err(anyhow!("no gateway addresses given"));
+    }
+    Ok(nodes)
+}
+
+/// Resolves cluster seed addresses automatically from cached cluster gossip, environment,
+/// or loopback gateway (Roadmap 5.2).
+pub fn resolve_auto_remotes() -> Result<Vec<SocketAddr>> {
+    let mut nodes = Vec::new();
+    // 1. Check cached cluster gossip file
+    if let Some(path) = cluster_cache_path()
+        && let Ok(bytes) = std::fs::read(&path)
+        && let Ok(cache) = serde_json::from_slice::<ClusterCache>(&bytes)
+    {
+        for n in cache.nodes {
+            if let Ok(addr) = n.parse::<SocketAddr>()
+                && !nodes.contains(&addr)
+            {
+                nodes.push(addr);
+            }
+        }
+    }
+    // 2. Check PROD_CODE_SEEDS environment variable if set
+    if let Ok(seeds_spec) = std::env::var("PROD_CODE_SEEDS") {
+        for s in seeds_spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(addrs) = s.to_socket_addrs() {
+                for addr in addrs {
+                    if !nodes.contains(&addr) {
+                        nodes.push(addr);
+                    }
+                }
+            }
+        }
+    }
+    // 3. Fallback to default loopback gateway address
+    let loopback: SocketAddr = "127.0.0.1:9400".parse().unwrap();
+    if !nodes.contains(&loopback) {
+        nodes.push(loopback);
     }
     Ok(nodes)
 }
@@ -588,6 +638,13 @@ mod tests {
         let nodes = parse_remotes("127.0.0.1:9400, 127.0.0.1:9401,127.0.0.1:9400").unwrap();
         assert_eq!(nodes.len(), 2);
         assert!(parse_remotes(" , ").is_err());
+    }
+
+    #[test]
+    fn parses_auto_discovery_seeds() {
+        let nodes = parse_remotes("auto").unwrap();
+        assert!(!nodes.is_empty());
+        assert!(nodes.contains(&"127.0.0.1:9400".parse().unwrap()));
     }
 
     #[test]

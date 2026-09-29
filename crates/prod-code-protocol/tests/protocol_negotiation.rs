@@ -20,6 +20,7 @@ fn request(protocol_version: u32, supported_versions: Option<Vec<u32>>) -> Hands
         client_agent: None,
         client_host: None,
         purpose: None,
+        redirect_count: 0,
     }
 }
 

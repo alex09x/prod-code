@@ -160,7 +160,7 @@ impl LspSession {
     }
 
     async fn open_inner(
-        remote: SocketAddr,
+        mut remote: SocketAddr,
         root: &Path,
         hint: Option<&Path>,
         purpose: Option<&str>,
@@ -168,52 +168,70 @@ impl LspSession {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
         let root_str = root.to_string_lossy().to_string();
         let identity: WorkspaceIdentity = workspace_identity(&root);
-        let stream = prod_code_protocol::transport::connect(remote)
-            .await
-            .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
-        let mut framed = Framed::new(stream, ProdCodeCodec::new());
-        push_workspace_sync(&mut framed, &root, &identity, None)
-            .await
-            .context("pre-flight workspace sync failed")?;
-        let (engine_subpath, engine) = engine_project(&root, hint.unwrap_or(&root));
-        // A nested project's engine is named, so a directory with no manifest of its own (a
-        // loose script's) is served by its language, not by detection there (#247).
-        let preferred_engine = engine_subpath.as_ref().and(engine).map(str::to_string);
-        let supported_versions = supported_protocol_versions();
-        framed
-            .send(WireMessage::HandshakeRequest(HandshakeRequest {
-                protocol_version: PROTOCOL_VERSION,
-                supported_versions: Some(supported_versions.clone()),
-                capabilities: Some(prod_code_protocol::ClientCapabilities {
-                    direct_edit: true,
-                    watch_files: true,
-                    indexing_status: true,
-                    shadow_runs: true,
-                    multi_root: true,
-                    sync_chunking: true,
-                    unix_socket_local: cfg!(unix),
-                }),
-                client_name: "prod-code-batch".to_string(),
-                client_pid: std::process::id(),
-                auth_token: None,
-                client_workspace_root: root_str.clone(),
-                preferred_engine,
-                base_workspace_name: Some(identity.name.clone()),
-                engine_subpath,
-                client_agent: Some(prod_code_protocol::detect_client_agent()),
-                client_host: Some(prod_code_protocol::client_host()),
-                purpose: purpose.map(str::to_string),
-            }))
-            .await?;
-        let handshake = match framed.next().await {
-            Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
-            Some(Ok(WireMessage::Disconnect { reason })) => {
-                anyhow::bail!("gateway refused the session: {reason}")
-            }
-            other => anyhow::bail!("unexpected handshake response: {other:?}"),
+        let mut redirect_count = 0;
+        let (framed, handshake) = loop {
+            let stream = prod_code_protocol::transport::connect(remote)
+                .await
+                .with_context(|| format!("failed to connect to remote gateway at {remote}"))?;
+            let mut framed = Framed::new(stream, ProdCodeCodec::new());
+            push_workspace_sync(&mut framed, &root, &identity, None)
+                .await
+                .context("pre-flight workspace sync failed")?;
+            let (engine_subpath, engine) = engine_project(&root, hint.unwrap_or(&root));
+            // A nested project's engine is named, so a directory with no manifest of its own (a
+            // loose script's) is served by its language, not by detection there (#247).
+            let preferred_engine = engine_subpath.as_ref().and(engine).map(str::to_string);
+            let supported_versions = supported_protocol_versions();
+            framed
+                .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                    protocol_version: PROTOCOL_VERSION,
+                    supported_versions: Some(supported_versions.clone()),
+                    capabilities: Some(prod_code_protocol::ClientCapabilities {
+                        direct_edit: true,
+                        watch_files: true,
+                        indexing_status: true,
+                        shadow_runs: true,
+                        multi_root: true,
+                        sync_chunking: true,
+                        unix_socket_local: cfg!(unix),
+                    }),
+                    client_name: "prod-code-batch".to_string(),
+                    client_pid: std::process::id(),
+                    auth_token: None,
+                    client_workspace_root: root_str.clone(),
+                    preferred_engine,
+                    base_workspace_name: Some(identity.name.clone()),
+                    engine_subpath,
+                    client_agent: Some(prod_code_protocol::detect_client_agent()),
+                    client_host: Some(prod_code_protocol::client_host()),
+                    purpose: purpose.map(str::to_string),
+                    redirect_count,
+                }))
+                .await?;
+            let handshake = match framed.next().await {
+                Some(Ok(WireMessage::HandshakeResponse(resp))) => resp,
+                Some(Ok(WireMessage::Redirect { target_addr, reason })) => {
+                    redirect_count += 1;
+                    if redirect_count > 3 {
+                        anyhow::bail!("too many gateway redirects: {reason:?}");
+                    }
+                    tracing::info!(%target_addr, ?reason, "received transparent redirect from gateway");
+                    if let Ok(addr) = target_addr.parse::<SocketAddr>() {
+                        remote = addr;
+                        continue;
+                    } else {
+                        anyhow::bail!("invalid redirect target address: {target_addr}");
+                    }
+                }
+                Some(Ok(WireMessage::Disconnect { reason })) => {
+                    anyhow::bail!("gateway refused the session: {reason}")
+                }
+                other => anyhow::bail!("unexpected handshake response: {other:?}"),
+            };
+            validate_selected_protocol_version(handshake.protocol_version, &supported_versions)
+                .context("gateway returned an incompatible MCP handshake response")?;
+            break (framed, handshake);
         };
-        validate_selected_protocol_version(handshake.protocol_version, &supported_versions)
-            .context("gateway returned an incompatible MCP handshake response")?;
         let folder_name = root
             .file_name()
             .and_then(|n| n.to_str())

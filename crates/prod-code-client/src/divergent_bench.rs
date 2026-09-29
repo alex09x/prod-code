@@ -1055,6 +1055,7 @@ async fn open_session_unbounded(
             client_agent: Some(prod_code_protocol::detect_client_agent()),
             client_host: Some(prod_code_protocol::client_host()),
             purpose: None,
+            redirect_count: 0,
         }))
         .await
         .context("send gateway handshake request")?;

@@ -50,6 +50,12 @@ pub fn engine_for_language(language: &str) -> Option<&'static str> {
         "elixir" | "ex" | "exs" => "elixir",
         "scala" | "sbt" => "scala",
         "lua" => "lua",
+        "haskell" | "hs" => "haskell",
+        "ocaml" | "ml" => "ocaml",
+        "clojure" | "clj" | "cljs" | "edn" => "clojure",
+        "julia" | "jl" => "julia",
+        "shell" | "sh" | "bash" | "zsh" => "shell",
+        "r" | "rstats" => "r",
         _ => return None,
     })
 }

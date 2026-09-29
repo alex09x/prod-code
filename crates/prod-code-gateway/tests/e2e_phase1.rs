@@ -192,6 +192,7 @@ async fn test_full_phase1_e2e_flow() {
                 client_agent: None,
                 client_host: None,
                 purpose: None,
+                redirect_count: 0,
             }))
             .await
             .unwrap();
@@ -346,6 +347,7 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
                 client_agent: None,
                 client_host: None,
                 purpose: None,
+                redirect_count: 0,
             }))
             .await
             .unwrap();
@@ -370,4 +372,96 @@ async fn unix_socket_local_transport_and_negotiated_capabilities_e2e() {
     }
 
     server_task.abort();
+}
+
+#[tokio::test]
+async fn transparent_gateway_redirection_e2e() {
+    // 1. Start Node B (the warm target node)
+    let (node_b_addr, node_b_handle, _dir_b) = start_test_gateway().await;
+
+    // 2. Start Node A (redirector node that sends WireMessage::Redirect pointing to Node B)
+    let listener_a = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let node_a_addr = listener_a.local_addr().unwrap();
+    let target_b_str = node_b_addr.to_string();
+
+    let node_a_handle = tokio::spawn(async move {
+        while let Ok((socket, _)) = listener_a.accept().await {
+            let target_addr = target_b_str.clone();
+            tokio::spawn(async move {
+                let mut framed = Framed::new(socket, ProdCodeCodec::new());
+                while let Some(Ok(msg)) = framed.next().await {
+                    if let WireMessage::HandshakeRequest(req) = msg
+                        && req.redirect_count == 0
+                    {
+                        framed
+                            .send(WireMessage::Redirect {
+                                target_addr: target_addr.clone(),
+                                reason: Some("workspace warm on Node B".to_string()),
+                            })
+                            .await
+                            .unwrap();
+                        return;
+                    }
+                }
+            });
+        }
+    });
+
+    // 3. Client connects to Node A, receives redirect, transparently reconnects to Node B
+    let mut current_remote = node_a_addr;
+    let mut redirect_count = 0;
+    let client_root = "/Users/dev/Documents/workspace/my-redirect-project";
+
+    let (mut framed, handshake_resp) = loop {
+        let stream = TcpStream::connect(current_remote).await.unwrap();
+        let mut framed = Framed::new(stream, ProdCodeCodec::new());
+
+        framed
+            .send(WireMessage::HandshakeRequest(HandshakeRequest {
+                protocol_version: PROTOCOL_VERSION,
+                supported_versions: Some(vec![PROTOCOL_VERSION]),
+                capabilities: None,
+                client_name: "redirect-client".to_string(),
+                client_pid: 12345,
+                auth_token: None,
+                client_workspace_root: client_root.to_string(),
+                preferred_engine: None,
+                base_workspace_name: None,
+                engine_subpath: None,
+                client_agent: None,
+                client_host: None,
+                purpose: None,
+                redirect_count,
+            }))
+            .await
+            .unwrap();
+
+        match framed.next().await.unwrap().unwrap() {
+            WireMessage::Redirect { target_addr, reason } => {
+                redirect_count += 1;
+                assert!(redirect_count <= 2, "too many redirects");
+                assert_eq!(reason.as_deref(), Some("workspace warm on Node B"));
+                current_remote = target_addr.parse().expect("valid target address");
+                continue;
+            }
+            WireMessage::HandshakeResponse(resp) => {
+                break (framed, resp);
+            }
+            other => panic!("unexpected wire message: {other:?}"),
+        }
+    };
+
+    assert_eq!(redirect_count, 1);
+    assert_eq!(current_remote, node_b_addr);
+    assert_eq!(handshake_resp.detected_engine, "rust");
+
+    framed
+        .send(WireMessage::Disconnect {
+            reason: "redirect e2e test finished".to_string(),
+        })
+        .await
+        .unwrap();
+
+    node_a_handle.abort();
+    node_b_handle.abort();
 }

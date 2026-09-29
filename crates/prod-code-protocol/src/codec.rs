@@ -116,6 +116,7 @@ mod tests {
             client_agent: None,
             client_host: None,
             purpose: None,
+            redirect_count: 0,
         });
 
         codec.encode(original.clone(), &mut buf).unwrap();

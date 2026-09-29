@@ -55,6 +55,12 @@ pub enum WireMessage {
     /// Usage metrics of one node (who asked what, how often, how fast).
     MetricsRequest(MetricsRequest),
     MetricsResponse(MetricsResponse),
+    /// Transparent redirect to another gateway node in the cluster (Roadmap 5.1).
+    Redirect {
+        target_addr: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
 }
 
 /// The token a cluster's connections open with (#402). Its `Debug` never shows it, so a
@@ -103,6 +109,12 @@ pub enum EngineKind {
     Elixir,
     Scala,
     Lua,
+    Haskell,
+    Ocaml,
+    Clojure,
+    Julia,
+    Shell,
+    R,
     Generic,
 }
 
@@ -125,6 +137,12 @@ impl EngineKind {
             EngineKind::Elixir => "elixir",
             EngineKind::Scala => "scala",
             EngineKind::Lua => "lua",
+            EngineKind::Haskell => "haskell",
+            EngineKind::Ocaml => "ocaml",
+            EngineKind::Clojure => "clojure",
+            EngineKind::Julia => "julia",
+            EngineKind::Shell => "shell",
+            EngineKind::R => "r",
             EngineKind::Generic => "generic",
         }
     }
@@ -156,6 +174,12 @@ impl std::str::FromStr for EngineKind {
             "elixir" | "ex" | "exs" => EngineKind::Elixir,
             "scala" | "sbt" => EngineKind::Scala,
             "lua" => EngineKind::Lua,
+            "haskell" | "hs" => EngineKind::Haskell,
+            "ocaml" | "ml" => EngineKind::Ocaml,
+            "clojure" | "clj" | "cljs" | "edn" => EngineKind::Clojure,
+            "julia" | "jl" => EngineKind::Julia,
+            "shell" | "sh" | "bash" | "zsh" => EngineKind::Shell,
+            "r" | "rstats" => EngineKind::R,
             _ => EngineKind::Generic,
         })
     }
@@ -235,6 +259,9 @@ pub struct HandshakeRequest {
     /// revert never invalidate what the main engine has computed (#73).
     #[serde(default)]
     pub purpose: Option<String>,
+    /// Number of times this handshake has been transparently redirected across nodes (Roadmap 5.1).
+    #[serde(default)]
+    pub redirect_count: u32,
 }
 
 /// Code of the diagnostic a gateway reports for a file the analyzer panicked on (#94): the file
@@ -1164,5 +1191,32 @@ mod wire_tests {
         assert_eq!(content_hash(b"abc"), content_hash(b"abc"));
         assert_ne!(content_hash(b"abc"), content_hash(b"abd"));
         assert_ne!(content_hash(b""), content_hash(b"\0"));
+    }
+
+    #[test]
+    fn redirect_message_round_trips() {
+        let msg = WireMessage::Redirect {
+            target_addr: "192.168.2.191:9400".to_string(),
+            reason: Some("engine loaded warm on peer".to_string()),
+        };
+        let encoded = serde_json::to_string(&msg).expect("encode redirect");
+        let decoded: WireMessage = serde_json::from_str(&encoded).expect("decode redirect");
+        assert_eq!(msg, decoded);
+    }
+
+    #[test]
+    fn polyglot_engine_kinds_round_trip() {
+        let languages = [
+            ("haskell", EngineKind::Haskell),
+            ("ocaml", EngineKind::Ocaml),
+            ("clojure", EngineKind::Clojure),
+            ("julia", EngineKind::Julia),
+            ("shell", EngineKind::Shell),
+            ("r", EngineKind::R),
+        ];
+        for (name, kind) in languages {
+            assert_eq!(kind.as_str(), name);
+            assert_eq!(name.parse::<EngineKind>().unwrap(), kind);
+        }
     }
 }

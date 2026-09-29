@@ -136,6 +136,12 @@ impl GenericLspConfig {
             "elixir" => Self::for_elixir(),
             "scala" => Self::for_scala(),
             "lua" => Self::for_lua(),
+            "haskell" => Self::for_haskell(),
+            "ocaml" => Self::for_ocaml(),
+            "clojure" => Self::for_clojure(),
+            "julia" => Self::for_julia(),
+            "shell" => Self::for_shell(),
+            "r" => Self::for_r(),
             _ => return None,
         };
         let command = Path::new(&config.command);
@@ -514,6 +520,138 @@ impl GenericLspConfig {
         Self {
             command: "lua-language-server".to_string(),
             args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Haskell language servers (haskell-language-server).
+    pub fn for_haskell() -> Self {
+        let (cmd, args) = if which_bin("haskell-language-server-wrapper").is_ok() {
+            ("haskell-language-server-wrapper".to_string(), vec!["--lsp".to_string()])
+        } else {
+            ("haskell-language-server".to_string(), vec!["--lsp".to_string()])
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for OCaml language servers (ocamllsp).
+    pub fn for_ocaml() -> Self {
+        Self {
+            command: "ocamllsp".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Clojure language servers (clojure-lsp).
+    pub fn for_clojure() -> Self {
+        Self {
+            command: "clojure-lsp".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Julia language servers.
+    pub fn for_julia() -> Self {
+        let (cmd, args) = if which_bin("julia-lsp").is_ok() {
+            ("julia-lsp".to_string(), vec![])
+        } else {
+            (
+                "julia".to_string(),
+                vec![
+                    "--startup-file=no".to_string(),
+                    "--history-file=no".to_string(),
+                    "-e".to_string(),
+                    "using LanguageServer; runserver()".to_string(),
+                ],
+            )
+        };
+        Self {
+            command: cmd,
+            args,
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for Shell language servers (bash-language-server).
+    pub fn for_shell() -> Self {
+        Self {
+            command: "bash-language-server".to_string(),
+            args: vec!["start".to_string()],
+            env: HashMap::new(),
+            working_dir: None,
+            initialization_options: None,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            ready: ReadySignal::Progress,
+            index_wait: INDEX_WAIT,
+            retain_open_documents: false,
+            max_retained_documents: DEFAULT_MAX_RETAINED_DOCUMENTS,
+            health_probe_interval: Some(DEFAULT_HEALTH_PROBE_INTERVAL),
+        }
+    }
+
+    /// Create a standard configuration for R language servers (languageserver).
+    pub fn for_r() -> Self {
+        let (cmd, args) = if which_bin("r-languageserver").is_ok() {
+            ("r-languageserver".to_string(), vec![])
+        } else {
+            (
+                "R".to_string(),
+                vec![
+                    "--slave".to_string(),
+                    "-e".to_string(),
+                    "languageserver::run()".to_string(),
+                ],
+            )
+        };
+        Self {
+            command: cmd,
+            args,
             env: HashMap::new(),
             working_dir: None,
             initialization_options: None,
