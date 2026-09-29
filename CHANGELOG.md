@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.3.19 — 2026-09-29
+
+### Added
+- **Expanded polyglot language matrix from 50 to 60 languages** (`crates/prod-code-gateway`, `crates/prod-code-mcp`, `crates/prod-code-protocol`): added PowerShell, Starlark/Bazel, HCL/Terragrunt, Typst, WebAssembly Text/WAT, SystemVerilog, VHDL, Ballerina, Jsonnet, and Cue, plus F# LSP mapping, with manifest/marker detection, disambiguation, priority ordering, and verification via `test_universal_language_detection_matrix_all_60_languages` (#732).
+- **Windows Named Pipe client transport** (`crates/prod-code-protocol`): added `AnyStream::NamedPipe`, `connect_named_pipe`, and `connect_named_pipe_with` for Windows local execution (#731).
+- **Master Epic #516 closure and Phase 7.1 delivery**: completed the full catalog of 33 polyglot refactorings across TypeScript/JavaScript, Python, Go, C/C++, Swift, and Rust; expanded MCP server to 63 tools with constructor-to-factory/builder, inheritance-to-delegation, conditional-to-polymorphism, and interface extraction (#731).
+
 ### Fixed
 - Rust multi-file validation snapshots symbols before edits and compares them after the complete
   proposal is open. A rust-analyzer unused-import warning on a public re-export is filtered only
