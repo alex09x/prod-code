@@ -120,6 +120,7 @@ evidence remain above; the original mechanism or required scope remains open.
 - **7.1 `inline_parameter`**: polyglot parameter inlining across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #704.
 - **7.1 `extract_field`**: polyglot field extraction across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #708.
 - **7.1 `extract_delegate`**: polyglot delegate extraction across TypeScript/JavaScript, Python, C++, Swift, Go, and Rust implemented in #710.
+- **7.1 `wrap_return_value`**: polyglot return value wrapping across TypeScript/JavaScript (promise, option, result), Python (option, result), C++ (std::optional, std::expected), Swift (option, result), Go (result tuple with error, pointer option), and Rust (Option, Result) implemented in #712.
 - **7.1 `loop_to_iterator`**: the three documented accumulator shapes and assists do not cover
   the promised general `for`/`while` iterator/fold transformation.
 - **7.3**: declaration-level slicing extended with intra-function backward data-flow and control-dependency slicing inside function bodies and explicit completeness contract (Complete, Bounded, Incomplete) in #680.
@@ -138,7 +139,7 @@ The custom Rust-only operations still need independently specified ports to Go, 
 JavaScript, Python, C/C++ and Swift where applicable: signature changes, safe cascading deletion,
 item/module/method moves, parameter inlining, named extraction with duplicate handling, field and
 interface extraction, delegation, encapsulation, receiver conversion, type migration, Boolean
-inversion, generics and return wrapping. Server assists expose only what that server supports.
+inversion, and generics. Server assists expose only what that server supports.
 
 Even Rust does not implement every stronger original requirement: whole-program transitive type
 migration, custom return envelopes, and general factory/builder generation remain distinct work

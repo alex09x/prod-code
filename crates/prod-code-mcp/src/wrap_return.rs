@@ -1,15 +1,27 @@
-//! Wrapping what a function returns in `Option` or `Result`, with every caller.
+//! Wrapping what a function returns in `Option`, `Result`, `Promise`, or `Pointer`, with callers.
 //!
 //! rust-analyzer's `wrap_return_type_in_option` / `wrap_return_type_in_result` rewrite the
-//! signature and every value the function returns, and touch no caller: after it, every call site
-//! is a type error. This does the other half. A caller that itself returns an `Option` (or a
-//! `Result`) gets `?` after the call; any other caller cannot, and is reported with its line,
-//! because turning a `None` or an error into something else there is a decision, not a rewrite.
+//! signature and every value the function returns for Rust, touching no caller. Here, for Rust:
+//! a caller that itself returns an `Option` (or a `Result`) gets `?` after the call; any other
+//! caller cannot, and is reported with its line, because turning a `None` or an error into
+//! something else there is a decision, not a rewrite.
+//!
+//! Across TypeScript/JavaScript, Python, C++, Swift, and Go:
+//! - TypeScript/JavaScript: supports `promise` (`Promise<T>`, adding `async` to declaration,
+//!   rewriting callers to `await call(...)`), `option`/`nullable` (`T | null`), `result` (`Result<T, E>`).
+//! - Python: supports `option`/`optional` (`Optional[T]`), `result` (`Result[T, E]`, wrapping return values in `Ok(...)`).
+//! - C++: supports `option`/`optional` (`std::optional<T>`), `result`/`expected` (`std::expected<T, E>`).
+//! - Swift: supports `option`/`optional` (`T?`), `result` (`Result<T, Error>`, wrapping return values in `.success(...)`).
+//! - Go: supports `result`/`error` (`(T, error)` with `return expr, nil`), `pointer`/`option` (`*T`).
+//!
+//! Refuses when the function already returns the target wrapper, or when callers cannot
+//! propagate without `force`.
 
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 /// Which wrapper the return type gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -17,28 +29,35 @@ use std::path::{Path, PathBuf};
 pub enum Wrapper {
     Option,
     Result,
+    Promise,
+    Pointer,
 }
 
 impl Wrapper {
     pub fn parse(text: &str) -> Result<Self> {
-        match text {
-            "option" | "Option" => Ok(Self::Option),
-            "result" | "Result" => Ok(Self::Result),
-            other => anyhow::bail!("`{other}` is not a wrapper: use `option` or `result`"),
+        match text.trim().to_ascii_lowercase().as_str() {
+            "option" | "optional" | "nullable" => Ok(Self::Option),
+            "result" | "expected" | "error" => Ok(Self::Result),
+            "promise" | "future" | "async" => Ok(Self::Promise),
+            "pointer" | "ptr" => Ok(Self::Pointer),
+            other => anyhow::bail!("`{other}` is not a wrapper: use `option`, `result`, `promise`, or `pointer`"),
         }
     }
 
-    fn assist_id(self) -> &'static str {
+    pub fn assist_id(self) -> &'static str {
         match self {
             Self::Option => "wrap_return_type_in_option",
             Self::Result => "wrap_return_type_in_result",
+            _ => "wrap_return_type_in_option",
         }
     }
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Self::Option => "Option",
             Self::Result => "Result",
+            Self::Promise => "Promise",
+            Self::Pointer => "Pointer",
         }
     }
 }
@@ -52,7 +71,7 @@ pub struct WrappedReturn {
     pub file: String,
     pub was: String,
     pub now: String,
-    /// Call sites that got `?`.
+    /// Call sites that got `?` (or `await`, etc.).
     pub propagated: usize,
     /// Call sites whose caller cannot propagate, with the reason.
     pub blocked: Vec<String>,
@@ -64,9 +83,14 @@ pub struct WrappedReturn {
 
 impl WrappedReturn {
     pub fn render(&self, diff_budget: usize) -> String {
+        let prop_note = if self.now.starts_with("Promise") {
+            format!("{} call site(s) propagate with `await`", self.propagated)
+        } else {
+            format!("{} call site(s) propagate with `?`", self.propagated)
+        };
         let mut out = format!(
-            "`{}` ({})\n\n- returned: `{}`\n- now returns: `{}`\n- {} call site(s) propagate with `?`\n\n",
-            self.function, self.file, self.was, self.now, self.propagated
+            "`{}` ({})\n\n- returned: `{}`\n- now returns: `{}`\n- {}\n\n",
+            self.function, self.file, self.was, self.now, prop_note
         );
         let mut body = String::new();
         let mut changed_lines = 0usize;
@@ -99,15 +123,19 @@ impl WrappedReturn {
             out.push_str(&body);
         }
         if !self.blocked.is_empty() {
+            let target_desc = if self.now.starts_with("Option") {
+                "an `Option`"
+            } else if self.now.starts_with("Result") {
+                "a `Result`"
+            } else if self.now.starts_with("Promise") {
+                "a `Promise`"
+            } else {
+                &self.now
+            };
             out.push_str(&format!(
-                "\n{} call site(s) cannot propagate: the calling function does not return {}. \
+                "\n{} call site(s) cannot propagate: the calling function does not return {target_desc}. \
                  Each needs a decision — unwrap, match, or wrap that caller too:\n",
-                self.blocked.len(),
-                if self.now.starts_with("Option") {
-                    "an `Option`"
-                } else {
-                    "a `Result`"
-                }
+                self.blocked.len()
             ));
             for b in &self.blocked {
                 out.push_str(&format!("  {b}\n"));
@@ -147,6 +175,10 @@ fn display(root: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .to_string_lossy()
         .into_owned()
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 /// The return type a function header declares between its parameter list's `)` at `close` and
@@ -208,16 +240,17 @@ pub fn propagates(ty: &str, wrapper: Wrapper) -> bool {
     match wrapper {
         Wrapper::Option => last == "Option",
         Wrapper::Result => last == "Result",
+        Wrapper::Promise | Wrapper::Pointer => false,
     }
 }
 
-/// Wraps the return type of the function declared at `line`:`col` of `file` and makes every caller
-/// that can propagate do so with `?`.
+/// Wraps the return type of the function declared at `line`:`col` (or `symbol`) of `file` for Rust.
 #[allow(clippy::too_many_arguments)]
-pub async fn wrap(
+pub async fn wrap_rust(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
+    symbol: Option<&str>,
     line: u32,
     col: u32,
     wrapper: Wrapper,
@@ -225,10 +258,24 @@ pub async fn wrap(
     apply: bool,
     force: bool,
 ) -> Result<WrappedReturn> {
+    anyhow::ensure!(
+        matches!(wrapper, Wrapper::Option | Wrapper::Result),
+        "Rust wrap_return supports `option` and `result`"
+    );
     let text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
-    let at = crate::signature::offset_of(&text, line, col)
-        .context("the position is not inside the file")?;
+    let at = if line > 0 && col > 0 {
+        crate::signature::offset_of(&text, line, col)
+            .context("the position is not inside the file")?
+    } else if let Some(sym) = symbol {
+        let needle = format!("fn {sym}");
+        let pos = text.find(&needle).with_context(|| {
+            format!("function `{sym}` not found in {}", file.display())
+        })?;
+        pos + 3
+    } else {
+        anyhow::bail!("provide either line and character or symbol");
+    };
     // The name the position is in, however far into it.
     let start = text[..at]
         .char_indices()
@@ -256,7 +303,7 @@ pub async fn wrap(
             Wrapper::Result => Some(error.map(str::trim).filter(|e| !e.is_empty()).context(
                 "pass `error`: the type a `Result` fails with, such as `anyhow::Error`",
             )?),
-            Wrapper::Option => None,
+            _ => None,
         };
 
     // rust-analyzer's half: the signature and every returned value.
@@ -439,8 +486,6 @@ pub async fn wrap(
             blocked.len(),
             blocked.join("\n  ")
         );
-        // A reference left as it was is in a file nothing here checks: it would stop compiling
-        // unseen. `force` overrides the analyzer, not a reference this did not rewrite (#446).
         anyhow::ensure!(
             unmatched.is_empty(),
             "{} reference(s) to `{name}` were not rewritten; nothing was written:\n  {}",
@@ -477,6 +522,999 @@ pub async fn wrap(
     })
 }
 
+/// Function declaration info for non-Rust languages.
+#[derive(Debug, Clone)]
+pub struct PolyglotFuncDecl {
+    pub name: String,
+    pub decl_start: usize,
+    pub name_start: usize,
+    pub close_paren: usize,
+    pub body_open: usize,
+    pub body_close: usize,
+    pub was: String,
+    pub ret_span: Option<(usize, usize)>,
+    pub is_async: bool,
+    pub is_arrow: bool,
+    pub has_return_type: bool,
+}
+
+/// Finds the declaration info for a function in non-Rust languages.
+pub fn find_polyglot_decl(
+    text: &str,
+    lang: Language,
+    symbol: Option<&str>,
+    line: Option<u32>,
+) -> Result<PolyglotFuncDecl> {
+    let clean_name = symbol
+        .map(|f| {
+            f.rsplit_once("::")
+                .map(|(_, m)| m)
+                .or_else(|| f.rsplit_once('.').map(|(_, m)| m))
+                .unwrap_or(f)
+                .trim()
+                .to_string()
+        })
+        .or_else(|| {
+            let l = line?;
+            let lines: Vec<&str> = text.lines().collect();
+            if l == 0 || l as usize > lines.len() {
+                return None;
+            }
+            let target_idx = (l - 1) as usize;
+            let start_idx = target_idx.saturating_sub(3);
+            let end_idx = (target_idx + 3).min(lines.len().saturating_sub(1));
+            for i in (start_idx..=end_idx).rev() {
+                if let Some(name) = crate::inline_parameter::extract_decl_name_from_line(lines[i], lang) {
+                    return Some(name);
+                }
+            }
+            None
+        })
+        .context("could not determine function name to wrap return value for")?;
+
+    for (name_idx, _) in text.match_indices(&clean_name) {
+        if name_idx > 0 && text[..name_idx].chars().next_back().is_some_and(is_ident) {
+            continue;
+        }
+        let after_name = &text[name_idx + clean_name.len()..];
+        if after_name.chars().next().is_some_and(is_ident) {
+            continue;
+        }
+
+        let line_start = text[..name_idx].rfind('\n').map_or(0, |p| p + 1);
+        let before_on_line = text[line_start..name_idx].trim_start();
+        if crate::inline_parameter::is_in_comment(text, name_idx, lang) {
+            continue;
+        }
+
+        let line_trimmed = before_on_line.trim_start();
+        if line_trimmed.starts_with("import ")
+            || line_trimmed.starts_with("import{")
+            || line_trimmed.starts_with("from ")
+            || line_trimmed.starts_with("export {")
+            || line_trimmed.starts_with("export{")
+            || line_trimmed.starts_with("export *")
+            || line_trimmed.starts_with("use ")
+            || line_trimmed.starts_with("#include")
+        {
+            continue;
+        }
+
+        // Multi-line import or export statement context
+        let search_start = name_idx.saturating_sub(500);
+        let before_sub = &text[search_start..name_idx];
+        if let Some(imp_pos) = before_sub.rfind("import ").or_else(|| before_sub.rfind("export {")) {
+            let between = &before_sub[imp_pos..];
+            if between.contains('{') && !between.contains('}') {
+                continue;
+            }
+        }
+
+        // Skip call/expression contexts
+        let before_trimmed = before_on_line.trim_end();
+        if before_trimmed.ends_with('=')
+            || before_trimmed.ends_with('+')
+            || before_trimmed.ends_with('-')
+            || before_trimmed.ends_with('*')
+            || before_trimmed.ends_with('/')
+            || before_trimmed.ends_with(',')
+            || before_trimmed.ends_with('(')
+            || before_trimmed.ends_with(':')
+            || before_trimmed.ends_with("return")
+            || before_trimmed.ends_with("throw")
+            || before_trimmed.ends_with("await")
+        {
+            continue;
+        }
+
+        // Check if followed by `(` (or generic `<...>(`)
+        let trimmed_after = after_name.trim_start();
+        let open_paren = if trimmed_after.starts_with('(') {
+            name_idx + clean_name.len() + (after_name.len() - trimmed_after.len())
+        } else if trimmed_after.starts_with('<') {
+            if let Some(end_gen) = trimmed_after.find('>') {
+                let rest_after_gen = trimmed_after[end_gen + 1..].trim_start();
+                if rest_after_gen.starts_with('(') {
+                    name_idx + clean_name.len() + (after_name.len() - rest_after_gen.len())
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        } else if (lang == Language::TypeScript || lang == Language::JavaScript)
+            && (before_on_line.starts_with("const ") || before_on_line.starts_with("let ") || before_on_line.starts_with("var "))
+        {
+            // Arrow function e.g. `const fn = (...) =>`
+            let Some(eq_pos) = after_name.find('=') else { continue };
+            let after_eq = after_name[eq_pos + 1..].trim_start();
+            let after_async = after_eq.strip_prefix("async ").unwrap_or(after_eq).trim_start();
+            if after_async.starts_with('(') {
+                name_idx + clean_name.len() + (after_name.len() - after_async.len())
+            } else {
+                continue;
+            }
+        } else {
+            continue;
+        };
+
+        let Some(close_paren) = crate::parameter_object::matching_bracket(text, open_paren) else {
+            continue;
+        };
+
+        let decl_start = line_start;
+        let is_async = text[decl_start..open_paren].contains("async");
+
+        if lang == Language::Python {
+            let Some(colon_rel) = text[close_paren..].find(':') else { continue };
+            let colon = close_paren + colon_rel;
+            let between = text[close_paren + 1..colon].trim();
+            let (was, ret_span, has_return_type) = if let Some(arr_pos) = between.find("->") {
+                let r = between[arr_pos + 2..].trim();
+                let abs_s = close_paren + 1 + (text[close_paren + 1..colon].find("->").unwrap() + 2);
+                let abs_start = abs_s + (text[abs_s..colon].len() - text[abs_s..colon].trim_start().len());
+                let abs_end = colon - (text[abs_s..colon].len() - text[abs_s..colon].trim_end().len());
+                (r.to_string(), Some((abs_start, abs_end)), true)
+            } else {
+                ("None".to_string(), None, false)
+            };
+            let body_open = colon;
+            let body_close = crate::inline_parameter::find_python_body_close(text, decl_start, colon);
+            return Ok(PolyglotFuncDecl {
+                name: clean_name,
+                decl_start,
+                name_start: name_idx,
+                close_paren,
+                body_open,
+                body_close,
+                was,
+                ret_span,
+                is_async,
+                is_arrow: false,
+                has_return_type,
+            });
+        }
+
+        // C-style braces
+        let Some(open_brace_rel) = text[close_paren..].find('{') else { continue };
+        let open_brace = close_paren + open_brace_rel;
+        let Some(body_close) = crate::parameter_object::matching_bracket(text, open_brace) else { continue };
+
+        let header_slice = &text[close_paren + 1..open_brace];
+        if header_slice.contains(';') {
+            continue;
+        }
+        let is_arrow = header_slice.contains("=>");
+
+        let (was, ret_span, has_return_type) = match lang {
+            Language::TypeScript | Language::JavaScript => {
+                let end_header = if is_arrow {
+                    close_paren + 1 + header_slice.find("=>").unwrap()
+                } else {
+                    open_brace
+                };
+                if let Some(c_rel) = text[close_paren + 1..end_header].find(':') {
+                    let c_pos = close_paren + 1 + c_rel;
+                    let ret_raw = text[c_pos + 1..end_header].trim();
+                    let s_start = c_pos + 1 + (text[c_pos + 1..end_header].len() - text[c_pos + 1..end_header].trim_start().len());
+                    let s_end = end_header - (text[c_pos + 1..end_header].len() - text[c_pos + 1..end_header].trim_end().len());
+                    (ret_raw.to_string(), Some((s_start, s_end)), true)
+                } else {
+                    let def_ret = if lang == Language::TypeScript { "void" } else { "" };
+                    (def_ret.to_string(), None, false)
+                }
+            }
+            Language::Swift => {
+                if let Some(arr_pos) = header_slice.find("->") {
+                    let ret_raw = header_slice[arr_pos + 2..].trim();
+                    let s_pos = close_paren + 1 + arr_pos + 2;
+                    let s_start = s_pos + (text[s_pos..open_brace].len() - text[s_pos..open_brace].trim_start().len());
+                    let s_end = open_brace - (text[s_pos..open_brace].len() - text[s_pos..open_brace].trim_end().len());
+                    (ret_raw.to_string(), Some((s_start, s_end)), true)
+                } else {
+                    ("Void".to_string(), None, false)
+                }
+            }
+            Language::Go => {
+                let ret_raw = header_slice.trim();
+                if !ret_raw.is_empty() {
+                    let s_pos = close_paren + 1;
+                    let s_start = s_pos + (header_slice.len() - header_slice.trim_start().len());
+                    let s_end = open_brace - (header_slice.len() - header_slice.trim_end().len());
+                    (ret_raw.to_string(), Some((s_start, s_end)), true)
+                } else {
+                    (String::new(), None, false)
+                }
+            }
+            Language::Cpp | Language::C => {
+                let before_name = text[decl_start..name_idx].trim();
+                let words: Vec<&str> = before_name.split_whitespace().collect();
+                let ret_raw = words.join(" ");
+                let s_start = decl_start + (text[decl_start..name_idx].len() - before_name.len());
+                let s_end = name_idx - (text[decl_start..name_idx].len() - text[decl_start..name_idx].trim_end().len());
+                (ret_raw, Some((s_start, s_end)), true)
+            }
+            Language::Python | Language::Rust => unreachable!(),
+        };
+
+        return Ok(PolyglotFuncDecl {
+            name: clean_name,
+            decl_start,
+            name_start: name_idx,
+            close_paren,
+            body_open: open_brace,
+            body_close,
+            was,
+            ret_span,
+            is_async,
+            is_arrow,
+            has_return_type,
+        });
+    }
+
+    anyhow::bail!("function declaration `{clean_name}` not found")
+}
+
+/// Rewrites return statements in function body.
+fn rewrite_body_returns(body: &str, lang: Language, wrapper: Wrapper) -> String {
+    let mut edits: Vec<(usize, usize, String)> = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    let mut depth = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b'r' if depth <= 1 && body[i..].starts_with("return") => {
+                let before = if i > 0 { body.as_bytes()[i - 1] as char } else { ' ' };
+                let after = if i + 6 < bytes.len() { body.as_bytes()[i + 6] as char } else { ' ' };
+                if !is_ident(before) && !is_ident(after) {
+                    let end_stmt = body[i..].find([';', '\n']).map_or(body.len(), |e| i + e);
+                    let ret_stmt = &body[i..end_stmt];
+                    let expr = ret_stmt.strip_prefix("return").unwrap().trim();
+                    let semi = if ret_stmt.ends_with(';') { ";" } else { "" };
+                    match (wrapper, lang) {
+                        (Wrapper::Result, Language::Go) => {
+                            if expr.is_empty() {
+                                edits.push((i, end_stmt - i, format!("return nil{semi}")));
+                            } else {
+                                edits.push((i, end_stmt - i, format!("return {expr}, nil{semi}")));
+                            }
+                        }
+                        (Wrapper::Result, Language::Swift) => {
+                            if expr.is_empty() {
+                                edits.push((i, end_stmt - i, format!("return .success(()){semi}")));
+                            } else {
+                                edits.push((i, end_stmt - i, format!("return .success({expr}){semi}")));
+                            }
+                        }
+                        (Wrapper::Result, Language::Python) => {
+                            if expr.is_empty() {
+                                edits.push((i, end_stmt - i, format!("return Ok(None){semi}")));
+                            } else {
+                                edits.push((i, end_stmt - i, format!("return Ok({expr}){semi}")));
+                            }
+                        }
+                        (Wrapper::Result, Language::TypeScript | Language::JavaScript) => {
+                            if expr.is_empty() {
+                                edits.push((i, end_stmt - i, format!("return {{ ok: true, value: undefined }}{semi}")));
+                            } else {
+                                edits.push((i, end_stmt - i, format!("return {{ ok: true, value: {expr} }}{semi}")));
+                            }
+                        }
+                        (Wrapper::Pointer | Wrapper::Option, Language::Go)
+                            if !expr.starts_with('&') && !expr.is_empty() && expr != "nil" =>
+                        {
+                            edits.push((i, end_stmt - i, format!("return &{expr}{semi}")));
+                        }
+                        _ => {}
+                    }
+                    i = end_stmt;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let mut out = body.to_string();
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    for (start, len, repl) in edits {
+        out.replace_range(start..start + len, &repl);
+    }
+    out
+}
+
+/// Restructures the declaring file: signature and return expressions in the body.
+pub fn restructure_declaring_file(
+    text: &str,
+    lang: Language,
+    decl: &PolyglotFuncDecl,
+    wrapper: Wrapper,
+    error: Option<&str>,
+) -> Result<(String, String)> {
+    let was = &decl.was;
+    let mut out = text.to_string();
+
+    let now = match lang {
+        Language::TypeScript | Language::JavaScript => {
+            let is_ts = lang == Language::TypeScript;
+            match wrapper {
+                Wrapper::Promise => {
+                    let now = if was.is_empty() || was == "void" {
+                        if is_ts { "Promise<void>".to_string() } else { "Promise".to_string() }
+                    } else {
+                        format!("Promise<{was}>")
+                    };
+                    if is_ts {
+                        if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                            out.replace_range(s..e, &format!("Promise<{was}>"));
+                        } else {
+                            out.insert_str(decl.close_paren + 1, ": Promise<void>");
+                        }
+                    }
+                    if !decl.is_async {
+                        let header_part = &out[decl.decl_start..decl.name_start];
+                        if let Some(pos) = header_part.rfind("function ") {
+                            out.insert_str(decl.decl_start + pos, "async ");
+                        } else if decl.is_arrow {
+                            let open_p = out[decl.decl_start..].find('(').unwrap();
+                            out.insert_str(decl.decl_start + open_p, "async ");
+                        } else {
+                            // Method
+                            out.insert_str(decl.name_start, "async ");
+                        }
+                    }
+                    now
+                }
+                Wrapper::Option => {
+                    let now = if is_ts {
+                        format!("{was} | null")
+                    } else {
+                        "Option".to_string()
+                    };
+                    if is_ts {
+                        if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                            out.replace_range(s..e, &format!("{was} | null"));
+                        } else {
+                            out.insert_str(decl.close_paren + 1, ": void | null");
+                        }
+                    }
+                    now
+                }
+                Wrapper::Result => {
+                    let err_ty = error.unwrap_or("Error");
+                    let now = if is_ts {
+                        format!("Result<{was}, {err_ty}>")
+                    } else {
+                        format!("Result<{err_ty}>")
+                    };
+                    if is_ts {
+                        if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                            out.replace_range(s..e, &now);
+                        } else {
+                            out.insert_str(decl.close_paren + 1, &format!(": Result<void, {err_ty}>"));
+                        }
+                    }
+                    now
+                }
+                Wrapper::Pointer => anyhow::bail!("Pointer wrapper is not supported for TypeScript/JavaScript"),
+            }
+        }
+        Language::Python => {
+            match wrapper {
+                Wrapper::Option => {
+                    let now = if was.is_empty() || was == "None" {
+                        "Optional[Any]".to_string()
+                    } else {
+                        format!("Optional[{was}]")
+                    };
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now}"));
+                    }
+                    now
+                }
+                Wrapper::Result => {
+                    let err_ty = error.unwrap_or("Exception");
+                    let now = if was.is_empty() || was == "None" {
+                        format!("Result[Any, {err_ty}]")
+                    } else {
+                        format!("Result[{was}, {err_ty}]")
+                    };
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now}"));
+                    }
+                    now
+                }
+                Wrapper::Promise | Wrapper::Pointer => anyhow::bail!("{wrapper:?} wrapper is not supported for Python"),
+            }
+        }
+        Language::Cpp | Language::C => {
+            match wrapper {
+                Wrapper::Option => {
+                    let now = format!("std::optional<{was}>");
+                    if let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    }
+                    now
+                }
+                Wrapper::Result => {
+                    let err_ty = error.unwrap_or("std::string");
+                    let now = format!("std::expected<{was}, {err_ty}>");
+                    if let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    }
+                    now
+                }
+                Wrapper::Promise | Wrapper::Pointer => anyhow::bail!("{wrapper:?} wrapper is not supported for C++"),
+            }
+        }
+        Language::Swift => {
+            match wrapper {
+                Wrapper::Option => {
+                    let now = format!("{was}?");
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now} "));
+                    }
+                    now
+                }
+                Wrapper::Result => {
+                    let err_ty = error.unwrap_or("Error");
+                    let now = format!("Result<{was}, {err_ty}>");
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" -> {now} "));
+                    }
+                    now
+                }
+                Wrapper::Promise | Wrapper::Pointer => anyhow::bail!("{wrapper:?} wrapper is not supported for Swift"),
+            }
+        }
+        Language::Go => {
+            match wrapper {
+                Wrapper::Result => {
+                    let now = if was.is_empty() {
+                        "error".to_string()
+                    } else if was.starts_with('(') && was.ends_with(')') {
+                        let inner = was[1..was.len() - 1].trim();
+                        format!("({inner}, error)")
+                    } else {
+                        format!("({was}, error)")
+                    };
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, " error ");
+                    }
+                    now
+                }
+                Wrapper::Pointer | Wrapper::Option => {
+                    let now = format!("*{was}");
+                    if decl.has_return_type && let Some((s, e)) = decl.ret_span {
+                        out.replace_range(s..e, &now);
+                    } else {
+                        out.insert_str(decl.body_open, &format!(" *{was} "));
+                    }
+                    now
+                }
+                Wrapper::Promise => anyhow::bail!("Promise wrapper is not supported for Go"),
+            }
+        }
+        Language::Rust => unreachable!(),
+    };
+
+    // Body rewrite: re-find body open and close in `out`
+    let new_body_open = out[decl.name_start..].find(if lang == Language::Python { ':' } else { '{' })
+        .map(|i| decl.name_start + i)
+        .context("cannot find body open")?;
+    let new_body_close = if lang == Language::Python {
+        crate::inline_parameter::find_python_body_close(&out, decl.decl_start, new_body_open)
+    } else {
+        crate::parameter_object::matching_bracket(&out, new_body_open).context("unclosed body")?
+    };
+
+    let body_text = &out[new_body_open + 1..new_body_close];
+    let rewritten_body = rewrite_body_returns(body_text, lang, wrapper);
+    out.replace_range(new_body_open + 1..new_body_close, &rewritten_body);
+
+    Ok((out, now))
+}
+
+/// Identifies return type and async status of the innermost enclosing function.
+pub fn enclosing_polyglot_info(content: &str, at: usize, lang: Language) -> Option<(String, bool)> {
+    if lang == Language::Python {
+        let lines: Vec<&str> = content[..at].lines().collect();
+        let target_line = lines.last()?;
+        let target_indent = target_line.len() - target_line.trim_start().len();
+        for line in lines.iter().rev().skip(1) {
+            let trimmed = line.trim();
+            if trimmed.starts_with("def ") || trimmed.starts_with("async def ") {
+                let indent = line.len() - line.trim_start().len();
+                if indent < target_indent {
+                    let is_async = trimmed.starts_with("async def ");
+                    let ret = if let Some(arr) = trimmed.find("->") {
+                        trimmed[arr + 2..trimmed.rfind(':').unwrap_or(trimmed.len())].trim().to_string()
+                    } else {
+                        "None".to_string()
+                    };
+                    return Some((ret, is_async));
+                }
+            }
+        }
+        return None;
+    }
+
+    // C-like bracket languages
+    let mut search = at;
+    while let Some(open_rel) = content[..search].rfind('{') {
+        search = open_rel;
+        let Some(close_b) = crate::parameter_object::matching_bracket(content, open_rel) else {
+            continue;
+        };
+        if open_rel < at && at < close_b {
+            let line_start = content[..open_rel].rfind('\n').map_or(0, |p| p + 1);
+            let header = &content[line_start..open_rel];
+            let is_async = header.contains("async");
+
+            let ret_type = match lang {
+                Language::TypeScript | Language::JavaScript => {
+                    let end_h = if let Some(arr) = header.find("=>") { arr } else { header.len() };
+                    if let Some(colon) = header[..end_h].rfind(':') {
+                        header[colon + 1..end_h].trim().to_string()
+                    } else {
+                        String::new()
+                    }
+                }
+                Language::Swift => {
+                    if let Some(arr) = header.find("->") {
+                        header[arr + 2..].trim().to_string()
+                    } else {
+                        "Void".to_string()
+                    }
+                }
+                Language::Go => {
+                    if let Some(func_pos) = header.find("func ") {
+                        let after_func = &header[func_pos + 5..];
+                        let trimmed = after_func.trim_start();
+                        let offset = func_pos + 5 + (after_func.len() - trimmed.len());
+                        if trimmed.starts_with('(') {
+                            // Receiver present: func (r Recv) Name(params) RetType
+                            if let Some(recv_close) = crate::parameter_object::matching_bracket(header, offset) {
+                                if let Some(param_open_rel) = header[recv_close + 1..].find('(') {
+                                    let param_open = recv_close + 1 + param_open_rel;
+                                    if let Some(param_close) = crate::parameter_object::matching_bracket(header, param_open) {
+                                        header[param_close + 1..].trim().to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                } else {
+                                    String::new()
+                                }
+                            } else {
+                                String::new()
+                            }
+                        } else if let Some(param_open_rel) = trimmed.find('(') {
+                            let param_open = offset + param_open_rel;
+                            if let Some(param_close) = crate::parameter_object::matching_bracket(header, param_open) {
+                                header[param_close + 1..].trim().to_string()
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    }
+                }
+                Language::Cpp | Language::C => {
+                    if let Some(paren_open) = header.find('(') {
+                        let before_paren = header[..paren_open].trim();
+                        let words: Vec<&str> = before_paren.split_whitespace().collect();
+                        if words.len() >= 2 {
+                            words[..words.len() - 1].join(" ")
+                        } else {
+                            words.join(" ")
+                        }
+                    } else {
+                        String::new()
+                    }
+                }
+                _ => String::new(),
+            };
+            return Some((ret_type, is_async));
+        }
+    }
+    None
+}
+
+/// Unified wrap_return refactoring across Rust, TypeScript, JavaScript, Python, C++, Swift, and Go.
+#[allow(clippy::too_many_arguments)]
+pub async fn wrap_polyglot(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    wrapper: Wrapper,
+    error: Option<&str>,
+    apply: bool,
+    force: bool,
+) -> Result<WrappedReturn> {
+    let lang = Language::of(file).with_context(|| format!("unsupported language for {}", file.display()))?;
+    if lang == Language::Rust {
+        return wrap_rust(
+            remote,
+            root,
+            file,
+            symbol,
+            line.unwrap_or(0),
+            col.unwrap_or(0),
+            wrapper,
+            error,
+            apply,
+            force,
+        )
+        .await;
+    }
+
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+
+    let decl = find_polyglot_decl(&text, lang, symbol, line)?;
+    let name = decl.name.clone();
+    let was = decl.was.clone();
+
+    // Check already wrapped
+    match wrapper {
+        Wrapper::Promise => {
+            anyhow::ensure!(
+                !was.contains("Promise<") && (!decl.is_async || !was.is_empty()),
+                "`{name}` already returns a `Promise`"
+            );
+        }
+        Wrapper::Option => {
+            anyhow::ensure!(
+                !was.contains("Optional[")
+                    && !was.contains("std::optional")
+                    && !was.contains("optional")
+                    && !was.ends_with('?')
+                    && !was.contains("| null")
+                    && !was.contains("| None")
+                    && !was.starts_with('*')
+                    && !was.starts_with("Option<"),
+                "`{name}` already returns an `Option`"
+            );
+        }
+        Wrapper::Result => {
+            anyhow::ensure!(
+                !was.contains("Result<")
+                    && !was.contains("Result[")
+                    && !was.contains("std::expected")
+                    && !was.contains("expected")
+                    && !was.contains("error")
+                    && !was.contains("{ ok:"),
+                "`{name}` already returns a `Result`"
+            );
+        }
+        Wrapper::Pointer => {
+            anyhow::ensure!(
+                !was.starts_with('*'),
+                "`{name}` already returns a `Pointer`"
+            );
+        }
+    }
+
+    let (new_decl_file, now) = restructure_declaring_file(&text, lang, &decl, wrapper, error)?;
+
+    let mut rewritten: BTreeMap<PathBuf, String> = BTreeMap::new();
+    rewritten.insert(file.to_path_buf(), new_decl_file.clone());
+
+    let mut propagated = 0usize;
+    let mut blocked = Vec::new();
+    let mut unmatched = Vec::new();
+
+    let canonical_file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+
+    // Traverse workspace files for callers
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        let path = entry.path();
+        if !path.is_file() || !crate::inline_parameter::language_matches(lang, path) {
+            continue;
+        }
+        let Ok(other_content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        if !other_content.contains(&name) {
+            continue;
+        }
+
+        let is_decl_file = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()) == canonical_file;
+        let rel_path = display(root, path);
+
+        let mut file_edits: Vec<(usize, usize, String)> = Vec::new();
+
+        for (at, _) in other_content.match_indices(&name) {
+            if at > 0 {
+                let prev = other_content[..at].chars().next_back().unwrap();
+                if is_ident(prev) {
+                    continue;
+                }
+            }
+            let after = &other_content[at + name.len()..];
+            if after.starts_with(is_ident) {
+                continue;
+            }
+
+            let line_num = other_content[..at].lines().count();
+            let col_num = at - other_content[..at].rfind('\n').map_or(0, |p| p + 1) + 1;
+            let site = format!("{rel_path}:{line_num}:{col_num}");
+
+            // In declaring file, skip the declaration itself
+            if is_decl_file && at >= decl.decl_start && at <= decl.close_paren {
+                continue;
+            }
+
+            // Self-call inside function's own body
+            if is_decl_file && at > decl.body_open && at < decl.body_close {
+                unmatched.push(format!("{site} (a call inside `{name}` itself)"));
+                continue;
+            }
+
+            if crate::inline_parameter::is_in_comment(&other_content, at, lang) {
+                continue;
+            }
+            if crate::inline_parameter::is_import_or_export_context(&other_content, at, lang) {
+                continue;
+            }
+
+            // C++ prototype in header
+            if matches!(lang, Language::Cpp | Language::C) && crate::inline_parameter::is_c_cpp_prototype(&other_content, at, decl.close_paren) {
+                if let Some(ret_start) = other_content[..at].rfind(&was) {
+                    file_edits.push((ret_start, was.len(), now.clone()));
+                }
+                continue;
+            }
+
+            let Some((_args_start, args_end)) = crate::parameter_object::call_args_span(&other_content, at + name.len()) else {
+                unmatched.push(format!("{site} `{name}` used as a value"));
+                continue;
+            };
+
+            // Call site found!
+            let caller_info = enclosing_polyglot_info(&other_content, at, lang);
+            let (caller_ret, caller_is_async) = caller_info.unwrap_or_else(|| (String::new(), false));
+
+            match wrapper {
+                Wrapper::Promise => {
+                    if caller_is_async {
+                        let before_call = other_content[..at].trim_end();
+                        if before_call.ends_with("await") {
+                            propagated += 1;
+                        } else {
+                            let after_call = other_content[args_end + 1..].trim_start();
+                            if after_call.starts_with('.') {
+                                file_edits.push((at, 0, "(await ".to_string()));
+                                file_edits.push((args_end + 1, 0, ")".to_string()));
+                            } else {
+                                file_edits.push((at, 0, "await ".to_string()));
+                            }
+                            propagated += 1;
+                        }
+                    } else {
+                        let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        blocked.push(format!("{site} the caller is not async and cannot await `{name}`: `{line_text}`"));
+                    }
+                }
+                Wrapper::Option => {
+                    let can_propagate = match lang {
+                        Language::TypeScript | Language::JavaScript => caller_ret.contains("| null") || caller_ret.contains("Option<"),
+                        Language::Python => caller_ret.contains("Optional[") || caller_ret.contains("| None"),
+                        Language::Cpp | Language::C => caller_ret.contains("optional"),
+                        Language::Swift => caller_ret.ends_with('?') || caller_ret.contains("Optional<"),
+                        Language::Go => caller_ret.starts_with('*'),
+                        Language::Rust => unreachable!(),
+                    };
+                    if can_propagate {
+                        propagated += 1;
+                    } else {
+                        let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let desc = if caller_ret.is_empty() { "none" } else { &caller_ret };
+                        blocked.push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                    }
+                }
+                Wrapper::Result => {
+                    let can_propagate = match lang {
+                        Language::TypeScript | Language::JavaScript => caller_ret.contains("Result<"),
+                        Language::Python => caller_ret.contains("Result["),
+                        Language::Cpp | Language::C => caller_ret.contains("expected") || caller_ret.contains("Result"),
+                        Language::Swift => caller_ret.contains("Result<"),
+                        Language::Go => caller_ret.contains("error"),
+                        Language::Rust => unreachable!(),
+                    };
+                    if can_propagate {
+                        propagated += 1;
+                    } else {
+                        let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let desc = if caller_ret.is_empty() { "none" } else { &caller_ret };
+                        blocked.push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                    }
+                }
+                Wrapper::Pointer => {
+                    let can_propagate = match lang {
+                        Language::Go => caller_ret.starts_with('*'),
+                        _ => caller_ret.contains('*'),
+                    };
+                    if can_propagate {
+                        propagated += 1;
+                    } else {
+                        let line_text = other_content[other_content[..at].rfind('\n').map_or(0, |i| i + 1)..]
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        let desc = if caller_ret.is_empty() { "none" } else { &caller_ret };
+                        blocked.push(format!("{site} the caller returns `{desc}`: `{line_text}`"));
+                    }
+                }
+            }
+        }
+
+        if !file_edits.is_empty() {
+            let mut body = if is_decl_file {
+                new_decl_file.clone()
+            } else {
+                other_content
+            };
+            file_edits.sort_by_key(|(at, len, _)| (*at, *len != 0));
+            for (at, len, replacement) in file_edits.into_iter().rev() {
+                body.replace_range(at..at + len, &replacement);
+            }
+            rewritten.insert(path.to_path_buf(), body);
+        }
+    }
+
+    rewritten.retain(|p, t| std::fs::read_to_string(p).map(|o| o != *t).unwrap_or(true));
+
+    let to_check: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (p.clone(), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, root, &to_check, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.message.lines().next().unwrap_or(""),
+                d.code
+                    .as_deref()
+                    .map(|c| format!(" [{c}]"))
+                    .unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    let mut applied = false;
+    if apply {
+        anyhow::ensure!(
+            blocked.is_empty() || force,
+            "{} call site(s) cannot propagate; nothing was written:\n  {}",
+            blocked.len(),
+            blocked.join("\n  ")
+        );
+        anyhow::ensure!(
+            unmatched.is_empty(),
+            "{} reference(s) to `{name}` were not rewritten; nothing was written:\n  {}",
+            unmatched.len(),
+            unmatched.join("\n  ")
+        );
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. Pass `force: true` to write it anyway:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let edit = crate::signature::whole_file_edit(&rewritten);
+        crate::refactor::apply_workspace_edit(root, &edit)?;
+        applied = true;
+    }
+
+    Ok(WrappedReturn {
+        function: name,
+        root: root.to_path_buf(),
+        file: display(root, file),
+        was,
+        now,
+        propagated,
+        blocked,
+        unmatched,
+        rewritten: rewritten
+            .into_iter()
+            .map(|(p, t)| (p.to_string_lossy().into_owned(), t))
+            .collect(),
+        diagnostics,
+        applied,
+    })
+}
+
+/// Backward compatibility wrapper.
+#[allow(clippy::too_many_arguments)]
+pub async fn wrap(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+    wrapper: Wrapper,
+    error: Option<&str>,
+    apply: bool,
+    force: bool,
+) -> Result<WrappedReturn> {
+    wrap_polyglot(
+        remote,
+        root,
+        file,
+        None,
+        Some(line),
+        Some(col),
+        wrapper,
+        error,
+        apply,
+        force,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,6 +1523,8 @@ mod tests {
     fn a_wrapper_is_named_either_way_and_nothing_else() {
         assert_eq!(Wrapper::parse("option").unwrap(), Wrapper::Option);
         assert_eq!(Wrapper::parse("Result").unwrap(), Wrapper::Result);
+        assert_eq!(Wrapper::parse("promise").unwrap(), Wrapper::Promise);
+        assert_eq!(Wrapper::parse("pointer").unwrap(), Wrapper::Pointer);
         assert!(Wrapper::parse("either").is_err());
         assert_eq!(Wrapper::Option.assist_id(), "wrap_return_type_in_option");
         assert_eq!(Wrapper::Result.assist_id(), "wrap_return_type_in_result");
