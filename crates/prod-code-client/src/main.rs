@@ -1071,18 +1071,24 @@ enum Commands {
         /// The file the selection is in.
         file: PathBuf,
         /// 1-based line where the expression starts.
-        line: u32,
+        line: Option<u32>,
         /// 1-based column where it starts.
-        character: u32,
+        character: Option<u32>,
         /// Where it ends, as `LINE:COL` (the column is exclusive).
         #[arg(long = "to")]
-        to: String,
+        to: Option<String>,
+        /// Selection range as `START_LINE:START_COL-END_LINE:END_COL`.
+        #[arg(long)]
+        range: Option<String>,
+        /// Expression text to extract if line/col not given.
+        #[arg(long)]
+        expression: Option<String>,
         /// What the new field is called.
         #[arg(long)]
         name: String,
         /// The field's type.
         #[arg(long = "type")]
-        ty: String,
+        ty: Option<String>,
         /// What every construction site initialises it with (default: the expression).
         #[arg(long)]
         init: Option<String>,
@@ -2664,6 +2670,8 @@ async fn main() -> Result<()> {
             line,
             character,
             to,
+            range,
+            expression,
             name,
             ty,
             init,
@@ -2672,24 +2680,38 @@ async fn main() -> Result<()> {
             apply,
             force,
         } => {
-            let (end_line, end_character): (u32, u32) = to
-                .split_once(':')
-                .and_then(|(l, c)| Some((l.trim().parse().ok()?, c.trim().parse().ok()?)))
-                .context("--to takes LINE:COL, for example --to 42:31")?;
             let cwd = env::current_dir().context("Failed to get current working directory")?;
             let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
             let mut args = serde_json::json!({
                 "path": file.to_string_lossy(),
-                "line": line,
-                "character": character,
-                "end_line": end_line,
-                "end_character": end_character,
                 "name": name,
-                "type": ty,
                 "replace_all": replace_all,
                 "apply": apply,
                 "force": force,
             });
+            if let Some(l) = line {
+                args["line"] = serde_json::Value::Number(l.into());
+            }
+            if let Some(c) = character {
+                args["character"] = serde_json::Value::Number(c.into());
+            }
+            if let Some(to_pos) = to {
+                let (end_line, end_character): (u32, u32) = to_pos
+                    .split_once(':')
+                    .and_then(|(l, c)| Some((l.trim().parse().ok()?, c.trim().parse().ok()?)))
+                    .context("--to takes LINE:COL, for example --to 42:31")?;
+                args["end_line"] = serde_json::Value::Number(end_line.into());
+                args["end_character"] = serde_json::Value::Number(end_character.into());
+            }
+            if let Some(r) = range {
+                args["range"] = serde_json::Value::String(r);
+            }
+            if let Some(expr) = expression {
+                args["expression"] = serde_json::Value::String(expr);
+            }
+            if let Some(t) = ty {
+                args["type"] = serde_json::Value::String(t);
+            }
             if let Some(init) = init {
                 args["init"] = serde_json::Value::String(init);
             }

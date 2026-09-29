@@ -279,7 +279,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_extract_field".to_string(),
-            description: "Promote an expression inside a method into a field of the type the method belongs to. Give the selection (path plus 1-based start and end line/character), the field's name and its `type`. The method then reads `self.<name>`, the struct declares the field last, and every place that builds the struct — `Type { … }` and `Self { … }` anywhere in the workspace — initialises it, by default with the expression itself; pass `init` for a different starting value, which is required when the expression reads `self`. A pattern that lists every field no longer matches a struct with one more and is reported, not rewritten; nothing is written while one remains. `replace_all` reads the field at every identical occurrence in the method. The whole change is type-checked in one overlay before anything is written; the analyzer does not check borrows, so for a type that is not `Copy`, ask for `verify: \"compile\"`. Rust only."
+            description: "Promote an expression inside a method into a field of the type the method belongs to across Rust, TypeScript, Python, C++, Swift, and Go. Give the selection (path plus 1-based start and end line/character, range, or expression), the field's name and optional `type`. The method then reads the instance field (`self.<name>`, `this.<name>`, `this-><name>`, or `r.<name>`), the class/struct declares the field, and construction sites or struct literals anywhere in the workspace initialise it with `init` (default: the expression itself); pass `init` for a different starting value, which is required when the expression reads receiver. `replace_all` reads the field at every identical occurrence in the method. The whole change is type-checked in one overlay before anything is written."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -289,15 +289,17 @@ pub fn list_tools() -> Vec<McpTool> {
                     "character": { "type": "integer", "description": "1-based column where it starts" },
                     "end_line": { "type": "integer", "description": "1-based line where it ends" },
                     "end_character": { "type": "integer", "description": "1-based column where it ends (exclusive)" },
+                    "range": { "type": "string", "description": "Selection range as START_LINE:START_COL-END_LINE:END_COL" },
+                    "expression": { "type": "string", "description": "Expression text to extract if line/col not given" },
                     "name": { "type": "string", "description": "What the new field is called" },
                     "type": { "type": "string", "description": "The field's type" },
                     "init": { "type": "string", "description": "What every construction site initialises the field with (default: the expression itself)" },
                     "replace_all": { "type": "boolean", "description": "Read the field at every identical occurrence in the method (default false: only the selection)" },
-                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too. Slower (seconds, not milliseconds), and it is the only check that sees a move out of `self`" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run `cargo check` on the result in a shadow of the workspace before writing it, and write only if the compiler accepts it too" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and the type check only)" },
                     "force": { "type": "boolean", "description": "Write even when a pattern would break or the result does not compile" }
                 },
-                "required": ["path", "line", "character", "end_line", "end_character", "name", "type"]
+                "required": ["path", "name"]
             }),
         },
         McpTool {
@@ -3233,12 +3235,38 @@ async fn handle_extract_field(
         .get("path")
         .and_then(|v| v.as_str())
         .context("Missing 'path' argument")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument"))
+    let file_path = resolve_file_path(workspace_root, path_str);
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args.get("character").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let end_line = args.get("end_line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let end_character = args.get("end_character").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let range = args.get("range").and_then(|v| v.as_str());
+    let expr_arg = args.get("expression").and_then(|v| v.as_str());
+
+    let (start_pos, end_pos) = if let (Some(l), Some(c), Some(el), Some(ec)) = (line, character, end_line, end_character) {
+        ((l, c), (el, ec))
+    } else if let Some(r) = range {
+        let (s, e) = if let Some(pair) = r.split_once("..") {
+            pair
+        } else {
+            r.split_once('-').context("Invalid 'range' format, expected LINE:COL-LINE:COL")?
+        };
+        let parse_pos = |p: &str| -> Result<(u32, u32)> {
+            let (l, c) = p.split_once(':').context("Expected LINE:COL")?;
+            Ok((l.trim().parse()?, c.trim().parse()?))
+        };
+        (parse_pos(s)?, parse_pos(e)?)
+    } else if let Some(expr) = expr_arg {
+        let content = std::fs::read_to_string(&file_path)
+            .with_context(|| format!("cannot read {}", file_path.display()))?;
+        let pos = content.find(expr).with_context(|| format!("expression `{expr}` not found in {}", file_path.display()))?;
+        let (sl, sc) = crate::signature::position_at(&content, pos)?;
+        let (el, ec) = crate::signature::position_at(&content, pos + expr.len())?;
+        ((sl, sc), (el, ec))
+    } else {
+        anyhow::bail!("Missing selection: provide 'line', 'character', 'end_line', 'end_character', or 'range', or 'expression'");
     };
+
     let name = args
         .get("name")
         .and_then(|v| v.as_str())
@@ -3252,21 +3280,40 @@ async fn handle_extract_field(
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
-    let file_path = resolve_file_path(workspace_root, path_str);
-    let mut done = crate::extract_field::extract(
-        remote,
-        workspace_root,
-        &file_path,
-        (num("line")?, num("character")?),
-        (num("end_line")?, num("end_character")?),
-        name,
-        ty,
-        init,
-        replace_all,
-        apply && !verify,
-        force,
-    )
-    .await?;
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_rust = ext == "rs";
+
+    let mut done = if is_rust {
+        crate::extract_field::extract(
+            remote,
+            workspace_root,
+            &file_path,
+            start_pos,
+            end_pos,
+            name,
+            ty,
+            init,
+            replace_all,
+            apply && !verify,
+            force,
+        )
+        .await?
+    } else {
+        crate::extract_field::extract_polyglot(
+            remote,
+            workspace_root,
+            &file_path,
+            start_pos,
+            end_pos,
+            name,
+            ty,
+            init,
+            replace_all,
+            apply && !verify,
+            force,
+        )
+        .await?
+    };
     refuse_incomplete(apply, &done.unmatched)?;
     let gate = if verify && (done.blocked.is_empty() || force) {
         let files = done.rewritten.clone();
