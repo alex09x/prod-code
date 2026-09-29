@@ -703,7 +703,7 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_move".to_string(),
-            description: "Move a declaration (function, struct, enum, trait, const) into another module, with the imports that keep every user of it compiling. The item travels whole — signature, body, doc comment, attributes — is cut from its file and appended to the target; every file the analyzer lists as using it has its `use` rewritten (a grouped import keeps its other names) and any path-qualified reference requalified. A target file that does not exist yet is created and declared in its parent module (`pub mod x;` for a `pub` item), in the same change. Only the ordinary crate layout is understood (src/a.rs, src/a/mod.rs); a file reached through #[path] is named and left alone. The whole change is type-checked in one overlay first, so a move that would not compile — the item uses something private to the module it left, the target already has that name — is reported rather than written. Nothing is written without `apply`. Rust only; re-run your formatter afterwards."
+            description: "Move a declaration (function, class, struct, enum, interface, trait, const) into another module across Rust, TypeScript, JavaScript, Python, Go, C/C++, and Swift, with the imports that keep every user of it compiling. The item travels whole — signature, body, doc comment, attributes — is cut from its file and appended to the target; every file using it has its imports updated or path-qualified references requalified. A target file that does not exist yet is created (and declared in its parent module for Rust or initialized with package/header for Go/C++), in the same change. The whole change is type-checked in one overlay first, so a move that would not compile is reported rather than written. Nothing is written without `apply`."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -2965,6 +2965,12 @@ async fn handle_move(
     let file_path = resolve_file_path(workspace_root, path_str);
     let target = resolve_file_path(workspace_root, to);
     let verify = args.get("verify").and_then(|v| v.as_str()) == Some("compile");
+    let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    anyhow::ensure!(
+        !verify || ext == "rs",
+        "`verify: compile` runs `cargo check` and is for Rust files; the analyzer's check of \
+         the result is reported without it"
+    );
     let mut moved = crate::move_item::move_item(
         remote,
         workspace_root,

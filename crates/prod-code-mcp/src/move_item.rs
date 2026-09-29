@@ -665,6 +665,10 @@ pub async fn move_item(
         "the item is already in {}",
         display(root, target)
     );
+    let ext = file.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if ext != "rs" {
+        return crate::move_polyglot::move_item(remote, root, file, line, col, target, apply, force).await;
+    }
     let source_text =
         std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
     // A target that does not exist yet is created, and declared by its parent module (#148).
@@ -913,7 +917,7 @@ pub async fn move_item(
     })
 }
 
-async fn document_symbols(
+pub(crate) async fn document_symbols(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
