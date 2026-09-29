@@ -304,21 +304,22 @@ pub fn list_tools() -> Vec<McpTool> {
         },
         McpTool {
             name: "code_generify".to_string(),
-            description: "Make a parameter generic: its concrete type becomes a type parameter with the bound it must satisfy (`fn total(v: &Vec<u32>)` → `fn total<T: AsRef<[u32]>>(v: &T)`). Give the function's name position (or `symbol`), the `param` and the `bound`; `type_param` names the new parameter (default `T`, refused if the function already has one of that name). A reference in front of the type is kept. Callers do not change — the type argument is inferred — but every file that calls the function is checked against the new signature in the same overlay, so a body that uses more than the bound promises, or a caller whose type does not satisfy it, is reported before anything is written. Rust only."
+            description: "Make a parameter generic across TypeScript, Python, C++, Swift, Go, and Rust (Roadmap 7.1.4): its concrete type becomes a type parameter with the bound it must satisfy. Give the function's name position (or `symbol`), the `param` and optional `bound`; `type_param` names the new parameter (default `T`, refused if the function already has one of that name). Preserves qualifiers, pointers and reference syntax. Updates C++ prototypes in headers. Type-checked in one overlay before writing."
                 .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "File that declares the function" },
-                    "line": { "type": "integer", "description": "1-based line of the function's name" },
-                    "character": { "type": "integer", "description": "1-based column of the function's name" },
+                    "path": { "type": "string", "description": "File that declares the function (optional if symbol is unique)" },
+                    "symbol": { "type": "string", "description": "Function or method name to generify (alternative to line and character)" },
+                    "line": { "type": "integer", "description": "1-based line of the function's declaration" },
+                    "character": { "type": "integer", "description": "1-based column of the function's declaration" },
                     "param": { "type": "string", "description": "The parameter to make generic" },
-                    "bound": { "type": "string", "description": "The trait bound, such as `AsRef<[u32]>` or `std::fmt::Display + Clone`" },
+                    "bound": { "type": "string", "description": "The trait or constraint bound, such as `AsRef<[u32]>`, `Comparable`, `Numeric`, or `any`" },
                     "type_param": { "type": "string", "description": "The new type parameter's name (default `T`)" },
                     "apply": { "type": "boolean", "description": "Write the change (default false: report the new signature and the check only)" },
                     "force": { "type": "boolean", "description": "Write even when the result does not compile" }
                 },
-                "required": ["param", "bound"]
+                "required": ["param"]
             }),
         },
         McpTool {
@@ -3413,35 +3414,63 @@ async fn handle_generify(
 ) -> Result<McpToolCallResult> {
     let path_str = args
         .get("path")
-        .and_then(|v| v.as_str())
-        .context("Missing 'path' argument (or `symbol`)")?;
-    let num = |key: &str| -> Result<u32> {
-        args.get(key)
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32)
-            .with_context(|| format!("Missing '{key}' argument (or `symbol`)"))
-    };
+        .or_else(|| args.get("file"))
+        .and_then(|v| v.as_str());
+    let symbol = args
+        .get("symbol")
+        .or_else(|| args.get("function"))
+        .and_then(|v| v.as_str());
+    let line = args.get("line").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let character = args
+        .get("character")
+        .or_else(|| args.get("col"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
     let param = args
         .get("param")
+        .or_else(|| args.get("parameter"))
         .and_then(|v| v.as_str())
         .context("Missing 'param' argument: the parameter to make generic")?;
     let bound = args
         .get("bound")
+        .or_else(|| args.get("trait"))
+        .or_else(|| args.get("constraint"))
         .and_then(|v| v.as_str())
-        .context("Missing 'bound' argument: the trait the type must satisfy")?;
+        .unwrap_or("");
     let type_param = args
         .get("type_param")
+        .or_else(|| args.get("as"))
         .and_then(|v| v.as_str())
         .unwrap_or("T");
     let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
     let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-    let file_path = resolve_file_path(workspace_root, path_str);
-    let done = crate::generify::generify(
+
+    let file_path = if let Some(p) = path_str {
+        resolve_file_path(workspace_root, p)
+    } else if let Some(sym) = symbol {
+        let mut found = None;
+        for entry in ignore::WalkBuilder::new(workspace_root).build().flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && let Ok(content) = std::fs::read_to_string(p)
+                && content.contains(sym)
+            {
+                found = Some(p.to_path_buf());
+                break;
+            }
+        }
+        found.with_context(|| format!("could not find file declaring symbol `{sym}`"))?
+    } else {
+        anyhow::bail!("Missing 'path' or 'symbol' argument");
+    };
+
+    let done = crate::generify::generify_polyglot(
         remote,
         workspace_root,
         &file_path,
-        num("line")?,
-        num("character")?,
+        symbol,
+        line,
+        character,
         param,
         bound,
         type_param,
@@ -3449,9 +3478,12 @@ async fn handle_generify(
         force,
     )
     .await?;
+
     let text = done.render();
     Ok(if done.diagnostics.is_empty() {
         McpToolCallResult::text(text)
+    } else if force {
+        McpToolCallResult::text(format!("{text}\n[forced: applied with diagnostics]"))
     } else {
         McpToolCallResult::error(text)
     })

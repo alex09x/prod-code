@@ -1621,7 +1621,7 @@ fn close_in(text: &str, open: usize, language: Language) -> Option<usize> {
 /// entry is not part of it. Type arguments nest in TypeScript (`Map<string, number>`), C++
 /// (`std::map<int, int>`) and Swift (`Dictionary<String, Int>`); a `<` is taken as one only
 /// straight after a name, since a comparison is written with spaces.
-fn entries(list: &str, language: Language) -> Vec<(usize, &str)> {
+pub(crate) fn entries(list: &str, language: Language) -> Vec<(usize, &str)> {
     let bytes = list.as_bytes();
     let (mut depth, mut angle) = (0i32, 0i32);
     let mut out = Vec::new();
@@ -1658,7 +1658,7 @@ fn entries(list: &str, language: Language) -> Vec<(usize, &str)> {
 
 /// Splits an entry at its first top-level `=` that is an assignment — not `==`, `!=`, `<=`,
 /// `>=` or TypeScript's `=>`.
-fn split_default(entry: &str, language: Language) -> (&str, Option<&str>) {
+pub(crate) fn split_default(entry: &str, language: Language) -> (&str, Option<&str>) {
     let bytes = entry.as_bytes();
     let mut depth = 0i32;
     let mut at = None;

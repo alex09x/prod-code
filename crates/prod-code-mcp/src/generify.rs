@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use crate::parameter_object::Language;
 
 /// What the change did, or would do if it were applied.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -113,10 +114,687 @@ pub fn generics_span(text: &str, name_end: usize) -> Option<(usize, usize)> {
     None
 }
 
+/// The offset of the matching `>` for the `<` at `open`.
+pub fn matching_angle_bracket(text: &str, open: usize) -> Option<usize> {
+    if text.as_bytes().get(open) != Some(&b'<') {
+        return None;
+    }
+    let mut depth = 0i32;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Makes the parameter `param` of the function declared at `line`:`col` of `file` generic, as a
 /// type parameter `type_param` bounded by `bound`.
 #[allow(clippy::too_many_arguments)]
 pub async fn generify(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    line: u32,
+    col: u32,
+    param: &str,
+    bound: &str,
+    type_param: &str,
+    apply: bool,
+    force: bool,
+) -> Result<Generified> {
+    generify_polyglot(
+        remote,
+        root,
+        file,
+        None,
+        Some(line),
+        Some(col),
+        param,
+        bound,
+        type_param,
+        apply,
+        force,
+    )
+    .await
+}
+
+#[derive(Debug, Clone)]
+struct PolyglotFuncDecl {
+    name: String,
+    decl_start: usize,
+    _name_start: usize,
+    name_end: usize,
+    open_paren: usize,
+    close_paren: usize,
+    has_generics: bool,
+    generics_span: Option<(usize, usize)>,
+}
+
+fn find_polyglot_func_decl(
+    text: &str,
+    lang: Language,
+    symbol: Option<&str>,
+    line: Option<u32>,
+) -> Result<PolyglotFuncDecl> {
+    let clean_name = symbol.map(|s| {
+        s.rsplit_once("::")
+            .map(|(_, m)| m)
+            .or_else(|| s.rsplit_once('.').map(|(_, m)| m))
+            .unwrap_or(s)
+            .trim()
+            .to_string()
+    }).or_else(|| {
+        let l = line?;
+        let lines: Vec<&str> = text.lines().collect();
+        let target_idx = (l.saturating_sub(1)) as usize;
+        let start_idx = target_idx.saturating_sub(2);
+        let end_idx = (target_idx + 2).min(lines.len().saturating_sub(1));
+        for i in (start_idx..=end_idx).rev() {
+            if let Some(name) = crate::inline_parameter::extract_decl_name_from_line(lines[i], lang) {
+                return Some(name);
+            }
+        }
+        None
+    }).context("could not determine function name to generify parameter for")?;
+
+    for (name_idx, _) in text.match_indices(&clean_name) {
+        if name_idx > 0 && text[..name_idx].chars().next_back().is_some_and(is_ident) {
+            continue;
+        }
+        let after_name = &text[name_idx + clean_name.len()..];
+        if after_name.chars().next().is_some_and(is_ident) {
+            continue;
+        }
+
+        let line_start = text[..name_idx].rfind('\n').map_or(0, |p| p + 1);
+        let before_on_line = &text[line_start..name_idx];
+        if crate::inline_parameter::is_in_comment(text, name_idx, lang) {
+            continue;
+        }
+
+        let line_trimmed = before_on_line.trim_start();
+        if line_trimmed.starts_with("import ")
+            || line_trimmed.starts_with("from ")
+            || line_trimmed.starts_with("export {")
+            || line_trimmed.starts_with("export *")
+            || line_trimmed.starts_with("use ")
+            || line_trimmed.starts_with("#include")
+        {
+            continue;
+        }
+
+        let before_trimmed = before_on_line.trim_end();
+        if before_trimmed.ends_with('=')
+            || before_trimmed.ends_with('+')
+            || before_trimmed.ends_with('-')
+            || before_trimmed.ends_with('*')
+            || before_trimmed.ends_with('/')
+            || before_trimmed.ends_with(',')
+            || before_trimmed.ends_with('(')
+            || before_trimmed.ends_with(':')
+            || before_trimmed.ends_with("return")
+            || before_trimmed.ends_with("throw")
+            || before_trimmed.ends_with("await")
+        {
+            continue;
+        }
+
+        let trimmed_after = after_name.trim_start();
+        let name_end = name_idx + clean_name.len();
+
+        let mut has_generics = false;
+        let mut gen_span = None;
+        let mut template_header_span = None;
+        let mut open_paren = None;
+
+        if lang == Language::Go || lang == Language::Python {
+            if trimmed_after.starts_with('[') {
+                let bracket_open = name_end + (after_name.len() - trimmed_after.len());
+                if let Some(bracket_close) = crate::parameter_object::matching_bracket(text, bracket_open) {
+                    has_generics = true;
+                    gen_span = Some((bracket_open + 1, bracket_close));
+                    let rest = text[bracket_close + 1..].trim_start();
+                    if rest.starts_with('(') {
+                        open_paren = Some(bracket_close + 1 + (text[bracket_close + 1..].len() - rest.len()));
+                    }
+                }
+            } else if trimmed_after.starts_with('(') {
+                open_paren = Some(name_end + (after_name.len() - trimmed_after.len()));
+            }
+        } else if lang == Language::TypeScript || lang == Language::JavaScript || lang == Language::Swift {
+            if trimmed_after.starts_with('<') {
+                let angle_open = name_end + (after_name.len() - trimmed_after.len());
+                if let Some(angle_close) = matching_angle_bracket(text, angle_open) {
+                    has_generics = true;
+                    gen_span = Some((angle_open + 1, angle_close));
+                    let rest = text[angle_close + 1..].trim_start();
+                    if rest.starts_with('(') {
+                        open_paren = Some(angle_close + 1 + (text[angle_close + 1..].len() - rest.len()));
+                    }
+                }
+            } else if trimmed_after.starts_with('(') {
+                open_paren = Some(name_end + (after_name.len() - trimmed_after.len()));
+            } else if (before_on_line.starts_with("const ") || before_on_line.starts_with("let ") || before_on_line.starts_with("var "))
+                && after_name.contains('=')
+            {
+                let eq_pos = after_name.find('=').unwrap();
+                let after_eq = after_name[eq_pos + 1..].trim_start();
+                let after_async = after_eq.strip_prefix("async ").unwrap_or(after_eq).trim_start();
+                if after_async.starts_with('<') {
+                    let a_open = name_end + (after_name.len() - after_async.len());
+                    if let Some(a_close) = matching_angle_bracket(text, a_open) {
+                        has_generics = true;
+                        gen_span = Some((a_open + 1, a_close));
+                        let rest_a = text[a_close + 1..].trim_start();
+                        if rest_a.starts_with('(') {
+                            open_paren = Some(a_close + 1 + (text[a_close + 1..].len() - rest_a.len()));
+                        }
+                    }
+                } else if after_async.starts_with('(') {
+                    open_paren = Some(name_end + (after_name.len() - after_async.len()));
+                }
+            }
+        } else if (lang == Language::Cpp || lang == Language::C) && trimmed_after.starts_with('(') {
+            open_paren = Some(name_end + (after_name.len() - trimmed_after.len()));
+            let search_start = name_idx.saturating_sub(400);
+            let before_decl = &text[search_start..name_idx];
+            if let Some(tmpl_pos) = before_decl.rfind("template") {
+                let tmpl_abs = search_start + tmpl_pos;
+                let after_tmpl = text[tmpl_abs + 8..].trim_start();
+                if after_tmpl.starts_with('<') {
+                    let angle_open = tmpl_abs + 8 + (text[tmpl_abs + 8..].len() - after_tmpl.len());
+                    if let Some(angle_close) = matching_angle_bracket(text, angle_open) {
+                        let between_tmpl = &text[angle_close + 1..name_idx];
+                        if !between_tmpl.contains(';') && !between_tmpl.contains('}') {
+                            has_generics = true;
+                            gen_span = Some((angle_open + 1, angle_close));
+                            template_header_span = Some((tmpl_abs, angle_close + 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        let Some(open_p) = open_paren else { continue };
+        let Some(close_p) = crate::parameter_object::matching_bracket(text, open_p) else { continue };
+
+        let decl_start = template_header_span.map_or(line_start, |(s, _)| s);
+        return Ok(PolyglotFuncDecl {
+            name: clean_name,
+            decl_start,
+            _name_start: name_idx,
+            name_end,
+            open_paren: open_p,
+            close_paren: close_p,
+            has_generics,
+            generics_span: gen_span,
+        });
+    }
+
+    anyhow::bail!("could not find declaration of `{clean_name}` in file")
+}
+
+fn rewrite_param_entry(
+    entry_text: &str,
+    target_param: &crate::parameter_object::Param,
+    type_param: &str,
+    lang: Language,
+) -> String {
+    match lang {
+        Language::TypeScript | Language::JavaScript => {
+            if let Some(colon) = entry_text.find(':') {
+                let before_colon = &entry_text[..colon];
+                let after_colon = &entry_text[colon + 1..];
+                let (ty_str, default_str) = crate::parameter_object::split_default(after_colon.trim(), Language::TypeScript);
+                let trimmed_ty = ty_str.trim();
+                let new_ty = if trimmed_ty.ends_with("[]") {
+                    format!("{type_param}[]")
+                } else if let Some(angle_open) = trimmed_ty.find('<') {
+                    if trimmed_ty.ends_with('>') {
+                        let container = &trimmed_ty[..angle_open];
+                        format!("{container}<{type_param}>")
+                    } else {
+                        type_param.to_string()
+                    }
+                } else {
+                    type_param.to_string()
+                };
+                let mut out = format!("{before_colon}: {new_ty}");
+                if let Some(def) = default_str {
+                    out.push_str(&format!(" = {def}"));
+                }
+                out
+            } else if let Some(eq) = entry_text.find('=') {
+                let before_eq = entry_text[..eq].trim_end();
+                let after_eq = &entry_text[eq..];
+                format!("{before_eq}: {type_param} {after_eq}")
+            } else {
+                format!("{}: {type_param}", target_param.name)
+            }
+        }
+        Language::Python => {
+            if let Some(colon) = entry_text.find(':') {
+                let before_colon = &entry_text[..colon];
+                let after_colon = &entry_text[colon + 1..];
+                let (ty_str, default_str) = crate::parameter_object::split_default(after_colon.trim(), Language::Python);
+                let trimmed_ty = ty_str.trim();
+                let new_ty = if let Some(bracket_open) = trimmed_ty.find('[') {
+                    if trimmed_ty.ends_with(']') {
+                        let container = &trimmed_ty[..bracket_open];
+                        format!("{container}[{type_param}]")
+                    } else {
+                        type_param.to_string()
+                    }
+                } else {
+                    type_param.to_string()
+                };
+                let mut out = format!("{before_colon}: {new_ty}");
+                if let Some(def) = default_str {
+                    out.push_str(&format!(" = {def}"));
+                }
+                out
+            } else if let Some(eq) = entry_text.find('=') {
+                let before_eq = entry_text[..eq].trim_end();
+                let after_eq = &entry_text[eq..];
+                format!("{before_eq}: {type_param} {after_eq}")
+            } else {
+                format!("{}: {type_param}", target_param.name)
+            }
+        }
+        Language::Swift => {
+            if let Some(colon) = entry_text.find(':') {
+                let before_colon = &entry_text[..colon];
+                let after_colon = &entry_text[colon + 1..];
+                let (ty_str, default_str) = crate::parameter_object::split_default(after_colon.trim(), Language::Swift);
+                let trimmed_ty = ty_str.trim();
+                let new_ty = if trimmed_ty.ends_with('?') {
+                    format!("{type_param}?")
+                } else if trimmed_ty.starts_with('[') && trimmed_ty.ends_with(']') {
+                    format!("[{type_param}]")
+                } else if let Some(rest) = trimmed_ty.strip_prefix("inout ") {
+                    let _ = rest;
+                    format!("inout {type_param}")
+                } else {
+                    type_param.to_string()
+                };
+                let mut out = format!("{before_colon}: {new_ty}");
+                if let Some(def) = default_str {
+                    out.push_str(&format!(" = {def}"));
+                }
+                out
+            } else {
+                format!("{}: {type_param}", target_param.name)
+            }
+        }
+        Language::Go => {
+            if let Some(ref old_ty) = target_param.ty {
+                let trimmed_ty = old_ty.trim();
+                let new_ty = if trimmed_ty.starts_with('*') {
+                    format!("*{type_param}")
+                } else if trimmed_ty.starts_with("[]") {
+                    format!("[]{type_param}")
+                } else if trimmed_ty.starts_with("...") {
+                    format!("...{type_param}")
+                } else {
+                    type_param.to_string()
+                };
+                entry_text.replace(trimmed_ty, &new_ty)
+            } else {
+                format!("{} {type_param}", target_param.name)
+            }
+        }
+        Language::Cpp | Language::C => {
+            let (decl_part, default_part) = if let Some(eq) = entry_text.find('=') {
+                (&entry_text[..eq], Some(&entry_text[eq..]))
+            } else {
+                (entry_text, None)
+            };
+            let name_match = decl_part
+                .match_indices(&target_param.name)
+                .filter(|(idx, _)| {
+                    let before_ok = *idx == 0 || !is_ident(decl_part[..*idx].chars().last().unwrap());
+                    let after_ok = *idx + target_param.name.len() == decl_part.len()
+                        || !is_ident(decl_part[*idx + target_param.name.len()..].chars().next().unwrap());
+                    before_ok && after_ok
+                })
+                .last();
+            if let Some((name_pos, _)) = name_match {
+                let ty_part = decl_part[..name_pos].trim_end();
+                let words: Vec<&str> = ty_part.split_whitespace().collect();
+                let mut rewritten_words = Vec::new();
+                let mut replaced = false;
+                for w in words {
+                    let clean = w.trim_matches(|c: char| !is_ident(c) && c != ':');
+                    if !replaced && clean != "const" && clean != "volatile" && clean != "struct" && clean != "class" && !clean.is_empty() {
+                        let replaced_w = w.replace(clean, type_param);
+                        rewritten_words.push(replaced_w);
+                        replaced = true;
+                    } else {
+                        rewritten_words.push(w.to_string());
+                    }
+                }
+                let mut out = format!("{} {}", rewritten_words.join(" "), decl_part[name_pos..].trim());
+                if let Some(def) = default_part {
+                    out.push_str(def);
+                }
+                out
+            } else {
+                entry_text.to_string()
+            }
+        }
+        Language::Rust => unreachable!(),
+    }
+}
+
+/// Unified generify refactoring across Rust, TypeScript, JavaScript, Python, C++, Swift, and Go.
+#[allow(clippy::too_many_arguments)]
+pub async fn generify_polyglot(
+    remote: SocketAddr,
+    root: &Path,
+    file: &Path,
+    symbol: Option<&str>,
+    line: Option<u32>,
+    col: Option<u32>,
+    param: &str,
+    bound: &str,
+    type_param: &str,
+    apply: bool,
+    force: bool,
+) -> Result<Generified> {
+    let lang = crate::parameter_object::Language::of(file)
+        .with_context(|| format!("unsupported language for {}", file.display()))?;
+
+    if lang == Language::Rust {
+        let (l, c) = match (line, col) {
+            (Some(l), Some(c)) => (l, c),
+            (Some(l), None) => (l, 1),
+            _ => {
+                let text = std::fs::read_to_string(file)
+                    .with_context(|| format!("cannot read {}", file.display()))?;
+                let sym = symbol.context("missing `symbol` or `line`")?;
+                let mut found_pos = None;
+                for (name_idx, _) in text.match_indices(sym) {
+                    let line_start = text[..name_idx].rfind('\n').map_or(0, |p| p + 1);
+                    let before = text[line_start..name_idx].trim();
+                    if before.ends_with("fn") || before.ends_with("pub fn") {
+                        let (nl, nc) = crate::signature::position_at(&text, name_idx)?;
+                        found_pos = Some((nl, nc));
+                        break;
+                    }
+                }
+                found_pos.with_context(|| format!("could not find declaration of `{sym}` in {}", file.display()))?
+            }
+        };
+        return generify_rust(
+            remote, root, file, l, c, param, bound, type_param, apply, force,
+        )
+        .await;
+    }
+
+    anyhow::ensure!(
+        !type_param.is_empty() && type_param.chars().all(is_ident),
+        "`{type_param}` is not a type parameter name"
+    );
+    let bound = bound.trim();
+
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("cannot read {}", file.display()))?;
+
+    let decl = find_polyglot_func_decl(&text, lang, symbol, line)?;
+
+    // Check collision with existing generics
+    if let Some((gs, ge)) = decl.generics_span {
+        let existing = &text[gs..ge];
+        anyhow::ensure!(
+            !existing.split(|c: char| !is_ident(c)).any(|w| w == type_param),
+            "`{}` already has a generic parameter `{type_param}`; pass another `type_param`",
+            decl.name
+        );
+    }
+
+    let list = &text[decl.open_paren + 1..decl.close_paren];
+    let (_, params) = crate::parameter_object::parse_params(list, lang);
+    let target_param = params
+        .iter()
+        .find(|p| p.name == param)
+        .with_context(|| format!("`{}` has no parameter `{param}`", decl.name))?;
+
+    let entries = crate::parameter_object::entries(list, lang);
+    let entry_match = entries
+        .iter()
+        .find(|(at, entry_text)| *at <= target_param.name_at && target_param.name_at <= *at + entry_text.len());
+    let (entry_at, entry_text) = entry_match
+        .copied()
+        .with_context(|| format!("could not locate parameter `{param}` in parameter list"))?;
+
+    let new_entry_text = rewrite_param_entry(entry_text, target_param, type_param, lang);
+
+    let mut new_list = list.to_string();
+    new_list.replace_range(entry_at..entry_at + entry_text.len(), &new_entry_text);
+
+    let was = text[decl.decl_start..decl.close_paren + 1].trim().to_string();
+
+    let mut new_text = text.clone();
+    new_text.replace_range(decl.open_paren + 1..decl.close_paren, &new_list);
+
+    // Now insert generic parameter declaration
+    match lang {
+        Language::TypeScript | Language::JavaScript => {
+            let bound_spec = if bound.is_empty() || bound == "any" {
+                String::new()
+            } else {
+                format!(" extends {bound}")
+            };
+            let gen_decl = format!("{type_param}{bound_spec}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                new_text.insert_str(decl.name_end, &format!("<{gen_decl}>"));
+            }
+        }
+        Language::Python => {
+            let bound_spec = if bound.is_empty() || bound == "Any" || bound == "object" {
+                String::new()
+            } else {
+                format!(": {bound}")
+            };
+            let gen_decl = format!("{type_param}{bound_spec}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                new_text.insert_str(decl.name_end, &format!("[{gen_decl}]"));
+            }
+        }
+        Language::Swift => {
+            let bound_spec = if bound.is_empty() || bound == "Any" {
+                String::new()
+            } else {
+                format!(": {bound}")
+            };
+            let gen_decl = format!("{type_param}{bound_spec}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                new_text.insert_str(decl.name_end, &format!("<{gen_decl}>"));
+            }
+        }
+        Language::Go => {
+            let bound_spec = if bound.is_empty() { "any" } else { bound };
+            let gen_decl = format!("{type_param} {bound_spec}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                new_text.insert_str(decl.name_end, &format!("[{gen_decl}]"));
+            }
+        }
+        Language::Cpp | Language::C => {
+            let concept_spec = if bound.is_empty() || bound == "typename" || bound == "class" {
+                "typename"
+            } else {
+                bound
+            };
+            let gen_decl = format!("{concept_spec} {type_param}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                let line_start = text[..decl.decl_start].rfind('\n').map_or(0, |p| p + 1);
+                let indent_len = text[line_start..].len() - text[line_start..].trim_start().len();
+                let indent = &text[line_start..line_start + indent_len];
+                new_text.insert_str(decl.decl_start, &format!("{indent}template<{gen_decl}>\n"));
+            }
+        }
+        Language::Rust => unreachable!(),
+    }
+
+    let new_open_p = new_text[decl.decl_start..].find('(').map(|i| decl.decl_start + i).unwrap_or(decl.decl_start);
+    let new_close_p = crate::parameter_object::matching_bracket(&new_text, new_open_p).unwrap_or(new_open_p);
+    let now = new_text[decl.decl_start..new_close_p + 1].trim().to_string();
+
+    let mut rewritten = vec![(file.to_string_lossy().into_owned(), new_text.clone())];
+
+    if matches!(lang, Language::Cpp | Language::C) {
+        let concept_spec = if bound.is_empty() || bound == "typename" || bound == "class" {
+            "typename"
+        } else {
+            bound
+        };
+        let gen_decl = format!("{concept_spec} {type_param}");
+
+        for entry in ignore::WalkBuilder::new(root).build().flatten() {
+            let p = entry.path();
+            if !p.is_file() || p == file {
+                continue;
+            }
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if !matches!(ext, "h" | "hpp" | "hh" | "hxx") {
+                continue;
+            }
+            let Ok(proto_content) = std::fs::read_to_string(p) else { continue };
+            if !proto_content.contains(&decl.name) {
+                continue;
+            }
+
+            if let Ok(proto_decl) = find_polyglot_func_decl(&proto_content, lang, Some(&decl.name), None) {
+                let proto_list = &proto_content[proto_decl.open_paren + 1..proto_decl.close_paren];
+                let (_, proto_params) = crate::parameter_object::parse_params(proto_list, lang);
+                if let Some(target_proto_param) = proto_params.iter().find(|pr| pr.name == param) {
+                    let proto_entries = crate::parameter_object::entries(proto_list, lang);
+                    if let Some((pr_at, pr_text)) = proto_entries
+                        .iter()
+                        .find(|(at, entry_text)| *at <= target_proto_param.name_at && target_proto_param.name_at <= *at + entry_text.len())
+                    {
+                        let new_pr_entry = rewrite_param_entry(pr_text, target_proto_param, type_param, lang);
+                        let mut new_pr_list = proto_list.to_string();
+                        new_pr_list.replace_range(*pr_at..*pr_at + pr_text.len(), &new_pr_entry);
+
+                        let mut new_proto_text = proto_content.clone();
+                        new_proto_text.replace_range(proto_decl.open_paren + 1..proto_decl.close_paren, &new_pr_list);
+
+                        if proto_decl.has_generics {
+                            if let Some((_, ge)) = proto_decl.generics_span {
+                                new_proto_text.insert_str(ge, &format!(", {gen_decl}"));
+                            }
+                        } else {
+                            let line_start = proto_content[..proto_decl.decl_start].rfind('\n').map_or(0, |p| p + 1);
+                            let indent_len = proto_content[line_start..].len() - proto_content[line_start..].trim_start().len();
+                            let indent = &proto_content[line_start..line_start + indent_len];
+                            new_proto_text.insert_str(proto_decl.decl_start, &format!("{indent}template<{gen_decl}>\n"));
+                        }
+                        rewritten.push((p.to_string_lossy().into_owned(), new_proto_text));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut callers_checked = 0usize;
+    for entry in ignore::WalkBuilder::new(root).build().flatten() {
+        let p = entry.path();
+        if !p.is_file() || p == file || !crate::inline_parameter::language_matches(lang, p) {
+            continue;
+        }
+        if let Ok(other_text) = std::fs::read_to_string(p)
+            && other_text.contains(&decl.name)
+        {
+            callers_checked += 1;
+        }
+    }
+
+    let files_to_validate: Vec<(PathBuf, String)> = rewritten
+        .iter()
+        .map(|(p, t)| (PathBuf::from(p), t.clone()))
+        .collect();
+    let reports = crate::diagnostics::validate_texts(remote, root, &files_to_validate, &[]).await?;
+    let diagnostics: Vec<String> = reports
+        .iter()
+        .flat_map(|r| r.items.iter().map(move |d| (r.file.clone(), d)))
+        .filter(|(_, d)| d.severity == "error")
+        .map(|(f, d)| {
+            format!(
+                "{}{} ({f}:{}:{})",
+                d.message.lines().next().unwrap_or(""),
+                d.code
+                    .as_deref()
+                    .map(|c| format!(" [{c}]"))
+                    .unwrap_or_default(),
+                d.line,
+                d.col
+            )
+        })
+        .collect();
+
+    let mut applied = false;
+    if apply {
+        anyhow::ensure!(
+            diagnostics.is_empty() || force,
+            "the change does not compile ({} error(s)); nothing was written. The body \
+             needs more than the bound promises, or a caller no longer satisfies it or can no longer \
+             infer its type; choose another bound, fix the caller, or pass `force: true`:\n  {}",
+            diagnostics.len(),
+            diagnostics.join("\n  ")
+        );
+        let files_map: std::collections::BTreeMap<PathBuf, String> = rewritten
+            .iter()
+            .map(|(p, t)| (PathBuf::from(p), t.clone()))
+            .collect();
+        crate::refactor::apply_workspace_edit(root, &crate::signature::whole_file_edit(&files_map))?;
+        applied = true;
+    }
+
+    Ok(Generified {
+        function: decl.name,
+        root: root.to_path_buf(),
+        file: display(root, file),
+        was,
+        now,
+        callers_checked,
+        rewritten,
+        diagnostics,
+        applied,
+    })
+}
+
+/// Makes the parameter `param` of the function declared at `line`:`col` of `file` generic in Rust.
+#[allow(clippy::too_many_arguments)]
+pub async fn generify_rust(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
