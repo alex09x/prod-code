@@ -471,6 +471,45 @@ pub fn list_tools() -> Vec<McpTool> {
             }),
         },
         McpTool {
+            name: "code_pull_up".to_string(),
+            description: "Pull up members (methods, fields, properties, constants) from a subclass or sub-trait into its superclass or super-trait across Python, TypeScript/JavaScript, C++, Swift, and Rust trait hierarchies (Roadmap 7.1.3). Cleans up redundant overrides in sibling subclasses, adjusts indentation and modifiers (such as stripping `override`), detects collisions, and validates overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the subclass or sub-trait" },
+                    "class_name": { "type": "string", "description": "Name of the subclass, derived class, or sub-trait" },
+                    "symbol": { "type": "string", "description": "Alternative alias for class_name" },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "Names of members to pull up" },
+                    "target_class": { "type": "string", "description": "Optional name of the superclass (auto-detected from inheritance if omitted)" },
+                    "clean_siblings": { "type": "boolean", "description": "Whether to also remove identical duplicate members from sibling subclasses (default true)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["members"]
+            }),
+        },
+        McpTool {
+            name: "code_push_down".to_string(),
+            description: "Push down members (methods, fields, properties, constants) from a superclass or super-trait into specific or all direct subclasses or sub-traits across Python, TypeScript/JavaScript, C++, Swift, and Rust trait hierarchies (Roadmap 7.1.3). Adjusts indentation and modifiers, detects collisions, and validates overlays before writing."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "File that holds the superclass or super-trait" },
+                    "class_name": { "type": "string", "description": "Name of the superclass, base class, or super-trait" },
+                    "symbol": { "type": "string", "description": "Alternative alias for class_name" },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "Names of members to push down" },
+                    "target_classes": { "type": "array", "items": { "type": "string" }, "description": "Optional list of specific subclass names to push down to (all discovered subclasses if omitted)" },
+                    "verify": { "type": "string", "enum": ["compile"], "description": "`compile`: also run compiler checks on the result in a shadow of the workspace before writing it" },
+                    "apply": { "type": "boolean", "description": "Write the change (default false: report the diff and analyzer diagnostics only)" },
+                    "force": { "type": "boolean", "description": "Write even when analyzer warnings or non-fatal diagnostics occur" }
+                },
+                "required": ["members"]
+            }),
+        },
+        McpTool {
             name: "code_extract_function".to_string(),
             description: "Extract the selected code into a new function with the name you give, and replace every other place in the same file that has the same code (whitespace aside) with the same call. rust-analyzer's `extract_function` does the first place and decides the parameters and what is returned; each duplicate is kept only if the result type-checks with the call there, and the report says why any duplicate was left. rust-analyzer does not check borrows, so when a duplicate is replaced, `apply` runs `cargo check` on the result in a shadow of the workspace first (as `verify: \"compile\"` does) and writes only what compiles. `duplicates: false` extracts the selection alone. Rust only."
                 .to_string(),
@@ -1357,6 +1396,8 @@ pub async fn execute_tool(
                 handle_replace_constructor_with_factory(remote, workspace_root, &args).await
             }
         }
+        "code_pull_up" => handle_pull_up(remote, workspace_root, &args).await,
+        "code_push_down" => handle_push_down(remote, workspace_root, &args).await,
         "code_extract_delegate" => {
             let path_str = args
                 .get("path")
@@ -3569,6 +3610,103 @@ async fn handle_replace_constructor_with_builder(
         verify,
     )
     .await?;
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_pull_up(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let class_name = args
+        .get("class_name")
+        .or_else(|| args.get("symbol"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'class_name' (or `symbol`) argument")?;
+    let members: Vec<String> = args
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let target_class = args.get("target_class").and_then(|v| v.as_str());
+    let clean_siblings = args.get("clean_siblings").and_then(|v| v.as_bool()).unwrap_or(true);
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+
+    let done = crate::pull_push::pull_up_impl(
+        remote,
+        workspace_root,
+        &file_path,
+        class_name,
+        target_class,
+        &members,
+        clean_siblings,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+
+    let text = done.render(2048);
+    Ok(if done.diagnostics.is_empty() {
+        McpToolCallResult::text(text)
+    } else {
+        McpToolCallResult::error(text)
+    })
+}
+
+async fn handle_push_down(
+    remote: SocketAddr,
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path_str = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let class_name = args
+        .get("class_name")
+        .or_else(|| args.get("symbol"))
+        .and_then(|v| v.as_str())
+        .context("Missing 'class_name' (or `symbol`) argument")?;
+    let members: Vec<String> = args
+        .get("members")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let target_classes: Option<Vec<String>> = args
+        .get("target_classes")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect());
+    let verify = args.get("verify").and_then(|v| v.as_str());
+    let apply = args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false);
+    let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+    let file_path = resolve_file_path(workspace_root, path_str);
+
+    let done = crate::pull_push::push_down_impl(
+        remote,
+        workspace_root,
+        &file_path,
+        class_name,
+        target_classes.as_deref(),
+        &members,
+        apply,
+        force,
+        verify,
+    )
+    .await?;
+
     let text = done.render(2048);
     Ok(if done.diagnostics.is_empty() {
         McpToolCallResult::text(text)
@@ -6128,6 +6266,8 @@ const SYMBOL_ADDRESSABLE: &[&str] = &[
     "code_replace_constructor_with_factory",
     "code_replace_constructor_with_builder",
     "code_replace_constructor",
+    "code_pull_up",
+    "code_push_down",
 ];
 
 /// One `workspace/symbol` hit, positioned on the symbol's name (1-based).

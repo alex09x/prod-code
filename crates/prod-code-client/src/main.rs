@@ -883,6 +883,55 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Pull up members (methods, fields, constants) from a subclass or sub-trait into its superclass or super-trait.
+    PullUp {
+        /// File that declares the subclass or sub-trait
+        file: PathBuf,
+        /// Name of the subclass, derived class, or sub-trait
+        #[arg(long)]
+        class: String,
+        /// Names of members to pull up (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        members: Vec<String>,
+        /// Optional name of the superclass (auto-detected from inheritance if omitted)
+        #[arg(long = "target-class")]
+        target_class: Option<String>,
+        /// Do not clean up duplicate members in sibling subclasses
+        #[arg(long, default_value_t = false)]
+        no_clean_siblings: bool,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if warnings or non-fatal diagnostics occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
+    /// Push down members (methods, fields, constants) from a superclass or super-trait into its subclasses or sub-traits.
+    PushDown {
+        /// File that declares the superclass or super-trait
+        file: PathBuf,
+        /// Name of the superclass, base class, or super-trait
+        #[arg(long)]
+        class: String,
+        /// Names of members to push down (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        members: Vec<String>,
+        /// Optional list of specific subclass names to push down to (all discovered subclasses if omitted)
+        #[arg(long = "target-classes", value_delimiter = ',')]
+        target_classes: Vec<String>,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if warnings or non-fatal diagnostics occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a method into a field of its type, initialised wherever the
     /// type is built.
     ExtractField {
@@ -2191,6 +2240,82 @@ async fn main() -> Result<()> {
             }
             let result =
                 prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_constructor_with_builder", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::PullUp {
+            file,
+            class,
+            members,
+            target_class,
+            no_clean_siblings,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "class_name": class,
+                "members": members,
+                "clean_siblings": !no_clean_siblings,
+                "apply": apply,
+                "force": force,
+            });
+            if let Some(t) = target_class {
+                args["target_class"] = serde_json::Value::String(t);
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_pull_up", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::PushDown {
+            file,
+            class,
+            members,
+            target_classes,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "class_name": class,
+                "members": members,
+                "apply": apply,
+                "force": force,
+            });
+            if !target_classes.is_empty() {
+                args["target_classes"] = serde_json::Value::Array(
+                    target_classes.into_iter().map(serde_json::Value::String).collect(),
+                );
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_push_down", args)
                     .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
