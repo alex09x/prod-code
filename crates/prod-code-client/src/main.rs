@@ -995,6 +995,36 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         force: bool,
     },
+    /// Extract an interface, protocol, or abstract class from a class or struct.
+    #[command(alias = "extract-interface")]
+    ExtractInterface {
+        /// File that declares the class or struct
+        file: PathBuf,
+        /// Name of the class or struct to extract an interface from
+        #[arg(long = "symbol", visible_alias = "type")]
+        symbol: String,
+        /// Name of the new interface, protocol, or abstract class
+        #[arg(long = "name", visible_alias = "interface")]
+        name: String,
+        /// Optional subset of method names to include (comma-separated, defaults to all public methods)
+        #[arg(long, value_delimiter = ',')]
+        methods: Vec<String>,
+        /// 1-based line of the type declaration
+        #[arg(long, default_value_t = 0)]
+        line: u32,
+        /// 1-based column of the type declaration
+        #[arg(long, default_value_t = 0)]
+        character: u32,
+        /// Verify with compiler check
+        #[arg(long)]
+        verify: Option<String>,
+        /// Apply the changes to disk
+        #[arg(long, default_value_t = false)]
+        apply: bool,
+        /// Force apply even if warnings or non-fatal diagnostics occur
+        #[arg(long, default_value_t = false)]
+        force: bool,
+    },
     /// Promote an expression in a method into a field of its type, initialised wherever the
     /// type is built.
     ExtractField {
@@ -2473,6 +2503,48 @@ async fn main() -> Result<()> {
             }
             let result =
                 prod_code_mcp::tools::execute_tool(remote, &root, "code_replace_conditional_with_polymorphism", args)
+                    .await?;
+            for content in &result.content {
+                let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                println!("{text}");
+            }
+            if result.is_error {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Commands::ExtractInterface {
+            file,
+            symbol,
+            name,
+            methods,
+            line,
+            character,
+            verify,
+            apply,
+            force,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "path": file.to_string_lossy(),
+                "symbol": symbol,
+                "interface_name": name,
+                "line": line,
+                "character": character,
+                "apply": apply,
+                "force": force,
+            });
+            if !methods.is_empty() {
+                args["methods"] = serde_json::Value::Array(
+                    methods.into_iter().map(serde_json::Value::String).collect(),
+                );
+            }
+            if let Some(v) = verify {
+                args["verify"] = serde_json::Value::String(v);
+            }
+            let result =
+                prod_code_mcp::tools::execute_tool(remote, &root, "code_extract_interface", args)
                     .await?;
             for content in &result.content {
                 let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
