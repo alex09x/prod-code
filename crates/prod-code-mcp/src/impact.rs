@@ -27,6 +27,36 @@ pub struct Symbol {
     pub col: u32,
 }
 
+/// A call site calling a function whose signature changed.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CallSite {
+    /// Checkout-relative path of the calling file.
+    pub file: String,
+    /// 1-based line of the call.
+    pub line: u32,
+    /// 1-based column of the call.
+    pub col: u32,
+    /// Enclosing caller function name, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+    /// Whether this call site is in a sibling file (a different file than the declared function).
+    pub is_sibling: bool,
+}
+
+/// A proactive warning that an updated function signature left unadjusted call sites
+/// in sibling files before full compilation is attempted (Roadmap 8.1).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SignatureWarning {
+    /// The function whose signature was adjusted.
+    pub symbol: Symbol,
+    /// The signature in the base revision.
+    pub old_signature: String,
+    /// The signature in the current working tree.
+    pub new_signature: String,
+    /// Call sites that were left unadjusted in the diff.
+    pub unadjusted_call_sites: Vec<CallSite>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ImpactReport {
     pub language: String,
@@ -53,6 +83,10 @@ pub struct ImpactReport {
     /// so only the whole suite can be trusted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub incomplete: Vec<Gap>,
+    /// Proactive warnings when an updated function signature left unadjusted call sites
+    /// in sibling files before full compilation is attempted (Roadmap 8.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signature_warnings: Vec<SignatureWarning>,
 }
 
 /// Something the analysis could not establish, so a test that reaches the change may be
@@ -237,6 +271,32 @@ impl ImpactReport {
             }
             out.push('\n');
         }
+        if !self.signature_warnings.is_empty() {
+            out.push_str("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:\n\n");
+            for warn in &self.signature_warnings {
+                out.push_str(&format!(
+                    "- `{}` (`{}:{}`):\n  - Old: `{}`\n  - New: `{}`\n  - Unadjusted call sites ({}):\n",
+                    warn.symbol.name,
+                    warn.symbol.file,
+                    warn.symbol.line,
+                    warn.old_signature,
+                    warn.new_signature,
+                    warn.unadjusted_call_sites.len()
+                ));
+                for site in &warn.unadjusted_call_sites {
+                    let tag = if site.is_sibling { "[sibling] " } else { "" };
+                    let caller_str = match &site.caller {
+                        Some(c) => format!(" in `{c}`"),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!(
+                        "    - {}`{}:{}:{}`{}\n",
+                        tag, site.file, site.line, site.col, caller_str
+                    ));
+                }
+            }
+            out.push('\n');
+        }
         match command {
             Some(c) => out.push_str(&format!("Ran `{}`: {why}.\n", c.join(" "))),
             None => out.push_str(&format!("Ran nothing: {why}.\n")),
@@ -289,6 +349,37 @@ impl ImpactReport {
                     "  • {}  {}:{}:{}\n",
                     s.name, s.file, s.line, s.col
                 ));
+            }
+        }
+        if !self.signature_warnings.is_empty() {
+            out.push_str("signature warnings (unadjusted call sites before full compilation):\n");
+            for warn in &self.signature_warnings {
+                out.push_str(&format!(
+                    "  ⚠️  `{}` signature changed in {}:{}:{}\n",
+                    warn.symbol.name, warn.symbol.file, warn.symbol.line, warn.symbol.col
+                ));
+                out.push_str(&format!("      old: {}\n", warn.old_signature));
+                out.push_str(&format!("      new: {}\n", warn.new_signature));
+                let sibling_count = warn
+                    .unadjusted_call_sites
+                    .iter()
+                    .filter(|c| c.is_sibling)
+                    .count();
+                out.push_str(&format!(
+                    "      unadjusted sibling call sites ({}):\n",
+                    sibling_count
+                ));
+                for site in &warn.unadjusted_call_sites {
+                    let caller_str = match &site.caller {
+                        Some(c) => format!(" in `{c}`"),
+                        None => String::new(),
+                    };
+                    let tag = if site.is_sibling { "[sibling] " } else { "" };
+                    out.push_str(&format!(
+                        "        • {}{}:{}:{}{}\n",
+                        tag, site.file, site.line, site.col, caller_str
+                    ));
+                }
             }
         }
         if !self.callers.is_empty() {
@@ -1485,6 +1576,7 @@ pub async fn analyze(
     let mut changed: Vec<Symbol> = Vec::new();
     let mut unattributed: Vec<String> = Vec::new();
     let mut incomplete: Vec<Gap> = Vec::new();
+    let mut adjusted_signatures: Vec<(Symbol, String, String, u32, u32)> = Vec::new();
 
     for (file, change) in &changes {
         if !is_source_file(file) {
@@ -1586,7 +1678,33 @@ pub async fn analyze(
                     col: *sc,
                 };
                 if !changed.contains(&sym) {
-                    changed.push(sym);
+                    changed.push(sym.clone());
+                }
+
+                let current_lines: Vec<&str> = text.lines().collect();
+                if let Some((sig_start, sig_end, curr_sig)) =
+                    extract_signature_span(&current_lines, *sl, name, &language)
+                    && file_hunks.iter().any(|h| h.touches(sig_start, sig_end))
+                {
+                    let base_ref = base.unwrap_or("HEAD");
+                    if let Ok(base_bytes) = git(root, &["show", &format!("{base_ref}:{file}")])
+                        && let Ok(base_text) = std::str::from_utf8(&base_bytes)
+                    {
+                        let base_lines: Vec<&str> = base_text.lines().collect();
+                        if let Some(base_line) = find_function_in_text(&base_lines, name, &language)
+                            && let Some((_, _, base_sig)) =
+                                extract_signature_span(&base_lines, base_line, name, &language)
+                            && base_sig != curr_sig
+                        {
+                            adjusted_signatures.push((
+                                sym,
+                                base_sig,
+                                curr_sig,
+                                sig_start,
+                                sig_end,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -1726,6 +1844,48 @@ pub async fn analyze(
         }
     }
 
+    let mut signature_warnings: Vec<SignatureWarning> = Vec::new();
+    for (sym, old_sig, new_sig, sig_start, sig_end) in adjusted_signatures {
+        let sites = discover_call_sites(&mut session, root, &sym).await;
+        let mut unadjusted = Vec::new();
+        for (call_file, call_line, call_col, caller) in sites {
+            if call_file == sym.file && call_line >= sig_start && call_line <= sig_end {
+                continue;
+            }
+            let is_sibling = call_file != sym.file;
+            let adjusted = match changes.get(&call_file) {
+                None => false,
+                Some(Change::Hunks(hunks)) => hunks.iter().any(|h| h.touches(call_line, call_line)),
+                Some(Change::Unknown(_)) => true,
+            };
+            if !adjusted {
+                unadjusted.push(CallSite {
+                    file: call_file,
+                    line: call_line,
+                    col: call_col,
+                    caller,
+                    is_sibling,
+                });
+            }
+        }
+        if !unadjusted.is_empty() {
+            unadjusted.sort_by(|a, b| {
+                b.is_sibling
+                    .cmp(&a.is_sibling)
+                    .then_with(|| a.file.cmp(&b.file))
+                    .then_with(|| a.line.cmp(&b.line))
+                    .then_with(|| a.col.cmp(&b.col))
+            });
+            unadjusted.dedup();
+            signature_warnings.push(SignatureWarning {
+                symbol: sym,
+                old_signature: old_sig,
+                new_signature: new_sig,
+                unadjusted_call_sites: unadjusted,
+            });
+        }
+    }
+
     session.close().await;
     let tests: Vec<Symbol> = tests.into_iter().collect();
     let test_command = test_command(&language, &tools, &tests);
@@ -1741,7 +1901,364 @@ pub async fn analyze(
         index,
         reaches,
         incomplete,
+        signature_warnings,
     })
+}
+
+fn normalize_signature(lines: &[&str], language: &str) -> String {
+    let mut parts = Vec::new();
+    for line in lines {
+        let mut trimmed = line.trim();
+        if language == "python" {
+            if let Some(pos) = trimmed.find('#') {
+                trimmed = trimmed[..pos].trim();
+            }
+        } else if let Some(pos) = trimmed.find("//") {
+            trimmed = trimmed[..pos].trim();
+        }
+        if !trimmed.is_empty() {
+            parts.push(trimmed);
+        }
+    }
+    let joined = parts.join(" ");
+    let mut out = String::new();
+    let mut prev_ws = false;
+    for c in joined.chars() {
+        if c.is_whitespace() {
+            if !prev_ws {
+                out.push(' ');
+                prev_ws = true;
+            }
+        } else {
+            out.push(c);
+            prev_ws = false;
+        }
+    }
+    let trimmed = out.trim_end_matches(|c: char| c == '{' || c == ':' || c == ';' || c.is_whitespace());
+    trimmed.replace("( ", "(").replace(" )", ")").to_string()
+}
+
+fn extract_signature_span(
+    lines: &[&str],
+    line: u32,
+    _name: &str,
+    language: &str,
+) -> Option<(u32, u32, String)> {
+    if line == 0 || (line as usize) > lines.len() {
+        return None;
+    }
+    let line_idx = (line - 1) as usize;
+    let mut start_idx = line_idx;
+    while start_idx > 0 && start_idx + 3 >= line_idx {
+        let prev = lines[start_idx - 1].trim();
+        if prev.starts_with('@')
+            || prev.starts_with("#[")
+            || prev.starts_with("template")
+            || prev.ends_with("async")
+            || prev.ends_with("pub")
+            || prev.ends_with("export")
+        {
+            start_idx -= 1;
+        } else {
+            break;
+        }
+    }
+
+    let mut end_idx = line_idx;
+    let mut paren_depth = 0i32;
+    let mut angle_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut param_started = false;
+
+    let max_scan = (line_idx + 25).min(lines.len());
+    for idx in start_idx..max_scan {
+        let line_text = lines[idx];
+        let trimmed = line_text.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
+            continue;
+        }
+
+        let mut in_str = false;
+        let mut str_char = ' ';
+        let mut chars = line_text.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            if in_str {
+                if c == '\\' {
+                    let _ = chars.next();
+                } else if c == str_char {
+                    in_str = false;
+                }
+                continue;
+            }
+            if c == '"' || c == '\'' || c == '`' {
+                in_str = true;
+                str_char = c;
+                continue;
+            }
+
+            match c {
+                '(' => {
+                    paren_depth += 1;
+                    param_started = true;
+                }
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                    }
+                }
+                '<' if !trimmed.starts_with("<-") => {
+                    angle_depth += 1;
+                }
+                '>' if angle_depth > 0 => {
+                    angle_depth -= 1;
+                }
+                '[' => {
+                    bracket_depth += 1;
+                }
+                ']' => {
+                    if bracket_depth > 0 {
+                        bracket_depth -= 1;
+                    }
+                }
+                ':' if language == "python" && param_started && paren_depth == 0 => {
+                    end_idx = idx;
+                    let sig_text = normalize_signature(&lines[start_idx..=end_idx], language);
+                    return Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text));
+                }
+                '{' | ';'
+                    if language != "python"
+                        && param_started
+                        && paren_depth == 0
+                        && angle_depth == 0
+                        && bracket_depth == 0 =>
+                {
+                    end_idx = idx;
+                    let sig_text = normalize_signature(&lines[start_idx..=end_idx], language);
+                    return Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text));
+                }
+                _ => {}
+            }
+        }
+        end_idx = idx;
+    }
+
+    let sig_text = normalize_signature(&lines[start_idx..=end_idx], language);
+    Some(((start_idx + 1) as u32, (end_idx + 1) as u32, sig_text))
+}
+
+fn find_function_in_text(lines: &[&str], name: &str, language: &str) -> Option<u32> {
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') || trimmed.starts_with('*') {
+            continue;
+        }
+        let matched = match language {
+            "python" => {
+                if let Some(rest) = trimmed.strip_prefix("def ") {
+                    let rest = rest.trim_start();
+                    rest.starts_with(name)
+                        && rest[name.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                } else if let Some(rest) = trimmed.strip_prefix("async def ") {
+                    let rest = rest.trim_start();
+                    rest.starts_with(name)
+                        && rest[name.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                } else {
+                    false
+                }
+            }
+            "rust" => {
+                let has_fn = trimmed.contains("fn ");
+                if has_fn {
+                    let pattern1 = format!("fn {name}");
+                    let pattern2 = format!("fn r#{name}");
+                    if let Some(pos) = trimmed.find(&pattern1) {
+                        let after = pos + pattern1.len();
+                        trimmed[after..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                    } else if let Some(pos) = trimmed.find(&pattern2) {
+                        let after = pos + pattern2.len();
+                        trimmed[after..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            "go" => {
+                if let Some(rest) = trimmed.strip_prefix("func ") {
+                    let rest = rest.trim_start();
+                    if let Some(tail) = rest.strip_prefix(name) {
+                        tail.chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+                    } else if let Some(close_paren) = rest.find(')') {
+                        let after = rest[close_paren + 1..].trim_start();
+                        after
+                            .strip_prefix(name)
+                            .is_some_and(|tail| tail.chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_'))
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+            _ => {
+                let has_decl = trimmed.contains("func ")
+                    || trimmed.contains("function ")
+                    || trimmed.contains("def ")
+                    || trimmed.contains("fn ")
+                    || trimmed.contains(&format!("{name}("))
+                    || trimmed.contains(&format!("{name}<"));
+                if has_decl {
+                    if let Some(pos) = trimmed.find(name) {
+                        let before_ok = if pos == 0 {
+                            true
+                        } else {
+                            let prev = trimmed[..pos].chars().last().unwrap();
+                            !prev.is_alphanumeric() && prev != '_' && prev != '.'
+                        };
+                        let after_pos = pos + name.len();
+                        let after_ok = trimmed[after_pos..]
+                            .chars()
+                            .next()
+                            .is_none_or(|c| !c.is_alphanumeric() && c != '_');
+                        before_ok && after_ok
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
+        };
+        if matched {
+            return Some((i + 1) as u32);
+        }
+    }
+    None
+}
+
+async fn discover_call_sites(
+    session: &mut LspSession,
+    root: &Path,
+    sym: &Symbol,
+) -> Vec<(String, u32, u32, Option<String>)> {
+    let mut sites = Vec::new();
+    let abs = root.join(&sym.file);
+    let Ok(uri) = Url::from_file_path(&abs).map(|u| u.to_string()) else {
+        return sites;
+    };
+    let position = serde_json::json!({
+        "line": sym.line.saturating_sub(1),
+        "character": sym.col.saturating_sub(1)
+    });
+
+    if let Ok(serde_json::Value::Array(locs)) = session
+        .query(
+            &abs,
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": position,
+                "context": { "includeDeclaration": false }
+            }),
+        )
+        .await
+    {
+        for loc in locs {
+            let Some(loc_uri) = loc.get("uri").and_then(|u| u.as_str()) else {
+                continue;
+            };
+            let rel_file = rel(root, loc_uri);
+            if rel_file.starts_with('/') {
+                continue;
+            }
+            if let Some(start) = loc.pointer("/range/start")
+                && let Some(line) = one_based(start, "line")
+                && let Some(col) = one_based(start, "character")
+            {
+                sites.push((rel_file, line, col, None));
+            }
+        }
+    }
+
+    let prepare = "textDocument/prepareCallHierarchy";
+    if let Ok(serde_json::Value::Array(items)) = session
+        .query(
+            &abs,
+            prepare,
+            serde_json::json!({ "textDocument": { "uri": uri }, "position": position }),
+        )
+        .await
+    {
+        for item in items {
+            if let Ok(serde_json::Value::Array(edges)) = session
+                .query(
+                    &abs,
+                    "callHierarchy/incomingCalls",
+                    serde_json::json!({ "item": item }),
+                )
+                .await
+            {
+                for edge in edges {
+                    let caller_name = edge
+                        .pointer("/from/name")
+                        .and_then(|n| n.as_str())
+                        .map(ToString::to_string);
+                    let caller_uri = edge.pointer("/from/uri").and_then(|u| u.as_str());
+                    let caller_file = caller_uri.map(|u| rel(root, u));
+
+                    if let Some(serde_json::Value::Array(ranges)) = edge.get("fromRanges") {
+                        for range in ranges {
+                            if let Some(rel_file) = &caller_file
+                                && !rel_file.starts_with('/')
+                                && let Some(start) = range.get("start")
+                                && let Some(line) = one_based(start, "line")
+                                && let Some(col) = one_based(start, "character")
+                            {
+                                sites.push((rel_file.clone(), line, col, caller_name.clone()));
+                            }
+                        }
+                    } else if let Some(rel_file) = caller_file
+                        && !rel_file.starts_with('/')
+                        && let Some(start) = edge
+                            .pointer("/from/selectionRange/start")
+                            .or_else(|| edge.pointer("/from/range/start"))
+                        && let Some(line) = one_based(start, "line")
+                        && let Some(col) = one_based(start, "character")
+                    {
+                        sites.push((rel_file, line, col, caller_name.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut map: BTreeMap<(String, u32, u32), Option<String>> = BTreeMap::new();
+    for (file, line, col, caller) in sites {
+        let entry = map.entry((file, line, col)).or_default();
+        if entry.is_none() && caller.is_some() {
+            *entry = caller;
+        }
+    }
+
+    map.into_iter()
+        .map(|((file, line, col), caller)| (file, line, col, caller))
+        .collect()
 }
 
 /// Adds `gap` unless it is already noted: two walks through one function meet the same gap.
@@ -2218,6 +2735,7 @@ mod tests {
             index: None,
             reaches: Vec::new(),
             incomplete: Vec::new(),
+            signature_warnings: Vec::new(),
         };
         assert_eq!(report.full_suite_reason(), None);
         // Tests reached, but no way to select them.
@@ -2435,6 +2953,7 @@ mod tests {
             index: None,
             reaches: vec![],
             incomplete: vec![gap],
+            signature_warnings: vec![],
         };
         assert!(report.full_suite_reason().is_some());
         assert_eq!(report.ci_decision().run, CiRun::WholeSuite);
@@ -2452,5 +2971,98 @@ mod tests {
             .collect();
         let cmd = test_command("rust", &crate::verify::ProjectTools::default(), &tests).unwrap();
         assert_eq!(cmd, vec!["cargo", "test", "--workspace"]);
+    }
+
+    #[test]
+    fn test_polyglot_signature_extraction_and_normalization() {
+        let rust_src = "pub fn add_item(\n    id: u64,\n    name: &str,\n) -> Result<(), Error> {\n    Ok(())\n}\n";
+        let lines: Vec<&str> = rust_src.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "add_item", "rust").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 4);
+        assert_eq!(sig, "pub fn add_item(id: u64, name: &str,) -> Result<(), Error>");
+
+        let go_src = "func (s *Store) Save(\n    ctx context.Context,\n    data []byte,\n) error {\n    return nil\n}\n";
+        let lines: Vec<&str> = go_src.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "Save", "go").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 4);
+        assert_eq!(sig, "func (s *Store) Save(ctx context.Context, data []byte,) error");
+
+        let py_src = "def calculate_price(\n    base: float,\n    tax_rate: float = 0.05,\n) -> float:\n    return base * (1 + tax_rate)\n";
+        let lines: Vec<&str> = py_src.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "calculate_price", "python").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 4);
+        assert_eq!(sig, "def calculate_price(base: float, tax_rate: float = 0.05,) -> float");
+
+        let ts_src = "export async function fetchUser(\n    userId: string,\n    timeoutMs: number = 5000\n): Promise<User> {\n    return null;\n}\n";
+        let lines: Vec<&str> = ts_src.lines().collect();
+        let (start, end, sig) = extract_signature_span(&lines, 1, "fetchUser", "typescript").unwrap();
+        assert_eq!(start, 1);
+        assert_eq!(end, 4);
+        assert_eq!(sig, "export async function fetchUser(userId: string, timeoutMs: number = 5000): Promise<User>");
+    }
+
+    #[test]
+    fn test_signature_warning_rendering() {
+        let report = ImpactReport {
+            language: "rust".to_string(),
+            base: "HEAD".to_string(),
+            changed_files: vec!["src/order.rs".to_string()],
+            changed: vec![Symbol {
+                name: "process_order".to_string(),
+                file: "src/order.rs".to_string(),
+                line: 12,
+                col: 8,
+            }],
+            callers: vec![],
+            tests: vec![],
+            test_command: None,
+            unattributed_files: vec![],
+            index: None,
+            reaches: vec![],
+            incomplete: vec![],
+            signature_warnings: vec![SignatureWarning {
+                symbol: Symbol {
+                    name: "process_order".to_string(),
+                    file: "src/order.rs".to_string(),
+                    line: 12,
+                    col: 8,
+                },
+                old_signature: "pub fn process_order(id: u64) -> bool".to_string(),
+                new_signature: "pub fn process_order(id: u64, priority: bool) -> bool".to_string(),
+                unadjusted_call_sites: vec![
+                    CallSite {
+                        file: "src/worker.rs".to_string(),
+                        line: 45,
+                        col: 10,
+                        caller: Some("run_worker".to_string()),
+                        is_sibling: true,
+                    },
+                    CallSite {
+                        file: "src/order.rs".to_string(),
+                        line: 99,
+                        col: 5,
+                        caller: Some("retry_order".to_string()),
+                        is_sibling: false,
+                    },
+                ],
+            }],
+        };
+
+        let rendered = report.render();
+        assert!(rendered.contains("signature warnings (unadjusted call sites before full compilation):"));
+        assert!(rendered.contains("`process_order` signature changed in src/order.rs:12:8"));
+        assert!(rendered.contains("old: pub fn process_order(id: u64) -> bool"));
+        assert!(rendered.contains("new: pub fn process_order(id: u64, priority: bool) -> bool"));
+        assert!(rendered.contains("unadjusted sibling call sites (1):"));
+        assert!(rendered.contains("• [sibling] src/worker.rs:45:10 in `run_worker`"));
+        assert!(rendered.contains("• src/order.rs:99:5 in `retry_order`"));
+
+        let ci = report.ci_summary(None, "no tests affected");
+        assert!(ci.contains("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:"));
+        assert!(ci.contains("`process_order` (`src/order.rs:12`)"));
+        assert!(ci.contains("[sibling] `src/worker.rs:45:10` in `run_worker`"));
     }
 }

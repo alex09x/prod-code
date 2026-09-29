@@ -327,6 +327,7 @@ async fn impact_report_render_lists_every_section_and_quotes_the_run_command() {
         index: None,
         reaches: vec![],
         incomplete: vec![],
+        signature_warnings: vec![],
     };
 
     let text = report.render();
@@ -359,6 +360,7 @@ async fn impact_report_render_says_when_no_test_reaches_the_change() {
         index: None,
         reaches: vec![],
         incomplete: vec![],
+        signature_warnings: vec![],
     };
 
     let text = report.render();
@@ -388,6 +390,7 @@ async fn impact_report_says_when_the_index_could_not_be_built() {
         index: Some(build(ok)),
         reaches: vec![],
         incomplete: vec![],
+        signature_warnings: vec![],
     };
 
     let built = report(true).render();
@@ -529,6 +532,97 @@ async fn analyze_walks_the_call_hierarchy_from_a_changed_function_to_the_test_th
         vec![(sym("helper", "src/lib.rs", 1, 8), 2)]
     );
     assert!(impact::suspects_for(&report.reaches, "tests::other").is_empty());
+}
+
+/// When a function signature is updated in one file, unadjusted call sites in sibling files
+/// are proactively detected and reported as signature warnings before compilation (Roadmap 8.1).
+#[tokio::test]
+async fn analyze_proactively_warns_when_signature_change_leaves_unadjusted_sibling_call_site() {
+    let ws = Workspace::new(&[
+        ("Cargo.toml", CARGO_TOML),
+        (
+            "src/lib.rs",
+            "pub fn helper(x: i32) -> i32 {\n    x + 1\n}\n",
+        ),
+        (
+            "src/sibling.rs",
+            "pub fn caller() -> i32 {\n    crate::helper(10)\n}\n",
+        ),
+    ]);
+    let root = ws.root();
+    // Signature change in src/lib.rs: helper(x: i32) -> helper(x: i32, extra: bool)
+    ws.write(
+        "src/lib.rs",
+        "pub fn helper(x: i32, extra: bool) -> i32 {\n    if extra { x + 2 } else { x + 1 }\n}\n",
+    );
+    // src/sibling.rs is left unadjusted!
+    let lib_uri = prod_code_protocol::path::file_uri(ws.path("src/lib.rs").as_path());
+    let sib_uri = prod_code_protocol::path::file_uri(ws.path("src/sibling.rs").as_path());
+
+    let remote = ScriptedGateway::start_arc(Arc::new(move |method, _params| match method {
+        "textDocument/documentSymbol" => serde_json::json!([
+            answers::document_symbol("helper", 12, 1, 3, 8),
+        ]),
+        "textDocument/prepareCallHierarchy" => {
+            serde_json::json!([{ "name": "helper", "uri": lib_uri, "_id": "helper" }])
+        }
+        "callHierarchy/incomingCalls" => {
+            serde_json::json!([{
+                "from": {
+                    "name": "caller",
+                    "uri": sib_uri,
+                    "selectionRange": { "start": { "line": 0, "character": 7 } }
+                },
+                "fromRanges": [
+                    { "start": { "line": 1, "character": 4 }, "end": { "line": 1, "character": 17 } }
+                ]
+            }])
+        }
+        "textDocument/references" => {
+            serde_json::json!([
+                {
+                    "uri": sib_uri,
+                    "range": {
+                        "start": { "line": 1, "character": 4 },
+                        "end": { "line": 1, "character": 17 }
+                    }
+                }
+            ])
+        }
+        _ => serde_json::Value::Null,
+    }))
+    .await
+    .addr();
+
+    let report = impact::analyze(remote, &root, None, 2)
+        .await
+        .expect("analysis runs");
+
+    assert_eq!(report.signature_warnings.len(), 1);
+    let warn = &report.signature_warnings[0];
+    assert_eq!(warn.symbol.name, "helper");
+    assert_eq!(warn.symbol.file, "src/lib.rs");
+    assert!(warn.old_signature.contains("helper(x: i32)"));
+    assert!(warn.new_signature.contains("helper(x: i32, extra: bool)"));
+    assert_eq!(warn.unadjusted_call_sites.len(), 1);
+    let site = &warn.unadjusted_call_sites[0];
+    assert_eq!(site.file, "src/sibling.rs");
+    assert_eq!(site.line, 2);
+    assert_eq!(site.col, 5);
+    assert_eq!(site.caller.as_deref(), Some("caller"));
+    assert!(site.is_sibling);
+
+    let rendered = report.render();
+    assert!(rendered.contains("signature warnings (unadjusted call sites before full compilation):"));
+    assert!(rendered.contains("`helper` signature changed in src/lib.rs:1:8"));
+    assert!(rendered.contains("old: pub fn helper(x: i32) -> i32"));
+    assert!(rendered.contains("new: pub fn helper(x: i32, extra: bool) -> i32"));
+    assert!(rendered.contains("unadjusted sibling call sites (1):"));
+    assert!(rendered.contains("• [sibling] src/sibling.rs:2:5 in `caller`"));
+
+    let ci = report.ci_summary(None, "no tests affected");
+    assert!(ci.contains("⚠️ **Signature Warnings**: updated signatures left unadjusted call sites:"));
+    assert!(ci.contains("[sibling] `src/sibling.rs:2:5` in `caller`"));
 }
 
 /// Two changed functions reach one test: the nearer is listed first, each once, and a
