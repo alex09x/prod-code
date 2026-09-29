@@ -1057,6 +1057,16 @@ fn plan_command_basic(
         ("php", VerifyKind::Test) => vec!["phpunit"],
         ("ruby", VerifyKind::Check) => vec!["bundle", "exec", "rake", "test"],
         ("ruby", VerifyKind::Test) => vec!["bundle", "exec", "rake", "test"],
+        ("dart", VerifyKind::Check) => vec!["dart", "analyze"],
+        ("dart", VerifyKind::Test) => vec!["dart", "test"],
+        ("zig", VerifyKind::Check) => vec!["zig", "build"],
+        ("zig", VerifyKind::Test) => vec!["zig", "test"],
+        ("elixir", VerifyKind::Check) => vec!["mix", "compile"],
+        ("elixir", VerifyKind::Test) => vec!["mix", "test"],
+        ("scala", VerifyKind::Check) => vec!["sbt", "compile"],
+        ("scala", VerifyKind::Test) => vec!["sbt", "test"],
+        ("lua", VerifyKind::Check) => vec!["luacheck", "."],
+        ("lua", VerifyKind::Test) => vec!["busted"],
         _ => {
             return Err(anyhow!(
                 "no {} command for language {language}",
@@ -1090,6 +1100,25 @@ fn plan_command_basic(
                 cmd.push(filter.to_string());
             }
             ("php", VerifyKind::Test) => {
+                cmd.push("--filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("dart", VerifyKind::Test) => {
+                cmd.push("--name".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("zig", VerifyKind::Test) => {
+                cmd.push("--test-filter".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("elixir", VerifyKind::Test) => {
+                cmd.push("--only".to_string());
+                cmd.push(filter.to_string());
+            }
+            ("scala", VerifyKind::Test) => {
+                cmd.push(format!("testOnly *{}", filter));
+            }
+            ("lua", VerifyKind::Test) => {
                 cmd.push("--filter".to_string());
                 cmd.push(filter.to_string());
             }
@@ -2849,6 +2878,46 @@ expected 42, got 43\n\
         assert_eq!(
             plan_command("ruby", VerifyKind::Check, None).unwrap(),
             vec!["bundle", "exec", "rake", "test"]
+        );
+        assert_eq!(
+            plan_command("dart", VerifyKind::Check, None).unwrap(),
+            vec!["dart", "analyze"]
+        );
+        assert_eq!(
+            plan_command("dart", VerifyKind::Test, Some("my_test")).unwrap(),
+            vec!["dart", "test", "--name", "my_test"]
+        );
+        assert_eq!(
+            plan_command("zig", VerifyKind::Check, None).unwrap(),
+            vec!["zig", "build"]
+        );
+        assert_eq!(
+            plan_command("zig", VerifyKind::Test, Some("foo")).unwrap(),
+            vec!["zig", "test", "--test-filter", "foo"]
+        );
+        assert_eq!(
+            plan_command("elixir", VerifyKind::Check, None).unwrap(),
+            vec!["mix", "compile"]
+        );
+        assert_eq!(
+            plan_command("elixir", VerifyKind::Test, Some("tag")).unwrap(),
+            vec!["mix", "test", "--only", "tag"]
+        );
+        assert_eq!(
+            plan_command("scala", VerifyKind::Check, None).unwrap(),
+            vec!["sbt", "compile"]
+        );
+        assert_eq!(
+            plan_command("scala", VerifyKind::Test, Some("Spec")).unwrap(),
+            vec!["sbt", "test", "testOnly *Spec"]
+        );
+        assert_eq!(
+            plan_command("lua", VerifyKind::Check, None).unwrap(),
+            vec!["luacheck", "."]
+        );
+        assert_eq!(
+            plan_command("lua", VerifyKind::Test, Some("suite")).unwrap(),
+            vec!["busted", "--filter", "suite"]
         );
         assert!(plan_command("fortran", VerifyKind::Check, None).is_err());
         let report = VerifyReport {

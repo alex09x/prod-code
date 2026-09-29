@@ -201,6 +201,7 @@ async fn serve_mock(socket: TcpStream, script: Script) -> anyhow::Result<()> {
                         stale_paths: Vec::new(),
                         engine_age_ms: None,
                         index_gated: false,
+                        capabilities: None,
                     }))
                     .await?;
             }

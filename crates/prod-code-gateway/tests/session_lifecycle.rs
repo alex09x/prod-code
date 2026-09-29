@@ -411,6 +411,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
             client_name: "session-lifecycle-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
@@ -465,6 +466,7 @@ async fn validation_wait_cancellation_and_failed_response_release_every_owner() 
         .send(WireMessage::HandshakeRequest(HandshakeRequest {
             protocol_version: PROTOCOL_VERSION,
             supported_versions: Some(vec![PROTOCOL_VERSION]),
+            capabilities: None,
             client_name: "session-lifecycle-test".to_string(),
             client_pid: std::process::id(),
             auth_token: None,
@@ -526,6 +528,7 @@ impl WireSession {
             .send(WireMessage::HandshakeRequest(HandshakeRequest {
                 protocol_version: PROTOCOL_VERSION,
                 supported_versions: Some(vec![PROTOCOL_VERSION]),
+                capabilities: None,
                 client_name: "session-lifecycle-real-engine".to_string(),
                 client_pid: std::process::id(),
                 auth_token: None,

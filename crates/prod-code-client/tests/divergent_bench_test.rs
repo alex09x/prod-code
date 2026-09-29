@@ -54,6 +54,7 @@ async fn handle_connection(stream: TcpStream) {
                     stale_paths: Vec::new(),
                     engine_age_ms: None,
                     index_gated: false,
+                    capabilities: None,
                 });
                 if framed.send(resp).await.is_err() {
                     break;

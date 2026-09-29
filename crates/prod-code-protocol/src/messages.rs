@@ -98,6 +98,11 @@ pub enum EngineKind {
     Csharp,
     Php,
     Ruby,
+    Dart,
+    Zig,
+    Elixir,
+    Scala,
+    Lua,
     Generic,
 }
 
@@ -115,6 +120,11 @@ impl EngineKind {
             EngineKind::Csharp => "csharp",
             EngineKind::Php => "php",
             EngineKind::Ruby => "ruby",
+            EngineKind::Dart => "dart",
+            EngineKind::Zig => "zig",
+            EngineKind::Elixir => "elixir",
+            EngineKind::Scala => "scala",
+            EngineKind::Lua => "lua",
             EngineKind::Generic => "generic",
         }
     }
@@ -141,9 +151,52 @@ impl std::str::FromStr for EngineKind {
             "csharp" | "cs" | "c#" | "dotnet" => EngineKind::Csharp,
             "php" => EngineKind::Php,
             "ruby" | "rb" => EngineKind::Ruby,
+            "dart" => EngineKind::Dart,
+            "zig" => EngineKind::Zig,
+            "elixir" | "ex" | "exs" => EngineKind::Elixir,
+            "scala" | "sbt" => EngineKind::Scala,
+            "lua" => EngineKind::Lua,
             _ => EngineKind::Generic,
         })
     }
+}
+
+/// Client capabilities advertised during handshake.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientCapabilities {
+    #[serde(default)]
+    pub direct_edit: bool,
+    #[serde(default)]
+    pub watch_files: bool,
+    #[serde(default)]
+    pub indexing_status: bool,
+    #[serde(default)]
+    pub shadow_runs: bool,
+    #[serde(default)]
+    pub multi_root: bool,
+    #[serde(default)]
+    pub sync_chunking: bool,
+    #[serde(default)]
+    pub unix_socket_local: bool,
+}
+
+/// Server capabilities granted during handshake.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerCapabilities {
+    #[serde(default)]
+    pub direct_edit: bool,
+    #[serde(default)]
+    pub watch_files: bool,
+    #[serde(default)]
+    pub indexing_status: bool,
+    #[serde(default)]
+    pub shadow_runs: bool,
+    #[serde(default)]
+    pub multi_root: bool,
+    #[serde(default)]
+    pub sync_chunking: bool,
+    #[serde(default)]
+    pub unix_socket_local: bool,
 }
 
 /// Initial handshake request sent by client upon connection.
@@ -154,6 +207,9 @@ pub struct HandshakeRequest {
     /// `protocol_version`; present-but-empty is invalid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supported_versions: Option<Vec<u32>>,
+    /// Negotiated client capabilities offer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ClientCapabilities>,
     pub client_name: String,
     pub client_pid: u32,
     pub auth_token: Option<String>,
@@ -217,6 +273,9 @@ pub struct HandshakeResponse {
     /// gateway too old to do so, and for a server whose readiness is not known (#391).
     #[serde(default)]
     pub index_gated: bool,
+    /// Negotiated server capabilities granted to this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<ServerCapabilities>,
 }
 
 /// Real-time health and session status of the remote gateway.

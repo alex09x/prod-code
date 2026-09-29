@@ -1,4 +1,4 @@
-use crate::{HandshakeRequest, PROTOCOL_VERSION};
+use crate::{ClientCapabilities, HandshakeRequest, PROTOCOL_VERSION, ServerCapabilities};
 use std::fmt;
 
 /// Wire protocol versions implemented by this build, in no particular order.
@@ -7,6 +7,38 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: &[u32] = &[PROTOCOL_VERSION];
 /// The version offer sent by a current client.
 pub fn supported_protocol_versions() -> Vec<u32> {
     SUPPORTED_PROTOCOL_VERSIONS.to_vec()
+}
+
+/// Returns the server capabilities supported by this build.
+pub fn default_server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        direct_edit: true,
+        watch_files: true,
+        indexing_status: true,
+        shadow_runs: true,
+        multi_root: true,
+        sync_chunking: true,
+        unix_socket_local: cfg!(unix),
+    }
+}
+
+/// Negotiates session capabilities between client offer and server supported capabilities.
+pub fn negotiate_capabilities(
+    client_offer: Option<&ClientCapabilities>,
+    server_supported: &ServerCapabilities,
+) -> ServerCapabilities {
+    match client_offer {
+        Some(client) => ServerCapabilities {
+            direct_edit: client.direct_edit && server_supported.direct_edit,
+            watch_files: client.watch_files && server_supported.watch_files,
+            indexing_status: client.indexing_status && server_supported.indexing_status,
+            shadow_runs: client.shadow_runs && server_supported.shadow_runs,
+            multi_root: client.multi_root && server_supported.multi_root,
+            sync_chunking: client.sync_chunking && server_supported.sync_chunking,
+            unix_socket_local: client.unix_socket_local && server_supported.unix_socket_local,
+        },
+        None => server_supported.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

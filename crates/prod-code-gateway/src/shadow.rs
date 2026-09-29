@@ -29,7 +29,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
+use prod_code_protocol::AnyStream;
 use tokio_util::codec::Framed;
 
 /// Bytes of output kept per hypothesis unless the request says otherwise.
@@ -1393,7 +1393,7 @@ fn default_parallel() -> usize {
 /// client leaves, and finishes with one `ShadowRunResponse`.
 pub async fn run_shadow(
     state: &crate::ServerState,
-    framed: &mut Framed<TcpStream, ProdCodeCodec>,
+    framed: &mut Framed<AnyStream, ProdCodeCodec>,
     req: ShadowRunRequest,
 ) -> Result<()> {
     let workspace = crate::workspace::server_workspace_path(

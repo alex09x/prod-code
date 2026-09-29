@@ -14,12 +14,13 @@
 use crate::workspace::WatchedChange;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use prod_code_protocol::{PathTranslator, ProdCodeCodec, WireMessage, transport::read_lsp_frame};
+use prod_code_protocol::{
+    AnyStream, PathTranslator, ProdCodeCodec, WireMessage, transport::read_lsp_frame,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tokio::task::{AbortHandle, JoinHandle};
 use tokio::time::{Instant, timeout_at};
 use tokio_util::codec::Framed;
@@ -80,6 +81,16 @@ pub fn server_command(engine: &str) -> Option<ServerCommand> {
         "python" => from(GenericLspConfig::for_python()),
         "typescript" => from(GenericLspConfig::for_typescript()),
         "swift" => from(GenericLspConfig::for_swift()),
+        "java" => from(GenericLspConfig::for_java()),
+        "kotlin" => from(GenericLspConfig::for_kotlin()),
+        "csharp" => from(GenericLspConfig::for_csharp()),
+        "php" => from(GenericLspConfig::for_php()),
+        "ruby" => from(GenericLspConfig::for_ruby()),
+        "dart" => from(GenericLspConfig::for_dart()),
+        "zig" => from(GenericLspConfig::for_zig()),
+        "elixir" => from(GenericLspConfig::for_elixir()),
+        "scala" => from(GenericLspConfig::for_scala()),
+        "lua" => from(GenericLspConfig::for_lua()),
         _ => return None,
     };
     let installed = if engine == "rust" {
@@ -362,7 +373,7 @@ async fn write_server_frames(
 }
 
 async fn write_editor_messages(
-    mut socket: futures_util::stream::SplitSink<Framed<TcpStream, ProdCodeCodec>, WireMessage>,
+    mut socket: futures_util::stream::SplitSink<Framed<AnyStream, ProdCodeCodec>, WireMessage>,
     mut input: rapidfire::mpsc::Receiver<PendingEditorMessage>,
 ) -> Result<()> {
     while let Ok(pending) = input.recv().await {
@@ -426,14 +437,17 @@ async fn finish_task(
 
 /// Runs an editor's session: starts `command` in `root` and carries the protocol between the
 /// editor on `framed` and the server until either ends.
-pub async fn run(
-    framed: Framed<TcpStream, ProdCodeCodec>,
+pub async fn run<S>(
+    framed: Framed<S, ProdCodeCodec>,
     translator: PathTranslator,
     command: ServerCommand,
     root: &Path,
     servers: &EditorServers,
     session_id: u64,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: Into<AnyStream>,
+{
     run_with_budgets(
         framed,
         translator,
@@ -450,8 +464,8 @@ pub async fn run(
 /// Test injection point for exercising deadlines without changing the product CLI.
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-pub async fn run_with_budgets(
-    framed: Framed<TcpStream, ProdCodeCodec>,
+pub async fn run_with_budgets<S>(
+    framed: Framed<S, ProdCodeCodec>,
     translator: PathTranslator,
     command: ServerCommand,
     root: &Path,
@@ -459,7 +473,17 @@ pub async fn run_with_budgets(
     session_id: u64,
     write_budget: Duration,
     teardown_budget: Duration,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: Into<AnyStream>,
+{
+    let parts = framed.into_parts();
+    let stream: AnyStream = parts.io.into();
+    let mut new_parts = tokio_util::codec::FramedParts::new(stream, parts.codec);
+    new_parts.read_buf = parts.read_buf;
+    new_parts.write_buf = parts.write_buf;
+    let framed = Framed::from_parts(new_parts);
+
     let mut process = tokio::process::Command::new(&command.program);
     process
         .args(&command.args)
