@@ -215,17 +215,30 @@ fn is_primitive(t: &str) -> bool {
 /// Extracts parameters and local let bindings from lines leading up to current line.
 fn extract_in_scope_variables(lines: &[&str], current_line_idx: usize) -> BTreeMap<String, String> {
     let mut vars = BTreeMap::new();
-    let scan_start = current_line_idx.saturating_sub(60);
+    let scan_start = current_line_idx.saturating_sub(200);
 
     // Look backwards to find enclosing function header
     for i in (scan_start..=current_line_idx.min(lines.len().saturating_sub(1))).rev() {
         let line = lines[i].trim();
-        if (line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with("def ") || line.starts_with("func "))
+        if (line.starts_with("fn ") || line.starts_with("pub fn ") || line.starts_with("pub async fn ") || line.starts_with("async fn ") || line.starts_with("def ") || line.starts_with("func "))
             && line.contains('(')
         {
-            // Parse parameters
-            if let Some(param_str) = line.split('(').nth(1) {
-                let params = param_str.split(')').next().unwrap_or("");
+            // Parse parameters across lines until closing paren
+            let mut param_text = String::new();
+            if let Some(rest) = line.split('(').nth(1) {
+                param_text.push_str(rest);
+                if !rest.contains(')') {
+                    for j in (i + 1)..=current_line_idx.min(lines.len().saturating_sub(1)) {
+                        let next_line = lines[j].trim();
+                        param_text.push(' ');
+                        param_text.push_str(next_line);
+                        if next_line.contains(')') {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(params) = param_text.split(')').next() {
                 for p in params.split(',') {
                     let p_trim = p.trim();
                     if p_trim.contains(':') {
