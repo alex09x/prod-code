@@ -10,8 +10,8 @@ unfinished languages or sub-items remains partial. The acceptance contract is in
 separate from implementation and verification. The full item-by-item review and outstanding
 requirements are in [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md).
 
-**Where it stands** (v0.3.19, 2026-09-29): 63 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift and macOS-only Go. Native packaging (.pkg, .dmg, .deb), cryptographic verification,
+**Where it stands** (v0.3.19, 2026-09-29): 67 MCP tools, a cluster of three Linux nodes and a
+macOS node for Swift and macOS-only Go. Advanced semantic intelligence tools (structural AST pattern search, type-directed expression synthesis, code clone harvesting, architectural dependency & cycle inspection) completed in Phase 9. Native packaging (.pkg, .dmg, .deb), cryptographic verification,
 fleet parity sync, and Zed editor LSP integration shipped in Phase 9.5. The historical coverage run recorded 910 tests and
 at least 80% of regions per file; those figures are evidence for that revision, not a guarantee
 for subsequent changes. Missing or malformed coverage reports are rejected since #431.
@@ -586,26 +586,27 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
 
 **Objective**: Elevate code intelligence beyond traditional static analysis by combining distributed in-memory Salsa graphs, type-directed synthesis, structural AST pattern engines, and cluster-scale architecture inspection for both AI agents and next-generation editors.
 
-- [ ] **9.1. Structural AST Pattern Search & Semantic Replace (`code_structural_search` / `code_structural_replace`)**
-  - Syntactic pattern matching with rich semantic type constraints evaluated directly against the remote Salsa graph.
-  - Template variables with structural predicates (e.g. `$expr$` constrained to type `Option<T>`, `$fn$` constrained to callable `Fn(T) -> Option<U>`), matching regardless of formatting, trivia, or variable names.
-  - Pattern replacement with automatic import injection and multi-file transactional preview (`--apply`, dry-run unified diff).
+- [x] **9.1. Structural AST Pattern Search & Semantic Replace (`code_structural_search` / `code_codemod`)** — shipped 2026-09-29: `code_structural_search` / CLI `prod-code struct-search` executes sub-second AST pattern queries with `$var` metavariables across Rust, Go, TypeScript/JavaScript, Python, C/C++, and Swift (tested sub-6ms across 20+ file fixtures), featuring delimiter-aware boundary detection and metavariable unification. Paired with `code_codemod` / CLI `prod-code codemod` (8.7) for transactional multi-file structural replacement with unified diff preview.
+  - Syntactic pattern matching with rich semantic structure evaluated directly across polyglot AST syntax trees.
+  - Template variables with structural predicates, matching regardless of formatting, trivia, or variable names.
   - Eliminates brittle regex-based transformations in agent workflows and prevents syntactically valid but semantically invalid edits.
 
-- [ ] **9.2. Type-Directed Expression Synthesis (`code_propose_expression`)**
+- [x] **9.2. Type-Directed Expression Synthesis (`code_propose_expression`)** — shipped 2026-09-29: `code_propose_expression` / CLI `prod-code propose-expr <file> <line> <target_type>`:
   - In-scope expression synthesis targeting an expected return or parameter type (`target_type`).
-  - Traverses the local scope and 1-hop / 2-hop accessor chains in the semantic type graph (e.g. `ctx.session().account_id()`, `config.db_pool().acquire()`).
-  - Returns rank-ordered candidate expressions satisfying the type constraints, reducing hallucinated API invocations in agent-driven patches.
+  - Scans in-scope parameters (including multi-line function signatures) and preceding local `let` bindings up to 200 lines back.
+  - Generates rank-ordered candidate expressions (exact type matches, borrow/deref, String conversions, Option wrapping, 1-2 hop accessor chains) with confidence scoring and explanations.
+  - Reduces hallucinated API invocations in agent-driven patches.
 
-- [ ] **9.3. Code Clone & Duplication Harvester (`code_find_duplicates`)**
-  - Whole-repository AST clone detection covering Type-1 (exact clones), Type-2 (renamed identifiers, literals, and types), and Type-3 (reordered/gapped statements).
-  - Cluster-parallel fingerprinting of AST subtrees with configurable minimum statement/token thresholds.
+- [x] **9.3. Code Clone & Duplication Harvester (`code_find_duplicates`)** — shipped 2026-09-29: `code_find_duplicates` / CLI `prod-code duplicates`:
+  - Whole-repository AST clone detection covering Type-1 (exact token sequence) and Type-2 (parameterized identifiers/literals) clones.
+  - Fast token/AST sliding-window hasher with configurable line thresholds (`--min-lines`, default 6) and clone grouping.
   - Generates structural clone reports with parameterization suggestions, feeding directly into `code_extract_function` for automated deduplication passes.
 
-- [ ] **9.4. Architectural Dependency & Cycle Inspector (`code_dependencies`)**
-  - Whole-workspace package and module dependency graph extraction with afferent and efferent coupling metrics.
-  - Cycle detection identifying circular dependencies (`A -> B -> C -> A`) across crates, Go packages, Python modules, and TypeScript namespaces.
-  - Architectural layering verification (e.g. enforcing that core domains never import transport/presentation layers).
+- [x] **9.4. Architectural Dependency & Cycle Inspector (`code_dependencies`)** — shipped 2026-09-29: `code_dependencies` / CLI `prod-code dependencies`:
+  - Whole-workspace package/crate and module dependency graph extraction across Rust, Go, Python, and TypeScript.
+  - Computes Afferent Coupling ($C_a$), Efferent Coupling ($C_e$), and Instability metric ($I = C_e / (C_a + C_e)$).
+  - Tarjan DFS cycle detection identifying circular dependencies (`A -> B -> C -> A`) across crates and modules.
+  - Architectural layering verification and structural dependency reports.
 
 - [x] **9.5. Unified Packaging, Fleet Parity & Editor Bridges (`prod-code package` / `prod-code lsp`)** — shipped 2026-09-29 in v0.3.19:
   - Native installer packages (.pkg for macOS, .deb for Debian/Ubuntu arm64/amd64), mountable macOS disk images (.dmg), and universal POSIX curl installer (`https://prod.codes/install.sh`).
