@@ -22,7 +22,7 @@ use std::time::Instant;
 /// Supported file extensions for polyglot structural codemods.
 pub const CODE_EXTENSIONS: &[&str] = &[
     "rs", "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "cpp", "cc", "cxx", "c", "hpp", "h",
-    "swift",
+    "swift", "java", "kt", "kts", "cs", "scala", "zig", "nim", "d", "php", "rb", "dart", "lua", "ex", "exs",
 ];
 
 /// Directories to skip during workspace-wide codemod traversal.

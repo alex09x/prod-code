@@ -78,7 +78,7 @@ pub fn find_duplicates(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "cpp" | "c" | "swift" | "java") {
+                if matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "cpp" | "c" | "swift" | "java" | "kt" | "kts" | "cs" | "scala" | "zig" | "nim" | "d" | "php" | "rb" | "dart" | "lua" | "ex" | "exs") {
                     if let Ok(raw_content) = std::fs::read_to_string(path) {
                         files_scanned += 1;
                         let rel_path = path

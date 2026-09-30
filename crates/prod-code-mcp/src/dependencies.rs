@@ -158,6 +158,47 @@ fn analyze_crate_dependencies(
         }
     }
 
+    // 2. Maven Multi-Module Workspace (Java)
+    let root_pom = workspace_root.join("pom.xml");
+    if root_pom.exists() {
+        if let Ok(pom_content) = std::fs::read_to_string(&root_pom) {
+            let mut modules = Vec::new();
+            let mut in_modules = false;
+            for line in pom_content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("<modules>") {
+                    in_modules = true;
+                } else if trimmed.starts_with("</modules>") {
+                    in_modules = false;
+                } else if in_modules && trimmed.starts_with("<module>") && trimmed.ends_with("</module>") {
+                    let mod_name = trimmed
+                        .trim_start_matches("<module>")
+                        .trim_end_matches("</module>")
+                        .trim();
+                    modules.push(mod_name.to_string());
+                }
+            }
+
+            let mut module_map = HashMap::new();
+            for m in &modules {
+                let sub_pom = workspace_root.join(m).join("pom.xml");
+                if let Ok(content) = std::fs::read_to_string(&sub_pom) {
+                    module_map.insert(m.clone(), (workspace_root.join(m), content));
+                }
+            }
+
+            for (mod_name, (dir, content)) in &module_map {
+                let mut deps = BTreeSet::new();
+                for other in module_map.keys() {
+                    if other != mod_name && content.contains(&format!("<artifactId>{other}</artifactId>")) {
+                        deps.insert(other.clone());
+                    }
+                }
+                adj.insert(mod_name.clone(), (dir.clone(), deps));
+            }
+        }
+    }
+
     build_graph_report("crates", workspace_root, adj)
 }
 
@@ -181,7 +222,7 @@ fn analyze_module_dependencies(
         let path = entry.path();
         if path.is_file() {
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if matches!(ext, "rs" | "go" | "py" | "ts" | "js") {
+                if matches!(ext, "rs" | "go" | "py" | "ts" | "js" | "java" | "kt" | "cs" | "swift") {
                     let rel = path
                         .strip_prefix(workspace_root)
                         .unwrap_or(path)
@@ -219,6 +260,7 @@ fn analyze_module_dependencies(
                     "go" => parse_go_imports(&content, go_module_name.as_deref(), &file_modules, &mut deps),
                     "py" => parse_python_imports(&content, &file_modules, &mut deps),
                     "ts" | "js" => parse_ts_imports(&content, &file_modules, &mut deps),
+                    "java" | "kt" => parse_java_imports(&content, &file_modules, &mut deps),
                     _ => {}
                 }
             }
@@ -234,13 +276,36 @@ fn analyze_module_dependencies(
 }
 
 fn file_to_module_name(rel_path: &str) -> String {
-    rel_path
-        .trim_end_matches(".rs")
-        .trim_end_matches(".go")
-        .trim_end_matches(".py")
-        .trim_end_matches(".ts")
-        .trim_end_matches(".js")
-        .replace('/', "::")
+    let p = if let Some(idx) = rel_path.rfind('.') {
+        &rel_path[..idx]
+    } else {
+        rel_path
+    };
+    p.replace('/', "::")
+}
+
+fn parse_java_imports(
+    content: &str,
+    known_modules: &HashMap<String, PathBuf>,
+    deps: &mut BTreeSet<String>,
+) {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("import ") {
+            let rest = trimmed
+                .trim_start_matches("import ")
+                .trim_start_matches("static ")
+                .trim_end_matches(';')
+                .trim();
+            let as_colons = rest.replace('.', "::");
+            let class_name = rest.rsplit('.').next().unwrap_or("");
+            for mod_name in known_modules.keys() {
+                if mod_name.ends_with(&as_colons) || (!class_name.is_empty() && mod_name.ends_with(&format!("::{class_name}"))) {
+                    deps.insert(mod_name.clone());
+                }
+            }
+        }
+    }
 }
 
 fn parse_rust_imports(
