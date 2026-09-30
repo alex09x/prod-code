@@ -98,8 +98,9 @@ pub fn parse_release_asset(json_val: &serde_json::Value, target: &str) -> Result
         if asset.get("name").and_then(|n| n.as_str()) == Some(&asset_name) {
             let download_url = asset
                 .get("browser_download_url")
+                .or_else(|| asset.get("url"))
                 .and_then(|u| u.as_str())
-                .context("missing browser_download_url for asset")?
+                .context("missing download url for asset")?
                 .to_string();
             return Ok((tag, download_url));
         }
