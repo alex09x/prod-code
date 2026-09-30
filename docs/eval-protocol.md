@@ -343,6 +343,14 @@ For every refactoring tool tested:
    - **Semantic Guards & Refactorings**: Transitive AST slicing of `BaseHandler.resolve_request` (99.97% reduction to 160 lines in 0.12s), structural search captured 38 error guards in `django/core` in 99.70 ms, parameter object bundling on `func_supports_parameter` -> `FuncParamSpec` (0 type errors), boolean inversion of `is_module_level_function` with proven safety refusal on passed-as-value functions, in-memory pre-validation caught injected attribute typo in 2.07s
    - **Full Deep-Dive Report**: [Half a Million Lines of Python and 25 Import Cycles: Dissecting Django with 67 AST Tools (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-python-inside-django/)
 
+10. **[psf/black](https://github.com/psf/black)** (Python)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 135,022 lines of Python across 358 files, 930 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Import cycle in `src/black/__init__.py` via `concurrency.py`, 10-line Type-2 clone blocks across 7 Python version feature tables in `src/black/mode.py`
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `can_be_split` (99.8% reduction to 240 lines), structural search captured 35 guard-and-raise statements in 8 files in 119.90 ms, 3-way RRF semantic search ranked delimiter split implementations in 8 ms across 3,133 declarations, parameter object bundling on `assert_equivalent(src, dst)` -> `@dataclass CodePair` across 12 call sites in 4 files, boolean inversion on `can_be_split` with proven safety refusal on non-call imports, in-memory shadow pre-validation caught injected attribute error in 0.68s
+    - **Full Deep-Dive Report**: [Black Under the Microscope: What 67 AST Tools Found Inside Python's Uncompromising Formatter (prod.codes)](https://prod.codes/blog/black-under-the-microscope-67-ast-tools/)
+
 
 
 
