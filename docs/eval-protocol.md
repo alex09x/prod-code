@@ -314,6 +314,15 @@ For every refactoring tool tested:
    - **Issues Identified & Resolved**:
      - [#739](https://github.com/alex09x/prod-code/issues/739): `fast-sync drops Cargo examples and tests in directories named state or data`
    - **Full Deep-Dive Report**: [204 Code Clones and Two Self-Loops: Dissecting Bevy's 97-Crate Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/204-code-clones-and-two-self-loops-inside-bevy/)
+7. **[prometheus/prometheus](https://github.com/prometheus/prometheus)** (Go)
+   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 385,511 lines of Go across 736 files, 14.1s cold sync into `gopls` in RAM, 865 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 84-package DAG (524 dependencies), 0 circular package cycles, core foundations `discovery/targetgroup` ($C_a=35$) and `model/labels` ($C_a=32$) with 0.000 instability, 40 Protobuf Varint clone clusters
+   - **Semantic Guards & Refactorings**: Structural search captured 1,485 `if err != nil` patterns in 3.71s, cross-package AST slicing of `promql.Engine` (99% reduction to 2.4 KB), safe-delete refusal (9 call sites of `contextDone`), RAM compiler shadow validation caught type error in 1.8s
+   - **Issues Identified & Resolved**:
+     - [#740](https://github.com/alex09x/prod-code/issues/740): `dependencies: unbounded circular dependency stream and loose Go import segment matching`
+   - **Full Deep-Dive Report**: [1,485 Error Checks and Zero Import Cycles: Dissecting Prometheus's 84-Package Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/1485-error-checks-and-zero-cycles-inside-prometheus/)
 
 
 
