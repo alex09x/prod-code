@@ -362,6 +362,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`netty/netty`](https://github.com/netty/netty) | Java (32-core node) | 67 / 67 tools (652K lines, 61 modules, all→bom cycle, 510 Huffman clones, multi-site refactoring, cluster JDTLS 0 errors) | 652K lines (3,595 files) | 3.43 ms RTT | [Netty Under the Microscope →](https://prod.codes/blog/netty-under-the-microscope-67-ast-tools/) |
 | [`ktorio/ktor`](https://github.com/ktorio/ktor) | Kotlin (32-core node) | 67 / 67 tools (296K lines, 134 Gradle modules, 100 test cycles, 74 coroutine clones, cluster kotlin-language-server 0 errors) | 296K lines (2,423 files) | 1.97 ms RTT | [Ktor Under the Microscope →](https://prod.codes/blog/ktor-under-the-microscope-67-ast-tools/) |
 | [`Kotlin/kotlinx.coroutines`](https://github.com/Kotlin/kotlinx.coroutines) | Kotlin (32-core node) | 67 / 67 tools (113K lines, 25 modules clean DAG, 32 TestBase clones, 72 AST matches, cluster kotlin-language-server 0 errors) | 113K lines (1,039 files) | 1.97 ms RTT | [Kotlinx.coroutines Under the Microscope →](https://prod.codes/blog/kotlinx-coroutines-under-the-microscope-67-ast-tools/) |
+| [`detekt/detekt`](https://github.com/detekt/detekt) | Kotlin (32-core node) | 67 / 67 tools (132K lines, 41 modules, 4 test cycles, 288 lint clones, 58 AST matches, cluster kotlin-language-server 0 errors) | 132K lines (1,105 files) | 1.97 ms RTT | [Detekt Under the Microscope →](https://prod.codes/blog/detekt-under-the-microscope-67-ast-tools/) |
 
 
 
