@@ -231,6 +231,8 @@ pub fn engine_for_file(path: &Path) -> Option<&'static str> {
         "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => "typescript",
         "c" | "cc" | "cpp" | "cxx" | "h" | "hh" | "hpp" | "hxx" | "m" | "mm" => "cpp",
         "swift" => "swift",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
         _ => return None,
     })
 }
@@ -648,6 +650,13 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         Some("typescript")
     } else if make_cpp {
         Some("cpp")
+    } else if has("pom.xml")
+        || has("build.gradle")
+        || has("build.gradle.kts")
+        || has("settings.gradle")
+        || has("settings.gradle.kts")
+    {
+        Some("java")
     } else {
         None
     }

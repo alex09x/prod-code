@@ -199,6 +199,76 @@ fn analyze_crate_dependencies(
         }
     }
 
+    // 3. Gradle Multi-Project Workspace (Java / Kotlin / Android)
+    let root_gradle = workspace_root.join("settings.gradle");
+    let root_gradle_kts = workspace_root.join("settings.gradle.kts");
+    let gradle_settings_path = if root_gradle.exists() {
+        Some(root_gradle)
+    } else if root_gradle_kts.exists() {
+        Some(root_gradle_kts)
+    } else {
+        None
+    };
+
+    if let Some(settings_file) = gradle_settings_path {
+        if let Ok(settings_content) = std::fs::read_to_string(&settings_file) {
+            let mut projects = Vec::new();
+            for line in settings_content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("include ") || trimmed.starts_with("include(") {
+                    for token in trimmed.split(&[' ', '(', ')', ',', '\'', '"'][..]) {
+                        let t = token.trim();
+                        if !t.is_empty() && t != "include" && !t.starts_with("//") && !t.starts_with("/*") {
+                            let proj_name = t.trim_matches(':');
+                            if !proj_name.is_empty() {
+                                let sub_rel = proj_name.replace(':', "/");
+                                if workspace_root.join(&sub_rel).exists() {
+                                    projects.push(proj_name.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut project_map = HashMap::new();
+            for p in &projects {
+                let sub_rel = p.replace(':', "/");
+                let sub_dir = workspace_root.join(&sub_rel);
+                let build_gradle = sub_dir.join("build.gradle");
+                let build_gradle_kts = sub_dir.join("build.gradle.kts");
+                let content = if let Ok(c) = std::fs::read_to_string(&build_gradle) {
+                    Some(c)
+                } else if let Ok(c) = std::fs::read_to_string(&build_gradle_kts) {
+                    Some(c)
+                } else {
+                    None
+                };
+
+                if let Some(c) = content {
+                    project_map.insert(p.clone(), (sub_dir, c));
+                }
+            }
+
+            for (proj_name, (dir, content)) in &project_map {
+                let mut deps = BTreeSet::new();
+                for other in project_map.keys() {
+                    if other != proj_name {
+                        let ref1 = format!("project(\":{other}\")");
+                        let ref2 = format!("project(':{other}')");
+                        let ref3 = format!("project(\"{other}\")");
+                        let ref4 = format!("project('{other}')");
+                        let ref5 = format!(":{other}");
+                        if content.contains(&ref1) || content.contains(&ref2) || content.contains(&ref3) || content.contains(&ref4) || content.contains(&ref5) {
+                            deps.insert(other.clone());
+                        }
+                    }
+                }
+                adj.insert(proj_name.clone(), (dir.clone(), deps));
+            }
+        }
+    }
+
     build_graph_report("crates", workspace_root, adj)
 }
 

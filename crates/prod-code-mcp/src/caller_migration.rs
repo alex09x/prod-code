@@ -792,6 +792,7 @@ pub(crate) fn find_caller_migrations(
                 }
             }
         }
+        Language::Java => {}
     }
 
     candidates

@@ -85,6 +85,7 @@ pub(crate) fn is_import_or_export_context(content: &str, at: usize, lang: Langua
         Language::Swift => line.starts_with("import "),
         Language::Go => line.starts_with("import "),
         Language::Rust => line.starts_with("use "),
+        Language::Java => line.starts_with("import ") || line.starts_with("package "),
     }
 }
 
@@ -189,7 +190,7 @@ fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<String> {
                 }
             }
         }
-        Language::Cpp | Language::C => {
+        Language::Cpp | Language::C | Language::Java => {
             if let Some(paren) = trimmed.find('(') {
                 let before = trimmed[..paren].trim();
                 if let Some(name) = before.split_whitespace().last() {
@@ -275,7 +276,7 @@ fn find_polyglot_declaration(
                     || header_prefix.trim_start().starts_with("async ")
                     || (header_prefix.trim().chars().all(is_ident) && !header_prefix.trim().is_empty())
             }
-            Language::Cpp | Language::C => {
+            Language::Cpp | Language::C | Language::Java => {
                 let last = header_prefix.split_whitespace().last().unwrap_or("");
                 !matches!(last, "return" | "throw" | "case" | "sizeof" | "")
                     && !header_prefix.trim_end().ends_with(['=', '(', '[', ',', '?', ':', '!', '+', '-', '*', '/', '%', '&', '|', '^'])
@@ -316,7 +317,7 @@ fn find_polyglot_declaration(
             let ret = match lang {
                 Language::TypeScript | Language::JavaScript
                 | Language::Swift | Language::Go => Some((close_paren + 1, b_open)),
-                Language::Cpp | Language::C => {
+                Language::Cpp | Language::C | Language::Java => {
                     let line_start = text[..pos].rfind('\n').map_or(0, |p| p + 1);
                     Some((line_start, pos))
                 }
@@ -424,6 +425,10 @@ fn format_polyglot_param(name: &str, ty: &str, value: &str, lang: Language) -> S
                 format!("{name}: {ty}")
             }
         }
+        Language::Java => {
+            let ty_str = if ty.is_empty() { "Object" } else { ty };
+            format!("{ty_str} {name}")
+        }
     }
 }
 
@@ -439,6 +444,7 @@ pub(crate) fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
         Language::Swift => ext == "swift",
         Language::Go => ext == "go",
         Language::Rust => ext == "rs",
+        Language::Java => ext == "java",
     }
 }
 
@@ -649,7 +655,7 @@ pub async fn change_with(
                     decl_edits.push((decl.close_paren + 1, decl.close_paren + 1, format!(" {new_ret} ")));
                 }
             }
-            Language::Cpp | Language::C => {
+            Language::Cpp | Language::C | Language::Java => {
                 if let Some((start, end)) = decl.ret_span {
                     let original = &text[start..end];
                     let indent = original.chars().take_while(|c| c.is_whitespace()).collect::<String>();

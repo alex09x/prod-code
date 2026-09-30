@@ -933,8 +933,8 @@ pub async fn introduce(
     anyhow::ensure!(params.len() >= 2, "bundling one parameter is not a bundle");
     let language = Language::of(file).with_context(|| {
         format!(
-            "bundling parameters works in Rust, TypeScript, JavaScript, Python, Go, C, C++ and \
-             Swift files; \
+            "bundling parameters works in Rust, TypeScript, JavaScript, Python, Go, C, C++, \
+             Swift and Java files; \
              {} is none of them",
             file.display()
         )
@@ -1385,6 +1385,7 @@ pub enum Language {
     C,
     Cpp,
     Swift,
+    Java,
 }
 
 impl Language {
@@ -1402,6 +1403,7 @@ impl Language {
             "c" => Some(Language::C),
             "cpp" => Some(Language::Cpp),
             "swift" => Some(Language::Swift),
+            "java" => Some(Language::Java),
             _ => None,
         }
     }
@@ -1417,6 +1419,7 @@ impl Language {
             Language::C => "c",
             Language::Cpp => "cpp",
             Language::Swift => "swift",
+            Language::Java => "java",
         }
     }
 
@@ -1430,16 +1433,17 @@ impl Language {
             Language::C => "C",
             Language::Cpp => "C++",
             Language::Swift => "Swift",
+            Language::Java => "Java",
         }
     }
 }
 
 /// What the new parameter is called when the request does not say: the type's name in the casing
 /// the language gives a parameter — `render_options` in Rust, Python, C and C++,
-/// `renderOptions` in TypeScript, JavaScript, Go and Swift.
+/// `renderOptions` in TypeScript, JavaScript, Go, Swift and Java.
 pub fn default_binding(file: &Path, name: &str) -> String {
     match Language::of(file) {
-        Some(Language::TypeScript | Language::JavaScript | Language::Go | Language::Swift) => {
+        Some(Language::TypeScript | Language::JavaScript | Language::Go | Language::Swift | Language::Java) => {
             lower_camel(name)
         }
         _ => crate::fixture::snake_case(name),
@@ -1628,7 +1632,7 @@ pub(crate) fn entries(list: &str, language: Language) -> Vec<(usize, &str)> {
     let mut current: Option<(usize, usize)> = None;
     let generic = matches!(
         language,
-        Language::TypeScript | Language::Cpp | Language::Swift
+        Language::TypeScript | Language::Cpp | Language::Swift | Language::Java
     );
     walk_code(list, 0, language, |i, c| {
         match c {
@@ -1703,7 +1707,7 @@ fn parse_param(entry: &str, at: usize, language: Language) -> Param {
         label: None,
     };
     match language {
-        Language::C | Language::Cpp => return parse_c_param(param, language),
+        Language::C | Language::Cpp | Language::Java => return parse_c_param(param, language),
         Language::Swift => return parse_swift_param(param),
         _ => {}
     }
@@ -2123,6 +2127,19 @@ pub fn type_text(
             }
             out.push_str("}\n");
         }
+        Language::Java => {
+            out.push_str(&format!("// The parameters `{callee}` takes together.\n"));
+            let public = if export { "public " } else { "" };
+            let p_str = fields
+                .iter()
+                .map(|f| {
+                    let ty = f.ty.as_deref().unwrap_or("Object");
+                    format!("{ty} {}", f.name)
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("{public}record {name}({p_str}) {{}}\n"));
+        }
         _ => {
             out.push_str(&format!(
                 "// {name} holds the parameters {callee} takes together.\n"
@@ -2148,7 +2165,7 @@ fn parameter_in(language: Language, binding: &str, name: &str) -> String {
     match language {
         Language::JavaScript => binding.to_string(),
         Language::Go => format!("{binding} {name}"),
-        Language::Cpp => format!("{name} {binding}"),
+        Language::Cpp | Language::Java => format!("{name} {binding}"),
         Language::C => format!("struct {name} {binding}"),
         _ => format!("{binding}: {name}"),
     }
@@ -2191,6 +2208,10 @@ pub fn literal_text(language: Language, spelling: &str, pairs: &[(String, String
         Language::C => format!("(struct {spelling}){{{}}}", designated()),
         Language::Cpp => format!("{{{}}}", designated()),
         Language::Swift => format!("{spelling}({})", join(": ")),
+        Language::Java => {
+            let values: Vec<&str> = pairs.iter().map(|(_, v)| v.as_str()).collect();
+            format!("new {spelling}({})", values.join(", "))
+        }
     }
 }
 
@@ -2513,7 +2534,7 @@ enum Effect {
 /// so `f(a, b, c)` reads `a`, `b`, `c` where `f({ a: a, c: c }, b)` reads `a`, `c`, `b`.
 fn opaque_reads(language: Language) -> Option<&'static str> {
     match language {
-        Language::Rust | Language::Go => None,
+        Language::Rust | Language::Go | Language::Java => None,
         Language::TypeScript | Language::JavaScript => Some(
             "a plain name may be an accessor of `globalThis`, whose getter runs when it is read",
         ),
@@ -3399,7 +3420,11 @@ async fn introduce_in(
             if language == Language::Python && after.starts_with('=') && !after.starts_with("==") {
                 continue;
             }
-            let field = format!("{binding}.{}", p.name);
+            let field = if language == Language::Java {
+                format!("{binding}.{}()", p.name)
+            } else {
+                format!("{binding}.{}", p.name)
+            };
             let replacement = if language == Language::JavaScript
                 && object_shorthand(&text, body.0, o, p.name.len())
             {

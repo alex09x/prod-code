@@ -451,7 +451,7 @@ fn rewrite_param_entry(
                 format!("{} {type_param}", target_param.name)
             }
         }
-        Language::Cpp | Language::C => {
+        Language::Cpp | Language::C | Language::Java => {
             let (decl_part, default_part) = if let Some(eq) = entry_text.find('=') {
                 (&entry_text[..eq], Some(&entry_text[eq..]))
             } else {
@@ -659,6 +659,21 @@ pub async fn generify_polyglot(
                 let indent_len = text[line_start..].len() - text[line_start..].trim_start().len();
                 let indent = &text[line_start..line_start + indent_len];
                 new_text.insert_str(decl.decl_start, &format!("{indent}template<{gen_decl}>\n"));
+            }
+        }
+        Language::Java => {
+            let bound_spec = if bound.is_empty() || bound == "Object" {
+                String::new()
+            } else {
+                format!(" extends {bound}")
+            };
+            let gen_decl = format!("{type_param}{bound_spec}");
+            if decl.has_generics {
+                if let Some((_, ge)) = decl.generics_span {
+                    new_text.insert_str(ge, &format!(", {gen_decl}"));
+                }
+            } else {
+                new_text.insert_str(decl.decl_start, &format!("<{gen_decl}> "));
             }
         }
         Language::Rust => unreachable!(),

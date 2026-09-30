@@ -2430,6 +2430,9 @@ pub async fn extract_delegate_polyglot(
         )
         .await;
     }
+    if lang == Language::Java {
+        anyhow::bail!("extract_delegate does not support Java yet");
+    }
 
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read {}", file.display()))?;
@@ -2441,7 +2444,7 @@ pub async fn extract_delegate_polyglot(
         Language::Cpp | Language::C => restructure_cpp(&text, symbol, line, fields, methods, helper, field)?,
         Language::Swift => restructure_swift(&text, symbol, line, fields, methods, helper, field)?,
         Language::Go => restructure_go(&text, symbol, line, fields, methods, helper, field)?,
-        Language::Rust => unreachable!(),
+        Language::Rust | Language::Java => unreachable!(),
     };
 
     let mut files: BTreeMap<PathBuf, String> = BTreeMap::new();

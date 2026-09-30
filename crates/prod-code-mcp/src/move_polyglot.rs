@@ -166,6 +166,12 @@ pub fn with_doc_comment_polyglot(text: &str, start: u32, lang: Language) -> u32 
             Language::Rust => {
                 above.starts_with("///") || above.starts_with("#[") || above.starts_with("//!")
             }
+            Language::Java => {
+                above.starts_with("//")
+                    || above.starts_with("/*")
+                    || above.starts_with('*')
+                    || above.starts_with('@')
+            }
         };
         if is_doc {
             first -= 1;
@@ -324,6 +330,15 @@ fn is_polyglot_decl_header(line: &str, lang: Language) -> bool {
                     || (trimmed.contains('(') && (trimmed.contains(')') || trimmed.ends_with('{'))))
         }
         Language::Rust => false,
+        Language::Java => {
+            trimmed.starts_with("public ")
+                || trimmed.starts_with("protected ")
+                || trimmed.starts_with("private ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("interface ")
+                || trimmed.starts_with("record ")
+                || trimmed.starts_with("enum ")
+        }
     }
 }
 
@@ -461,6 +476,32 @@ fn extract_polyglot_decl_name(line: &str, lang: Language) -> Option<String> {
             }
         }
         Language::Rust => {}
+        Language::Java => {
+            if let Some(paren) = trimmed.find('(') {
+                let before = trimmed[..paren].trim();
+                if let Some(name) = before.split_whitespace().last() {
+                    let clean = name.trim();
+                    if !clean.is_empty()
+                        && !matches!(clean, "if" | "while" | "for" | "switch" | "catch")
+                    {
+                        return Some(clean.to_string());
+                    }
+                }
+            }
+            for keyword in &["class ", "interface ", "record ", "enum "] {
+                if let Some(pos) = trimmed.find(keyword) {
+                    let after = &trimmed[pos + keyword.len()..];
+                    let clean = after.trim_start();
+                    let name = clean
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .next()
+                        .unwrap_or("");
+                    if !name.is_empty() {
+                        return Some(name.to_string());
+                    }
+                }
+            }
+        }
     }
     None
 }
@@ -651,8 +692,8 @@ pub fn check_target_collision(target_text: &str, name: &str, lang: Language) -> 
                     || trimmed.contains("enum ")
                     || trimmed.contains("protocol ")
             }
-            Language::Cpp | Language::C => {
-                trimmed.contains("class ") || trimmed.contains("struct ") || trimmed.contains(name)
+            Language::Cpp | Language::C | Language::Java => {
+                trimmed.contains("class ") || trimmed.contains("interface ") || trimmed.contains("record ") || trimmed.contains("enum ") || trimmed.contains(name)
             }
             Language::Rust => false,
         };
@@ -887,6 +928,15 @@ pub fn carry_imports_polyglot(
             }
         }
         Language::Rust => {}
+        Language::Java => {
+            for line in source_text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("import ") && !out.contains(trimmed) {
+                    out = format!("{trimmed}\n{out}");
+                    notes.push(format!("carried `{trimmed}`"));
+                }
+            }
+        }
     }
 
     (out, notes)
@@ -959,6 +1009,7 @@ pub fn update_source_imports(
             Some("same module: direct access".to_string()),
         ),
         Language::Rust => (source_text.to_string(), None),
+        Language::Java => (source_text.to_string(), None),
     }
 }
 

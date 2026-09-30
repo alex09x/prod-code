@@ -353,6 +353,15 @@ fn format_constructor_call(
                 format!("&{clean_base}{{Data: {expr}}}")
             }
         }
+        Language::Java => {
+            if expr.is_empty() {
+                format!("new {default_base}()")
+            } else if !was.is_empty() && was != "void" {
+                format!("new {default_base}<>({expr})")
+            } else {
+                format!("new {default_base}({expr})")
+            }
+        }
     }
 }
 
@@ -1056,7 +1065,7 @@ pub fn find_polyglot_decl(
                     (String::new(), None, false)
                 }
             }
-            Language::Cpp | Language::C => {
+            Language::Cpp | Language::C | Language::Java => {
                 let before_name = text[decl_start..name_idx].trim();
                 let words: Vec<&str> = before_name.split_whitespace().collect();
                 let ret_raw = words.join(" ");
@@ -1438,7 +1447,7 @@ pub fn restructure_declaring_file(
                 Wrapper::Promise => anyhow::bail!("Promise wrapper is not supported for Go"),
             }
         }
-        Language::Rust => unreachable!(),
+        Language::Rust | Language::Java => unreachable!(),
     };
 
     // Body rewrite: re-find body open and close in `out`
@@ -1628,6 +1637,9 @@ pub async fn wrap_polyglot_ext(
         )
         .await;
     }
+    if lang == Language::Java {
+        anyhow::bail!("wrap_return does not support Java yet");
+    }
 
     let text = std::fs::read_to_string(file)
         .with_context(|| format!("cannot read {}", file.display()))?;
@@ -1801,7 +1813,7 @@ pub async fn wrap_polyglot_ext(
                     let can_propagate = match lang {
                         Language::TypeScript | Language::JavaScript => caller_ret.contains("| null") || caller_ret.contains("Option<"),
                         Language::Python => caller_ret.contains("Optional[") || caller_ret.contains("| None"),
-                        Language::Cpp | Language::C => caller_ret.contains("optional"),
+                        Language::Cpp | Language::C | Language::Java => caller_ret.contains("optional") || caller_ret.contains("Optional<"),
                         Language::Swift => caller_ret.ends_with('?') || caller_ret.contains("Optional<"),
                         Language::Go => caller_ret.starts_with('*'),
                         Language::Rust => unreachable!(),
@@ -1823,7 +1835,7 @@ pub async fn wrap_polyglot_ext(
                     let can_propagate = match lang {
                         Language::TypeScript | Language::JavaScript => caller_ret.contains("Result<"),
                         Language::Python => caller_ret.contains("Result["),
-                        Language::Cpp | Language::C => caller_ret.contains("expected") || caller_ret.contains("Result"),
+                        Language::Cpp | Language::C | Language::Java => caller_ret.contains("expected") || caller_ret.contains("Result"),
                         Language::Swift => caller_ret.contains("Result<"),
                         Language::Go => caller_ret.contains("error"),
                         Language::Rust => unreachable!(),

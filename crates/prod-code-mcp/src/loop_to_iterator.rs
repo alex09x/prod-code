@@ -1707,6 +1707,9 @@ pub async fn loop_to_iterator_polyglot(
         };
         return loop_to_iterator(remote, root, file, l, c, apply, force).await;
     }
+    if lang == Language::Java {
+        anyhow::bail!("loop_to_iterator does not support Java yet");
+    }
 
     let offset = find_loop_offset(&text, lang, symbol, line, col)?;
 
@@ -1716,7 +1719,7 @@ pub async fn loop_to_iterator_polyglot(
         Language::Swift => recognise_swift(&text, offset)?,
         Language::Cpp | Language::C => recognise_cpp(&text, offset)?,
         Language::Go => recognise_go(&text, offset)?,
-        Language::Rust => unreachable!(),
+        Language::Rust | Language::Java => unreachable!(),
     };
 
     let mut new_text = text.clone();

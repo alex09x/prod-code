@@ -279,7 +279,7 @@ pub(crate) fn extract_decl_name_from_line(line: &str, lang: Language) -> Option<
                 }
             }
         }
-        Language::Cpp | Language::C => {
+        Language::Cpp | Language::C | Language::Java => {
             if let Some(paren) = trimmed.find('(') {
                 let before = trimmed[..paren].trim();
                 if let Some(name) = before.split_whitespace().last() {
@@ -415,6 +415,10 @@ fn format_binding(param_name: &str, param_type: Option<&str>, val: &str, lang: L
         Language::Rust => {
             let ty_ann = param_type.map(|t| format!(": {t}")).unwrap_or_default();
             format!("let {param_name}{ty_ann} = {val};")
+        }
+        Language::Java => {
+            let ty = param_type.unwrap_or("var");
+            format!("{ty} {param_name} = {val};")
         }
     }
 }
@@ -581,6 +585,9 @@ pub(crate) fn is_import_or_export_context(content: &str, at: usize, lang: Langua
                 .or_else(|| line.strip_prefix("pub(crate) "))
                 .unwrap_or(line);
             without_pub.starts_with("use ")
+        }
+        Language::Java => {
+            line.starts_with("import ") || line.starts_with("package ")
         }
     }
 }

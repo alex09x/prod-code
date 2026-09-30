@@ -224,6 +224,18 @@ pub fn is_keyword(word: &str, lang: Language) -> bool {
                 | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe"
                 | "use" | "where" | "while" | "async" | "await" | "dyn"
         ),
+        Language::Java => matches!(
+            word,
+            "abstract" | "assert" | "boolean" | "break" | "byte" | "case" | "catch"
+                | "char" | "class" | "const" | "continue" | "default" | "do" | "double"
+                | "else" | "enum" | "extends" | "final" | "finally" | "float" | "for"
+                | "goto" | "if" | "implements" | "import" | "instanceof" | "int" | "interface"
+                | "long" | "native" | "new" | "package" | "private" | "protected" | "public"
+                | "return" | "short" | "static" | "strictfp" | "super" | "switch" | "synchronized"
+                | "this" | "throw" | "throws" | "transient" | "try" | "void" | "volatile"
+                | "while" | "record" | "var" | "yield" | "sealed" | "permits" | "non-sealed"
+                | "true" | "false" | "null"
+        ),
     }
 }
 
@@ -266,6 +278,13 @@ pub fn is_builtin_or_global(word: &str, lang: Language) -> bool {
             "println" | "print" | "eprintln" | "eprint" | "format" | "vec" | "panic"
                 | "Some" | "None" | "Ok" | "Err" | "Box" | "Vec" | "String" | "Option"
                 | "Result"
+        ),
+        Language::Java => matches!(
+            word,
+            "System" | "String" | "Object" | "Integer" | "Long" | "Double" | "Float"
+                | "Boolean" | "Character" | "Byte" | "Short" | "Math" | "Arrays" | "Collections"
+                | "List" | "Map" | "Set" | "Optional" | "Objects" | "StringBuilder" | "StringBuffer"
+                | "Exception" | "RuntimeException" | "Throwable" | "Thread" | "Runnable"
         ),
     }
 }
@@ -605,6 +624,31 @@ fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<String> {
             Some("Double".into())
         }
         Language::Rust => Some("usize".into()),
+        Language::Java => {
+            let pat = format!(" {name}");
+            if let Some(pos) = scope.find(&pat) {
+                let before = scope[..pos].trim_end();
+                let ty: String = before
+                    .chars()
+                    .rev()
+                    .take_while(|c| is_ident(*c) || *c == '<' || *c == '>' || *c == '[' || *c == ']')
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                if is_ident(ty.chars().next().unwrap_or(' '))
+                    && (!is_keyword(&ty, lang)
+                        || matches!(
+                            ty.as_str(),
+                            "int" | "double" | "float" | "boolean" | "char" | "long"
+                                | "short" | "byte" | "String" | "Object"
+                        ))
+                {
+                    return Some(ty);
+                }
+            }
+            Some("Object".into())
+        }
     }
 }
 
@@ -743,7 +787,7 @@ fn generate_call_replacement(
     let call = if is_method {
         match lang {
             Language::Python | Language::Swift => format!("self.{name}({args_str})"),
-            Language::TypeScript | Language::JavaScript => format!("this.{name}({args_str})"),
+            Language::TypeScript | Language::JavaScript | Language::Java => format!("this.{name}({args_str})"),
             Language::Cpp | Language::C => format!("this->{name}({args_str})"),
             Language::Go => format!("r.{name}({args_str})"),
             Language::Rust => format!("self.{name}({args_str})"),
@@ -774,6 +818,7 @@ fn generate_call_replacement(
                     Language::Cpp | Language::C => format!("{indent}auto {v} = {call};"),
                     Language::Swift => format!("{indent}let {v} = {call}"),
                     Language::Rust => format!("{indent}let {v} = {call};"),
+                    Language::Java => format!("{indent}var {v} = {call};"),
                 }
             } else {
                 format!("{indent}{v} = {call}{semi}")
@@ -790,6 +835,7 @@ fn generate_call_replacement(
                 Language::Cpp | Language::C => format!("{indent}auto [{joined}] = {call};"),
                 Language::Swift => format!("{indent}let ({joined}) = {call}"),
                 Language::Rust => format!("{indent}let ({joined}) = {call};"),
+                Language::Java => format!("{indent}var res = {call};"),
             }
         }
         OutputKind::Void => format!("{indent}{call}{semi}"),
@@ -961,6 +1007,24 @@ fn generate_function_code(
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("fn {name}({p_str}) {{\n{reindented}\n}}\n")
+        }
+        Language::Java => {
+            let p_str = params
+                .iter()
+                .map(|p| format!("{} {}", p.ty.as_deref().unwrap_or("Object"), p.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_ty = enclosing_ret.unwrap_or("void");
+            let ret_ann = match output {
+                OutputKind::Expression(_) | OutputKind::SingleVar { .. } => ret_ty,
+                _ => "void",
+            };
+            let vis = if is_exported { "public " } else { "private " };
+            if is_method {
+                format!("{method_indent}{vis}{ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
+            } else {
+                format!("{method_indent}{vis}static {ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
+            }
         }
     }
 }

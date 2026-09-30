@@ -826,6 +826,7 @@ fn language_matches_extension(lang: Language, path: &Path) -> bool {
         Language::Swift => ext == "swift",
         Language::Cpp => matches!(ext, "cpp" | "cc" | "cxx" | "hpp" | "h"),
         Language::C => matches!(ext, "c" | "h"),
+        Language::Java => ext == "java",
     }
 }
 
@@ -1086,7 +1087,7 @@ fn has_member_named(text: &str, lang: Language, owner: &str, name: &str) -> bool
                     || t.starts_with(&format!("{name}("))
             })
         }
-        Language::Rust => false,
+        Language::Rust | Language::Java => false,
     }
 }
 
@@ -1126,6 +1127,9 @@ pub async fn extract_polyglot(
             force,
         )
         .await;
+    }
+    if lang == Language::Java {
+        anyhow::bail!("extract_field does not support Java yet; use LSP or IDE assists");
     }
 
     let text = std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?;
@@ -1422,11 +1426,11 @@ pub async fn extract_polyglot(
             let t_close_line_start = text[..t_close].rfind('\n').map_or(0, |i| i + 1);
             (o_name, m_name, "this".to_string(), p_list, b_open, b_close, t_open, t_close_line_start, None)
         }
-        Language::Rust => unreachable!(),
+        Language::Rust | Language::Java => unreachable!(),
     };
 
     let recv_kw = match lang {
-        Language::TypeScript | Language::JavaScript | Language::Cpp | Language::C => "this",
+        Language::TypeScript | Language::JavaScript | Language::Cpp | Language::C | Language::Java => "this",
         Language::Go => &receiver_name,
         _ => "self",
     };
@@ -1518,14 +1522,14 @@ pub async fn extract_polyglot(
             let ty_str = ty.context("pass the field's `type`: C++ requires a type for member declarations")?;
             (class_close_line_start, format!("    {ty_str} {name} = {init};\n"))
         }
-        Language::Rust => unreachable!(),
+        Language::Rust | Language::Java => unreachable!(),
     };
 
     let own_edits = edits.entry(file.to_path_buf()).or_default();
     own_edits.push((insert_offset, 0, insert_text));
 
     let recv_expr = match lang {
-        Language::TypeScript | Language::JavaScript => format!("this.{name}"),
+        Language::TypeScript | Language::JavaScript | Language::Java => format!("this.{name}"),
         Language::Python | Language::Swift => format!("self.{name}"),
         Language::Cpp | Language::C => format!("this->{name}"),
         Language::Go => format!("{receiver_name}.{name}"),

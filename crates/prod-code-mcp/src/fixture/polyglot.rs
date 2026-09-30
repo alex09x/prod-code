@@ -30,6 +30,7 @@ pub fn parse_polyglot_shape(decl: &str, language: Language) -> Option<PolyglotSh
         Language::Rust => parse_rust_shape(decl),
         Language::Cpp | Language::C => parse_cpp_shape(decl),
         Language::Swift => parse_swift_shape(decl),
+        Language::Java => parse_cpp_shape(decl),
     }
 }
 
@@ -809,6 +810,30 @@ pub fn sample_value_for_type(
                 }
             }
         }
+        Language::Java => {
+            if !randomized {
+                match t {
+                    "boolean" => "false".to_string(),
+                    "String" => "\"\"".to_string(),
+                    "byte" | "short" | "int" | "long" => "0".to_string(),
+                    "float" => "0.0f".to_string(),
+                    "double" => "0.0".to_string(),
+                    "char" => "'\\0'".to_string(),
+                    p if p.starts_with("List<") || p.starts_with("java.util.List<") => "java.util.Collections.emptyList()".to_string(),
+                    p if p.starts_with("Map<") || p.starts_with("java.util.Map<") => "java.util.Collections.emptyMap()".to_string(),
+                    p if p.starts_with("Set<") || p.starts_with("java.util.Set<") => "java.util.Collections.emptySet()".to_string(),
+                    _ => "null".to_string(),
+                }
+            } else {
+                match t {
+                    "boolean" => "true".to_string(),
+                    "String" => format!("\"test_{}\"", fn_ref),
+                    "int" | "long" => "42".to_string(),
+                    "double" | "float" => "3.14".to_string(),
+                    _ => "null".to_string(),
+                }
+            }
+        }
     }
 }
 
@@ -897,6 +922,16 @@ pub fn format_polyglot_fixture(
                     let val = format!("{type_name}(\n{}\n)", lines.join("\n"));
                     let var_name = lower_camel_case(type_name);
                     let snippet = format!("let {var_name} = {val}");
+                    (val, snippet)
+                }
+                Language::Java => {
+                    let mut args = Vec::new();
+                    for (_, v) in &pairs {
+                        args.push(v.clone());
+                    }
+                    let val = format!("new {type_name}({})", args.join(", "));
+                    let var_name = lower_camel_case(type_name);
+                    let snippet = format!("{type_name} {var_name} = {val};");
                     (val, snippet)
                 }
             }

@@ -840,6 +840,8 @@ fn ensure_source_file(file: &Path) -> Result<()> {
             | "objective-c"
             | "objective-cpp"
             | "swift"
+            | "java"
+            | "kotlin"
     ) || crate::lang::is_header(file);
     anyhow::ensure!(
         supported,

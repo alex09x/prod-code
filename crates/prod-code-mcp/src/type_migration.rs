@@ -265,7 +265,7 @@ pub fn declared_type_span_polyglot(
                 let end = body - (text[close + 1..body].len() - text[close + 1..body].trim_end().len());
                 return Some((start, end));
             }
-            Language::Cpp | Language::C => {
+            Language::Cpp | Language::C | Language::Java => {
                 // In C/C++, return type is before function name
                 let line_start = text[..name_offset].rfind(['\n', ';', '{', '}']).map_or(0, |p| p + 1);
                 let before = text[line_start..name_offset].trim();
@@ -316,7 +316,7 @@ pub fn declared_type_span_polyglot(
             }
             None
         }
-        Language::Cpp | Language::C => {
+        Language::Cpp | Language::C | Language::Java => {
             let line_start = text[..name_offset].rfind(['\n', ';', '{', '}', '(', ',']).map_or(0, |p| p + 1);
             let before = text[line_start..name_offset].trim();
             if before.is_empty() {
@@ -514,6 +514,15 @@ pub fn language_conversion(expr: &str, target_type: &str, lang: Language) -> Str
         }
         Language::Cpp | Language::C => {
             format!("static_cast<{t}>({expr})")
+        }
+        Language::Java => {
+            if matches!(t, "int" | "long" | "float" | "double" | "byte" | "short" | "char") {
+                format!("({t}) ({expr})")
+            } else if t == "String" {
+                format!("String.valueOf({expr})")
+            } else {
+                format!("({t}) ({expr})")
+            }
         }
     }
 }
@@ -1348,7 +1357,7 @@ fn find_matching_vars(
                         }
                     }
             }
-            Language::Cpp | Language::C => {
+            Language::Cpp | Language::C | Language::Java => {
                 if let Some(eq) = trimmed.find('=') {
                     let before_eq = trimmed[..eq].trim();
                     let parts: Vec<&str> = before_eq.split_whitespace().collect();
@@ -1456,7 +1465,7 @@ fn find_enclosing_fn(text: &str, at: usize, lang: Language) -> Option<EnclosingF
             let return_type = text[start..end].trim().to_string();
             Some(EnclosingFn { name, return_type, ret_start: start, ret_end: end })
         }
-        Language::Cpp | Language::C => {
+        Language::Cpp | Language::C | Language::Java => {
             let body_open = prefix.rfind('{')?;
             let prev_close = text[..body_open].rfind(['}', ';']).map_or(0, |p| p + 1);
             let header = &text[prev_close..body_open];
@@ -1718,6 +1727,7 @@ fn is_import_line(content: &str, at: usize, lang: Language) -> bool {
             let without_pub = line.strip_prefix("pub ").or_else(|| line.strip_prefix("pub(crate) ")).unwrap_or(line);
             without_pub.starts_with("use ")
         }
+        Language::Java => line.starts_with("import ") || line.starts_with("package "),
     }
 }
 

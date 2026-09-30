@@ -27,6 +27,7 @@ pub fn generate_mock(
         Language::Rust => generate_rust_mock(type_name, methods, fields),
         Language::Cpp | Language::C => generate_cpp_mock(type_name, methods, fields),
         Language::Swift => generate_swift_mock(type_name, methods, fields),
+        Language::Java => generate_java_mock(type_name, methods, fields),
     }
 }
 
@@ -602,6 +603,53 @@ fn swift_default_for_type(ty: &str) -> String {
         "String" => "\"\"".to_string(),
         "Date" => "Date(timeIntervalSince1970: 0)".to_string(),
         _ => "nil".to_string(),
+    }
+}
+
+fn generate_java_mock(
+    type_name: &str,
+    methods: &[MethodSignature],
+    fields: &[(String, String)],
+) -> String {
+    let mock_name = format!("Mock{type_name}");
+    let mut out = format!("public class {mock_name} implements {type_name} {{\n    public final java.util.List<String> calls = new java.util.ArrayList<>();\n\n");
+    for (name, ty) in fields {
+        let val = java_default_for_type(ty);
+        out.push_str(&format!("    public {ty} {name} = {val};\n"));
+    }
+    for m in methods {
+        let params_sig = m
+            .params
+            .iter()
+            .map(|(n, t)| format!("{t} {n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret = m.return_type.as_deref().unwrap_or("void");
+        out.push_str(&format!("    @Override\n    public {ret} {}({}) {{\n", m.name, params_sig));
+        out.push_str(&format!("        calls.add(\"{}\");\n", m.name));
+        if ret != "void" && ret != "Void" {
+            let default_val = java_default_for_type(ret);
+            out.push_str(&format!("        return {default_val};\n"));
+        }
+        out.push_str("    }\n\n");
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn java_default_for_type(ty: &str) -> String {
+    let t = ty.trim();
+    match t {
+        "boolean" => "false".to_string(),
+        "byte" | "short" | "int" | "long" => "0".to_string(),
+        "float" => "0.0f".to_string(),
+        "double" => "0.0".to_string(),
+        "char" => "'\\0'".to_string(),
+        "String" => "\"\"".to_string(),
+        t if t.starts_with("List<") || t.starts_with("java.util.List<") => "new java.util.ArrayList<>()".to_string(),
+        t if t.starts_with("Map<") || t.starts_with("java.util.Map<") => "new java.util.HashMap<>()".to_string(),
+        t if t.starts_with("Set<") || t.starts_with("java.util.Set<") => "new java.util.HashSet<>()".to_string(),
+        _ => "null".to_string(),
     }
 }
 

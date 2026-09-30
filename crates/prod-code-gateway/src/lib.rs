@@ -5685,7 +5685,10 @@ fn available_engines() -> Vec<String> {
     {
         engines.push("go (gopls)".to_string());
     }
-    for engine in ["cpp", "swift", "python", "typescript"] {
+    for engine in [
+        "cpp", "swift", "python", "typescript", "java", "kotlin", "csharp", "php", "ruby", "dart",
+        "zig",
+    ] {
         if let Some(server) = prod_code_engine_generic::GenericLspConfig::installed_server(engine) {
             engines.push(format!("{engine} ({server})"));
         }

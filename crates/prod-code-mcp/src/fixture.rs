@@ -786,6 +786,9 @@ pub async fn generate_with_options(
             Language::Swift => {
                 format!("{original}\n\nfunc _prod_code_fixture_probe() {{\n    {}\n}}\n", fixture.snippet)
             }
+            Language::Java => {
+                format!("{original}\n\n// prod-code fixture probe\nclass _ProdCodeFixtureProbe {{\n    void probe() {{\n        {}\n    }}\n}}\n", fixture.snippet)
+            }
         };
 
         let reports =
