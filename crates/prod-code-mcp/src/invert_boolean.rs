@@ -201,7 +201,7 @@ fn return_value_end(inner: &str, at: usize) -> usize {
                 Some(close) => i = close + 1,
                 None => return bytes.len(),
             },
-            b';' | b'}' => return i,
+            b';' | b'}' | b'\n' => return i,
             _ => i += 1,
         }
     }
@@ -575,6 +575,55 @@ struct PolyglotPredDecl {
     body_close: usize,
 }
 
+fn is_function_decl(line: &str, lang: Language, name: &str) -> bool {
+    let trimmed = line.trim();
+    match lang {
+        Language::Go => {
+            if let Some(rest) = trimmed.strip_prefix("func ") {
+                if rest.starts_with('(') {
+                    if let Some(close) = rest.find(')') {
+                        let after_recv = rest[close + 1..].trim_start();
+                        after_recv.starts_with(name)
+                    } else {
+                        false
+                    }
+                } else {
+                    rest.starts_with(name)
+                }
+            } else {
+                false
+            }
+        }
+        Language::Python => {
+            let rest = trimmed.strip_prefix("async ").unwrap_or(trimmed);
+            rest.strip_prefix("def ").is_some_and(|after| after.trim_start().starts_with(name))
+        }
+        Language::Swift => {
+            trimmed.contains("func ") && crate::inline_parameter::extract_decl_name_from_line(trimmed, lang).as_deref() == Some(name)
+        }
+        Language::TypeScript | Language::JavaScript => {
+            let rest = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+            let rest = rest.strip_prefix("default ").unwrap_or(rest);
+            let rest = rest.strip_prefix("async ").unwrap_or(rest);
+            if let Some(after) = rest.strip_prefix("function ") {
+                after.trim_start().starts_with(name)
+            } else {
+                !trimmed.starts_with("const ")
+                    && !trimmed.starts_with("let ")
+                    && !trimmed.starts_with("var ")
+                    && !trimmed.starts_with("return ")
+                    && crate::inline_parameter::extract_decl_name_from_line(trimmed, lang).as_deref() == Some(name)
+            }
+        }
+        Language::Cpp | Language::C => {
+            !trimmed.starts_with("return ")
+                && !trimmed.contains('=')
+                && crate::inline_parameter::extract_decl_name_from_line(trimmed, lang).as_deref() == Some(name)
+        }
+        _ => false,
+    }
+}
+
 fn find_polyglot_predicate_declaration(
     text: &str,
     lang: Language,
@@ -612,7 +661,7 @@ fn find_polyglot_predicate_declaration(
     let needle_space = format!("{clean_name} (");
     let needle_generic = format!("{clean_name}<");
 
-    let mut found = None;
+    let mut candidates = Vec::new();
     for (pos, _) in text
         .match_indices(&needle_paren)
         .chain(text.match_indices(&needle_space))
@@ -653,17 +702,40 @@ fn find_polyglot_predicate_declaration(
             (b_open, b_close)
         };
 
-        found = Some(PolyglotPredDecl {
-            fn_name: clean_name.clone(),
-            decl_name_at: pos,
-            close_paren,
-            body_open,
-            body_close,
-        });
-        break;
+        let line_start = text[..pos].rfind('\n').map_or(0, |i| i + 1);
+        let line_text = text[line_start..].lines().next().unwrap_or("");
+        let is_decl = is_function_decl(line_text, lang, &clean_name);
+        let pos_line = text[..pos].split('\n').count() as u32;
+
+        candidates.push((
+            is_decl,
+            pos_line,
+            PolyglotPredDecl {
+                fn_name: clean_name.clone(),
+                decl_name_at: pos,
+                close_paren,
+                body_open,
+                body_close,
+            },
+        ));
     }
 
-    found.with_context(|| format!("could not find declaration for predicate `{clean_name}`"))
+    let best = if let Some(target_line) = line {
+        candidates
+            .into_iter()
+            .min_by_key(|(is_decl, l, _)| {
+                let dist = (*l as i64 - target_line as i64).abs();
+                (!*is_decl, dist)
+            })
+            .map(|(_, _, decl)| decl)
+    } else {
+        candidates
+            .into_iter()
+            .min_by_key(|(is_decl, _, _)| !*is_decl)
+            .map(|(_, _, decl)| decl)
+    };
+
+    best.with_context(|| format!("could not find declaration for predicate `{clean_name}`"))
 }
 
 /// Inverts the boolean predicate in polyglot languages: TypeScript/JavaScript, Python, C++, Swift, Go.
