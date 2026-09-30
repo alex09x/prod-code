@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CodeCloneOccurrence {

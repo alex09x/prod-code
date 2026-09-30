@@ -350,7 +350,7 @@ fn build_graph_report(
     let mut afferent_counts: HashMap<String, usize> = HashMap::new();
     let mut total_edges = 0;
 
-    for (node, (_, deps)) in &adj {
+    for (_node, (_, deps)) in &adj {
         total_edges += deps.len();
         for dep in deps {
             *afferent_counts.entry(dep.clone()).or_insert(0) += 1;
