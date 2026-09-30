@@ -456,6 +456,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `ParsableCommand` and `AsyncParsableCommand` in 19 ms across 3,724 declarations, structural search captured 46 parser failures (`throw ParserError.$$$`) in 80.97 ms and 18 validation failures (`throw ValidationError($$$)`) in 44.52 ms (64 total error exit points across the CLI tree), parameterized AST codemod updated 42 lines across 9 files binding `$msg` metavariable cleanly into `ValidationError("DoccReference: " + $msg)`, remote Apple Silicon test offloading executed `swift test --filter HelpGenerationTests` passing 81/81 tests in 14.2s without local CPU consumption
     - **Full Deep-Dive Report**: [Swift Argument Parser Under the Microscope: What 67 AST Tools Found Inside Apple's CLI Framework (prod.codes)](https://prod.codes/blog/swift-argument-parser-under-the-microscope-67-ast-tools/)
 
+25. **[Alamofire/Alamofire](https://github.com/Alamofire/Alamofire)** (Swift)
+    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 7,652 declarations across 102 files (39,248 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Core networking pipeline centered on `SessionDelegate` multiplexer and `AFError` typed domain (in-degree 472, centrality 3.31), Clone Group #471 surfaced 25 occurrences of response expectation fulfillment boilerplate across 6 test files, Clone Group #2051 surfaced 10 occurrences of WebSocket disconnect handlers
+    - **Semantic Guards & Refactorings**: Semantic search located `SessionDelegate::urlSession` and `AFError` in 13-16 ms across 7,652 declarations, structural search captured 46 typed library errors (`throw AFError.$$$`) in 220.95 ms, 92 total throw statements (`throw $$$`) in 185.35 ms, and 7 invalid URL conversions (`throw AFError.invalidURL($$$)`) in 61.92 ms, parameterized AST codemod updated 14 lines across 2 files binding `$u` URL metavariables without touching disk, remote Apple Silicon test offloading executed 60 tests across `HTTPHeadersTests`, `ParameterEncodingTestCase`, and `RetryPolicyTestCase` passing in under 8s with 0% local CPU, dead-code scanner isolated 11 unreferenced example symbols in 11.35s
+    - **Full Deep-Dive Report**: [Alamofire Under the Microscope: What 67 AST Tools Found Inside the Swift Networking Engine (prod.codes)](https://prod.codes/blog/alamofire-under-the-microscope-67-ast-tools/)
+
 
 
 

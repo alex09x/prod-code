@@ -354,6 +354,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`curl/curl`](https://github.com/curl/curl) | C (32-core node) | 67 / 67 tools (Curl_easy centrality 4.83, 1,924 error/telemetry points, Clone Group #780, parameterized codemod) | 200K lines (1,048 files) | 0.61 ms RTT | [curl Under the Microscope →](https://prod.codes/blog/curl-under-the-microscope-67-ast-tools/) |
 | [`apple/swift-algorithms`](https://github.com/apple/swift-algorithms) | Swift (macOS node) | 67 / 67 tools (Chain2Sequence graph, 81 bounds invariants, Clone Group #314, remote test offload) | 13.7K lines (56 files) | 5.44 ms RTT | [Swift Algorithms Under the Microscope →](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/) |
 | [`apple/swift-argument-parser`](https://github.com/apple/swift-argument-parser) | Swift (macOS node) | 67 / 67 tools (ParsableCommand in-degree 296, 64 error egress points, property wrapper clones, 81 tests offloaded) | 30.0K lines (121 files) | 5.44 ms RTT | [Swift Argument Parser Under the Microscope →](https://prod.codes/blog/swift-argument-parser-under-the-microscope-67-ast-tools/) |
+| [`Alamofire/Alamofire`](https://github.com/Alamofire/Alamofire) | Swift (macOS node) | 67 / 67 tools (SessionDelegate multiplexer, 92 error boundaries, 20 clone groups, remote test offload) | 39.2K lines (102 files) | 5.44 ms RTT | [Alamofire Under the Microscope →](https://prod.codes/blog/alamofire-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 
