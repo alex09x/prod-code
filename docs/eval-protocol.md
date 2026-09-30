@@ -269,4 +269,12 @@ For every refactoring tool tested:
      - [#733](https://github.com/alex09x/prod-code/issues/733): `code_validate_edit fails on package.json with no package metadata`
    - **Full Deep-Dive Report**: [Dissecting Ripgrep with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/)
 
+2. **[quickwit-oss/tantivy](https://github.com/quickwit-oss/tantivy)** (Rust)
+   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 6.77 MB cold sync in 423 ms, 0.96 ms LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 10-crate clean DAG, 7,156 cyclic module paths in `src/`, Type-2 clone clusters in JIT and metrics
+   - **Semantic Guards & Refactorings**: Multi-file rename across 18 files in 5.75s, clone-aware function extraction, active safe-delete refusal (67 refs)
+   - **Full Deep-Dive Report**: [Dissecting Tantivy with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-tantivy-with-remote-ast/)
+
 
