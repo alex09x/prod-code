@@ -790,6 +790,17 @@ fn parse_diagnostic(d: &serde_json::Value) -> Result<DocDiagnostic, String> {
 }
 
 fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
+    if result.is_null() {
+        return DiagnosticsReport {
+            file: file.to_string(),
+            errors: 0,
+            warnings: 0,
+            items: Vec::new(),
+            preexisting: Vec::new(),
+            in_derive: Vec::new(),
+            auto_trait: Vec::new(),
+        };
+    }
     // This client never sends a previousResultId, so an unchanged report has no cached
     // evidence to refer to. Older adapters omit kind but still provide the complete items.
     if result
@@ -801,7 +812,11 @@ fn parse_items(file: &str, result: &serde_json::Value) -> DiagnosticsReport {
             "expected a full report; no previous result was supplied",
         );
     }
-    let Some(raw_items) = result.get("items").and_then(serde_json::Value::as_array) else {
+    let Some(raw_items) = result
+        .get("items")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| result.as_array())
+    else {
         return invalid_report(file, "required items array is missing or malformed");
     };
     let mut items = Vec::with_capacity(raw_items.len());

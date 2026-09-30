@@ -371,7 +371,7 @@ impl GenericLspConfig {
                     "classFileContentsSupport": true
                 }
             })),
-            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            request_timeout: Duration::from_secs(300),
             ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
             retain_open_documents: false,
@@ -2241,7 +2241,10 @@ impl GenericLspEngine {
         if let Some(options) = &self.config.initialization_options {
             init_params["initializationOptions"] = options.clone();
         }
-        let resp = self.send_request("initialize", init_params).await?;
+        let init_timeout = self.config.request_timeout.max(Duration::from_secs(180));
+        let resp = self
+            .send_request_with_timeout("initialize", init_params, init_timeout)
+            .await?;
 
         let capabilities = validate_initialize_response(&resp)?;
 
@@ -2499,6 +2502,16 @@ impl GenericLspEngine {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.send_request_with_timeout(method, params, self.config.request_timeout)
+            .await
+    }
+
+    pub async fn send_request_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value> {
         if !self.is_alive.load(Ordering::Acquire) {
             anyhow::bail!("Language server process has exited before request '{method}'");
         }
@@ -2511,7 +2524,7 @@ impl GenericLspEngine {
             None
         };
 
-        let deadline = tokio::time::Instant::now() + self.config.request_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
         let req_id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
         let payload = serde_json::json!({
             "jsonrpc": "2.0",
