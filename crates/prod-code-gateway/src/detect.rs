@@ -43,7 +43,13 @@ const RUBY_MARKERS: &[&str] = &["Gemfile"];
 const DART_MARKERS: &[&str] = &["pubspec.yaml"];
 const ZIG_MARKERS: &[&str] = &["build.zig", "build.zig.zon"];
 const ELIXIR_MARKERS: &[&str] = &["mix.exs"];
-const SCALA_MARKERS: &[&str] = &["build.sbt"];
+const SCALA_MARKERS: &[&str] = &[
+    "build.sbt",
+    "build.sc",
+    ".scala-build",
+    "project/build.properties",
+    "project/plugins.sbt",
+];
 const LUA_MARKERS: &[&str] = &[".luarc.json", ".luacheckrc"];
 const HASKELL_MARKERS: &[&str] = &["cabal.project", "stack.yaml", "package.yaml"];
 const OCAML_MARKERS: &[&str] = &["dune-project", "dune"];
@@ -816,6 +822,9 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
         return EngineKind::Kotlin;
     }
+    if SCALA_MARKERS.iter().any(|m| root.join(m).exists()) {
+        return EngineKind::Scala;
+    }
     for marker in JAVA_MARKERS {
         if root.join(marker).exists() {
             return EngineKind::Java;
@@ -847,9 +856,6 @@ pub fn detect_engine(root: &Path) -> EngineKind {
     }
     if ELIXIR_MARKERS.iter().any(|m| root.join(m).exists()) {
         return EngineKind::Elixir;
-    }
-    if SCALA_MARKERS.iter().any(|m| root.join(m).exists()) {
-        return EngineKind::Scala;
     }
     if has_lua_project(root) {
         return EngineKind::Lua;

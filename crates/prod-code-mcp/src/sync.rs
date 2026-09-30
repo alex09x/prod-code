@@ -635,6 +635,11 @@ fn engine_at(root: &Path) -> Option<&'static str> {
             })
             .unwrap_or(false);
     let has_kotlin = has("build.gradle.kts") || has("settings.gradle.kts");
+    let has_scala = has("build.sbt")
+        || has("build.sc")
+        || has(".scala-build")
+        || root.join("project/build.properties").exists()
+        || root.join("project/plugins.sbt").exists();
     if has("Cargo.toml") {
         Some("rust")
     } else if has("go.mod") || has("go.work") {
@@ -643,6 +648,8 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         Some("csharp")
     } else if has_kotlin {
         Some("kotlin")
+    } else if has_scala {
+        Some("scala")
     } else if has("Package.swift") || has_xcode || xcodegen {
         Some("swift")
     } else if has("compile_commands.json")
