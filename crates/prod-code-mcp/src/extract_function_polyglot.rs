@@ -140,7 +140,7 @@ pub fn tokenize_polyglot(text: &str, lang: Language) -> Vec<PolyToken> {
             });
             i = j;
         } else {
-            let two = if i + 2 <= bytes.len() {
+            let two = if i + 2 <= bytes.len() && c.is_ascii() && bytes[i + 1].is_ascii() {
                 &text[i..i + 2]
             } else {
                 ""
@@ -1327,4 +1327,17 @@ fn apply_edits(text: &str, edits: &[(usize, usize, String)]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tokenize_polyglot_multibyte_unicode() {
+        let code = "let price = 50€; let ratio = 10 / 2; let name = \"café\";";
+        let tokens = tokenize_polyglot(code, Language::TypeScript);
+        assert!(tokens.iter().any(|t| t.text == "€" && t.kind == PolyTokenKind::Punct));
+        assert!(tokens.iter().any(|t| t.text == "\"café\"" && t.kind == PolyTokenKind::Str));
+    }
 }

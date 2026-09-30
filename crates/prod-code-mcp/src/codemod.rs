@@ -232,8 +232,8 @@ fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
             continue;
         }
 
-        // Multi-char and single-char punctuation
-        if i + 1 < bytes.len() {
+        // Multi-char punctuation
+        if i + 1 < bytes.len() && b.is_ascii() && bytes[i + 1].is_ascii() {
             let pair = &pattern[i..i + 2];
             if matches!(
                 pair,
@@ -244,6 +244,20 @@ fn tokenize_pattern(pattern: &str) -> Result<Vec<PatternToken>> {
                 continue;
             }
         }
+
+        // Non-ASCII Unicode character
+        if !b.is_ascii() {
+            let ch = pattern[i..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            tokens.push(PatternToken::Literal(if ch.is_alphabetic() {
+                TokenKind::Ident(ch.to_string())
+            } else {
+                TokenKind::Punct(ch.to_string())
+            }));
+            i += ch_len;
+            continue;
+        }
+
         tokens.push(PatternToken::Literal(TokenKind::Punct(
             (b as char).to_string(),
         )));
@@ -1190,5 +1204,11 @@ fn test_currency() {
         let tokens = tokenize_source("let symbol = €; let name = café;");
         assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "€")));
         assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(id) if id.contains("caf"))));
+
+        // Pattern and codemod rule parsing with multi-byte Unicode characters
+        let rule = CodemodRule::parse("$x.price(€) ==>> $x.cost(¥)").expect("valid rule with unicode");
+        let src = "let r = item.price(€);";
+        let rewritten = rewrite_source(src, &rule).expect("should match and rewrite");
+        assert_eq!(rewritten, "let r = item.cost(¥);");
     }
 }
