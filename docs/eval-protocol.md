@@ -256,3 +256,17 @@ For every refactoring tool tested:
 - Strict Prohibition: NO AI trailers, NO star counts in titles/headings.
 - Keep in draft/uncommitted state until explicit user review.
 
+---
+
+## Completed Field Evaluations
+
+1. **[BurntSushi/ripgrep](https://github.com/BurntSushi/ripgrep)** (Rust)
+   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 45.4 KB cold sync, 1.02 ms LAN ping, 0% local laptop CPU
+   - **Issues Identified & Resolved**:
+     - [#735](https://github.com/alex09x/prod-code/issues/735): `slice: handle inverted/empty symbol ranges from language servers gracefully`
+     - [#733](https://github.com/alex09x/prod-code/issues/733): `code_validate_edit fails on package.json with no package metadata`
+   - **Full Deep-Dive Report**: [Dissecting Ripgrep with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/)
+
+

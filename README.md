@@ -324,6 +324,14 @@ identifier (so macOS remembers the Local Network grant instead of prompting afte
 redeploy), writes the launchd agent with `--engines` (`PROD_CODE_ENGINES`, default `swift`)
 and reloads it.
 
+## Field Evaluations & Benchmarks
+
+We evaluate `prod-code` against prominent real-world open-source repositories using our standardized [67-tool evaluation protocol](docs/eval-protocol.md) across cluster nodes (0% CPU on developer laptop):
+
+| Repository | Stack | Tested Tools | Cold Sync | LAN Latency | Deep-Dive Report |
+|---|---|---|---|---|---|
+| [`BurntSushi/ripgrep`](https://github.com/BurntSushi/ripgrep) | Rust (32-core node) | 67 / 67 tools (AST search, slicing, 30 refactorings, RAM validation) | 45.4 KB (27 files) | 1.02 ms RTT | [Dissecting Ripgrep with Remote AST →](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/) |
+
 ## Reading more
 
 The design decisions, with the measurements behind them, are written up as a series:
