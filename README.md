@@ -335,6 +335,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`tokio-rs/tokio`](https://github.com/tokio-rs/tokio) | Rust (32-core node) | 67 / 67 tools (10-crate circular DAG, AST slicing, Issue #736 fix, Criterion bench) | 6.11 MB (882 files) | 0.63 ms RTT | [Six Circular Dependencies in Tokio →](https://prod.codes/blog/six-circular-dependencies-in-tokio/) |
 | [`pola-rs/polars`](https://github.com/pola-rs/polars) | Rust (32-core node) | 67 / 67 tools (33-crate DAG, Issue #737 fix, AST slicing, RAM validation) | 29.6 MB (3,426 files) | 0.56 ms RTT | [Half a Million Lines of Arrow →](https://prod.codes/blog/half-a-million-lines-of-arrow-what-67-ast-analyzers-found-inside-polars/) |
 | [`astral-sh/uv`](https://github.com/astral-sh/uv) | Rust (32-core node) | 67 / 67 tools (74-crate DAG, 347 clones, Issue #738 fix, AST slicing) | 36.5 MB (1,787 files) | 0.50 ms RTT | [347 Code Clones Inside uv →](https://prod.codes/blog/347-code-clones-and-a-circular-crate-inside-uv/) |
+| [`bevyengine/bevy`](https://github.com/bevyengine/bevy) | Rust (32-core node) | 67 / 67 tools (97-crate DAG, 204 clones, Issue #739 fix, AST slicing, 28 traits on Entity) | 81.0 MB (3,044 files) | 0.61 ms RTT | [204 Code Clones and Two Self-Loops in Bevy →](https://prod.codes/blog/204-code-clones-and-two-self-loops-inside-bevy/) |
 
 ## Reading more
 

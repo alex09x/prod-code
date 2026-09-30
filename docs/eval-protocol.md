@@ -305,7 +305,16 @@ For every refactoring tool tested:
    - **Semantic Guards & Refactorings**: AST slicing of `Requirement` across 11 crates (559K lines to 100 lines), cross-crate boolean inversion of `GitLfs::enabled` across 10 crates (0 errors), safe-delete refusal (461 usages), RAM pre-flight validation in 430 ms
    - **Issues Identified & Resolved**:
      - [#738](https://github.com/alex09x/prod-code/issues/738): `fast-sync drops tracked JSON build inputs larger than 256 KiB breaking builds (uv-python)`
-   - **Full Deep-Dive Report**: [347 Code Clones and a Self-Loop: Breaking Down uv's 74-Crate Workspace with 67 AST Tools (prod.codes)](https://prod.codes/blog/347-code-clones-and-a-circular-crate-inside-uv/)
+6. **[bevyengine/bevy](https://github.com/bevyengine/bevy)** (Rust)
+   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 81.0 MB cold sync in 18.2s, 0.0 ms warm sync, 613 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 97-crate DAG (708 dependencies), 2 circular dev-dependency loops (`bevy_math -> bevy_math`, `bevy_remote -> bevy_remote`), 8-module mutual circular import knot in `bevy_ecs`, 204 Type-1 and 633 Type-2 code clones
+   - **Semantic Guards & Refactorings**: Cross-crate AST slicing of `Entity` & `App` (99% reduction), multi-callsite rename in 2.57s with full test pass, safe-delete refusal (3,160 usages), RAM pre-flight validation in 10.66s, shadow runs in 6.4s
+   - **Issues Identified & Resolved**:
+     - [#739](https://github.com/alex09x/prod-code/issues/739): `fast-sync drops Cargo examples and tests in directories named state or data`
+   - **Full Deep-Dive Report**: [204 Code Clones and Two Self-Loops: Dissecting Bevy's 97-Crate Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/204-code-clones-and-two-self-loops-inside-bevy/)
+
 
 
 
