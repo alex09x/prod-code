@@ -11,8 +11,85 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use crate::extract_function::{Duplicate, Extracted};
-use crate::parameter_object::Language;
-use crate::signature_polyglot::collect_workspace_sources;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    Python,
+    TypeScript,
+    JavaScript,
+    Go,
+    C,
+    Cpp,
+    Swift,
+    Java,
+    Kotlin,
+}
+
+impl Language {
+    pub fn of(file: &Path) -> Option<Self> {
+        let ext = file.extension().and_then(|e| e.to_str())?;
+        match ext {
+            "rs" => Some(Self::Rust),
+            "py" => Some(Self::Python),
+            "ts" | "tsx" => Some(Self::TypeScript),
+            "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
+            "go" => Some(Self::Go),
+            "c" | "h" => Some(Self::C),
+            "cpp" | "cc" | "cxx" | "hpp" => Some(Self::Cpp),
+            "swift" => Some(Self::Swift),
+            "java" => Some(Self::Java),
+            "kt" | "kts" => Some(Self::Kotlin),
+            _ => None,
+        }
+    }
+}
+fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
+    let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    match lang {
+        Language::TypeScript => matches!(ext, "ts" | "tsx" | "js" | "jsx"),
+        Language::JavaScript => matches!(ext, "js" | "jsx" | "ts" | "tsx"),
+        Language::Python => ext == "py",
+        Language::Cpp | Language::C => matches!(ext, "cpp" | "cc" | "cxx" | "c" | "h" | "hpp" | "hxx"),
+        Language::Swift => ext == "swift",
+        Language::Go => ext == "go",
+        Language::Rust => ext == "rs",
+        Language::Java => ext == "java",
+        Language::Kotlin => matches!(ext, "kt" | "kts"),
+    }
+}
+
+fn collect_workspace_sources(root: &Path, lang: Language) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.')
+                || name_str == "target"
+                || name_str == "node_modules"
+                || name_str == "build"
+                || name_str == ".build"
+                || name_str == "dist"
+            {
+                continue;
+            }
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.is_file() && is_candidate_source_file(&path, lang) {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    files
+}
 
 fn is_ident(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
@@ -236,6 +313,20 @@ pub fn is_keyword(word: &str, lang: Language) -> bool {
                 | "while" | "record" | "var" | "yield" | "sealed" | "permits" | "non-sealed"
                 | "true" | "false" | "null"
         ),
+        Language::Kotlin => matches!(
+            word,
+            "as" | "break" | "class" | "continue" | "do" | "else" | "false" | "for"
+                | "fun" | "if" | "in" | "interface" | "is" | "null" | "object" | "package"
+                | "return" | "super" | "this" | "throw" | "true" | "try" | "typealias"
+                | "typeof" | "val" | "var" | "when" | "while" | "by" | "catch" | "constructor"
+                | "delegate" | "dynamic" | "field" | "file" | "finally" | "get" | "import"
+                | "init" | "param" | "property" | "receiver" | "set" | "setparam" | "where"
+                | "actual" | "abstract" | "annotation" | "companion" | "const" | "crossinline"
+                | "data" | "enum" | "expect" | "external" | "final" | "infix" | "inline"
+                | "inner" | "internal" | "lateinit" | "noinline" | "open" | "operator"
+                | "out" | "override" | "private" | "protected" | "public" | "reified"
+                | "sealed" | "suspend" | "tailrec" | "vararg" | "value"
+        ),
     }
 }
 
@@ -285,6 +376,16 @@ pub fn is_builtin_or_global(word: &str, lang: Language) -> bool {
                 | "Boolean" | "Character" | "Byte" | "Short" | "Math" | "Arrays" | "Collections"
                 | "List" | "Map" | "Set" | "Optional" | "Objects" | "StringBuilder" | "StringBuffer"
                 | "Exception" | "RuntimeException" | "Throwable" | "Thread" | "Runnable"
+        ),
+        Language::Kotlin => matches!(
+            word,
+            "println" | "print" | "require" | "check" | "error" | "assert" | "TODO"
+                | "run" | "let" | "also" | "apply" | "with" | "takeIf" | "takeUnless"
+                | "repeat" | "lazy" | "emptyList" | "listOf" | "mutableListOf" | "emptySet"
+                | "setOf" | "mutableSetOf" | "emptyMap" | "mapOf" | "mutableMapOf"
+                | "String" | "Int" | "Long" | "Double" | "Float" | "Boolean" | "Byte"
+                | "Short" | "Char" | "Any" | "Unit" | "Nothing" | "Array" | "ByteArray"
+                | "IntArray" | "LongArray" | "CharArray" | "BooleanArray"
         ),
     }
 }
@@ -473,7 +574,7 @@ fn extract_input_variables(
     let mut declared_in_selection = HashSet::new();
 
     for (i, t) in tokens.iter().enumerate() {
-        if matches!(t.text.as_str(), "let" | "const" | "var") && i + 1 < tokens.len() {
+        if matches!(t.text.as_str(), "let" | "const" | "var" | "val") && i + 1 < tokens.len() {
             let next = &tokens[i + 1];
             if next.kind == PolyTokenKind::Word && !is_keyword(&next.text, lang) {
                 declared_in_selection.insert(next.text.clone());
@@ -656,6 +757,47 @@ fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<String> {
             }
             Some("Object".into())
         }
+        Language::Kotlin => {
+            let pat = format!("{name}:");
+            if let Some(pos) = scope.find(&pat) {
+                let rest = scope[pos + pat.len()..].trim_start();
+                let ty: String = rest
+                    .chars()
+                    .take_while(|c| is_ident(*c) || *c == '<' || *c == '>' || *c == '[' || *c == ']' || *c == '?')
+                    .collect();
+                if !ty.is_empty() {
+                    return Some(ty);
+                }
+            }
+            let pat_space = format!("{name} : ");
+            if let Some(pos) = scope.find(&pat_space) {
+                let rest = scope[pos + pat_space.len()..].trim_start();
+                let ty: String = rest
+                    .chars()
+                    .take_while(|c| is_ident(*c) || *c == '<' || *c == '>' || *c == '[' || *c == ']' || *c == '?')
+                    .collect();
+                if !ty.is_empty() {
+                    return Some(ty);
+                }
+            }
+            let pat_eq = format!("{name} =");
+            if let Some(pos) = scope.find(&pat_eq) {
+                let rest = scope[pos + pat_eq.len()..].trim_start();
+                if rest.starts_with('"') {
+                    return Some("String".into());
+                }
+                if rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    if rest.contains('.') {
+                        return Some("Double".into());
+                    }
+                    return Some("Int".into());
+                }
+                if rest.starts_with("true") || rest.starts_with("false") {
+                    return Some("Boolean".into());
+                }
+            }
+            Some("Any".into())
+        }
     }
 }
 
@@ -679,8 +821,10 @@ fn analyze_outputs(
             "let"
                 | "const"
                 | "var"
+                | "val"
                 | "def"
                 | "func"
+                | "fun"
                 | "if"
                 | "while"
                 | "for"
@@ -699,7 +843,7 @@ fn analyze_outputs(
     let mut assigned = Vec::new();
     let mut seen = HashSet::new();
     for (i, t) in tokens.iter().enumerate() {
-        if matches!(t.text.as_str(), "let" | "const" | "var") && i + 1 < tokens.len() {
+        if matches!(t.text.as_str(), "let" | "const" | "var" | "val") && i + 1 < tokens.len() {
             let next = &tokens[i + 1];
             if next.kind == PolyTokenKind::Word
                 && !is_keyword(&next.text, lang)
@@ -796,6 +940,7 @@ fn generate_call_replacement(
         match lang {
             Language::Python | Language::Swift => format!("self.{name}({args_str})"),
             Language::TypeScript | Language::JavaScript | Language::Java => format!("this.{name}({args_str})"),
+            Language::Kotlin => format!("{name}({args_str})"),
             Language::Cpp | Language::C => format!("this->{name}({args_str})"),
             Language::Go => format!("r.{name}({args_str})"),
             Language::Rust => format!("self.{name}({args_str})"),
@@ -805,7 +950,7 @@ fn generate_call_replacement(
     };
 
     let semi = match lang {
-        Language::Python | Language::Swift | Language::Go => "",
+        Language::Python | Language::Swift | Language::Go | Language::Kotlin => "",
         _ => ";",
     };
 
@@ -827,6 +972,7 @@ fn generate_call_replacement(
                     Language::Swift => format!("{indent}let {v} = {call}"),
                     Language::Rust => format!("{indent}let {v} = {call};"),
                     Language::Java => format!("{indent}var {v} = {call};"),
+                    Language::Kotlin => format!("{indent}val {v} = {call}"),
                 }
             } else {
                 format!("{indent}{v} = {call}{semi}")
@@ -844,6 +990,7 @@ fn generate_call_replacement(
                 Language::Swift => format!("{indent}let ({joined}) = {call}"),
                 Language::Rust => format!("{indent}let ({joined}) = {call};"),
                 Language::Java => format!("{indent}var res = {call};"),
+                Language::Kotlin => format!("{indent}val ({joined}) = {call}"),
             }
         }
         OutputKind::Void => format!("{indent}{call}{semi}"),
@@ -865,7 +1012,7 @@ fn generate_function_code(
     let body = match output {
         OutputKind::Expression(expr) => {
             let semi = match lang {
-                Language::Python | Language::Swift | Language::Go => "",
+                Language::Python | Language::Swift | Language::Go | Language::Kotlin => "",
                 _ => ";",
             };
             format!("return {expr}{semi}")
@@ -873,7 +1020,7 @@ fn generate_function_code(
         OutputKind::EndsWithReturn => selection_body.trim().to_string(),
         OutputKind::SingleVar { name: v, .. } => {
             let semi = match lang {
-                Language::Python | Language::Swift | Language::Go => "",
+                Language::Python | Language::Swift | Language::Go | Language::Kotlin => "",
                 _ => ";",
             };
             let mut s = selection_body.trim_end().to_string();
@@ -885,7 +1032,7 @@ fn generate_function_code(
         }
         OutputKind::MultipleVars(vars) => {
             let semi = match lang {
-                Language::Python | Language::Swift | Language::Go => "",
+                Language::Python | Language::Swift | Language::Go | Language::Kotlin => "",
                 _ => ";",
             };
             let mut s = selection_body.trim_end().to_string();
@@ -1035,6 +1182,30 @@ fn generate_function_code(
                 format!("{method_indent}{vis}static {ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
             }
         }
+        Language::Kotlin => {
+            let p_str = params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty.as_deref().unwrap_or("Any")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_ann = match output {
+                OutputKind::Expression(_) | OutputKind::SingleVar { .. } => {
+                    if let Some(ret) = enclosing_ret {
+                        format!(": {ret}")
+                    } else {
+                        String::new()
+                    }
+                }
+                OutputKind::Void => String::new(),
+                _ => String::new(),
+            };
+            let vis = if is_exported { "" } else { "private " };
+            if is_method {
+                format!("{method_indent}{vis}fun {name}({p_str}){ret_ann} {{\n{reindented}\n{method_indent}}}\n")
+            } else {
+                format!("{vis}fun {name}({p_str}){ret_ann} {{\n{reindented}\n}}\n")
+            }
+        }
     }
 }
 
@@ -1174,7 +1345,7 @@ pub async fn extract_function_polyglot(
                 } else {
                     match lang {
                         Language::Go | Language::Cpp | Language::C => Some("int".into()),
-                        Language::Swift => Some("Int".into()),
+                        Language::Swift | Language::Kotlin => Some("Int".into()),
                         _ => Some("number".into()),
                     }
                 };
@@ -1425,5 +1596,42 @@ mod tests {
         let tokens = tokenize_polyglot(code, Language::TypeScript);
         assert!(tokens.iter().any(|t| t.text == "€" && t.kind == PolyTokenKind::Punct));
         assert!(tokens.iter().any(|t| t.text == "\"café\"" && t.kind == PolyTokenKind::Str));
+    }
+
+    #[test]
+    fn test_kotlin_extract_function_generation() {
+        let params = vec![ExtractedParam {
+            name: "ch".to_string(),
+            ty: Some("Char".to_string()),
+        }];
+        let output = OutputKind::Expression("ch.digitToInt(16)".to_string());
+        let fn_code = generate_function_code(
+            "parseHexDigit",
+            &params,
+            &output,
+            "ch.digitToInt(16)",
+            Language::Kotlin,
+            false,
+            false,
+            "",
+            Some("Int"),
+        );
+        assert!(fn_code.contains("private fun parseHexDigit(ch: Char): Int {"));
+        assert!(fn_code.contains("return ch.digitToInt(16)"));
+        assert!(!fn_code.contains("return ch.digitToInt(16);"));
+
+        let call = generate_call_replacement(
+            "parseHexDigit",
+            &["c".to_string()],
+            &["ch".to_string()],
+            &OutputKind::SingleVar {
+                name: "digit".to_string(),
+                is_new: true,
+            },
+            Language::Kotlin,
+            false,
+            "    ",
+        );
+        assert_eq!(call, "    val digit = parseHexDigit(c)");
     }
 }
