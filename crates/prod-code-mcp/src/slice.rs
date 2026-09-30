@@ -391,6 +391,16 @@ fn parse_pos(value: Option<&serde_json::Value>) -> Result<Pos, String> {
     })
 }
 
+fn parse_symbol_span(value: Option<&serde_json::Value>) -> Result<Span, String> {
+    let value = value.ok_or("a range is missing")?;
+    let mut start = parse_pos(value.get("start"))?;
+    let mut end = parse_pos(value.get("end"))?;
+    if end < start {
+        std::mem::swap(&mut start, &mut end);
+    }
+    Ok(Span { start, end })
+}
+
 fn parse_span(value: Option<&serde_json::Value>) -> Result<Span, String> {
     let value = value.ok_or("a range is missing")?;
     let span = Span {
@@ -458,13 +468,13 @@ fn collect_decls(symbols: &[serde_json::Value], out: &mut Vec<Decl>) -> Result<(
             .and_then(|k| k.as_u64())
             .ok_or_else(|| format!("symbol `{name}` has no kind"))?;
         if is_sliceable(kind) && !name.is_empty() {
-            let range = parse_span(
+            let range = parse_symbol_span(
                 sym.get("range")
                     .or_else(|| sym.get("location").and_then(|l| l.get("range"))),
             )
             .map_err(|e| format!("symbol `{name}`: {e}"))?;
             let selection = match sym.get("selectionRange") {
-                Some(sel) => parse_span(Some(sel)).map_err(|e| format!("symbol `{name}`: {e}"))?,
+                Some(sel) => parse_symbol_span(Some(sel)).map_err(|e| format!("symbol `{name}`: {e}"))?,
                 None => range,
             };
             out.push(Decl {

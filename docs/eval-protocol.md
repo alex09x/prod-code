@@ -154,11 +154,105 @@ Measure cluster offloading performance vs local execution:
 
 ---
 
-## Evaluation Workflow for Each Project
+## Standardized Step-by-Step Project Evaluation Algorithm
 
-For every target repository:
-1. **Target Selection**: Pure native language (no external C/C++ or system headers), high adoption, rich architecture.
-2. **Environment**: Execute on `booster` (`192.168.2.168:9400`). Keep local client at 0% CPU.
-3. **Execution**: Step through all 9 suites (67 tools). Record exact latency, memory, AST matches, and edge cases.
-4. **Issue Filing**: If any tool gives an unexpected result, file an issue via `code_report_issue` / `prod-code report-issue`.
-5. **Publication**: Produce an in-depth article in `prod.codes/src/content/blog/` documenting all 9 suites with real outputs and metrics. Do NOT put star counts in article titles.
+For every target repository, execute this exact checkpoint lifecycle:
+
+### Step 0: Clean Workspace Setup & Verification
+1. Ensure the local checkout is clean: `git status --short` must return 0 uncommitted changes.
+2. Verify node health: `prod-code -r <node> status` (record memory RSS, uptime, ping RTT).
+3. Clean remote workspace on target node to ensure 100% cold baseline:
+   `ssh alex09x@<node> "rm -rf /home/alex09x/prod-code-storage/workspaces/<workspace_name>"`
+
+### Step 1: Ingestion & Cold Sync Benchmark
+1. Run cold sync: `prod-code -r <node> sync`.
+   - Record: `Files Planned`, `Manifest Probe`, `Files Updated`, `Data Transferred (KB/MB)`, `Fast-Sync Latency (ms)`.
+2. Run immediate incremental warm sync: `prod-code -r <node> sync`.
+   - Record: 0 files updated, 0.0 KB transferred, incremental latency (ms).
+3. Test issue reporter sanitization in dry-run mode:
+   `prod-code -r <node> report-issue --title "..." --body "..." --dry-run`
+   - Verify zero leaks of private IPs, hostnames, or home directories.
+
+### Step 2: Architecture DAG & Coupling Analysis
+1. Analyze crate/package level graph: `prod-code -r <node> dependencies --scope crates`.
+   - Calculate Robert C. Martin metrics: Afferent Coupling ($C_a$), Efferent Coupling ($C_e$), Instability ($I = C_e / (C_a + C_e)$).
+   - Verify DAG property (assert zero circular crate dependencies).
+2. Analyze module level for hidden cycles: `prod-code -r <node> dependencies --scope modules --path <dir>`.
+   - Record any circular dependencies identified by Tarjan's SCC DFS.
+3. Detect code duplications: `prod-code -r <node> duplicates --min-lines 10`.
+   - Log Type-1 (exact) and Type-2 (parameterized) clone clusters and duplicate byte counts.
+
+### Step 3: Structural AST Search & Slicing
+1. Polyglot structural search with metavariables:
+   `prod-code -r <node> structural-search '<pattern>' --path <file>`.
+2. Semantic intent search:
+   `prod-code -r <node> search '<natural language query>'`.
+3. Backward/Forward program slicing:
+   `prod-code -r <node> slice --symbol <symbol> <file>`.
+   - Calculate context reduction percentage: `1.0 - (sliced_bytes / full_file_bytes)`.
+
+### Step 4: Semantic LSP Navigation
+Step through all 10 core navigation primitives across crate boundaries:
+1. `prod-code -r <node> def --symbol <symbol>`
+2. `prod-code -r <node> refs --symbol <symbol>`
+3. `prod-code -r <node> callers <symbol>`
+4. `prod-code -r <node> callees <symbol>`
+5. `prod-code -r <node> impls --symbol <symbol>`
+6. `prod-code -r <node> supertypes --symbol <symbol>`
+7. `prod-code -r <node> hover <file> <line> <col>`
+8. `prod-code -r <node> type-at <file> <line> <col>`
+9. `prod-code -r <node> outline <file>`
+10. `prod-code -r <node> symbols <query>`
+11. `prod-code -r <node> source <path>` (std/registry code resolution)
+
+### Step 5: Diagnostics, Failure Explanation & Dead Code
+1. Query compiler diagnostics stream: `prod-code -r <node> diagnostics`.
+2. Scan workspace-wide dead code: `prod-code -r <node> dead-code`.
+3. Test batch orphan pruning: `prod-code -r <node> prune-orphans` (preview dry-run).
+4. Run remote linter: `prod-code -r <node> lint [--path <crate>]`.
+
+### Step 6: Code Assists (Intention Actions)
+1. Discover assists at position: `prod-code -r <node> assists <file> <line> <col>`.
+2. Apply intention action: `prod-code -r <node> assist <file> <line> <col> <action_id>`.
+3. Verify remote compilation & tests:
+   `prod-code -r <node> check --path <crate>`
+   `prod-code -r <node> test --path <crate>`
+4. Revert: `git checkout -- .`.
+
+### Step 7: AST Refactorings (The 5-Step Integrity Loop)
+For every refactoring tool tested:
+1. **Execute with `--apply`**: Apply the semantic transformation to the local checkout.
+2. **Inspect Diff**: Run `git diff` and record the exact patch (call sites, bodies, imports).
+3. **Compile-Check**: Run `prod-code -r <node> check --path <crate>` on cluster cores.
+4. **Test Run**: Run `prod-code -r <node> test --path <crate> [filter]` and assert 100% green.
+5. **Revert Cleanly**: Run `git checkout -- .` and verify `git status --short` is empty before next test.
+6. **Guard Verification**: For guard tools (`safe-delete`, `make-static`), assert that improper edits are blocked with clear semantic explanations.
+
+### Step 8: Synthesis & In-Memory Pre-validation
+1. Test fixture generation: `prod-code -r <node> fixture --type <symbol>`.
+2. Propose in-scope expression: `prod-code -r <node> propose-expression <file> <line> <col> <type>`.
+3. Test in-memory edit validation: pipe modified file to `prod-code -r <node> validate` over stdin without saving to disk. Verify compiler catches syntax/type errors in RAM.
+4. Run multi-hypothesis shadow run: `prod-code -r <node> shadow-run <spec.json> -- <cmd>`.
+
+### Step 9: Remote Execution, Blast Radius & CI
+1. Impact analysis: calculate affected test set from changed files (`prod-code impact`).
+2. Remote benchmark execution: `prod-code -r <node> benchmarks --path <crate>`.
+3. Remote test suite execution: `prod-code -r <node> test --path <crate>`.
+4. Remote command execution: `prod-code -r <node> exec -- <cmd>`.
+
+### Bug Protocol
+- If any tool crashes, hangs, or returns an unhandled error:
+  1. Capture reproduction command and stack trace.
+  2. File an issue using `prod-code report-issue --title "..." --body "..." --label bug`.
+  3. Fix the bug in the `prod-code` codebase.
+  4. Write an automated unit test.
+  5. Verify the fix passes tests remotely and locally.
+  6. Document the bug and resolution in the evaluation report.
+
+### Publishing Protocol
+- Synthesize all collected metrics into an article in `prod.codes/src/content/blog/`.
+- Must include real terminal logs, authentic cold vs warm sync timings, real AST diffs, and exact cluster resource metrics.
+- Author: `Alexander Panasenko <alex@prod.codes>`.
+- Strict Prohibition: NO AI trailers, NO star counts in titles/headings.
+- Keep in draft/uncommitted state until explicit user review.
+

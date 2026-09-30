@@ -155,9 +155,17 @@ pub fn parse_remotes(spec: &str) -> Result<Vec<SocketAddr>> {
             }
             continue;
         }
-        let addr = item
-            .to_socket_addrs()
-            .with_context(|| format!("cannot resolve gateway address {item}"))?
+        let addrs: Vec<SocketAddr> = match item.to_socket_addrs() {
+            Ok(parsed) => parsed.collect(),
+            Err(_) => match (item, 9400).to_socket_addrs() {
+                Ok(parsed) => parsed.collect(),
+                Err(err) => {
+                    return Err(anyhow!("cannot resolve gateway address {item}: {err}"));
+                }
+            },
+        };
+        let addr = addrs
+            .into_iter()
             .next()
             .ok_or_else(|| anyhow!("gateway address {item} resolved to nothing"))?;
         if !nodes.contains(&addr) {
@@ -638,6 +646,12 @@ mod tests {
         let nodes = parse_remotes("127.0.0.1:9400, 127.0.0.1:9401,127.0.0.1:9400").unwrap();
         assert_eq!(nodes.len(), 2);
         assert!(parse_remotes(" , ").is_err());
+    }
+
+    #[test]
+    fn parses_omitted_port_with_default() {
+        let nodes = parse_remotes("127.0.0.1, localhost").unwrap();
+        assert!(nodes.contains(&"127.0.0.1:9400".parse().unwrap()));
     }
 
     #[test]

@@ -741,3 +741,45 @@ async fn an_unsliced_target_leaves_the_slice_bounded_not_complete() {
     );
     assert!(text.contains("inner (src/lib.rs:1)"), "{text}");
 }
+
+/// Inverted symbol ranges (e.g. from macro expansions or synthetic type aliases, #735)
+/// are normalized gracefully without erroring as "a range ends before it starts".
+#[tokio::test]
+async fn inverted_document_symbol_ranges_are_normalized_gracefully() {
+    let ws = Workspace::new(&[(
+        "src/lib.rs",
+        "type LiteralStrategy = u32;\nfn seed() { let _x: LiteralStrategy = 1; }\n",
+    )]);
+    let root = ws.root();
+    let file = root.join("src/lib.rs");
+    let gateway = ScriptedGateway::start(move |method, _params| match method {
+        "textDocument/documentSymbol" => {
+            serde_json::json!([
+                // Inverted range: line 0 character 20 down to character 5
+                serde_json::json!({
+                    "name": "LiteralStrategy",
+                    "kind": 14,
+                    "range": {
+                        "start": { "line": 0, "character": 20 },
+                        "end": { "line": 0, "character": 5 }
+                    },
+                    "selectionRange": {
+                        "start": { "line": 0, "character": 20 },
+                        "end": { "line": 0, "character": 5 }
+                    }
+                }),
+                answers::document_symbol("seed", 12, 1, 1, 2)
+            ])
+        }
+        "textDocument/definition" => serde_json::Value::Null,
+        _ => serde_json::Value::Null,
+    })
+    .await;
+
+    let report = slice::slice(gateway.addr(), &root, &file, 1, 3, 3, 4096)
+        .await
+        .expect("slice succeeds despite inverted symbol range (#735)");
+    let text = report.render();
+    assert!(text.contains("seed"), "{text}");
+}
+

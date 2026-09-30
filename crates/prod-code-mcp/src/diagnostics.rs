@@ -2,7 +2,7 @@
 //! or of a proposed replacement text, without a build and without writing anything.
 
 use crate::session::LspSession;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -852,12 +852,64 @@ fn ensure_source_file(file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether `file` is a JSON manifest or document whose syntax is validated directly (#733).
+fn is_json_file(file: &Path) -> bool {
+    crate::lang::language_id_for_path(file) == "json"
+}
+
+/// JSON syntax validator for manifests and JSON configuration files (#733).
+pub fn validate_json(shown: &str, text: &str) -> DiagnosticsReport {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(_) => DiagnosticsReport {
+            file: shown.to_string(),
+            errors: 0,
+            warnings: 0,
+            items: Vec::new(),
+            preexisting: Vec::new(),
+            in_derive: Vec::new(),
+            auto_trait: Vec::new(),
+        },
+        Err(err) => {
+            let line = (err.line() as u32).max(1);
+            let col = (err.column() as u32).max(1);
+            DiagnosticsReport {
+                file: shown.to_string(),
+                errors: 1,
+                warnings: 0,
+                items: vec![DocDiagnostic {
+                    severity: "error".to_string(),
+                    message: format!("JSON syntax error: {err}"),
+                    code: Some("json-syntax".to_string()),
+                    line,
+                    col,
+                    source: None,
+                    end: None,
+                    note: None,
+                }],
+                preexisting: Vec::new(),
+                in_derive: Vec::new(),
+                auto_trait: Vec::new(),
+            }
+        }
+    }
+}
+
 /// Diagnostics of `file` as it is on disk.
 pub async fn diagnostics(
     remote: SocketAddr,
     root: &Path,
     file: &Path,
 ) -> Result<DiagnosticsReport> {
+    if is_json_file(file) {
+        let abs = if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            root.join(file)
+        };
+        let text = std::fs::read_to_string(&abs)
+            .with_context(|| format!("cannot read {}", file.display()))?;
+        return Ok(validate_json(&display(root, file), &text));
+    }
     ensure_source_file(file)?;
     let mut session = LspSession::open(remote, root, Some(file)).await?;
     let uri = session.uri_for(file)?;
@@ -889,6 +941,9 @@ pub async fn validate_text(
     file: &Path,
     new_text: &str,
 ) -> Result<DiagnosticsReport> {
+    if is_json_file(file) {
+        return Ok(validate_json(&display(root, file), new_text));
+    }
     ensure_source_file(file)?;
     let shown = display(root, file);
     // The file as it is on disk, read on the validation engine: it has no overlay for this
@@ -967,7 +1022,9 @@ pub async fn validate_texts(
     also_check: &[std::path::PathBuf],
 ) -> Result<Vec<DiagnosticsReport>> {
     for file in edits.iter().map(|(file, _)| file).chain(also_check) {
-        ensure_source_file(file)?;
+        if !is_json_file(file) {
+            ensure_source_file(file)?;
+        }
     }
     // An extra file is checked against its text on disk; one that cannot be read would come back
     // as a clean report nobody made, and the change would pass unchecked there (#446).
@@ -985,6 +1042,17 @@ pub async fn validate_texts(
                 abs.display()
             )
         })?);
+    }
+    // Fast path: if all files are JSON, validate locally without an LSP session (#733).
+    if edits.iter().all(|(f, _)| is_json_file(f)) && also_check.iter().all(|f| is_json_file(f)) {
+        let mut reports = Vec::with_capacity(edits.len() + also_check.len());
+        for (file, text) in edits {
+            reports.push(validate_json(&display(root, file), text));
+        }
+        for (file, text) in also_check.iter().zip(&also_texts) {
+            reports.push(validate_json(&display(root, file), text));
+        }
+        return Ok(reports);
     }
     let hint = edits
         .first()
