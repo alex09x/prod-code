@@ -349,6 +349,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`vercel/next.js`](https://github.com/vercel/next.js) | TypeScript/JS (32-core node) | 67 / 67 tools (SSR render slice, 484 clone groups, 1,254 error assertions, cross-file boolean inversion) | 1.29M lines (24,309 files) | 0.65 ms RTT | [Next.js Under the Microscope →](https://prod.codes/blog/nextjs-under-the-microscope-67-ast-tools/) |
 | [`expressjs/express`](https://github.com/expressjs/express) | JavaScript (32-core node) | 67 / 67 tools (95% app.handle slice, 10 TypeError sites, Clone Group #150, dynamic receiver guardrails) | 21.5K lines (201 files) | 0.65 ms RTT | [Express Under the Microscope →](https://prod.codes/blog/express-under-the-microscope-67-ast-tools/) |
 | [`redis/redis`](https://github.com/redis/redis) | C (32-core node) | 67 / 67 tools (event loop slice to epoll_wait, 454 error reply sites, Clone Group #382, non-call guards) | 212K lines (219 files) | 0.65 ms RTT | [Redis Under the Microscope →](https://prod.codes/blog/redis-under-the-microscope-67-ast-tools/) |
+| [`duckdb/duckdb`](https://github.com/duckdb/duckdb) | C++ (32-core node) | 67 / 67 tools (QueryResult slice, 2,277 InternalException sites, 5,500+ clone groups, Catch2 guards) | 681K lines (3,273 files) | 0.65 ms RTT | [DuckDB Under the Microscope →](https://prod.codes/blog/duckdb-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 

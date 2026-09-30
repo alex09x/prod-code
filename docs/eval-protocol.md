@@ -416,6 +416,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: Multiplexed event architecture, Clone Group #382 identified 5 identical 12-line reply parser validation blocks in `deps/hiredis/hiredis.c:190-296`
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `aeProcessEvents` in `src/ae.c:365` (isolated event dispatch dependencies, traversing to `aeEventLoop` in `src/ae.h` and `aeApiPoll` epoll_wait in `src/ae_epoll.c:89`), structural search captured 454 error reply sites matching `addReplyError($$$)` across 38 files in 4,538 ms, semantic search located `aeProcessEvents` in 196 ms (dense cosine similarity 0.852), AST boolean inversion on `stringmatch` -> `stringmismatch` updated 26 lines across 4 files and safely halted on 1 non-call reference in `src/debug.c:1080` (`stringmatch-test`), remote in-memory pre-flight validation under clangd caught 3 C compilation errors in 0.52s
     - **Full Deep-Dive Report**: [Redis Under the Microscope: What 67 AST Tools Found Inside the In-Memory Engine (prod.codes)](https://prod.codes/blog/redis-under-the-microscope-67-ast-tools/)
+20. **[duckdb/duckdb](https://github.com/duckdb/duckdb)** (C++)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 350,004 declarations across 4,971 files (681,473 lines in `src/`), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Columnar vectorized execution architecture, 5,500+ clone groups across third-party generators (Group #1518 with 33 occurrences and Group #2227 with 25 occurrences in `third_party/utf8proc`)
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `Connection::Query` in `src/main/connection.cpp:81` (traversed query execution spine into `QueryResult` data chunk streaming contracts in `src/include/duckdb/main/query_result.hpp`), structural search captured 2,277 exception invariants matching `throw InternalException($$$)` across 693 files in 18.8s, semantic search located `class ClientContext` in 4,172 ms with typed graph centrality of 5.23 (in-degree 3,671), AST boolean inversion on `StringUtil::EndsWith` safely halted due to cross-class overload collision with `Identifier::EndsWith` and 2 non-call value references in Catch2 test matchers, remote in-memory pre-flight validation under clangd caught undeclared types in 2.82s
+    - **Full Deep-Dive Report**: [DuckDB Under the Microscope: What 67 AST Tools Found Inside the Analytical Engine (prod.codes)](https://prod.codes/blog/duckdb-under-the-microscope-67-ast-tools/)
 
 
 
