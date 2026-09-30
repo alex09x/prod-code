@@ -367,6 +367,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`dotnet/aspnetcore`](https://github.com/dotnet/aspnetcore) | C# (32-core node) | 67 / 67 tools (1.76M lines, 625 projects, 7,427 deps, 20 clone groups, 4K+ guard modernizations, cluster OmniSharp 0 errors) | 1.76M lines (10,685 files) | 1.55 ms RTT | [ASP.NET Core Under the Microscope →](https://prod.codes/blog/aspnetcore-under-the-microscope-67-ast-tools/) |
 | [`dotnet/efcore`](https://github.com/dotnet/efcore) | C# (32-core node) | 67 / 67 tools (1.75M lines, 58 projects clean DAG, 20 clone groups, 1.4K guard search, cluster OmniSharp 0 errors) | 1.75M lines (5,778 files) | 0.55 ms RTT | [EF Core Under the Microscope →](https://prod.codes/blog/efcore-under-the-microscope-67-ast-tools/) |
 | [`dotnet/roslyn`](https://github.com/dotnet/roslyn) | C# (32-core node) | 67 / 67 tools (6.5M lines, 394 projects, 2,103 deps, 1.8% clones, 15.3K invariants, cluster OmniSharp 0 errors) | 6.50M lines (18,176 files) | 0.55 ms RTT | [Roslyn Under the Microscope →](https://prod.codes/blog/roslyn-under-the-microscope-67-ast-tools/) |
+| [`dotnet/BenchmarkDotNet`](https://github.com/dotnet/BenchmarkDotNet) | C# (32-core node) | 67 / 67 tools (121K lines, 29 projects clean DAG, 20 clone groups, 1.1K benchmarks, cluster OmniSharp 0 errors) | 121K lines (1,175 files) | 0.58 ms RTT | [BenchmarkDotNet Under the Microscope →](https://prod.codes/blog/benchmarkdotnet-under-the-microscope-67-ast-tools/) |
 
 
 
