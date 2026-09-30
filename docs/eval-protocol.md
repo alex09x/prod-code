@@ -297,6 +297,16 @@ For every refactoring tool tested:
      - [#737](https://github.com/alex09x/prod-code/issues/737): `codemod: non-char-boundary panic in tokenize_source on multi-byte UTF-8 tokens`
    - **Full Deep-Dive Report**: [Half a Million Lines of Arrow: What 67 AST Analyzers Found Inside Polars' Query Engine (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-arrow-what-67-ast-analyzers-found-inside-polars/)
 
+5. **[astral-sh/uv](https://github.com/astral-sh/uv)** (Rust)
+   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`) & `booster`
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 36.45 MB cold sync in 1.85s, 234 ms warm sync, 500 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 74-crate DAG (623 dependencies), self-referencing cycle in `uv-preview`, 347 Type-1/Type-2 code clones in test fixtures
+   - **Semantic Guards & Refactorings**: AST slicing of `Requirement` across 11 crates (559K lines to 100 lines), cross-crate boolean inversion of `GitLfs::enabled` across 10 crates (0 errors), safe-delete refusal (461 usages), RAM pre-flight validation in 430 ms
+   - **Issues Identified & Resolved**:
+     - [#738](https://github.com/alex09x/prod-code/issues/738): `fast-sync drops tracked JSON build inputs larger than 256 KiB breaking builds (uv-python)`
+   - **Full Deep-Dive Report**: [347 Code Clones and a Self-Loop: Breaking Down uv's 74-Crate Workspace with 67 AST Tools (prod.codes)](https://prod.codes/blog/347-code-clones-and-a-circular-crate-inside-uv/)
+
 
 
 
