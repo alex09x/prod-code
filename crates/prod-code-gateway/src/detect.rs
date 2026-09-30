@@ -806,13 +806,8 @@ pub fn detect_engine(root: &Path) -> EngineKind {
             return EngineKind::Python;
         }
     }
-    for marker in TYPESCRIPT_MARKERS {
-        if root.join(marker).exists() {
-            return EngineKind::TypeScript;
-        }
-    }
-    if is_make_cpp_project(root) {
-        return EngineKind::Cpp;
+    if has_csharp_project(root) {
+        return EngineKind::Csharp;
     }
     if KOTLIN_MARKERS.iter().any(|m| root.join(m).exists()) {
         return EngineKind::Kotlin;
@@ -822,8 +817,13 @@ pub fn detect_engine(root: &Path) -> EngineKind {
             return EngineKind::Java;
         }
     }
-    if has_csharp_project(root) {
-        return EngineKind::Csharp;
+    for marker in TYPESCRIPT_MARKERS {
+        if root.join(marker).exists() {
+            return EngineKind::TypeScript;
+        }
+    }
+    if is_make_cpp_project(root) {
+        return EngineKind::Cpp;
     }
     for marker in PHP_MARKERS {
         if root.join(marker).exists() {

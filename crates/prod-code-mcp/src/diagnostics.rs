@@ -857,6 +857,7 @@ fn ensure_source_file(file: &Path) -> Result<()> {
             | "swift"
             | "java"
             | "kotlin"
+            | "csharp"
     ) || crate::lang::is_header(file);
     anyhow::ensure!(
         supported,

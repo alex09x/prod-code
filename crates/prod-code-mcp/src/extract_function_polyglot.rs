@@ -23,6 +23,7 @@ pub enum Language {
     Swift,
     Java,
     Kotlin,
+    Csharp,
 }
 
 impl Language {
@@ -39,6 +40,7 @@ impl Language {
             "swift" => Some(Self::Swift),
             "java" => Some(Self::Java),
             "kt" | "kts" => Some(Self::Kotlin),
+            "cs" => Some(Self::Csharp),
             _ => None,
         }
     }
@@ -57,6 +59,7 @@ fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
         Language::Rust => ext == "rs",
         Language::Java => ext == "java",
         Language::Kotlin => matches!(ext, "kt" | "kts"),
+        Language::Csharp => ext == "cs",
     }
 }
 
@@ -327,6 +330,21 @@ pub fn is_keyword(word: &str, lang: Language) -> bool {
                 | "out" | "override" | "private" | "protected" | "public" | "reified"
                 | "sealed" | "suspend" | "tailrec" | "vararg" | "value"
         ),
+        Language::Csharp => matches!(
+            word,
+            "abstract" | "as" | "base" | "bool" | "break" | "byte" | "case" | "catch"
+                | "char" | "checked" | "class" | "const" | "continue" | "decimal" | "default"
+                | "delegate" | "do" | "double" | "else" | "enum" | "event" | "explicit"
+                | "extern" | "false" | "finally" | "fixed" | "float" | "for" | "foreach"
+                | "goto" | "if" | "implicit" | "in" | "int" | "interface" | "internal"
+                | "is" | "lock" | "long" | "namespace" | "new" | "null" | "object"
+                | "operator" | "out" | "override" | "params" | "private" | "protected"
+                | "public" | "readonly" | "record" | "ref" | "return" | "sbyte" | "sealed"
+                | "short" | "sizeof" | "stackalloc" | "static" | "string" | "struct"
+                | "switch" | "this" | "throw" | "true" | "try" | "typeof" | "uint"
+                | "ulong" | "unchecked" | "unsafe" | "ushort" | "using" | "virtual"
+                | "void" | "volatile" | "while" | "var" | "async" | "await" | "yield"
+        ),
     }
 }
 
@@ -386,6 +404,13 @@ pub fn is_builtin_or_global(word: &str, lang: Language) -> bool {
                 | "String" | "Int" | "Long" | "Double" | "Float" | "Boolean" | "Byte"
                 | "Short" | "Char" | "Any" | "Unit" | "Nothing" | "Array" | "ByteArray"
                 | "IntArray" | "LongArray" | "CharArray" | "BooleanArray"
+        ),
+        Language::Csharp => matches!(
+            word,
+            "Console" | "String" | "Object" | "Int32" | "Int64" | "Double" | "Single"
+                | "Boolean" | "Char" | "Byte" | "Int16" | "Math" | "Array" | "List" | "Dictionary"
+                | "HashSet" | "StringBuilder" | "Exception" | "Task" | "ValueTask" | "Action"
+                | "Func" | "Predicate" | "Nullable" | "Span" | "ReadOnlySpan" | "Memory"
         ),
     }
 }
@@ -547,7 +572,7 @@ fn find_enclosing_scope(
                                 if !ret_type.is_empty() {
                                     enclosing_ret = Some(ret_type.to_string());
                                 }
-                            } else if lang == Language::Java || lang == Language::Cpp || lang == Language::C {
+                            } else if lang == Language::Java || lang == Language::Cpp || lang == Language::C || lang == Language::Csharp {
                                 let parts: Vec<&str> = before_p.split_whitespace().collect();
                                 if parts.len() >= 2 {
                                     let ty = parts[parts.len() - 2];
@@ -768,6 +793,31 @@ fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<String> {
             }
             Some("Object".into())
         }
+        Language::Csharp => {
+            let pat = format!(" {name}");
+            if let Some(pos) = scope.find(&pat) {
+                let before = scope[..pos].trim_end();
+                let ty: String = before
+                    .chars()
+                    .rev()
+                    .take_while(|c| is_ident(*c) || *c == '<' || *c == '>' || *c == '[' || *c == ']' || *c == '?')
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
+                if is_ident(ty.chars().next().unwrap_or(' '))
+                    && (!is_keyword(&ty, lang)
+                        || matches!(
+                            ty.as_str(),
+                            "int" | "double" | "float" | "bool" | "char" | "long"
+                                | "short" | "byte" | "string" | "object"
+                        ))
+                {
+                    return Some(ty);
+                }
+            }
+            Some("object".into())
+        }
         Language::Kotlin => {
             let pat = format!("{name}:");
             if let Some(pos) = scope.find(&pat) {
@@ -950,7 +1000,7 @@ fn generate_call_replacement(
     let call = if is_method {
         match lang {
             Language::Python | Language::Swift => format!("self.{name}({args_str})"),
-            Language::TypeScript | Language::JavaScript | Language::Java => format!("this.{name}({args_str})"),
+            Language::TypeScript | Language::JavaScript | Language::Java | Language::Csharp => format!("this.{name}({args_str})"),
             Language::Kotlin => format!("{name}({args_str})"),
             Language::Cpp | Language::C => format!("this->{name}({args_str})"),
             Language::Go => format!("r.{name}({args_str})"),
@@ -982,7 +1032,7 @@ fn generate_call_replacement(
                     Language::Cpp | Language::C => format!("{indent}auto {v} = {call};"),
                     Language::Swift => format!("{indent}let {v} = {call}"),
                     Language::Rust => format!("{indent}let {v} = {call};"),
-                    Language::Java => format!("{indent}var {v} = {call};"),
+                    Language::Java | Language::Csharp => format!("{indent}var {v} = {call};"),
                     Language::Kotlin => format!("{indent}val {v} = {call}"),
                 }
             } else {
@@ -1001,6 +1051,7 @@ fn generate_call_replacement(
                 Language::Swift => format!("{indent}let ({joined}) = {call}"),
                 Language::Rust => format!("{indent}let ({joined}) = {call};"),
                 Language::Java => format!("{indent}var res = {call};"),
+                Language::Csharp => format!("{indent}var ({joined}) = {call};"),
                 Language::Kotlin => format!("{indent}val ({joined}) = {call}"),
             }
         }
@@ -1193,6 +1244,25 @@ fn generate_function_code(
                 format!("{method_indent}{vis}static {ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
             }
         }
+        Language::Csharp => {
+            let p_str = params
+                .iter()
+                .map(|p| format!("{} {}", p.ty.as_deref().unwrap_or("object"), p.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_ty = enclosing_ret.unwrap_or("void");
+            let ret_ann = match output {
+                OutputKind::Expression(_) | OutputKind::SingleVar { .. } => ret_ty,
+                _ => "void",
+            };
+            let vis = if is_exported { "public " } else { "private " };
+            let has_this = selection_body.contains("this.") || selection_body.contains("this ");
+            if is_method || has_this {
+                format!("{method_indent}{vis}{ret_ann} {name}({p_str})\n{method_indent}{{\n{reindented}\n{method_indent}}}\n")
+            } else {
+                format!("{method_indent}{vis}static {ret_ann} {name}({p_str})\n{method_indent}{{\n{reindented}\n{method_indent}}}\n")
+            }
+        }
         Language::Kotlin => {
             let p_str = params
                 .iter()
@@ -1355,7 +1425,7 @@ pub async fn extract_function_polyglot(
                     Some("string".into())
                 } else {
                     match lang {
-                        Language::Go | Language::Cpp | Language::C => Some("int".into()),
+                        Language::Go | Language::Cpp | Language::C | Language::Csharp => Some("int".into()),
                         Language::Swift | Language::Kotlin => Some("Int".into()),
                         _ => Some("number".into()),
                     }
@@ -1644,5 +1714,41 @@ mod tests {
             "    ",
         );
         assert_eq!(call, "    val digit = parseHexDigit(c)");
+    }
+
+    #[test]
+    fn test_csharp_extract_function_generation() {
+        let params = vec![ExtractedParam {
+            name: "input".to_string(),
+            ty: Some("string".to_string()),
+        }];
+        let output = OutputKind::Expression("input.Trim()".to_string());
+        let fn_code = generate_function_code(
+            "CleanInput",
+            &params,
+            &output,
+            "input.Trim()",
+            Language::Csharp,
+            false,
+            false,
+            "    ",
+            Some("string"),
+        );
+        assert!(fn_code.contains("private static string CleanInput(string input)"));
+        assert!(fn_code.contains("return input.Trim();"));
+
+        let call = generate_call_replacement(
+            "CleanInput",
+            &["raw".to_string()],
+            &["input".to_string()],
+            &OutputKind::SingleVar {
+                name: "cleaned".to_string(),
+                is_new: true,
+            },
+            Language::Csharp,
+            false,
+            "        ",
+        );
+        assert_eq!(call, "        var cleaned = CleanInput(raw);");
     }
 }
