@@ -360,7 +360,17 @@ impl GenericLspConfig {
             args,
             env: HashMap::new(),
             working_dir: None,
-            initialization_options: None,
+            initialization_options: Some(serde_json::json!({
+                "settings": {
+                    "java": {
+                        "autobuild": { "enabled": true }
+                    }
+                },
+                "extendedClientCapabilities": {
+                    "progressReportProvider": true,
+                    "classFileContentsSupport": true
+                }
+            })),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             ready: ReadySignal::Progress,
             index_wait: INDEX_WAIT,
@@ -2204,6 +2214,16 @@ impl GenericLspEngine {
                     "configuration": true
                 },
                 "textDocument": {
+                    "synchronization": {
+                        "dynamicRegistration": false,
+                        "willSave": false,
+                        "willSaveWaitUntil": false,
+                        "didSave": true
+                    },
+                    "publishDiagnostics": {
+                        "relatedInformation": true,
+                        "versionSupport": true
+                    },
                     "hover": {
                         "contentFormat": ["markdown", "plaintext"]
                     },
@@ -2304,11 +2324,16 @@ impl GenericLspEngine {
             )
             .await
             .ok()?;
-        if answer.pointer("/error/code").and_then(|c| c.as_i64()) == Some(METHOD_NOT_FOUND) {
-            self.pull_unsupported.store(true, Ordering::Relaxed);
-            return None;
-        }
-        if answer.get("error").is_some() {
+        if let Some(err) = answer.get("error") {
+            let code = err.get("code").and_then(|c| c.as_i64());
+            let msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("");
+            if code == Some(METHOD_NOT_FOUND)
+                || code == Some(-32603)
+                || msg.to_lowercase().contains("unsupported")
+                || msg.to_lowercase().contains("not implemented")
+            {
+                self.pull_unsupported.store(true, Ordering::Relaxed);
+            }
             return None;
         }
         let kind = answer.pointer("/result/kind").and_then(|k| k.as_str());
@@ -3158,7 +3183,7 @@ const SEMANTIC_POLL: Duration = Duration::from_millis(300);
 /// How long [`GenericLspEngine::current_diagnostics_for`] waits for the first publication for a
 /// document no text was sent for: one the server opened by itself, or one it will never
 /// publish for.
-pub const FIRST_PUBLICATION_WAIT: Duration = Duration::from_secs(3);
+pub const FIRST_PUBLICATION_WAIT: Duration = Duration::from_secs(10);
 
 /// What a server last published for one document.
 #[derive(Debug, Clone)]
