@@ -287,5 +287,16 @@ For every refactoring tool tested:
      - [#736](https://github.com/alex09x/prod-code/issues/736): `supertypes: out-of-bounds line index when symbol resolves to remote sysroot path (Box<T>)`
    - **Full Deep-Dive Report**: [Six Circular Dependencies in Tokio: What 67 AST Analyzers Found Inside Rust's Async Engine (prod.codes)](https://prod.codes/blog/six-circular-dependencies-in-tokio/)
 
+4. **[pola-rs/polars](https://github.com/pola-rs/polars)** (Rust)
+   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 29.65 MB cold sync in 2.0s, 145 ms warm sync, 563 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 33-crate DAG (4 circular paths across members), Type-2 clone clusters across `SeriesTrait` implementations in 9 data types
+   - **Semantic Guards & Refactorings**: AST slicing of `DelayRechunk::optimize_plan` (96% reduction), cross-crate boolean inversion of `is_empty` to `is_non_empty` (0 errors), safe-delete refusal (1,528 usages), RAM pre-flight validation in 360 ms
+   - **Issues Identified & Resolved**:
+     - [#737](https://github.com/alex09x/prod-code/issues/737): `codemod: non-char-boundary panic in tokenize_source on multi-byte UTF-8 tokens`
+   - **Full Deep-Dive Report**: [Half a Million Lines of Arrow: What 67 AST Analyzers Found Inside Polars' Query Engine (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-arrow-what-67-ast-analyzers-found-inside-polars/)
+
+
 
 

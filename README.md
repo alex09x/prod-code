@@ -333,6 +333,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`BurntSushi/ripgrep`](https://github.com/BurntSushi/ripgrep) | Rust (32-core node) | 67 / 67 tools (AST search, slicing, 30 refactorings, RAM validation) | 45.4 KB (27 files) | 1.02 ms RTT | [Can 67 AST Tools Break Ripgrep? →](https://prod.codes/blog/can-67-ast-tools-break-ripgrep/) |
 | [`quickwit-oss/tantivy`](https://github.com/quickwit-oss/tantivy) | Rust (32-core node) | 67 / 67 tools (10-crate DAG, 18-file rename, clone detection, AST search) | 6.77 MB (602 files) | 0.96 ms RTT | [7,156 Cyclic Module Paths in Tantivy →](https://prod.codes/blog/7156-cyclic-module-paths-in-tantivy/) |
 | [`tokio-rs/tokio`](https://github.com/tokio-rs/tokio) | Rust (32-core node) | 67 / 67 tools (10-crate circular DAG, AST slicing, Issue #736 fix, Criterion bench) | 6.11 MB (882 files) | 0.63 ms RTT | [Six Circular Dependencies in Tokio →](https://prod.codes/blog/six-circular-dependencies-in-tokio/) |
+| [`pola-rs/polars`](https://github.com/pola-rs/polars) | Rust (32-core node) | 67 / 67 tools (33-crate DAG, Issue #737 fix, AST slicing, RAM validation) | 29.6 MB (3,426 files) | 0.56 ms RTT | [Half a Million Lines of Arrow →](https://prod.codes/blog/half-a-million-lines-of-arrow-what-67-ast-analyzers-found-inside-polars/) |
 
 ## Reading more
 
