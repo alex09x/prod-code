@@ -351,6 +351,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `can_be_split` (99.8% reduction to 240 lines), structural search captured 35 guard-and-raise statements in 8 files in 119.90 ms, 3-way RRF semantic search ranked delimiter split implementations in 8 ms across 3,133 declarations, parameter object bundling on `assert_equivalent(src, dst)` -> `@dataclass CodePair` across 12 call sites in 4 files, boolean inversion on `can_be_split` with proven safety refusal on non-call imports, in-memory shadow pre-validation caught injected attribute error in 0.68s
     - **Full Deep-Dive Report**: [Black Under the Microscope: What 67 AST Tools Found Inside Python's Uncompromising Formatter (prod.codes)](https://prod.codes/blog/black-under-the-microscope-67-ast-tools/)
 
+11. **[tiangolo/fastapi](https://github.com/tiangolo/fastapi)** (Python)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 118,093 lines of Python across 1,166 files, 930 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 135 occurrences of OpenAPI schema response clones in `tests/test_include_router_defaults_overrides.py`, `fastapi/routing.py` APIRouter hierarchy with 866 variables
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `solve_dependencies` (99.8% reduction to 260 lines), structural search captured 66 raise statements in 16 files in 241.47 ms, 3-way RRF semantic search located dependency solving in 55 ms across 6,216 declarations, parameter object bundling on `create_model_field` -> `@dataclass FieldSpec` across 5 call sites in 3 files, boolean inversion on `is_body_allowed_for_status_code` with 2 import reference safety refusals, function extraction safety refusal on classmethod calling `self`, in-memory shadow pre-validation caught injected attribute error in 0.52s
+    - **Full Deep-Dive Report**: [FastAPI Under the Microscope: What 67 AST Tools Found Inside Python's Modern Async Framework (prod.codes)](https://prod.codes/blog/fastapi-under-the-microscope-67-ast-tools/)
+
 
 
 

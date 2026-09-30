@@ -340,6 +340,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`kubernetes/kubernetes`](https://github.com/kubernetes/kubernetes) | Go (32-core node) | 67 / 67 tools (779-pkg DAG, 900+ clones, Issues #741 & #742 fixes, full Go refactoring suite) | 5.38M lines (17,823 files) | 0.74 ms RTT | [5.3 Million Lines of Go in Kubernetes →](https://prod.codes/blog/5-million-lines-of-go-inside-kubernetes/) |
 | [`django/django`](https://github.com/django/django) | Python (32-core node) | 67 / 67 tools (25 circular checks, 150+ clones, basedpyright diagnostics, full Python refactoring) | 527K lines (2,932 files) | 0.65 ms RTT | [Half a Million Lines of Python Inside Django →](https://prod.codes/blog/half-a-million-lines-of-python-inside-django/) |
 | [`psf/black`](https://github.com/psf/black) | Python (32-core node) | 67 / 67 tools (concurrency cycle, 10-line version clones, 12-callsite parameter bundling, 99.8% slice) | 135K lines (358 files) | 0.93 ms RTT | [Black Under the Microscope →](https://prod.codes/blog/black-under-the-microscope-67-ast-tools/) |
+| [`tiangolo/fastapi`](https://github.com/tiangolo/fastapi) | Python (32-core node) | 67 / 67 tools (135 OpenAPI clones, 66 error guards, 99.8% dependency slice, parameter bundling) | 118K lines (1,166 files) | 0.93 ms RTT | [FastAPI Under the Microscope →](https://prod.codes/blog/fastapi-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 
