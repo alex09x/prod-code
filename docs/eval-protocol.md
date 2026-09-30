@@ -472,6 +472,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `Deque`, `OrderedSet`, and `OrderedDictionary` in 19-100 ms across 10,710 declarations, structural search captured 548 release preconditions (`precondition($$$)`) in 481.67 ms, 731 debug assertions (`assert($$$)`) in 540.70 ms (1,279 total boundary invariants), and 15 precondition traps (`preconditionFailure($$$)`) in 89.64 ms, parameterized AST codemod updated 30 lines across 10 files spanning `BitCollections`, `HashTreeCollections`, and `OrderedCollections` binding `$msg` without touching disk, remote Apple Silicon test offloading executed 130 tests across `DequeTests` and `OrderedSetTests` passing in under 27s with 0% local CPU, dead-code scanner isolated 33 unreferenced benchmark harnesses in 25.65s
     - **Full Deep-Dive Report**: [Swift Collections Under the Microscope: What 67 AST Tools Found Inside Apple's Data Structure Engine (prod.codes)](https://prod.codes/blog/swift-collections-under-the-microscope-67-ast-tools/)
 
+27. **[google/guava](https://github.com/google/guava)** (Java)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 795,118 lines of Java across 3,279 files, 0.65 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Core collections and concurrency abstractions evaluated; clone analysis identified 33-occurrence clone patterns across concurrent hash multiset and table implementations
+    - **Semantic Guards & Refactorings**: Structural search scanned 3,279 files in 545.82 ms finding 1,440 precondition sites (`Preconditions.checkNotNull($$$)`), parameterized AST codemod tested dry-run transformations across 454 files, refactoring engine validated method extraction, signature modifications, and type migrations
+    - **Full Deep-Dive Report**: [Guava Under the Microscope: What 67 AST Tools Found Inside Google's Core Java Libraries (prod.codes)](https://prod.codes/blog/guava-under-the-microscope-67-ast-tools/)
+
 
 
 
