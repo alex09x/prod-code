@@ -267,7 +267,7 @@ For every refactoring tool tested:
    - **Issues Identified & Resolved**:
      - [#735](https://github.com/alex09x/prod-code/issues/735): `slice: handle inverted/empty symbol ranges from language servers gracefully`
      - [#733](https://github.com/alex09x/prod-code/issues/733): `code_validate_edit fails on package.json with no package metadata`
-   - **Full Deep-Dive Report**: [Dissecting Ripgrep with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/)
+    - **Full Deep-Dive Report**: [Can 67 AST Tools Break Ripgrep? Stress-Testing Rust's Fastest Grep on an Idle Cluster Node (prod.codes)](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/)
 
 2. **[quickwit-oss/tantivy](https://github.com/quickwit-oss/tantivy)** (Rust)
    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
@@ -275,7 +275,7 @@ For every refactoring tool tested:
    - **Key Metrics**: 6.77 MB cold sync in 423 ms, 0.96 ms LAN ping, 0% local laptop CPU
    - **Architectural Findings**: 10-crate clean DAG, 7,156 cyclic module paths in `src/`, Type-2 clone clusters in JIT and metrics
    - **Semantic Guards & Refactorings**: Multi-file rename across 18 files in 5.75s, clone-aware function extraction, active safe-delete refusal (67 refs)
-   - **Full Deep-Dive Report**: [Dissecting Tantivy with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-tantivy-with-remote-ast/)
+   - **Full Deep-Dive Report**: [7,156 Cyclic Module Paths: Stress-Testing Tantivy's Search Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/dissecting-tantivy-with-remote-ast/)
 
 3. **[tokio-rs/tokio](https://github.com/tokio-rs/tokio)** (Rust)
    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
@@ -285,7 +285,7 @@ For every refactoring tool tested:
    - **Semantic Guards & Refactorings**: AST slicing of work-stealing queue (96% reduction), parameter side-effect order guard refusal on Deref, 20-callsite boolean inversion, safe-delete refusal (126 usages)
    - **Issues Identified & Resolved**:
      - [#736](https://github.com/alex09x/prod-code/issues/736): `supertypes: out-of-bounds line index when symbol resolves to remote sysroot path (Box<T>)`
-   - **Full Deep-Dive Report**: [Dissecting Tokio with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-tokio-with-remote-ast/)
+   - **Full Deep-Dive Report**: [Six Circular Dependencies in Tokio: What 67 AST Analyzers Found Inside Rust's Async Engine (prod.codes)](https://prod.codes/blog/dissecting-tokio-with-remote-ast/)
 
 
 
