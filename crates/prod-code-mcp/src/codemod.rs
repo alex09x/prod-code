@@ -75,6 +75,42 @@ pub enum ReplacementToken {
     Metavar(String),
 }
 
+/// A compiled structural AST pattern for read-only search or codemod matching.
+#[derive(Debug, Clone)]
+pub struct CompiledPattern {
+    pub raw: String,
+    pub pattern_tokens: Vec<PatternToken>,
+    /// Non-metavariable literal identifiers that MUST exist in a candidate file.
+    pub required_literals: Vec<String>,
+}
+
+impl CompiledPattern {
+    /// Parse and compile a structural pattern string (e.g. `$a.unwrap()`).
+    pub fn parse(pattern: &str) -> Result<Self> {
+        let pattern_raw = pattern.trim();
+        if pattern_raw.is_empty() {
+            bail!("pattern cannot be empty");
+        }
+        let pattern_tokens = tokenize_pattern(pattern_raw)?;
+        let mut required_literals = Vec::new();
+        for tok in &pattern_tokens {
+            if let PatternToken::Literal(TokenKind::Ident(name)) = tok {
+                if name.len() >= 2 && !name.starts_with('$') {
+                    required_literals.push(name.clone());
+                }
+            }
+        }
+        required_literals.sort();
+        required_literals.dedup();
+
+        Ok(Self {
+            raw: pattern.to_string(),
+            pattern_tokens,
+            required_literals,
+        })
+    }
+}
+
 /// A parsed and compiled structural codemod rule: `pattern ==>> replacement`.
 #[derive(Debug, Clone)]
 pub struct CodemodRule {
@@ -98,26 +134,14 @@ impl CodemodRule {
             bail!("pattern in rule cannot be empty");
         }
 
-        let pattern_tokens = tokenize_pattern(pattern_raw)?;
+        let pattern = CompiledPattern::parse(pattern_raw)?;
         let replacement_tokens = parse_replacement(replacement_raw);
-
-        let mut required_literals = Vec::new();
-        for tok in &pattern_tokens {
-            if let PatternToken::Literal(TokenKind::Ident(name)) = tok {
-                // Ignore very common single-character keywords or trivial identifiers
-                if name.len() >= 2 && !name.starts_with('$') {
-                    required_literals.push(name.clone());
-                }
-            }
-        }
-        required_literals.sort();
-        required_literals.dedup();
 
         Ok(Self {
             raw: rule.to_string(),
-            pattern_tokens,
+            pattern_tokens: pattern.pattern_tokens,
             replacement_tokens,
-            required_literals,
+            required_literals: pattern.required_literals,
         })
     }
 }
@@ -447,20 +471,21 @@ pub struct CodemodMatch {
     pub replacement: String,
 }
 
-/// Attempt to match a pattern starting at `start_idx` in `tokens`.
-fn match_at(
+/// Attempt to match pattern tokens starting at `start_idx` in `tokens`.
+/// Returns `(start_byte, end_byte, end_token_idx, bindings)` on success.
+fn match_pattern_tokens(
     tokens: &[SourceToken],
     start_idx: usize,
     matching_delims: &[Option<usize>],
-    rule: &CodemodRule,
+    pattern_tokens: &[PatternToken],
     source: &str,
-) -> Option<CodemodMatch> {
+) -> Option<(usize, usize, usize, BTreeMap<String, (usize, usize)>)> {
     let mut code_idx = start_idx;
     let mut pat_idx = 0;
     let mut bindings: BTreeMap<String, (usize, usize)> = BTreeMap::new();
 
-    while pat_idx < rule.pattern_tokens.len() {
-        let pat_tok = &rule.pattern_tokens[pat_idx];
+    while pat_idx < pattern_tokens.len() {
+        let pat_tok = &pattern_tokens[pat_idx];
 
         match pat_tok {
             PatternToken::Literal(expected_kind) => {
@@ -474,7 +499,7 @@ fn match_at(
                 pat_idx += 1;
             }
             PatternToken::Metavar(var_name) => {
-                let next_pat_tok = rule.pattern_tokens.get(pat_idx + 1);
+                let next_pat_tok = pattern_tokens.get(pat_idx + 1);
                 let var_start_token = code_idx;
 
                 if code_idx >= tokens.len() {
@@ -557,6 +582,20 @@ fn match_at(
 
     let match_start_byte = tokens[start_idx].start_byte;
     let match_end_byte = tokens[code_idx - 1].end_byte;
+
+    Some((match_start_byte, match_end_byte, code_idx, bindings))
+}
+
+/// Attempt to match a pattern starting at `start_idx` in `tokens`.
+fn match_at(
+    tokens: &[SourceToken],
+    start_idx: usize,
+    matching_delims: &[Option<usize>],
+    rule: &CodemodRule,
+    source: &str,
+) -> Option<CodemodMatch> {
+    let (match_start_byte, match_end_byte, _, bindings) =
+        match_pattern_tokens(tokens, start_idx, matching_delims, &rule.pattern_tokens, source)?;
 
     // Synthesize replacement text
     let mut rep = String::new();
@@ -798,6 +837,188 @@ pub fn run_codemod(
     })
 }
 
+/// Helper to convert a byte offset into 1-based (line, column).
+pub fn byte_to_line_col(source: &str, byte_offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in source.char_indices() {
+        if i >= byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// One matched AST span in a structural search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StructuralMatchItem {
+    pub file: String,
+    pub line: usize,
+    pub col: usize,
+    pub matched_text: String,
+    pub bindings: BTreeMap<String, String>,
+}
+
+/// The result of executing a read-only structural AST search across files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StructuralSearchResult {
+    pub pattern: String,
+    pub files_scanned: usize,
+    pub files_matched: usize,
+    pub total_matches: usize,
+    pub matches: Vec<StructuralMatchItem>,
+    pub elapsed_ms: f64,
+}
+
+impl StructuralSearchResult {
+    /// Render human-readable summary of structural search matches.
+    pub fn render(&self, max_items: usize) -> String {
+        let mut text = format!("⚡ prod-code Structural AST Search: `{}`\n", self.pattern);
+        text.push_str("────────────────────────────────────────────────────\n");
+        text.push_str(&format!(
+            "{} match(es) in {} file(s) ({} scanned in {:.2}ms)\n\n",
+            self.total_matches, self.files_matched, self.files_scanned, self.elapsed_ms
+        ));
+
+        if self.matches.is_empty() {
+            text.push_str("✓ No matches found for pattern.\n");
+            return text;
+        }
+
+        for m in self.matches.iter().take(max_items) {
+            let first_line = m.matched_text.lines().next().unwrap_or(&m.matched_text).trim();
+            text.push_str(&format!("  • {}:{}:{}  {}\n", m.file, m.line, m.col, first_line));
+            if !m.bindings.is_empty() {
+                let binds: Vec<String> = m.bindings.iter().map(|(k, v)| format!("${k} = {v}")).collect();
+                text.push_str(&format!("    └─ [{}]\n", binds.join(", ")));
+            }
+        }
+        if self.matches.len() > max_items {
+            text.push_str(&format!("\n  … and {} more match(es) truncated\n", self.matches.len() - max_items));
+        }
+        text
+    }
+}
+
+/// Find all structural matches for a compiled pattern in a single source string.
+pub fn find_structural_matches_in_source(
+    rel_path: &str,
+    source: &str,
+    pattern: &CompiledPattern,
+) -> Vec<StructuralMatchItem> {
+    for lit in &pattern.required_literals {
+        if !source.contains(lit) {
+            return Vec::new();
+        }
+    }
+
+    let tokens = tokenize_source(source);
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let matching_delims = compute_matching_delims(&tokens);
+    let mut matches = Vec::new();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        if let Some((start_b, end_b, _, bindings)) =
+            match_pattern_tokens(&tokens, i, &matching_delims, &pattern.pattern_tokens, source)
+        {
+            let (line, col) = byte_to_line_col(source, start_b);
+            let matched_text = source[start_b..end_b].to_string();
+            let mut string_bindings = BTreeMap::new();
+            for (k, (s, e)) in bindings {
+                string_bindings.insert(k, source[s..e].trim().to_string());
+            }
+
+            matches.push(StructuralMatchItem {
+                file: rel_path.to_string(),
+                line,
+                col,
+                matched_text,
+                bindings: string_bindings,
+            });
+
+            // Advance tokens past the end of the match
+            while i < tokens.len() && tokens[i].end_byte <= end_b {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    matches
+}
+
+/// Run read-only structural AST search across files in the workspace.
+pub fn run_structural_search(
+    workspace_root: &Path,
+    pattern_str: &str,
+    scope: Option<&Path>,
+) -> Result<StructuralSearchResult> {
+    let start = Instant::now();
+    let pattern = CompiledPattern::parse(pattern_str)?;
+
+    let mut target_files = Vec::new();
+    if let Some(target) = scope {
+        if target.is_file() {
+            target_files.push(target.to_path_buf());
+        } else if target.is_dir() {
+            collect_code_files(target, &mut target_files);
+        } else {
+            let abs = workspace_root.join(target);
+            if abs.is_file() {
+                target_files.push(abs);
+            } else if abs.is_dir() {
+                collect_code_files(&abs, &mut target_files);
+            }
+        }
+    } else {
+        collect_code_files(workspace_root, &mut target_files);
+    }
+
+    target_files.sort();
+    let files_scanned = target_files.len();
+    let mut all_matches = Vec::new();
+    let mut matched_files_set = std::collections::HashSet::new();
+
+    for path in &target_files {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            continue;
+        };
+
+        let rel = path
+            .strip_prefix(workspace_root)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string_lossy().into_owned());
+
+        let file_matches = find_structural_matches_in_source(&rel, &source, &pattern);
+        if !file_matches.is_empty() {
+            matched_files_set.insert(rel);
+            all_matches.extend(file_matches);
+        }
+    }
+
+    let elapsed = start.elapsed();
+
+    Ok(StructuralSearchResult {
+        pattern: pattern_str.to_string(),
+        files_scanned,
+        files_matched: matched_files_set.len(),
+        total_matches: all_matches.len(),
+        matches: all_matches,
+        elapsed_ms: elapsed.as_secs_f64() * 1000.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,5 +1115,21 @@ void make() {
 "#;
         let rewritten = rewrite_source(src, &rule).expect("should match");
         assert!(rewritten.contains("compute(secondArgument * 2, firstArgument + 1)"));
+    }
+
+    #[test]
+    fn test_structural_search_ast() {
+        let pattern = CompiledPattern::parse("$a.unwrap()").expect("valid pattern");
+        let src = r#"
+fn run() {
+    let x = opt.unwrap();
+    let y = calc(1, 2);
+    let z = map.get(&k).unwrap();
+}
+"#;
+        let matches = find_structural_matches_in_source("test.rs", src, &pattern);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].bindings.get("a").unwrap(), "opt");
+        assert_eq!(matches[1].bindings.get("a").unwrap(), "map.get(&k)");
     }
 }

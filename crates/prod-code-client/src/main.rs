@@ -1467,6 +1467,61 @@ enum Commands {
         #[arg(long, default_value_t = 4)]
         worktrees: usize,
     },
+    /// Analyze architectural dependencies, calculate coupling metrics, and detect cycles
+    Dependencies {
+        /// Scope: 'crates' (default) or 'modules'
+        #[arg(long, default_value = "crates")]
+        scope: String,
+        /// Path to narrow scope
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Output JSON report
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Scan workspace for code duplications and Type-1/Type-2 code clones
+    Duplicates {
+        /// Minimum consecutive duplicated lines
+        #[arg(long, default_value_t = 6)]
+        min_lines: usize,
+        /// Parameterized clone matching
+        #[arg(long, default_value_t = true)]
+        parameterized: bool,
+        /// Maximum number of clone groups to display
+        #[arg(long, default_value_t = 20)]
+        max_groups: usize,
+        /// Path to narrow scan
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Output JSON report
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Polyglot Structural AST Pattern Search across languages using metavariables ($name)
+    #[command(alias = "struct-search")]
+    StructuralSearch {
+        /// AST Pattern, e.g. '$a.unwrap()' or 'errors.Wrap($err, $msg)'
+        pattern: String,
+        /// Path to narrow search
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Output JSON report
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    /// Synthesize valid in-scope expressions evaluating to a requested target type
+    #[command(alias = "propose-expr")]
+    ProposeExpression {
+        /// Source file path
+        file: PathBuf,
+        /// 1-based line number where the expression is needed
+        line: u32,
+        /// The expected target type, e.g. 'String', '&str', 'u64', 'Option<T>'
+        target_type: String,
+        /// Output JSON report
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
     /// Check for and install updates to prod-code from GitHub releases
     #[command(alias = "self-update")]
     Update {
@@ -3065,6 +3120,141 @@ async fn main() -> Result<()> {
                 worktrees,
             })
             .await
+        }
+        Commands::Dependencies { scope, path, json } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "scope": scope,
+            });
+            if let Some(p) = path.as_ref() {
+                args["path"] = serde_json::Value::String(p.to_string_lossy().into_owned());
+            }
+            if json {
+                let dep_scope = match scope.as_str() {
+                    "modules" => prod_code_mcp::dependencies::DependencyScope::Modules,
+                    _ => prod_code_mcp::dependencies::DependencyScope::Crates,
+                };
+                let report = prod_code_mcp::dependencies::analyze_dependencies(&root, dep_scope, path.as_deref())?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            } else {
+                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_dependencies", args).await?;
+                for content in &result.content {
+                    let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                    println!("{text}");
+                }
+                if result.is_error {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        }
+        Commands::Duplicates {
+            min_lines,
+            parameterized,
+            max_groups,
+            path,
+            json,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "min_lines": min_lines,
+                "parameterized": parameterized,
+                "max_groups": max_groups,
+            });
+            if let Some(p) = path.as_ref() {
+                args["path"] = serde_json::Value::String(p.to_string_lossy().into_owned());
+            }
+            if json {
+                let options = prod_code_mcp::duplicates::DuplicateOptions {
+                    min_lines,
+                    parameterized,
+                    max_groups,
+                };
+                let report = prod_code_mcp::duplicates::find_duplicates(&root, path.as_deref(), options)?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            } else {
+                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_find_duplicates", args).await?;
+                for content in &result.content {
+                    let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                    println!("{text}");
+                }
+                if result.is_error {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        }
+        Commands::StructuralSearch {
+            pattern,
+            path,
+            json,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let mut args = serde_json::json!({
+                "pattern": pattern,
+            });
+            if let Some(p) = path.as_ref() {
+                args["path"] = serde_json::Value::String(p.to_string_lossy().into_owned());
+            }
+            if json {
+                let report = prod_code_mcp::codemod::run_structural_search(&root, &pattern, path.as_deref())?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            } else {
+                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_structural_search", args).await?;
+                for content in &result.content {
+                    let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                    println!("{text}");
+                }
+                if result.is_error {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+        }
+        Commands::ProposeExpression {
+            file,
+            line,
+            target_type,
+            json,
+        } => {
+            let cwd = env::current_dir().context("Failed to get current working directory")?;
+            let root = find_workspace_root(&cwd).unwrap_or_else(|| cwd.clone());
+            let abs = if file.is_absolute() {
+                file
+            } else {
+                cwd.join(file)
+            };
+            let args = serde_json::json!({
+                "path": abs.to_string_lossy(),
+                "line": line,
+                "target_type": target_type,
+            });
+            if json {
+                let report = prod_code_mcp::expression_synthesis::propose_expressions_in_scope(
+                    &root,
+                    &abs.to_string_lossy(),
+                    line,
+                    &target_type,
+                )?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            } else {
+                let result = prod_code_mcp::tools::execute_tool(remote, &root, "code_propose_expression", args).await?;
+                for content in &result.content {
+                    let prod_code_mcp::protocol::McpContentItem::Text { text } = content;
+                    println!("{text}");
+                }
+                if result.is_error {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
         }
         Commands::Update { check, force, tag } => update::run_update(check, force, tag).await,
         Commands::Package { .. } => unreachable!(),

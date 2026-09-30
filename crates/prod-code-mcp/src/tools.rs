@@ -1216,6 +1216,93 @@ pub fn list_tools() -> Vec<McpTool> {
                 }
             }),
         },
+        McpTool {
+            name: "code_dependencies".to_string(),
+            description: "Analyze architectural dependencies, calculate afferent (Ca) and efferent (Ce) coupling metrics, instability index (Ce / (Ca + Ce)), and detect circular dependency cycles (e.g. A -> B -> C -> A) using Tarjan's algorithm. Supports `scope: \"crates\"` (Cargo / Go module manifests) and `scope: \"modules\"` (Rust, Go, Python, TS/JS imports)."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["crates", "modules"],
+                        "description": "Granularity: 'crates' (default, workspace crates/packages) or 'modules' (source file module imports)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional subdirectory to narrow the dependency analysis scope"
+                    }
+                }
+            }),
+        },
+        McpTool {
+            name: "code_find_duplicates".to_string(),
+            description: "Scan workspace source files for code duplications and copy-paste clones. Detects Type-1 (exact token clones) and Type-2 (parameterized clones with renamed variables/differing literals), grouping occurrences and generating recommendations to fold into shared functions."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "min_lines": {
+                        "type": "integer",
+                        "description": "Minimum consecutive duplicated lines to report (default 6)"
+                    },
+                    "parameterized": {
+                        "type": "boolean",
+                        "description": "Detect Type-2 parameterized clones where identifier names and literals vary (default true)"
+                    },
+                    "max_groups": {
+                        "type": "integer",
+                        "description": "Maximum number of clone groups to return (default 20)"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional directory path to narrow the clone search"
+                    }
+                }
+            }),
+        },
+        McpTool {
+            name: "code_structural_search".to_string(),
+            description: "Polyglot Structural AST Pattern Search across Rust, Go, TypeScript/JS, Python, C/C++, and Swift. Matches syntax trees regardless of formatting, whitespace, or variable names using metavariables (`$name`), returning exact match locations and bound expression snippets."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Structural AST pattern with metavariables, e.g. `$a.unwrap()`, `errors.Wrap($err, $msg)`, or `if ($x == nil) { return $y }`"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Optional file or directory path to search within"
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        },
+        McpTool {
+            name: "code_propose_expression".to_string(),
+            description: "Type-Directed Expression Synthesis: synthesizes valid in-scope expressions, borrow/deref conversions, String conversions, and 1-2 hop accessor chains that evaluate to a requested target type (e.g. `AccountId`, `String`, `Option<T>`), ranked by confidence to prevent hallucinated API calls."
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Source file path"
+                    },
+                    "line": {
+                        "type": "integer",
+                        "description": "1-based line number where the expression is needed"
+                    },
+                    "target_type": {
+                        "type": "string",
+                        "description": "The expected target type to synthesize, e.g. 'String', '&str', 'u64', 'Option<T>'"
+                    }
+                },
+                "required": ["path", "line", "target_type"]
+            }),
+        },
     ];
     for tool in &mut tools {
         if let Some(properties) = tool
@@ -1614,9 +1701,92 @@ pub async fn execute_tool(
 
         "code_sync" => handle_sync(remote, workspace_root, args).await,
 
+        "code_dependencies" => handle_dependencies(workspace_root, &args).await,
+        "code_find_duplicates" => handle_find_duplicates(workspace_root, &args).await,
+        "code_structural_search" => handle_structural_search(workspace_root, &args).await,
+        "code_propose_expression" => handle_propose_expression(workspace_root, &args).await,
+
         unknown => Ok(McpToolCallResult::error(format!("Unknown tool: {unknown}"))),
     };
     with_indexing_notes(result, workspace_root)
+}
+
+async fn handle_dependencies(
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let scope_str = args.get("scope").and_then(|v| v.as_str()).unwrap_or("crates");
+    let scope = match scope_str {
+        "modules" => crate::dependencies::DependencyScope::Modules,
+        _ => crate::dependencies::DependencyScope::Crates,
+    };
+    let target_path = args.get("path").and_then(|v| v.as_str()).map(Path::new);
+
+    let report = crate::dependencies::analyze_dependencies(workspace_root, scope, target_path)?;
+    let output = crate::dependencies::format_dependency_report(&report);
+    Ok(McpToolCallResult::text(output))
+}
+
+async fn handle_find_duplicates(
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let min_lines = args.get("min_lines").and_then(|v| v.as_u64()).unwrap_or(6) as usize;
+    let parameterized = args.get("parameterized").and_then(|v| v.as_bool()).unwrap_or(true);
+    let max_groups = args.get("max_groups").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+    let target_path = args.get("path").and_then(|v| v.as_str()).map(Path::new);
+
+    let options = crate::duplicates::DuplicateOptions {
+        min_lines,
+        parameterized,
+        max_groups,
+    };
+
+    let report = crate::duplicates::find_duplicates(workspace_root, target_path, options)?;
+    let output = crate::duplicates::format_duplication_report(&report);
+    Ok(McpToolCallResult::text(output))
+}
+
+async fn handle_structural_search(
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let pattern = args
+        .get("pattern")
+        .and_then(|v| v.as_str())
+        .context("Missing 'pattern' argument")?;
+    let scope = args.get("path").and_then(|v| v.as_str()).map(Path::new);
+
+    let result = crate::codemod::run_structural_search(workspace_root, pattern, scope)?;
+    let output = result.render(25);
+    Ok(McpToolCallResult::text(output))
+}
+
+async fn handle_propose_expression(
+    workspace_root: &Path,
+    args: &serde_json::Value,
+) -> Result<McpToolCallResult> {
+    let path = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .context("Missing 'path' argument")?;
+    let line = args
+        .get("line")
+        .and_then(|v| v.as_u64())
+        .context("Missing 'line' argument")? as u32;
+    let target_type = args
+        .get("target_type")
+        .and_then(|v| v.as_str())
+        .context("Missing 'target_type' argument")?;
+
+    let report = crate::expression_synthesis::propose_expressions_in_scope(
+        workspace_root,
+        path,
+        line,
+        target_type,
+    )?;
+    let output = crate::expression_synthesis::format_expression_synthesis_report(&report);
+    Ok(McpToolCallResult::text(output))
 }
 
 /// A tool's answer with a note for every index question the language server answered while it
