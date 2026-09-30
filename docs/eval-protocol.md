@@ -395,6 +395,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: Clean 167-module DAG in reconciler, 18 occurrences of an identical 12-line test harness class in `ReactFragment-test.js` (Group #328), and 16 occurrences of a 12-line transition tracing callback in `ReactTransitionTracing-test.js` (Group #17)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `scheduleUpdateOnFiber` in `ReactFiberWorkLoop.js` (99.9% reduction from 745K lines to Fiber/FiberRoot/lanes data structures), structural search captured 156 error guards matching `throw Error($$$)` across 59 files in 1,901 ms, 3-way RRF semantic search located `scheduleUpdateOnFiber` in 341 ms (dense cosine similarity 0.839), parameter object bundling on `retainWhere<T>` in `babel-plugin-react-compiler` safely rejected by language engine because the synthesized interface was missing generic `<T>` scope (`Cannot find name 'T' [2304]`), remote in-memory shadow pre-validation in 840 ms
     - **Full Deep-Dive Report**: [React Under the Microscope: What 67 AST Tools Found Inside the UI Engine (prod.codes)](https://prod.codes/blog/react-under-the-microscope-67-ast-tools/)
+17. **[vercel/next.js](https://github.com/vercel/next.js)** (TypeScript / JavaScript)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 229,297 declarations across 24,309 source files (1,293,158 lines), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 24,309-file multi-package DAG, 13 occurrences of an identical 12-line immediate test helper in `test/e2e/app-dir/actions/fast-set-immediate.external.test.ts:90-101` (Clone Group #484)
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `renderToHTMLImpl` in `packages/next/src/server/render.tsx:457` (isolated Document shell, React Fizz streaming, tracing spans, and HTML postProcess), structural search captured 1,254 error assertions matching `throw new Error($$$)` across 306 files in 10,378 ms, semantic search located `renderToHTML` entrypoints in 1,572 ms across 229,297 declarations, AST boolean inversion on `isResSent` -> `isResPending` accurately updated 24 lines across 5 files flipping 5 call-site negations and simplifying pre-existing `!`, in-memory pre-flight validation caught 4 syntax errors in 4.35s while filtering 9 pre-existing diagnostics without touching disk
+    - **Full Deep-Dive Report**: [Next.js Under the Microscope: What 67 AST Tools Found Inside the React Framework (prod.codes)](https://prod.codes/blog/nextjs-under-the-microscope-67-ast-tools/)
 
 
 
