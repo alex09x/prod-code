@@ -18,6 +18,7 @@ use tokio_util::codec::Framed;
 use url::Url;
 
 mod update;
+mod package;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -1479,6 +1480,11 @@ enum Commands {
         #[arg(long)]
         tag: Option<String>,
     },
+    /// Manage native packages, verify cryptographic integrity, and monitor cluster fleet versions
+    Package {
+        #[command(subcommand)]
+        subcommand: package::PackageSubcommands,
+    },
 }
 
 #[tokio::main]
@@ -1656,6 +1662,21 @@ async fn main() -> Result<()> {
     if let Some(Commands::Update { check, force, tag }) = cli.command {
         startup.report();
         return update::run_update(check, force, tag).await;
+    }
+    // Package management needs no specific project workspace.
+    if let Some(Commands::Package { subcommand }) = cli.command {
+        startup.report();
+        match subcommand {
+            package::PackageSubcommands::Status { json } => return package::run_package_status(json).await,
+            package::PackageSubcommands::Verify => return package::run_package_verify().await,
+            package::PackageSubcommands::Install { force, tag, system } => {
+                return package::run_package_install(force, tag, system).await;
+            }
+            package::PackageSubcommands::Sync { remote } => {
+                let r = remote.or_else(|| picked.ok());
+                return package::run_package_sync(r).await;
+            }
+        }
     }
     // An editor learns why its server could not start from the answer to its `initialize`,
     // not from a process that is gone before it asks (#338).
@@ -3046,6 +3067,7 @@ async fn main() -> Result<()> {
             .await
         }
         Commands::Update { check, force, tag } => update::run_update(check, force, tag).await,
+        Commands::Package { .. } => unreachable!(),
     }
 }
 
