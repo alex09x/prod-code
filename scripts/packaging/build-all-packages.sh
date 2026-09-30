@@ -5,7 +5,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-VERSION="${1:-0.3.19}"
+CARGO_TOML_VERSION="$(grep '^version = ' "$ROOT_DIR/Cargo.toml" | head -1 | cut -d'"' -f2)"
+VERSION="${1:-$CARGO_TOML_VERSION}"
 OUT_DIR="${ROOT_DIR}/dist/packages"
 mkdir -p "$OUT_DIR"
 

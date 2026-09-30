@@ -2,7 +2,10 @@
 # generate-homebrew-formula.sh - Generates a Homebrew formula for prod-code with release SHA-256 hashes.
 set -euo pipefail
 
-VERSION="${1:-0.3.19}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CARGO_TOML_VERSION="$(grep '^version = ' "$ROOT_DIR/Cargo.toml" | head -1 | cut -d'"' -f2 2>/dev/null || echo "0.3.19")"
+VERSION="${1:-$CARGO_TOML_VERSION}"
 TAG="v${VERSION#v}"
 OUTPUT="${2:-Formula/prod-code.rb}"
 
