@@ -196,6 +196,19 @@ fn analyze_module_dependencies(
         }
     }
 
+    let go_module_name: Option<String> = std::fs::read_to_string(workspace_root.join("go.mod"))
+        .ok()
+        .and_then(|content| {
+            content.lines().find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("module ") {
+                    Some(trimmed.trim_start_matches("module ").trim().to_string())
+                } else {
+                    None
+                }
+            })
+        });
+
     // Phase 2: Parse imports
     for (module_name, path) in &file_modules {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -203,7 +216,7 @@ fn analyze_module_dependencies(
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 match ext {
                     "rs" => parse_rust_imports(&content, &file_modules, &mut deps),
-                    "go" => parse_go_imports(&content, &file_modules, &mut deps),
+                    "go" => parse_go_imports(&content, go_module_name.as_deref(), &file_modules, &mut deps),
                     "py" => parse_python_imports(&content, &file_modules, &mut deps),
                     "ts" | "js" => parse_ts_imports(&content, &file_modules, &mut deps),
                     _ => {}
@@ -262,8 +275,15 @@ fn parse_rust_imports(
     }
 }
 
+fn extract_quoted_string(line: &str) -> Option<&str> {
+    let start = line.find('"')? + 1;
+    let end = line[start..].find('"')? + start;
+    Some(&line[start..end])
+}
+
 fn parse_go_imports(
     content: &str,
+    go_module_prefix: Option<&str>,
     known_modules: &HashMap<String, PathBuf>,
     deps: &mut BTreeSet<String>,
 ) {
@@ -280,14 +300,35 @@ fn parse_go_imports(
         }
 
         if in_import_block || trimmed.starts_with("import ") {
-            let pkg = trimmed
-                .trim_start_matches("import ")
-                .trim()
-                .trim_matches('"');
-            let last_segment = pkg.split('/').last().unwrap_or(pkg);
-            for m in known_modules.keys() {
-                if m.ends_with(last_segment) {
-                    deps.insert(m.clone());
+            if let Some(pkg) = extract_quoted_string(trimmed) {
+                // Only resolve internal workspace packages
+                let target_pkg = if let Some(prefix) = go_module_prefix {
+                    if pkg == prefix {
+                        Some("")
+                    } else if let Some(rel) = pkg.strip_prefix(&format!("{prefix}/")) {
+                        Some(rel)
+                    } else {
+                        None
+                    }
+                } else if let Some(rel) = pkg.strip_prefix("./") {
+                    Some(rel)
+                } else if let Some(rel) = pkg.strip_prefix("../") {
+                    Some(rel)
+                } else {
+                    None
+                };
+
+                if let Some(target_dir) = target_pkg {
+                    let target_colon = target_dir.replace('/', "::");
+                    for mod_name in known_modules.keys() {
+                        if target_colon.is_empty() {
+                            if !mod_name.contains("::") {
+                                deps.insert(mod_name.clone());
+                            }
+                        } else if mod_name.starts_with(&format!("{target_colon}::")) {
+                            deps.insert(mod_name.clone());
+                        }
+                    }
                 }
             }
         }
@@ -328,12 +369,14 @@ fn parse_ts_imports(
     for line in content.lines() {
         let trimmed = line.trim();
         if (trimmed.starts_with("import ") || trimmed.starts_with("export ")) && trimmed.contains("from ") {
-            if let Some(from_str) = trimmed.split("from ").nth(1) {
-                let path = from_str.trim().trim_matches([';', '\'', '"']);
-                let base = path.split('/').last().unwrap_or(path);
-                for m in known_modules.keys() {
-                    if m.ends_with(base) {
-                        deps.insert(m.clone());
+            if let Some(path) = extract_quoted_string(trimmed) {
+                // Only local relative imports: ./ or ../
+                if path.starts_with('.') {
+                    let base = path.split('/').last().unwrap_or(path);
+                    for m in known_modules.keys() {
+                        if m.ends_with(base) {
+                            deps.insert(m.clone());
+                        }
                     }
                 }
             }
@@ -405,7 +448,9 @@ fn build_graph_report(
     })
 }
 
-/// Detects all cycles using depth-first search with recursion stack.
+pub const MAX_CYCLES_DETECTED: usize = 100;
+
+/// Detects all cycles using depth-first search with recursion stack, bounded to MAX_CYCLES_DETECTED.
 pub fn find_cycles(adj: &BTreeMap<String, (PathBuf, BTreeSet<String>)>) -> Vec<Vec<String>> {
     let mut cycles = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
@@ -413,6 +458,9 @@ pub fn find_cycles(adj: &BTreeMap<String, (PathBuf, BTreeSet<String>)>) -> Vec<V
     let mut current_path: Vec<String> = Vec::new();
 
     for start_node in adj.keys() {
+        if cycles.len() >= MAX_CYCLES_DETECTED {
+            break;
+        }
         if !visited.contains(start_node) {
             dfs_cycles(
                 start_node,
@@ -436,12 +484,18 @@ fn dfs_cycles(
     path: &mut Vec<String>,
     cycles: &mut Vec<Vec<String>>,
 ) {
+    if cycles.len() >= MAX_CYCLES_DETECTED {
+        return;
+    }
     visited.insert(u.to_string());
     on_stack.insert(u.to_string());
     path.push(u.to_string());
 
     if let Some((_, neighbors)) = adj.get(u) {
         for v in neighbors {
+            if cycles.len() >= MAX_CYCLES_DETECTED {
+                break;
+            }
             if on_stack.contains(v) {
                 // Cycle detected: slice from position of v in path to the end
                 if let Some(pos) = path.iter().position(|node| node == v) {
@@ -470,12 +524,19 @@ pub fn format_dependency_report(report: &DependencyGraphReport) -> String {
     ));
 
     if report.cycles_detected > 0 {
+        let shown = report.cycles.len().min(25);
         out.push_str(&format!(
             "\n🚨 CYCLES DETECTED: {} circular dependency path(s) found:\n",
             report.cycles_detected
         ));
-        for (i, cycle) in report.cycles.iter().enumerate() {
+        for (i, cycle) in report.cycles.iter().take(shown).enumerate() {
             out.push_str(&format!("  {}. {}\n", i + 1, cycle.join(" -> ")));
+        }
+        if report.cycles_detected > shown {
+            out.push_str(&format!(
+                "  … and {} more circular dependency path(s) truncated\n",
+                report.cycles_detected - shown
+            ));
         }
     } else {
         out.push_str("\n✓ Zero circular dependencies detected. Architecture graph is a clean DAG.\n");
@@ -522,6 +583,66 @@ mod tests {
         let cycles = find_cycles(&adj);
         assert_eq!(cycles.len(), 1);
         assert_eq!(cycles[0], vec!["A", "B", "C", "A"]);
+    }
+
+    #[test]
+    fn test_cycle_detection_capped() {
+        let mut adj = BTreeMap::new();
+        let dummy = PathBuf::from("test");
+
+        // 150 independent 2-cycles: A_i -> B_i -> A_i
+        for i in 0..150 {
+            let a = format!("A_{i}");
+            let b = format!("B_{i}");
+            adj.insert(a.clone(), (dummy.clone(), [b.clone()].into()));
+            adj.insert(b.clone(), (dummy.clone(), [a.clone()].into()));
+        }
+
+        let cycles = find_cycles(&adj);
+        assert_eq!(cycles.len(), MAX_CYCLES_DETECTED);
+    }
+
+    #[test]
+    fn test_format_dependency_report_truncation() {
+        let mut cycles = Vec::new();
+        for i in 0..30 {
+            cycles.push(vec![format!("mod{i}"), format!("mod{}", i + 1), format!("mod{i}")]);
+        }
+        let report = DependencyGraphReport {
+            scope: "modules".to_string(),
+            total_nodes: 30,
+            total_edges: 60,
+            cycles_detected: cycles.len(),
+            cycles,
+            nodes: vec![],
+            isolated_nodes: vec![],
+        };
+        let formatted = format_dependency_report(&report);
+        assert!(formatted.contains("25. mod24 -> mod25 -> mod24"));
+        assert!(formatted.contains("… and 5 more circular dependency path(s) truncated"));
+    }
+
+    #[test]
+    fn test_parse_go_imports_internal_matching() {
+        let content = r#"
+package main
+
+import (
+    "fmt"
+    "net/http"
+    "github.com/example/app/pkg/util"
+    ext "github.com/other/lib"
+)
+"#;
+        let mut known = HashMap::new();
+        known.insert("pkg::util::helper".to_string(), PathBuf::from("pkg/util/helper.go"));
+        known.insert("http::server".to_string(), PathBuf::from("http/server.go"));
+
+        let mut deps = BTreeSet::new();
+        parse_go_imports(content, Some("github.com/example/app"), &known, &mut deps);
+
+        assert!(deps.contains("pkg::util::helper"));
+        assert!(!deps.contains("http::server"));
     }
 
     #[test]
