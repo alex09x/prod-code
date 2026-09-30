@@ -448,6 +448,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `Chain2Sequence` and protocol conformances in 13 ms across 1,735 declarations, structural search captured 45 release-mode bounds preconditions in 57.45 ms and 36 debug assertions in 57.57 ms (81 total bounds invariants across collection indexers), structural codemod transformed internal error descriptions across 24 lines in 5 files (`Chain.swift`, `FlattenCollection.swift`, `Intersperse.swift`, `Product.swift`, `Windows.swift`), remote Apple Silicon test offloading executed `swift test --filter ChainTests` passing 5/5 tests in 10.3s without local battery consumption
     - **Full Deep-Dive Report**: [Swift Algorithms Under the Microscope: What 67 AST Tools Found Inside Apple's Sequence Engine (prod.codes)](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/)
 
+24. **[apple/swift-argument-parser](https://github.com/apple/swift-argument-parser)** (Swift)
+    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 3,724 declarations across 170 files (30,001 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: CLI command dispatch hierarchy centered on `ParsableCommand` protocol (in-degree 296, graph centrality 4.04), Clone Group #417 and #511 identified identical value unwrapping and `configurationFailure` boilerplate across all 5 core property wrappers (`@Argument`, `@Option`, `@OptionGroup`, `@ParentCommand`, `@Flag`)
+    - **Semantic Guards & Refactorings**: Semantic search located `ParsableCommand` and `AsyncParsableCommand` in 19 ms across 3,724 declarations, structural search captured 46 parser failures (`throw ParserError.$$$`) in 80.97 ms and 18 validation failures (`throw ValidationError($$$)`) in 44.52 ms (64 total error exit points across the CLI tree), parameterized AST codemod updated 42 lines across 9 files binding `$msg` metavariable cleanly into `ValidationError("DoccReference: " + $msg)`, remote Apple Silicon test offloading executed `swift test --filter HelpGenerationTests` passing 81/81 tests in 14.2s without local CPU consumption
+    - **Full Deep-Dive Report**: [Swift Argument Parser Under the Microscope: What 67 AST Tools Found Inside Apple's CLI Framework (prod.codes)](https://prod.codes/blog/swift-argument-parser-under-the-microscope-67-ast-tools/)
+
 
 
 
