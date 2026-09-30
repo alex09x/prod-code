@@ -269,7 +269,12 @@ fn analyze_crate_dependencies(
         }
     }
 
-    build_graph_report("crates", workspace_root, adj)
+    let scope_label = if root_cargo.exists() {
+        "crates"
+    } else {
+        "modules"
+    };
+    build_graph_report(scope_label, workspace_root, adj)
 }
 
 /// Analyzes module-level dependencies by scanning source file import/use declarations.
