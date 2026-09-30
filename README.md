@@ -352,6 +352,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`duckdb/duckdb`](https://github.com/duckdb/duckdb) | C++ (32-core node) | 67 / 67 tools (QueryResult slice, 2,277 InternalException sites, 5,500+ clone groups, Catch2 guards) | 681K lines (3,273 files) | 0.65 ms RTT | [DuckDB Under the Microscope →](https://prod.codes/blog/duckdb-under-the-microscope-67-ast-tools/) |
 | [`git/git`](https://github.com/git/git) | C (32-core node) | 67 / 67 tools (setup_git_directory in 316 ms, 4,657 error exit points, Clone Group #199, multi-file codemods) | 443K lines (986 files) | 0.65 ms RTT | [Git Under the Microscope →](https://prod.codes/blog/git-under-the-microscope-67-ast-tools/) |
 | [`curl/curl`](https://github.com/curl/curl) | C (32-core node) | 67 / 67 tools (Curl_easy centrality 4.83, 1,924 error/telemetry points, Clone Group #780, parameterized codemod) | 200K lines (1,048 files) | 0.61 ms RTT | [curl Under the Microscope →](https://prod.codes/blog/curl-under-the-microscope-67-ast-tools/) |
+| [`apple/swift-algorithms`](https://github.com/apple/swift-algorithms) | Swift (macOS node) | 67 / 67 tools (Chain2Sequence graph, 81 bounds invariants, Clone Group #314, remote test offload) | 13.7K lines (56 files) | 5.44 ms RTT | [Swift Algorithms Under the Microscope →](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 

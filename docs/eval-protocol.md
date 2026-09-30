@@ -440,6 +440,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `curl_easy_perform` entry points in 328 ms across 70,295 declarations, structural search captured 1,134 failure points matching `failf($$$)` in 3.50s and 790 protocol trace points matching `infof($$$)` in 2.74s (1,924 total telemetry and failure egress points across the C codebase), parameterized AST codemod updated proxy error descriptions across 4 lines in `lib/cf-h1-proxy.c` and bound local ephemeral port telemetry via `$p` metavariable without touching disk
     - **Full Deep-Dive Report**: [curl Under the Microscope: What 67 AST Tools Found Inside the Ubiquitous Transfer Engine (prod.codes)](https://prod.codes/blog/curl-under-the-microscope-67-ast-tools/)
 
+23. **[apple/swift-algorithms](https://github.com/apple/swift-algorithms)** (Swift)
+    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 1,735 declarations across 57 files (13,722 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Generic collection adapter architecture centered on progressive protocol extensions (`Sequence`, `Collection`, `BidirectionalCollection`, `RandomAccessCollection`), Clone Group #314 surfaced 6 identical occurrences of `offsetForward` bounds checking across distinct collection adapters, Clone Group #11 surfaced 3 identical `offsetBackward` implementations
+    - **Semantic Guards & Refactorings**: Semantic search located `Chain2Sequence` and protocol conformances in 13 ms across 1,735 declarations, structural search captured 45 release-mode bounds preconditions in 57.45 ms and 36 debug assertions in 57.57 ms (81 total bounds invariants across collection indexers), structural codemod transformed internal error descriptions across 24 lines in 5 files (`Chain.swift`, `FlattenCollection.swift`, `Intersperse.swift`, `Product.swift`, `Windows.swift`), remote Apple Silicon test offloading executed `swift test --filter ChainTests` passing 5/5 tests in 10.3s without local battery consumption
+    - **Full Deep-Dive Report**: [Swift Algorithms Under the Microscope: What 67 AST Tools Found Inside Apple's Sequence Engine (prod.codes)](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/)
+
 
 
 
