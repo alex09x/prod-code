@@ -381,6 +381,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: 2,269-file DAG, zero circular package dependencies, 224 occurrences of an identical 14-line Protobuf varint decoding loop across BuildKit and fsutil
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `ContainerStart` (99.9% reduction from 387K lines to 250 lines in 190 ms), structural search captured 858 error returns across 285 files in 1.9s, 3-way RRF semantic search located container start and attach streams in 212 ms across 20,508 declarations, boolean inversion on `IsRunning` across 19 files with gopls compiler safety refusal protecting plugin executor interfaces, in-memory shadow pre-validation in 2.00s
     - **Full Deep-Dive Report**: [Moby Under the Microscope: What 67 AST Tools Found Inside Docker's Engine (prod.codes)](https://prod.codes/blog/moby-under-the-microscope-67-ast-tools/)
+15. **[microsoft/TypeScript](https://github.com/microsoft/TypeScript)** (TypeScript)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 264,411 declarations across 31,433 source files, 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Clean modular DAG across 116 packages, 17 occurrences of an identical 10-line modifier traversal generator loop in `packages/typescript/src/ast/factory.generated.ts` (Group #1480), and 332 occurrences across test baselines
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `createSourceFile` (99.9% reduction from 264K declarations to ~120 lines across 3 files), structural search captured 134 error guards matching `throw new Error($$$)` across 18 files in 721.72 ms, 3-way RRF semantic search located `createSourceFile` in 2,088 ms across 264,411 declarations, boolean inversion on `hasProperty` safely halted by compiler refusal due to 10 non-call value references in namespace imports, parameter object bundling on `hasProperty` generated `export interface HasPropertyArgs` with call sites rewritten to `{ map: member, key: "kind" }` and 0 errors, in-memory shadow pre-validation in 5.24s
+    - **Full Deep-Dive Report**: [TypeScript Under the Microscope: What 67 AST Tools Found Inside the Compiler (prod.codes)](https://prod.codes/blog/typescript-under-the-microscope-67-ast-tools/)
 
 
 
