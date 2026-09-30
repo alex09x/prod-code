@@ -372,6 +372,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`apache/incubator-pekko`](https://github.com/apache/incubator-pekko) | Scala (32-core node) | 67 / 67 tools (838K lines, 41 modules clean DAG, 3.5% clones, 435 preconditions, cluster Metals 0 errors) | 838K lines (3,384 files) | 0.95 ms RTT | [Pekko Under the Microscope →](https://prod.codes/blog/pekko-under-the-microscope-67-ast-tools/) |
 | [`playframework/playframework`](https://github.com/playframework/playframework) | Scala (32-core node) | 67 / 67 tools (222K lines, 44 modules clean DAG, 0.9% clones, 133 preconditions, cluster Metals 0 errors) | 222K lines (1,636 files) | 0.95 ms RTT | [Play Under the Microscope →](https://prod.codes/blog/playframework-under-the-microscope-67-ast-tools/) |
 | [`scalameta/scalameta`](https://github.com/scalameta/scalameta) | Scala (32-core node) | 67 / 67 tools (106K lines, 24 modules clean DAG, 2.7% clones, 202 @ast nodes, cluster Metals 0 errors) | 106K lines (722 files) | 0.95 ms RTT | [Scalameta Under the Microscope →](https://prod.codes/blog/scalameta-under-the-microscope-67-ast-tools/) |
+| [`ziglang/zig`](https://github.com/ziglang/zig) | Zig (32-core node) | 67 / 67 tools (1.36M lines, 2,052 codegen clones, 480 compiler errdefers, 4.2K asserts, cluster ZLS 0 errors) | 1.36M lines (2,950 files) | 0.44 ms RTT | [Zig Under the Microscope →](https://prod.codes/blog/zig-under-the-microscope-67-ast-tools/) |
 
 
 

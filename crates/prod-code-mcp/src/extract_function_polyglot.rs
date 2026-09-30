@@ -24,6 +24,7 @@ pub enum Language {
     Java,
     Kotlin,
     Csharp,
+    Zig,
 }
 
 impl Language {
@@ -41,6 +42,7 @@ impl Language {
             "java" => Some(Self::Java),
             "kt" | "kts" => Some(Self::Kotlin),
             "cs" => Some(Self::Csharp),
+            "zig" | "zon" => Some(Self::Zig),
             _ => None,
         }
     }
@@ -60,6 +62,7 @@ fn is_candidate_source_file(path: &Path, lang: Language) -> bool {
         Language::Java => ext == "java",
         Language::Kotlin => matches!(ext, "kt" | "kts"),
         Language::Csharp => ext == "cs",
+        Language::Zig => matches!(ext, "zig" | "zon"),
     }
 }
 
@@ -167,7 +170,8 @@ pub fn tokenize_polyglot(text: &str, lang: Language) -> Vec<PolyToken> {
             || (c == '\''
                 && lang != Language::Rust
                 && lang != Language::Cpp
-                && lang != Language::C)
+                && lang != Language::C
+                && lang != Language::Zig)
         {
             let quote = c;
             let mut j = i + 1;
@@ -345,6 +349,21 @@ pub fn is_keyword(word: &str, lang: Language) -> bool {
                 | "ulong" | "unchecked" | "unsafe" | "ushort" | "using" | "virtual"
                 | "void" | "volatile" | "while" | "var" | "async" | "await" | "yield"
         ),
+        Language::Zig => matches!(
+            word,
+            "addrspace" | "align" | "allowzero" | "and" | "anyframe" | "anytype" | "asm" | "async"
+                | "await" | "break" | "callconv" | "catch" | "comptime" | "const" | "continue"
+                | "defer" | "else" | "enum" | "errdefer" | "error" | "export" | "extern"
+                | "fn" | "for" | "if" | "inline" | "noalias" | "noinline" | "nosuspend"
+                | "opaque" | "or" | "orelse" | "packed" | "pub" | "resume" | "return"
+                | "linksection" | "struct" | "suspend" | "switch" | "test" | "threadlocal"
+                | "try" | "union" | "unreachable" | "usingnamespace" | "var" | "volatile"
+                | "while" | "true" | "false" | "null" | "undefined"
+                | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                | "f16" | "f32" | "f64" | "f80" | "f128" | "c_int" | "c_uint" | "c_long"
+                | "c_ulong" | "c_char" | "bool" | "void" | "noreturn" | "type" | "anyerror"
+        ),
     }
 }
 
@@ -411,6 +430,10 @@ pub fn is_builtin_or_global(word: &str, lang: Language) -> bool {
                 | "Boolean" | "Char" | "Byte" | "Int16" | "Math" | "Array" | "List" | "Dictionary"
                 | "HashSet" | "StringBuilder" | "Exception" | "Task" | "ValueTask" | "Action"
                 | "Func" | "Predicate" | "Nullable" | "Span" | "ReadOnlySpan" | "Memory"
+        ),
+        Language::Zig => matches!(
+            word,
+            "std" | "builtin" | "root" | "assert"
         ),
     }
 }
@@ -859,6 +882,31 @@ fn infer_param_type(name: &str, scope: &str, lang: Language) -> Option<String> {
             }
             Some("Any".into())
         }
+        Language::Zig => {
+            let pat = format!("{name}:");
+            if let Some(pos) = scope.find(&pat) {
+                let rest = scope[pos + pat.len()..].trim_start();
+                let ty: String = rest
+                    .chars()
+                    .take_while(|c| is_ident(*c) || *c == '[' || *c == ']' || *c == '*' || *c == '?' || *c == '!')
+                    .collect();
+                if !ty.is_empty() {
+                    return Some(ty);
+                }
+            }
+            let pat_space = format!("{name} : ");
+            if let Some(pos) = scope.find(&pat_space) {
+                let rest = scope[pos + pat_space.len()..].trim_start();
+                let ty: String = rest
+                    .chars()
+                    .take_while(|c| is_ident(*c) || *c == '[' || *c == ']' || *c == '*' || *c == '?' || *c == '!')
+                    .collect();
+                if !ty.is_empty() {
+                    return Some(ty);
+                }
+            }
+            Some("anytype".into())
+        }
     }
 }
 
@@ -1004,7 +1052,7 @@ fn generate_call_replacement(
             Language::Kotlin => format!("{name}({args_str})"),
             Language::Cpp | Language::C => format!("this->{name}({args_str})"),
             Language::Go => format!("r.{name}({args_str})"),
-            Language::Rust => format!("self.{name}({args_str})"),
+            Language::Rust | Language::Zig => format!("self.{name}({args_str})"),
         }
     } else {
         format!("{name}({args_str})")
@@ -1034,6 +1082,7 @@ fn generate_call_replacement(
                     Language::Rust => format!("{indent}let {v} = {call};"),
                     Language::Java | Language::Csharp => format!("{indent}var {v} = {call};"),
                     Language::Kotlin => format!("{indent}val {v} = {call}"),
+                    Language::Zig => format!("{indent}const {v} = {call};"),
                 }
             } else {
                 format!("{indent}{v} = {call}{semi}")
@@ -1053,6 +1102,7 @@ fn generate_call_replacement(
                 Language::Java => format!("{indent}var res = {call};"),
                 Language::Csharp => format!("{indent}var ({joined}) = {call};"),
                 Language::Kotlin => format!("{indent}val ({joined}) = {call}"),
+                Language::Zig => format!("{indent}const {joined} = {call};"),
             }
         }
         OutputKind::Void => format!("{indent}{call}{semi}"),
@@ -1287,6 +1337,30 @@ fn generate_function_code(
                 format!("{vis}fun {name}({p_str}){ret_ann} {{\n{reindented}\n}}\n")
             }
         }
+        Language::Zig => {
+            let p_str = params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty.as_deref().unwrap_or("anytype")))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let ret_ann = match output {
+                OutputKind::Expression(_) | OutputKind::SingleVar { .. } => {
+                    if let Some(ret) = enclosing_ret {
+                        format!(" {ret}")
+                    } else {
+                        " anytype".to_string()
+                    }
+                }
+                OutputKind::Void => " void".to_string(),
+                _ => String::new(),
+            };
+            let vis = if is_exported { "pub " } else { "" };
+            if is_method {
+                format!("{method_indent}{vis}fn {name}({p_str}){ret_ann} {{\n{reindented}\n{method_indent}}}\n")
+            } else {
+                format!("{vis}fn {name}({p_str}){ret_ann} {{\n{reindented}\n}}\n")
+            }
+        }
     }
 }
 
@@ -1421,12 +1495,21 @@ pub async fn extract_function_polyglot(
                 } else {
                     format!("value{}", n + 1)
                 };
-                let ty = if orig_lit.starts_with('"') || orig_lit.starts_with('\'') {
-                    Some("string".into())
+                let ty = if orig_lit.starts_with('"') {
+                    match lang {
+                        Language::Zig => Some("[]const u8".into()),
+                        _ => Some("string".into()),
+                    }
+                } else if orig_lit.starts_with('\'') {
+                    match lang {
+                        Language::Zig => Some("u8".into()),
+                        _ => Some("char".into()),
+                    }
                 } else {
                     match lang {
                         Language::Go | Language::Cpp | Language::C | Language::Csharp => Some("int".into()),
                         Language::Swift | Language::Kotlin => Some("Int".into()),
+                        Language::Zig => Some("usize".into()),
                         _ => Some("number".into()),
                     }
                 };

@@ -681,6 +681,18 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         || has("settings.gradle.kts")
     {
         Some("java")
+    } else if has("build.zig") || has("build.zig.zon") {
+        Some("zig")
+    } else if has("mix.exs") {
+        Some("elixir")
+    } else if has(".luarc.json") || has(".luacheckrc") {
+        Some("lua")
+    } else if has("cabal.project") || has("stack.yaml") || has("package.yaml") {
+        Some("haskell")
+    } else if has("nim.cfg") {
+        Some("nim")
+    } else if has("dub.json") || has("dub.sdl") {
+        Some("d")
     } else {
         None
     }
