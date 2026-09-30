@@ -531,16 +531,27 @@ fn find_enclosing_scope(
 
                             let after_p = head[last_p + 1..].trim();
                             if after_p.starts_with("->") {
-                                enclosing_ret = Some(after_p.trim_start_matches("->").trim().to_string());
+                                let clean = after_p.trim_start_matches("->").trim();
+                                let ret_type = clean.split_whitespace().next().unwrap_or("").trim_end_matches('{').trim();
+                                if !ret_type.is_empty() {
+                                    enclosing_ret = Some(ret_type.to_string());
+                                }
                             } else if after_p.starts_with(':') {
-                                enclosing_ret = Some(after_p.trim_start_matches(':').trim().to_string());
+                                let clean = after_p.trim_start_matches(':').trim();
+                                let ret_type = clean.split_whitespace().next().unwrap_or("").trim_end_matches('{').trim();
+                                if !ret_type.is_empty() {
+                                    enclosing_ret = Some(ret_type.to_string());
+                                }
                             } else if !after_p.is_empty() && !after_p.starts_with('{') {
-                                enclosing_ret = Some(after_p.split_whitespace().next().unwrap_or("").to_string());
-                            } else {
+                                let ret_type = after_p.split_whitespace().next().unwrap_or("").trim_end_matches('{').trim();
+                                if !ret_type.is_empty() {
+                                    enclosing_ret = Some(ret_type.to_string());
+                                }
+                            } else if lang == Language::Java || lang == Language::Cpp || lang == Language::C {
                                 let parts: Vec<&str> = before_p.split_whitespace().collect();
                                 if parts.len() >= 2 {
                                     let ty = parts[parts.len() - 2];
-                                    if ty != "export" && ty != "static" && ty != "inline" && ty != "virtual" {
+                                    if ty != "export" && ty != "static" && ty != "inline" && ty != "virtual" && ty != "fun" && ty != "def" {
                                         enclosing_ret = Some(ty.to_string());
                                     }
                                 }
