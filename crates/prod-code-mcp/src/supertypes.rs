@@ -71,7 +71,14 @@ impl Supertypes {
                 out.push_str("  (derived)");
             }
             if let Some((path, line, col)) = &s.at {
-                let shown = path.strip_prefix(root).unwrap_or(path);
+                let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                let canonical_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                let shown = path
+                    .strip_prefix(root)
+                    .or_else(|_| canonical_path.strip_prefix(&canonical_root))
+                    .or_else(|_| path.strip_prefix(&canonical_root))
+                    .or_else(|_| canonical_path.strip_prefix(root))
+                    .unwrap_or(path);
                 out.push_str(&format!("  {}:{line}:{col}", shown.display()));
             }
         }
