@@ -343,6 +343,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`psf/black`](https://github.com/psf/black) | Python (32-core node) | 67 / 67 tools (concurrency cycle, 10-line version clones, 12-callsite parameter bundling, 99.8% slice) | 135K lines (358 files) | 0.93 ms RTT | [Black Under the Microscope →](https://prod.codes/blog/black-under-the-microscope-67-ast-tools/) |
 | [`tiangolo/fastapi`](https://github.com/tiangolo/fastapi) | Python (32-core node) | 67 / 67 tools (135 OpenAPI clones, 66 error guards, 99.8% dependency slice, parameter bundling) | 118K lines (1,166 files) | 0.93 ms RTT | [FastAPI Under the Microscope →](https://prod.codes/blog/fastapi-under-the-microscope-67-ast-tools/) |
 | [`pallets/flask`](https://github.com/pallets/flask) | Python (32-core node) | 67 / 67 tools (blueprint clones, 159 error guards, 98.6% dispatch slice, dataclass bundling) | 18K lines (83 files) | 0.65 ms RTT | [Flask Under the Microscope →](https://prod.codes/blog/flask-under-the-microscope-67-ast-tools/) |
+| [`moby/moby`](https://github.com/moby/moby) | Go (32-core node) | 67 / 67 tools (224 varint clones, 858 error guards, 99.9% ContainerStart slice, interface safety refusal) | 388K lines (2,269 files) | 0.65 ms RTT | [Moby Under the Microscope →](https://prod.codes/blog/moby-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 

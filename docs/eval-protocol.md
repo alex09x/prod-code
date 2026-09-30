@@ -374,6 +374,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: 1,094-package DAG (3,420 dependencies), zero circular dependencies, verified unidirectional layering (`api`, `pkg`, `client`, `server/storage`, `server/etcdserver`)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `(*EtcdServer).MoveLeader` (99.9% reduction from 220K lines to 200 lines in 180 ms), structural search captured 445 error returns across 132 files in 1,226 ms, 3-way RRF semantic search located Raft election handlers in 87 ms across 11,320 declarations, parameter object bundling on `MoveLeader` with compiler safety refusal catching cross-package `LeaderTransferrer` interface mismatch and unexported structs, boolean inversion on `isLeader` with 7 non-call value reference safety refusals, in-memory shadow pre-validation caught syntax error in 0.57s
     - **Full Deep-Dive Report**: [etcd Under the Microscope: What 67 AST Tools Found Inside Cloud-Native Consensus (prod.codes)](https://prod.codes/blog/etcd-under-the-microscope-67-ast-tools/)
+14. **[moby/moby](https://github.com/moby/moby)** (Go)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 387,617 lines of Go across 2,269 source files (20,508 declarations), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 2,269-file DAG, zero circular package dependencies, 224 occurrences of an identical 14-line Protobuf varint decoding loop across BuildKit and fsutil
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `ContainerStart` (99.9% reduction from 387K lines to 250 lines in 190 ms), structural search captured 858 error returns across 285 files in 1.9s, 3-way RRF semantic search located container start and attach streams in 212 ms across 20,508 declarations, boolean inversion on `IsRunning` across 19 files with gopls compiler safety refusal protecting plugin executor interfaces, in-memory shadow pre-validation in 2.00s
+    - **Full Deep-Dive Report**: [Moby Under the Microscope: What 67 AST Tools Found Inside Docker's Engine (prod.codes)](https://prod.codes/blog/moby-under-the-microscope-67-ast-tools/)
 
 
 
