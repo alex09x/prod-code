@@ -17,8 +17,8 @@ pub(crate) struct GoCompileVerdict {
 
 /// Compiles every package and its external test package with the proposed files in place.
 ///
-/// `go test -c` builds test binaries but never starts them, so package and test `init`
-/// functions cannot run. [`crate::shadow::run_shadow`] stages the complete proposed texts in a
+/// `go test -exec=true -run=^$` builds every package and test binary without writing colliding
+/// artifacts to disk or executing test bodies. [`crate::shadow::run_shadow`] stages the complete proposed texts in a
 /// private workspace on the supplied gateway; no Go process or checkout copy is created on the
 /// client. `-mod=readonly` prevents the compiler from changing module metadata. A source file
 /// changing while the gateway checks the proposal is an error, never a verdict about a mixture
@@ -74,10 +74,9 @@ pub(crate) async fn compile_go_shadow(
         vec![
             "go".to_string(),
             "test".to_string(),
-            "-c".to_string(),
+            "-exec=true".to_string(),
+            "-run=^$".to_string(),
             "-mod=readonly".to_string(),
-            "-o".to_string(),
-            ".prod-code-testbins/".to_string(),
             "./...".to_string(),
         ],
         vec![("GOTOOLCHAIN".to_string(), "local".to_string())],
