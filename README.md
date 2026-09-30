@@ -355,6 +355,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`apple/swift-algorithms`](https://github.com/apple/swift-algorithms) | Swift (macOS node) | 67 / 67 tools (Chain2Sequence graph, 81 bounds invariants, Clone Group #314, remote test offload) | 13.7K lines (56 files) | 5.44 ms RTT | [Swift Algorithms Under the Microscope →](https://prod.codes/blog/swift-algorithms-under-the-microscope-67-ast-tools/) |
 | [`apple/swift-argument-parser`](https://github.com/apple/swift-argument-parser) | Swift (macOS node) | 67 / 67 tools (ParsableCommand in-degree 296, 64 error egress points, property wrapper clones, 81 tests offloaded) | 30.0K lines (121 files) | 5.44 ms RTT | [Swift Argument Parser Under the Microscope →](https://prod.codes/blog/swift-argument-parser-under-the-microscope-67-ast-tools/) |
 | [`Alamofire/Alamofire`](https://github.com/Alamofire/Alamofire) | Swift (macOS node) | 67 / 67 tools (SessionDelegate multiplexer, 92 error boundaries, 20 clone groups, remote test offload) | 39.2K lines (102 files) | 5.44 ms RTT | [Alamofire Under the Microscope →](https://prod.codes/blog/alamofire-under-the-microscope-67-ast-tools/) |
+| [`apple/swift-collections`](https://github.com/apple/swift-collections) | Swift (macOS node) | 67 / 67 tools (Deque ring buffer, 1,279 boundary invariants, Clone Group #1165, 130 tests offloaded) | 71.0K lines (391 files) | 5.44 ms RTT | [Swift Collections Under the Microscope →](https://prod.codes/blog/swift-collections-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 

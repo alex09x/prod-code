@@ -464,6 +464,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `SessionDelegate::urlSession` and `AFError` in 13-16 ms across 7,652 declarations, structural search captured 46 typed library errors (`throw AFError.$$$`) in 220.95 ms, 92 total throw statements (`throw $$$`) in 185.35 ms, and 7 invalid URL conversions (`throw AFError.invalidURL($$$)`) in 61.92 ms, parameterized AST codemod updated 14 lines across 2 files binding `$u` URL metavariables without touching disk, remote Apple Silicon test offloading executed 60 tests across `HTTPHeadersTests`, `ParameterEncodingTestCase`, and `RetryPolicyTestCase` passing in under 8s with 0% local CPU, dead-code scanner isolated 11 unreferenced example symbols in 11.35s
     - **Full Deep-Dive Report**: [Alamofire Under the Microscope: What 67 AST Tools Found Inside the Swift Networking Engine (prod.codes)](https://prod.codes/blog/alamofire-under-the-microscope-67-ast-tools/)
 
+26. **[apple/swift-collections](https://github.com/apple/swift-collections)** (Swift)
+    - **Evaluated on**: macOS node (`192.168.2.40:9400`, Apple Silicon)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 10,710 declarations across 441 files (70,979 lines of Swift), 5.44 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Core algorithmic collection architecture centered on `Deque` ring buffers (in-degree 270, graph centrality 4.00) and `OrderedSet` / `OrderedDictionary` hash trees (in-degree 396 and 229, centralities 4.18 and 3.92), Clone Group #1165 identified 11 occurrences of nested tree-node traversal scaffolding across persistent hash tree tests
+    - **Semantic Guards & Refactorings**: Semantic search located `Deque`, `OrderedSet`, and `OrderedDictionary` in 19-100 ms across 10,710 declarations, structural search captured 548 release preconditions (`precondition($$$)`) in 481.67 ms, 731 debug assertions (`assert($$$)`) in 540.70 ms (1,279 total boundary invariants), and 15 precondition traps (`preconditionFailure($$$)`) in 89.64 ms, parameterized AST codemod updated 30 lines across 10 files spanning `BitCollections`, `HashTreeCollections`, and `OrderedCollections` binding `$msg` without touching disk, remote Apple Silicon test offloading executed 130 tests across `DequeTests` and `OrderedSetTests` passing in under 27s with 0% local CPU, dead-code scanner isolated 33 unreferenced benchmark harnesses in 25.65s
+    - **Full Deep-Dive Report**: [Swift Collections Under the Microscope: What 67 AST Tools Found Inside Apple's Data Structure Engine (prod.codes)](https://prod.codes/blog/swift-collections-under-the-microscope-67-ast-tools/)
+
 
 
 
