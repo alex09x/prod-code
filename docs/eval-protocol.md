@@ -367,6 +367,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `Flask.full_dispatch_request` (98.6% reduction from 18K to 250 lines in 250 ms), structural search captured 159 exception raises across 33 files in 255.96 ms (166 total direct raises across 33 files), 3-way RRF semantic search ranked request dispatching in 10 ms across 1,658 declarations, parameter object bundling on `flash(message, category)` -> `@dataclass FlashMessage` with default argument preservation, boolean inversion on `AppContext.has_request` with proven safety refusal on 6 property value references across 4 files, semantic indentation verification on function extraction, in-memory shadow pre-validation caught 6 syntax errors in 0.22s
     - **Full Deep-Dive Report**: [Flask Under the Microscope: What 67 AST Tools Found Inside Python's Iconic Microframework (prod.codes)](https://prod.codes/blog/flask-under-the-microscope-67-ast-tools/)
 
+13. **[etcd-io/etcd](https://github.com/etcd-io/etcd)** (Go)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 219,982 lines of Go across 1,094 source files (11,320 declarations), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 1,094-package DAG (3,420 dependencies), zero circular dependencies, verified unidirectional layering (`api`, `pkg`, `client`, `server/storage`, `server/etcdserver`)
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `(*EtcdServer).MoveLeader` (99.9% reduction from 220K lines to 200 lines in 180 ms), structural search captured 445 error returns across 132 files in 1,226 ms, 3-way RRF semantic search located Raft election handlers in 87 ms across 11,320 declarations, parameter object bundling on `MoveLeader` with compiler safety refusal catching cross-package `LeaderTransferrer` interface mismatch and unexported structs, boolean inversion on `isLeader` with 7 non-call value reference safety refusals, in-memory shadow pre-validation caught syntax error in 0.57s
+    - **Full Deep-Dive Report**: [etcd Under the Microscope: What 67 AST Tools Found Inside Cloud-Native Consensus (prod.codes)](https://prod.codes/blog/etcd-under-the-microscope-67-ast-tools/)
+
+
 
 
 
