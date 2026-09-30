@@ -324,6 +324,17 @@ For every refactoring tool tested:
      - [#740](https://github.com/alex09x/prod-code/issues/740): `dependencies: unbounded circular dependency stream and loose Go import segment matching`
    - **Full Deep-Dive Report**: [1,485 Error Checks and Zero Import Cycles: Dissecting Prometheus's 84-Package Engine with 67 AST Tools (prod.codes)](https://prod.codes/blog/1485-error-checks-and-zero-cycles-inside-prometheus/)
 
+8. **[kubernetes/kubernetes](https://github.com/kubernetes/kubernetes)** (Go)
+   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 5,384,262 lines of Go across 17,823 files (31,351 total files), 779 internal packages, 737 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 779-package DAG (3,639 dependencies), core foundations `pkg/features` ($C_a=154$), `pkg/api/legacyscheme` ($C_a=138$), and `pkg/apis/core` ($C_a=137$), 900+ Type-2 clone groups across scheduler plugins
+   - **Semantic Guards & Refactorings**: Transitive AST slicing of `v1.Pod` (99.4% reduction to 1.42s), structural search captured 737 error checks in 160 files in `pkg/kubelet` in 1.86s, interface extraction of 22 methods from `CycleState` into `CycleStateManager`, safe-delete refusal (2 callers), type-invalidation caught in memory in 3.61s
+   - **Issues Identified & Resolved**:
+     - [#741](https://github.com/alex09x/prod-code/issues/741): `compile_go_shadow: go test -c -o collides on packages with identical base names in multi-package modules`
+     - [#742](https://github.com/alex09x/prod-code/issues/742): `invert_boolean: find_polyglot_predicate_declaration matches call site before function declaration`
+   - **Full Deep-Dive Report**: [5.3 Million Lines of Go and 779 Packages: Dissecting Kubernetes with 67 AST Tools (prod.codes)](https://prod.codes/blog/5-million-lines-of-go-inside-kubernetes/)
+
 
 
 
