@@ -347,6 +347,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`microsoft/TypeScript`](https://github.com/microsoft/TypeScript) | TypeScript (32-core node) | 67 / 67 tools (264K decls, 17 AST factory clones, 99.9% createSourceFile slice, interface synthesis) | 31,433 files | 0.65 ms RTT | [TypeScript Under the Microscope →](https://prod.codes/blog/typescript-under-the-microscope-67-ast-tools/) |
 | [`facebook/react`](https://github.com/facebook/react) | JavaScript/TS (32-core node) | 67 / 67 tools (Fiber work loop slice, 18 test clones, 156 error throws, compiler generic guardrails) | 745K lines (4,445 files) | 0.65 ms RTT | [React Under the Microscope →](https://prod.codes/blog/react-under-the-microscope-67-ast-tools/) |
 | [`vercel/next.js`](https://github.com/vercel/next.js) | TypeScript/JS (32-core node) | 67 / 67 tools (SSR render slice, 484 clone groups, 1,254 error assertions, cross-file boolean inversion) | 1.29M lines (24,309 files) | 0.65 ms RTT | [Next.js Under the Microscope →](https://prod.codes/blog/nextjs-under-the-microscope-67-ast-tools/) |
+| [`expressjs/express`](https://github.com/expressjs/express) | JavaScript (32-core node) | 67 / 67 tools (95% app.handle slice, 10 TypeError sites, Clone Group #150, dynamic receiver guardrails) | 21.5K lines (201 files) | 0.65 ms RTT | [Express Under the Microscope →](https://prod.codes/blog/express-under-the-microscope-67-ast-tools/) |
 
 ## Reading more
 

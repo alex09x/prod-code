@@ -402,6 +402,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: 24,309-file multi-package DAG, 13 occurrences of an identical 12-line immediate test helper in `test/e2e/app-dir/actions/fast-set-immediate.external.test.ts:90-101` (Clone Group #484)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `renderToHTMLImpl` in `packages/next/src/server/render.tsx:457` (isolated Document shell, React Fizz streaming, tracing spans, and HTML postProcess), structural search captured 1,254 error assertions matching `throw new Error($$$)` across 306 files in 10,378 ms, semantic search located `renderToHTML` entrypoints in 1,572 ms across 229,297 declarations, AST boolean inversion on `isResSent` -> `isResPending` accurately updated 24 lines across 5 files flipping 5 call-site negations and simplifying pre-existing `!`, in-memory pre-flight validation caught 4 syntax errors in 4.35s while filtering 9 pre-existing diagnostics without touching disk
     - **Full Deep-Dive Report**: [Next.js Under the Microscope: What 67 AST Tools Found Inside the React Framework (prod.codes)](https://prod.codes/blog/nextjs-under-the-microscope-67-ast-tools/)
+18. **[expressjs/express](https://github.com/expressjs/express)** (JavaScript)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 6,037 declarations across 201 source files (21,492 lines), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Prototype delegation chains, Clone Group #150 identified identical 8-line middleware mock fixtures across 6 test suites (`test/express.json.js`, `test/res.sendFile.js`, etc.)
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `app.handle` in `lib/application.js:152` (95% reduction from 13.9KB to 711 bytes isolating handler binding, headers, and error logger), structural search captured 10 type assertion sites matching `throw new TypeError($$$)` across 4 files in 37.56 ms, semantic search located `this.router.handle` and `app.handle` in 22 ms across 6,037 declarations, AST boolean inversion on `app.enabled` safely refused mutation due to 22 dynamic value references in untyped JS where `this.enabled` is accessed as a property, remote in-memory pre-flight validation caught invalid JavaScript variable syntax in 0.20s
+    - **Full Deep-Dive Report**: [Express Under the Microscope: What 67 AST Tools Found Inside the Node.js Backbone (prod.codes)](https://prod.codes/blog/express-under-the-microscope-67-ast-tools/)
 
 
 
