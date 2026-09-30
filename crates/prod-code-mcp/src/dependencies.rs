@@ -213,23 +213,43 @@ fn analyze_crate_dependencies(
     if let Some(settings_file) = gradle_settings_path {
         if let Ok(settings_content) = std::fs::read_to_string(&settings_file) {
             let mut projects = Vec::new();
+            let mut in_include = false;
             for line in settings_content.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("include ") || trimmed.starts_with("include(") {
-                    for token in trimmed.split(&[' ', '(', ')', ',', '\'', '"'][..]) {
+                    in_include = true;
+                }
+                if in_include {
+                    let code_part = if let Some(idx) = trimmed.find("//") {
+                        &trimmed[..idx]
+                    } else {
+                        trimmed
+                    };
+                    for token in code_part.split(&[' ', '(', ')', ',', '\'', '"'][..]) {
                         let t = token.trim();
                         if !t.is_empty() && t != "include" && !t.starts_with("//") && !t.starts_with("/*") {
                             let proj_name = t.trim_matches(':');
                             if !proj_name.is_empty() {
                                 let sub_rel = proj_name.replace(':', "/");
                                 if workspace_root.join(&sub_rel).exists() {
-                                    projects.push(proj_name.to_string());
+                                    if !projects.contains(&proj_name.to_string()) {
+                                        projects.push(proj_name.to_string());
+                                    }
                                 }
                             }
                         }
                     }
+                    if !trimmed.ends_with(',') && !trimmed.starts_with("include") {
+                        in_include = false;
+                    } else if trimmed.ends_with(')') {
+                        in_include = false;
+                    }
                 }
             }
+
+            let root_build_content = std::fs::read_to_string(workspace_root.join("build.gradle"))
+                .or_else(|_| std::fs::read_to_string(workspace_root.join("build.gradle.kts")))
+                .ok();
 
             let mut project_map = HashMap::new();
             for p in &projects {
@@ -238,16 +258,16 @@ fn analyze_crate_dependencies(
                 let build_gradle = sub_dir.join("build.gradle");
                 let build_gradle_kts = sub_dir.join("build.gradle.kts");
                 let content = if let Ok(c) = std::fs::read_to_string(&build_gradle) {
-                    Some(c)
+                    c
                 } else if let Ok(c) = std::fs::read_to_string(&build_gradle_kts) {
-                    Some(c)
+                    c
+                } else if let Some(ref root_content) = root_build_content {
+                    extract_gradle_project_block(root_content, p).unwrap_or_default()
                 } else {
-                    None
+                    String::new()
                 };
 
-                if let Some(c) = content {
-                    project_map.insert(p.clone(), (sub_dir, c));
-                }
+                project_map.insert(p.clone(), (sub_dir, content));
             }
 
             for (proj_name, (dir, content)) in &project_map {
@@ -348,6 +368,49 @@ fn analyze_module_dependencies(
     }
 
     build_graph_report("modules", workspace_root, adj)
+}
+
+fn extract_gradle_project_block(root_content: &str, project_name: &str) -> Option<String> {
+    let alt_name = project_name.replace(':', "-");
+    let last_name = project_name.split(':').last().unwrap_or(project_name);
+    let patterns = [
+        format!("project(':{project_name}')"),
+        format!("project(\":{project_name}\")"),
+        format!("project('{project_name}')"),
+        format!("project(\"{project_name}\")"),
+        format!("project(':{alt_name}')"),
+        format!("project(\":{alt_name}\")"),
+        format!("project(':{last_name}')"),
+        format!("project(\":{last_name}\")"),
+    ];
+
+    let mut start_idx = None;
+    for pat in &patterns {
+        if let Some(pos) = root_content.find(pat) {
+            start_idx = Some(pos + pat.len());
+            break;
+        }
+    }
+
+    let start_search = start_idx?;
+    let brace_offset = root_content[start_search..].find('{')?;
+    let brace_start = start_search + brace_offset;
+
+    let mut depth = 0;
+    let mut end_idx = None;
+    for (i, c) in root_content[brace_start..].char_indices() {
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+            if depth == 0 {
+                end_idx = Some(brace_start + i + 1);
+                break;
+            }
+        }
+    }
+
+    end_idx.map(|end| root_content[brace_start..end].to_string())
 }
 
 fn file_to_module_name(rel_path: &str) -> String {
