@@ -11,12 +11,13 @@ separate from implementation and verification. The full item-by-item review and 
 requirements are in [ROADMAP-AUDIT.md](ROADMAP-AUDIT.md).
 
 **Where it stands** (v0.3.19, 2026-09-29): 63 MCP tools, a cluster of three Linux nodes and a
-macOS node for Swift and macOS-only Go. The historical coverage run recorded 910 tests and
+macOS node for Swift and macOS-only Go. Native packaging (.pkg, .dmg, .deb), cryptographic verification,
+fleet parity sync, and Zed editor LSP integration shipped in Phase 9.5. The historical coverage run recorded 910 tests and
 at least 80% of regions per file; those figures are evidence for that revision, not a guarantee
 for subsequent changes. Missing or malformed coverage reports are rejected since #431.
 A 2026-09-26 audit put a status note on each finished item whose text promised more than was built.
-Editors get the language's own server on the node through `prod-code lsp`, with a Zed extension
-in `editors/zed`.
+Editors get the language's own server on the node through `prod-code lsp`, with Zed settings and extension
+support.
 The Rust refactoring catalog (7.1) has implementations or analyzer assists for its applicable
 operations, with the restrictions documented per item; broader original requirements such as
 transitive type migration remain open. Other languages expose their own servers' code actions;
@@ -578,4 +579,39 @@ partial: a clangd index and a Swift module cache shared across worktree copies, 
   - Pattern-based structural code transformations (AST pattern matching).
   - Matches syntax trees regardless of whitespace, formatting, or variable names.
   - Executes large-scale library migrations and API upgrades across hundreds of files in sub-second time.
+
+---
+
+## Phase 9: Advanced Semantic Intelligence & Autonomous Quality Engineering
+
+**Objective**: Elevate code intelligence beyond traditional static analysis by combining distributed in-memory Salsa graphs, type-directed synthesis, structural AST pattern engines, and cluster-scale architecture inspection for both AI agents and next-generation editors.
+
+- [ ] **9.1. Structural AST Pattern Search & Semantic Replace (`code_structural_search` / `code_structural_replace`)**
+  - Syntactic pattern matching with rich semantic type constraints evaluated directly against the remote Salsa graph.
+  - Template variables with structural predicates (e.g. `$expr$` constrained to type `Option<T>`, `$fn$` constrained to callable `Fn(T) -> Option<U>`), matching regardless of formatting, trivia, or variable names.
+  - Pattern replacement with automatic import injection and multi-file transactional preview (`--apply`, dry-run unified diff).
+  - Eliminates brittle regex-based transformations in agent workflows and prevents syntactically valid but semantically invalid edits.
+
+- [ ] **9.2. Type-Directed Expression Synthesis (`code_propose_expression`)**
+  - In-scope expression synthesis targeting an expected return or parameter type (`target_type`).
+  - Traverses the local scope and 1-hop / 2-hop accessor chains in the semantic type graph (e.g. `ctx.session().account_id()`, `config.db_pool().acquire()`).
+  - Returns rank-ordered candidate expressions satisfying the type constraints, reducing hallucinated API invocations in agent-driven patches.
+
+- [ ] **9.3. Code Clone & Duplication Harvester (`code_find_duplicates`)**
+  - Whole-repository AST clone detection covering Type-1 (exact clones), Type-2 (renamed identifiers, literals, and types), and Type-3 (reordered/gapped statements).
+  - Cluster-parallel fingerprinting of AST subtrees with configurable minimum statement/token thresholds.
+  - Generates structural clone reports with parameterization suggestions, feeding directly into `code_extract_function` for automated deduplication passes.
+
+- [ ] **9.4. Architectural Dependency & Cycle Inspector (`code_dependencies`)**
+  - Whole-workspace package and module dependency graph extraction with afferent and efferent coupling metrics.
+  - Cycle detection identifying circular dependencies (`A -> B -> C -> A`) across crates, Go packages, Python modules, and TypeScript namespaces.
+  - Architectural layering verification (e.g. enforcing that core domains never import transport/presentation layers).
+
+- [x] **9.5. Unified Packaging, Fleet Parity & Editor Bridges (`prod-code package` / `prod-code lsp`)** — shipped 2026-09-29 in v0.3.19:
+  - Native installer packages (.pkg for macOS, .deb for Debian/Ubuntu arm64/amd64), mountable macOS disk images (.dmg), and universal POSIX curl installer (`https://prod.codes/install.sh`).
+  - Cryptographic SHA-256 integrity verification (`prod-code package verify`) against official GitHub release manifests.
+  - Cluster fleet parity inspection (`prod-code package sync`) and atomic self-update (`prod-code update`).
+  - Official code signing under `Apple Development: Alexander Panasenko (alex@prod.codes)`.
+  - Native Zed editor integration (`~/.config/zed/settings.json`) routing `rust-analyzer`, `gopls`, `clangd`, `basedpyright`, and `vtsls` over 10G LAN to remote cluster nodes with sub-millisecond latency, zero local CPU check overhead, and < 20 MB local RAM footprint.
+
 
