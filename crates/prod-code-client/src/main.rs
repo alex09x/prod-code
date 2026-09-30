@@ -1672,8 +1672,8 @@ async fn main() -> Result<()> {
             package::PackageSubcommands::Install { force, tag, system } => {
                 return package::run_package_install(force, tag, system).await;
             }
-            package::PackageSubcommands::Sync { remote } => {
-                let r = remote.or_else(|| picked.ok());
+            package::PackageSubcommands::Sync { node } => {
+                let r = node.or_else(|| picked.ok());
                 return package::run_package_sync(r).await;
             }
         }

@@ -37,9 +37,9 @@ pub enum PackageSubcommands {
     Verify,
     /// Inspect cluster nodes for version parity and pending updates
     Sync {
-        /// Optional remote gateway address override
-        #[arg(short, long)]
-        remote: Option<SocketAddr>,
+        /// Target node to inspect directly (overrides default seed)
+        #[arg(long = "node")]
+        node: Option<SocketAddr>,
     },
 }
 
