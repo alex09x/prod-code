@@ -231,19 +231,43 @@ fn analyze_crate_dependencies(
                     } else {
                         trimmed
                     };
-                    for token in code_part.split(&[' ', '(', ')', ',', '\'', '"'][..]) {
-                        let t = token.trim();
-                        if !t.is_empty() && t != "include" && !t.starts_with("//") && !t.starts_with("/*") {
-                            let proj_name = t.trim_matches(':');
+                    let mut at = 0;
+                    while let Some(q_start) = code_part[at..].find(['"', '\'']) {
+                        let quote_char = code_part[at + q_start..].chars().next().unwrap();
+                        let rest = &code_part[at + q_start + 1..];
+                        if let Some(q_end) = rest.find(quote_char) {
+                            let proj_name = rest[..q_end].trim_matches(':');
                             if !proj_name.is_empty() && !projects.contains(&proj_name.to_string()) {
                                 projects.push(proj_name.to_string());
                             }
+                            at += q_start + 1 + q_end + 1;
+                        } else {
+                            break;
                         }
                     }
                     if !trimmed.ends_with(',') && !trimmed.starts_with("include") {
                         in_include = false;
                     } else if trimmed.ends_with(')') {
                         in_include = false;
+                    }
+                }
+
+                // Handle JetBrains module("path/name") helper DSL
+                if trimmed.starts_with("module(") || trimmed.starts_with("module ") {
+                    let rest = if trimmed.starts_with("module(") {
+                        trimmed.strip_prefix("module(").unwrap().trim()
+                    } else {
+                        trimmed.strip_prefix("module ").unwrap().trim()
+                    };
+                    if (rest.starts_with('"') && rest.len() >= 2) || (rest.starts_with('\'') && rest.len() >= 2) {
+                        let quote = rest.chars().next().unwrap();
+                        if let Some(end_idx) = rest[1..].find(quote) {
+                            let path_str = &rest[1..1 + end_idx];
+                            let mod_name = path_str.split('/').last().unwrap_or(path_str).trim_matches(':');
+                            if !mod_name.is_empty() && !projects.contains(&mod_name.to_string()) {
+                                projects.push(mod_name.to_string());
+                            }
+                        }
                     }
                 }
 
@@ -279,11 +303,13 @@ fn analyze_crate_dependencies(
                                 && !rel_str.starts_with("build-")
                                 && !rel_str.starts_with(".gradle")
                                 && !rel_str.starts_with("build/")
+                                && !rel_str.starts_with("buildSrc")
                             {
                                 if let Some(folder_name) = parent.file_name().and_then(|n| n.to_str()) {
                                     dir_by_name.insert(folder_name.to_string(), parent.to_path_buf());
                                     dir_by_name.insert(rel_str.replace('/', ":"), parent.to_path_buf());
-                                    if projects.is_empty() && !projects.contains(&folder_name.to_string()) {
+                                    dir_by_name.insert(rel_str.clone(), parent.to_path_buf());
+                                    if !projects.contains(&folder_name.to_string()) {
                                         projects.push(folder_name.to_string());
                                     }
                                 }
