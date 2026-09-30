@@ -277,4 +277,15 @@ For every refactoring tool tested:
    - **Semantic Guards & Refactorings**: Multi-file rename across 18 files in 5.75s, clone-aware function extraction, active safe-delete refusal (67 refs)
    - **Full Deep-Dive Report**: [Dissecting Tantivy with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-tantivy-with-remote-ast/)
 
+3. **[tokio-rs/tokio](https://github.com/tokio-rs/tokio)** (Rust)
+   - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 6.11 MB cold sync in 450 ms, 57 ms warm sync, 633 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 10-crate circular DAG (6 cyclic paths across members), Type-2 clone clusters in stream combinators
+   - **Semantic Guards & Refactorings**: AST slicing of work-stealing queue (96% reduction), parameter side-effect order guard refusal on Deref, 20-callsite boolean inversion, safe-delete refusal (126 usages)
+   - **Issues Identified & Resolved**:
+     - [#736](https://github.com/alex09x/prod-code/issues/736): `supertypes: out-of-bounds line index when symbol resolves to remote sysroot path (Box<T>)`
+   - **Full Deep-Dive Report**: [Dissecting Tokio with Remote AST (prod.codes)](https://prod.codes/blog/dissecting-tokio-with-remote-ast/)
+
+
 

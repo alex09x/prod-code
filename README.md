@@ -332,6 +332,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 |---|---|---|---|---|---|
 | [`BurntSushi/ripgrep`](https://github.com/BurntSushi/ripgrep) | Rust (32-core node) | 67 / 67 tools (AST search, slicing, 30 refactorings, RAM validation) | 45.4 KB (27 files) | 1.02 ms RTT | [Dissecting Ripgrep with Remote AST →](https://prod.codes/blog/dissecting-ripgrep-with-remote-ast/) |
 | [`quickwit-oss/tantivy`](https://github.com/quickwit-oss/tantivy) | Rust (32-core node) | 67 / 67 tools (10-crate DAG, 18-file rename, clone detection, AST search) | 6.77 MB (602 files) | 0.96 ms RTT | [Dissecting Tantivy with Remote AST →](https://prod.codes/blog/dissecting-tantivy-with-remote-ast/) |
+| [`tokio-rs/tokio`](https://github.com/tokio-rs/tokio) | Rust (32-core node) | 67 / 67 tools (10-crate circular DAG, AST slicing, Issue #736 fix, Criterion bench) | 6.11 MB (882 files) | 0.63 ms RTT | [Dissecting Tokio with Remote AST →](https://prod.codes/blog/dissecting-tokio-with-remote-ast/) |
 
 ## Reading more
 
