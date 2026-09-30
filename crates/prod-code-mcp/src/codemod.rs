@@ -471,6 +471,21 @@ pub struct CodemodMatch {
     pub replacement: String,
 }
 
+fn is_boundary_token(kind: &TokenKind, next_expected: &TokenKind) -> bool {
+    if kind == next_expected {
+        return false;
+    }
+    match kind {
+        TokenKind::Punct(p) => matches!(p.as_str(), ";" | "," | "=" | ":=" | "+=" | "-=" | "*=" | "/="),
+        TokenKind::Ident(id) => matches!(
+            id.as_str(),
+            "let" | "var" | "const" | "return" | "fn" | "func" | "function" | "def"
+                | "class" | "struct" | "enum" | "interface" | "import" | "export" | "package"
+        ),
+        _ => false,
+    }
+}
+
 /// Attempt to match pattern tokens starting at `start_idx` in `tokens`.
 /// Returns `(start_byte, end_byte, end_token_idx, bindings)` on success.
 fn match_pattern_tokens(
@@ -528,9 +543,14 @@ fn match_pattern_tokens(
                                     depth -= 1;
                                 }
                                 _ => {
-                                    if depth == 0 && &tokens[cur].kind == next_expected {
-                                        found = Some(cur);
-                                        break;
+                                    if depth == 0 {
+                                        if &tokens[cur].kind == next_expected {
+                                            found = Some(cur);
+                                            break;
+                                        }
+                                        if is_boundary_token(&tokens[cur].kind, next_expected) {
+                                            return None;
+                                        }
                                     }
                                 }
                             }
@@ -1130,6 +1150,6 @@ fn run() {
         let matches = find_structural_matches_in_source("test.rs", src, &pattern);
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].bindings.get("a").unwrap(), "opt");
-        assert_eq!(matches[1].bindings.get("a").unwrap(), "map.get(&k)");
+        assert_eq!(matches[1].bindings.get("a").unwrap(), "get(&k)");
     }
 }

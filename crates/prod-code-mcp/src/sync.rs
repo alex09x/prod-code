@@ -120,7 +120,9 @@ pub fn engine_project(root: &Path, hint: &Path) -> (Option<String>, Option<&'sta
     let canonical_root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     // A caller may name a source relative to this checkout while its process runs elsewhere.
     // Resolve it against the supplied root before examining files or project manifests (#488).
-    let hint = if hint.is_absolute() {
+    let hint = if let Ok(rel) = hint.strip_prefix(root) {
+        canonical_root.join(rel)
+    } else if hint.is_absolute() {
         hint.to_path_buf()
     } else {
         canonical_root.join(hint)
