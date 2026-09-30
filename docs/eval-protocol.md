@@ -480,6 +480,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned 3,279 files in 545.82 ms finding 1,440 precondition sites (`Preconditions.checkNotNull($$$)`), parameterized AST codemod tested dry-run transformations across 454 files, refactoring engine validated method extraction, signature modifications, and type migrations
     - **Full Deep-Dive Report**: [Guava Under the Microscope: What 67 AST Tools Found Inside Google's Core Java Libraries (prod.codes)](https://prod.codes/blog/guava-under-the-microscope-67-ast-tools/)
 
+28. **[spring-projects/spring-boot](https://github.com/spring-projects/spring-boot)** (Java)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 880,132 lines of Java across 8,696 files (448 Gradle modules, 2,790 dependencies), 0.65 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 448-module dependency graph analyzed with `prod-code dependencies`, revealing a completely acyclic DAG (0 cycles). Foundational `starter:spring-boot-starter` has highest afferent coupling (Ca=283, Ce=3, instability 0.01), followed by `core:spring-boot` (Ca=164, Ce=1). Clone analysis (`prod-code duplicates`) scanned 9,192 files (908,509 lines) and isolated 20 clone groups, including 55 occurrences of `isEnabled()` property accessors across autoconfiguration classes, confirming intentional POJO decoupling over fragile base classes.
+    - **Semantic Guards & Refactorings**: Structural search scanned 8,897 files in 3,075 ms isolating 982 assertions matching `Assert.notNull($A, $B)` across 398 files. Parameterized AST codemod tested `Assert.notNull($A, $B) ==>> Objects.requireNonNull($A, $B)` yielding 1,965 changed lines across 398 files in dry run. AST refactoring evaluated `prod-code extract-function` on `SpringApplicationShutdownHook.java`, capturing method parameters and instance receiver, verified by remote Eclipse JDTLS with 0 errors in 1.94s.
+    - **Full Deep-Dive Report**: [Spring Boot Under the Microscope: What 67 Remote AST Tools Found Inside the Enterprise Java Standard (prod.codes)](https://prod.codes/blog/spring-boot-under-the-microscope-67-ast-tools/)
+
+
 
 
 
