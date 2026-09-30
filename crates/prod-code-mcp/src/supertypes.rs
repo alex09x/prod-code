@@ -229,8 +229,11 @@ pub fn supertraits(header: &str) -> Vec<String> {
 /// The traits derived by the `#[derive(…)]` attributes directly above the declaration on line
 /// `decl` (0-based), each with its 1-based position. An attribute may span lines.
 fn derives_above(lines: &[&str], decl: usize) -> Vec<(String, u32, u32)> {
+    if lines.is_empty() || decl == 0 {
+        return Vec::new();
+    }
     // The attributes and doc comments of this item: up to the end of the one before it.
-    let mut start = decl;
+    let mut start = decl.min(lines.len());
     while start > 0 {
         let above = lines[start - 1].trim();
         if above.is_empty() || above.ends_with('}') || above.ends_with(';') || decl - start >= 40 {
@@ -240,7 +243,7 @@ fn derives_above(lines: &[&str], decl: usize) -> Vec<(String, u32, u32)> {
     }
     let mut out = Vec::new();
     let mut inside = false;
-    for (n, line) in lines.iter().enumerate().take(decl).skip(start) {
+    for (n, line) in lines.iter().enumerate().take(decl.min(lines.len())).skip(start) {
         let mut from = 0;
         if !inside {
             match line.find("derive(") {
@@ -496,12 +499,27 @@ async fn rust_supertypes(
             character.saturating_sub(1),
         ));
     let (decl_file, decl_line, decl_col) = definition;
-    let text = std::fs::read_to_string(&decl_file).unwrap_or_default();
+    let text = if let Ok((bytes, _)) =
+        crate::remote_fs::read_source(remote, root, &decl_file.to_string_lossy()).await
+    {
+        String::from_utf8_lossy(&bytes).into_owned()
+    } else {
+        std::fs::read_to_string(&decl_file).unwrap_or_default()
+    };
     let lines: Vec<&str> = text.lines().collect();
-    let decl = lines.get(decl_line as usize).copied().unwrap_or("");
+    if lines.is_empty() {
+        return Ok(Supertypes {
+            of: "?".to_string(),
+            kind: Kind::Other,
+            list: Vec::new(),
+            unsupported: None,
+        });
+    }
+    let decl_idx = (decl_line as usize).min(lines.len() - 1);
+    let decl = lines.get(decl_idx).copied().unwrap_or("");
     let of = word_at(decl, decl_col + 1).unwrap_or_else(|| "?".to_string());
     if is_trait_decl(decl) {
-        let list = supertraits(&header_from(&lines, decl_line as usize))
+        let list = supertraits(&header_from(&lines, decl_idx))
             .into_iter()
             .map(|name| Supertype {
                 name,
@@ -530,7 +548,7 @@ async fn rust_supertypes(
         }),
     )
     .await?;
-    let mut list: Vec<Supertype> = derives_above(&lines, decl_line as usize)
+    let mut list: Vec<Supertype> = derives_above(&lines, decl_idx)
         .into_iter()
         .map(|(name, l, c)| Supertype {
             name,
@@ -539,7 +557,13 @@ async fn rust_supertypes(
         })
         .collect();
     for (path, l, c) in locations(&impls) {
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let text = if let Ok((bytes, _)) =
+            crate::remote_fs::read_source(remote, root, &path.to_string_lossy()).await
+        {
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            std::fs::read_to_string(&path).unwrap_or_default()
+        };
         let lines: Vec<&str> = text.lines().collect();
         if l as usize >= lines.len() {
             continue;
@@ -717,5 +741,13 @@ mod tests {
             "targetSelectionRange": { "start": { "line": 2, "character": 4 } } });
         assert_eq!(locations(&link), vec![(PathBuf::from("/w/a.rs"), 2, 4)]);
         assert!(locations(&serde_json::Value::Null).is_empty());
+    }
+
+    #[test]
+    fn derives_above_never_panics_on_empty_lines_or_out_of_bounds_decl() {
+        assert!(derives_above(&[], 0).is_empty());
+        assert!(derives_above(&[], 232).is_empty());
+        let lines = ["struct Foo;"];
+        assert!(derives_above(&lines, 50).is_empty());
     }
 }
