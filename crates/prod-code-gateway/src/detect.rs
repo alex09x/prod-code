@@ -33,7 +33,11 @@ const TYPESCRIPT_MARKERS: &[&str] = &[
 ];
 const JAVA_MARKERS: &[&str] = &["pom.xml", "build.gradle"];
 const KOTLIN_MARKERS: &[&str] = &["build.gradle.kts", "settings.gradle.kts"];
-const CSHARP_MARKERS: &[&str] = &["global.json"];
+const CSHARP_MARKERS: &[&str] = &[
+    "global.json",
+    "Directory.Build.props",
+    "Directory.Build.targets",
+];
 const PHP_MARKERS: &[&str] = &["composer.json"];
 const RUBY_MARKERS: &[&str] = &["Gemfile"];
 const DART_MARKERS: &[&str] = &["pubspec.yaml"];

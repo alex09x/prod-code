@@ -622,10 +622,27 @@ fn engine_at(root: &Path) -> Option<&'static str> {
         .iter()
         .any(|m| root.join(m).is_file())
         && (has_c_sources(root) || has_c_sources(&root.join("src")));
+    let has_csharp = has("global.json")
+        || has("Directory.Build.props")
+        || has("Directory.Build.targets")
+        || std::fs::read_dir(root)
+            .map(|entries| {
+                entries.flatten().any(|e| {
+                    let n = e.file_name();
+                    let n = n.to_string_lossy();
+                    n.ends_with(".csproj") || n.ends_with(".sln")
+                })
+            })
+            .unwrap_or(false);
+    let has_kotlin = has("build.gradle.kts") || has("settings.gradle.kts");
     if has("Cargo.toml") {
         Some("rust")
     } else if has("go.mod") || has("go.work") {
         Some("go")
+    } else if has_csharp {
+        Some("csharp")
+    } else if has_kotlin {
+        Some("kotlin")
     } else if has("Package.swift") || has_xcode || xcodegen {
         Some("swift")
     } else if has("compile_commands.json")
