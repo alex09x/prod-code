@@ -388,6 +388,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: Clean modular DAG across 116 packages, 17 occurrences of an identical 10-line modifier traversal generator loop in `packages/typescript/src/ast/factory.generated.ts` (Group #1480), and 332 occurrences across test baselines
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `createSourceFile` (99.9% reduction from 264K declarations to ~120 lines across 3 files), structural search captured 134 error guards matching `throw new Error($$$)` across 18 files in 721.72 ms, 3-way RRF semantic search located `createSourceFile` in 2,088 ms across 264,411 declarations, boolean inversion on `hasProperty` safely halted by compiler refusal due to 10 non-call value references in namespace imports, parameter object bundling on `hasProperty` generated `export interface HasPropertyArgs` with call sites rewritten to `{ map: member, key: "kind" }` and 0 errors, in-memory shadow pre-validation in 5.24s
     - **Full Deep-Dive Report**: [TypeScript Under the Microscope: What 67 AST Tools Found Inside the Compiler (prod.codes)](https://prod.codes/blog/typescript-under-the-microscope-67-ast-tools/)
+16. **[facebook/react](https://github.com/facebook/react)** (JavaScript / Flow / TypeScript)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 115,541 declarations across 4,578 source files (745,980 lines), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Clean 167-module DAG in reconciler, 18 occurrences of an identical 12-line test harness class in `ReactFragment-test.js` (Group #328), and 16 occurrences of a 12-line transition tracing callback in `ReactTransitionTracing-test.js` (Group #17)
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `scheduleUpdateOnFiber` in `ReactFiberWorkLoop.js` (99.9% reduction from 745K lines to Fiber/FiberRoot/lanes data structures), structural search captured 156 error guards matching `throw Error($$$)` across 59 files in 1,901 ms, 3-way RRF semantic search located `scheduleUpdateOnFiber` in 341 ms (dense cosine similarity 0.839), parameter object bundling on `retainWhere<T>` in `babel-plugin-react-compiler` safely rejected by language engine because the synthesized interface was missing generic `<T>` scope (`Cannot find name 'T' [2304]`), remote in-memory shadow pre-validation in 840 ms
+    - **Full Deep-Dive Report**: [React Under the Microscope: What 67 AST Tools Found Inside the UI Engine (prod.codes)](https://prod.codes/blog/react-under-the-microscope-67-ast-tools/)
 
 
 
