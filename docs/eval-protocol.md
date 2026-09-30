@@ -432,6 +432,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Semantic search located `setup_git_directory` entry points in 316 ms across 107,779 declarations with dense cosine similarity 0.901-0.904, structural search captured 3,001 fatal `die($$$)` exit sites in 7.46s and 1,656 recoverable `error($$$)` sites in 5.15s (4,657 total exit boundaries across the C codebase), parameterized AST codemod updated 6 lines across 3 files in disjoint subsystems (`apply.c`, `builtin/unpack-file.c`, `xdiff-interface.c`) binding `$arg` metavariables and wrapping in gettext macros `_()` without disk mutations
     - **Full Deep-Dive Report**: [Git Under the Microscope: What 67 AST Tools Found Inside the Core VCS (prod.codes)](https://prod.codes/blog/git-under-the-microscope-67-ast-tools/)
 
+22. **[curl/curl](https://github.com/curl/curl)** (C)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 70,295 declarations across 1,101 files (200,796 lines of C), 610 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Core transfer architecture centered on `Curl_easy` struct handle (in-degree 1,573, graph centrality 4.83), Clone Group #780 identified 17 identical occurrences of global initialization logic across `tests/libtest/lib*.c`, Clone Group #2287 identified 16 occurrences of execution/cleanup scaffolds
+    - **Semantic Guards & Refactorings**: Semantic search located `curl_easy_perform` entry points in 328 ms across 70,295 declarations, structural search captured 1,134 failure points matching `failf($$$)` in 3.50s and 790 protocol trace points matching `infof($$$)` in 2.74s (1,924 total telemetry and failure egress points across the C codebase), parameterized AST codemod updated proxy error descriptions across 4 lines in `lib/cf-h1-proxy.c` and bound local ephemeral port telemetry via `$p` metavariable without touching disk
+    - **Full Deep-Dive Report**: [curl Under the Microscope: What 67 AST Tools Found Inside the Ubiquitous Transfer Engine (prod.codes)](https://prod.codes/blog/curl-under-the-microscope-67-ast-tools/)
+
 
 
 
