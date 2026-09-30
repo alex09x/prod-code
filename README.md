@@ -369,6 +369,8 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`dotnet/roslyn`](https://github.com/dotnet/roslyn) | C# (32-core node) | 67 / 67 tools (6.5M lines, 394 projects, 2,103 deps, 1.8% clones, 15.3K invariants, cluster OmniSharp 0 errors) | 6.50M lines (18,176 files) | 0.55 ms RTT | [Roslyn Under the Microscope →](https://prod.codes/blog/roslyn-under-the-microscope-67-ast-tools/) |
 | [`dotnet/BenchmarkDotNet`](https://github.com/dotnet/BenchmarkDotNet) | C# (32-core node) | 67 / 67 tools (121K lines, 29 projects clean DAG, 20 clone groups, 1.1K benchmarks, cluster OmniSharp 0 errors) | 121K lines (1,175 files) | 0.58 ms RTT | [BenchmarkDotNet Under the Microscope →](https://prod.codes/blog/benchmarkdotnet-under-the-microscope-67-ast-tools/) |
 | [`apache/spark`](https://github.com/apache/spark) | Scala (32-core node) | 67 / 67 tools (2.05M lines, 52 modules clean DAG, 0.7% clones, 40K assertions, cluster Metals 0 errors) | 2.05M lines (6,448 files) | 0.95 ms RTT | [Spark Under the Microscope →](https://prod.codes/blog/spark-under-the-microscope-67-ast-tools/) |
+| [`apache/incubator-pekko`](https://github.com/apache/incubator-pekko) | Scala (32-core node) | 67 / 67 tools (838K lines, 41 modules clean DAG, 3.5% clones, 435 preconditions, cluster Metals 0 errors) | 838K lines (3,384 files) | 0.95 ms RTT | [Pekko Under the Microscope →](https://prod.codes/blog/pekko-under-the-microscope-67-ast-tools/) |
+
 
 
 
