@@ -12,14 +12,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
-const MAX_FILE_SIZE: u64 = 5 * 1024 * 1024; // 5 MiB per source file limit
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MiB per source file limit
 /// The limit for a library a build links (`.a`, `.so`, `.dylib`, `.lib`, `.o`): a vendored C
 /// library the checkout links through cgo is part of the build, however large (#313).
 const MAX_LIBRARY_SIZE: u64 = 128 * 1024 * 1024;
 /// How much file content one sync message carries. The whole tree in one message could exceed
 /// the codec's frame limit (#313); a file larger than this goes in a message of its own.
 const SYNC_BATCH_BYTES: usize = 24 * 1024 * 1024;
-const MAX_JSON_CONFIG_SIZE: u64 = 256 * 1024; // 256 KiB for .json configs (reject datasets)
+const MAX_JSON_CONFIG_SIZE: u64 = 8 * 1024 * 1024; // 8 MiB for .json configs/metadata (reject giant datasets, #738)
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SyncFileEntry {
@@ -56,7 +56,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 8;
+pub const RELEVANCE_VERSION: u32 = 9;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2202,6 +2202,12 @@ mod tests {
         assert_eq!(size_limit("lib/libfoo.dylib"), MAX_LIBRARY_SIZE);
         assert_eq!(size_limit("src/main.go"), MAX_FILE_SIZE);
         assert_eq!(size_limit("assets/video.mp4"), MAX_FILE_SIZE);
+    }
+
+    #[test]
+    fn json_config_size_limit_allows_tracked_build_metadata() {
+        assert!(3_176_495 <= MAX_JSON_CONFIG_SIZE); // download-metadata.json in uv-python (#738)
+        assert!(MAX_JSON_CONFIG_SIZE <= MAX_FILE_SIZE);
     }
 
     /// A sync is cut into messages that stay under the frame limit: files are packed in order up
