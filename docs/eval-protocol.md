@@ -424,6 +424,14 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `Connection::Query` in `src/main/connection.cpp:81` (traversed query execution spine into `QueryResult` data chunk streaming contracts in `src/include/duckdb/main/query_result.hpp`), structural search captured 2,277 exception invariants matching `throw InternalException($$$)` across 693 files in 18.8s, semantic search located `class ClientContext` in 4,172 ms with typed graph centrality of 5.23 (in-degree 3,671), AST boolean inversion on `StringUtil::EndsWith` safely halted due to cross-class overload collision with `Identifier::EndsWith` and 2 non-call value references in Catch2 test matchers, remote in-memory pre-flight validation under clangd caught undeclared types in 2.82s
     - **Full Deep-Dive Report**: [DuckDB Under the Microscope: What 67 AST Tools Found Inside the Analytical Engine (prod.codes)](https://prod.codes/blog/duckdb-under-the-microscope-67-ast-tools/)
 
+21. **[git/git](https://github.com/git/git)** (C)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 107,779 declarations across 1,007 files (443,306 lines of C), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Monolithic C DAG (`gitcore`), Clone Group #199 identified 4 occurrences of a 12-line filter situation dispatch block in `list-objects-filter.c:81-412`, Clone Group #173 identified repeated reftable block iterator loops in unit tests
+    - **Semantic Guards & Refactorings**: Semantic search located `setup_git_directory` entry points in 316 ms across 107,779 declarations with dense cosine similarity 0.901-0.904, structural search captured 3,001 fatal `die($$$)` exit sites in 7.46s and 1,656 recoverable `error($$$)` sites in 5.15s (4,657 total exit boundaries across the C codebase), parameterized AST codemod updated 6 lines across 3 files in disjoint subsystems (`apply.c`, `builtin/unpack-file.c`, `xdiff-interface.c`) binding `$arg` metavariables and wrapping in gettext macros `_()` without disk mutations
+    - **Full Deep-Dive Report**: [Git Under the Microscope: What 67 AST Tools Found Inside the Core VCS (prod.codes)](https://prod.codes/blog/git-under-the-microscope-67-ast-tools/)
+
 
 
 
