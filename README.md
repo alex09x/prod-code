@@ -338,6 +338,7 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`bevyengine/bevy`](https://github.com/bevyengine/bevy) | Rust (32-core node) | 67 / 67 tools (97-crate DAG, 204 clones, Issue #739 fix, AST slicing, 28 traits on Entity) | 81.0 MB (3,044 files) | 0.61 ms RTT | [204 Code Clones and Two Self-Loops in Bevy →](https://prod.codes/blog/204-code-clones-and-two-self-loops-inside-bevy/) |
 | [`prometheus/prometheus`](https://github.com/prometheus/prometheus) | Go (32-core node) | 67 / 67 tools (84-package DAG, 1,485 error checks, Issue #740 fix, 99% slicing) | 385K lines (736 files) | 0.86 ms RTT | [1,485 Error Checks and Zero Import Cycles in Prometheus →](https://prod.codes/blog/1485-error-checks-and-zero-cycles-inside-prometheus/) |
 | [`kubernetes/kubernetes`](https://github.com/kubernetes/kubernetes) | Go (32-core node) | 67 / 67 tools (779-pkg DAG, 900+ clones, Issues #741 & #742 fixes, full Go refactoring suite) | 5.38M lines (17,823 files) | 0.74 ms RTT | [5.3 Million Lines of Go in Kubernetes →](https://prod.codes/blog/5-million-lines-of-go-inside-kubernetes/) |
+| [`django/django`](https://github.com/django/django) | Python (32-core node) | 67 / 67 tools (25 circular checks, 150+ clones, basedpyright diagnostics, full Python refactoring) | 527K lines (2,932 files) | 0.65 ms RTT | [Half a Million Lines of Python Inside Django →](https://prod.codes/blog/half-a-million-lines-of-python-inside-django/) |
 
 ## Reading more
 

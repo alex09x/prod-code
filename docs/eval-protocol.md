@@ -335,6 +335,15 @@ For every refactoring tool tested:
      - [#742](https://github.com/alex09x/prod-code/issues/742): `invert_boolean: find_polyglot_predicate_declaration matches call site before function declaration`
    - **Full Deep-Dive Report**: [5.3 Million Lines of Go and 779 Packages: Dissecting Kubernetes with 67 AST Tools (prod.codes)](https://prod.codes/blog/5-million-lines-of-go-inside-kubernetes/)
 
+9. **[django/django](https://github.com/django/django)** (Python)
+   - **Evaluated on**: `ram9` (32-core Linux node, `192.168.2.143:9400`)
+   - **Tool Coverage**: 67 / 67 tools across all 9 suites
+   - **Key Metrics**: 526,995 lines of Python across 2,932 files, 654 µs LAN ping, 0% local laptop CPU
+   - **Architectural Findings**: 112 modules in `django/core` (832 dependencies), 25 circular module import paths detected in `django::core::checks`, foundational modules `django::core::exceptions` ($C_a=11, I=0.00$), 150+ Type-2 clone groups across serializers, command parsers, and cache backends
+   - **Semantic Guards & Refactorings**: Transitive AST slicing of `BaseHandler.resolve_request` (99.97% reduction to 160 lines in 0.12s), structural search captured 38 error guards in `django/core` in 99.70 ms, parameter object bundling on `func_supports_parameter` -> `FuncParamSpec` (0 type errors), boolean inversion of `is_module_level_function` with proven safety refusal on passed-as-value functions, in-memory pre-validation caught injected attribute typo in 2.07s
+   - **Full Deep-Dive Report**: [Half a Million Lines of Python and 25 Import Cycles: Dissecting Django with 67 AST Tools (prod.codes)](https://prod.codes/blog/half-a-million-lines-of-python-inside-django/)
+
+
 
 
 
