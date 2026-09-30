@@ -359,6 +359,15 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `solve_dependencies` (99.8% reduction to 260 lines), structural search captured 66 raise statements in 16 files in 241.47 ms, 3-way RRF semantic search located dependency solving in 55 ms across 6,216 declarations, parameter object bundling on `create_model_field` -> `@dataclass FieldSpec` across 5 call sites in 3 files, boolean inversion on `is_body_allowed_for_status_code` with 2 import reference safety refusals, function extraction safety refusal on classmethod calling `self`, in-memory shadow pre-validation caught injected attribute error in 0.52s
     - **Full Deep-Dive Report**: [FastAPI Under the Microscope: What 67 AST Tools Found Inside Python's Modern Async Framework (prod.codes)](https://prod.codes/blog/fastapi-under-the-microscope-67-ast-tools/)
 
+12. **[pallets/flask](https://github.com/pallets/flask)** (Python)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 18,345 lines of Python across 83 files (1,658 declarations), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Code clone clusters between `src/flask/blueprints.py` (lines 81-94) and `src/flask/app.py` (lines 392-405) on `send_static_file` and cache expiration
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `Flask.full_dispatch_request` (98.6% reduction from 18K to 250 lines in 250 ms), structural search captured 159 exception raises across 33 files in 255.96 ms (166 total direct raises across 33 files), 3-way RRF semantic search ranked request dispatching in 10 ms across 1,658 declarations, parameter object bundling on `flash(message, category)` -> `@dataclass FlashMessage` with default argument preservation, boolean inversion on `AppContext.has_request` with proven safety refusal on 6 property value references across 4 files, semantic indentation verification on function extraction, in-memory shadow pre-validation caught 6 syntax errors in 0.22s
+    - **Full Deep-Dive Report**: [Flask Under the Microscope: What 67 AST Tools Found Inside Python's Iconic Microframework (prod.codes)](https://prod.codes/blog/flask-under-the-microscope-67-ast-tools/)
+
+
 
 
 
