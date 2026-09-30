@@ -409,6 +409,13 @@ For every refactoring tool tested:
     - **Architectural Findings**: Prototype delegation chains, Clone Group #150 identified identical 8-line middleware mock fixtures across 6 test suites (`test/express.json.js`, `test/res.sendFile.js`, etc.)
     - **Semantic Guards & Refactorings**: Transitive AST slicing of `app.handle` in `lib/application.js:152` (95% reduction from 13.9KB to 711 bytes isolating handler binding, headers, and error logger), structural search captured 10 type assertion sites matching `throw new TypeError($$$)` across 4 files in 37.56 ms, semantic search located `this.router.handle` and `app.handle` in 22 ms across 6,037 declarations, AST boolean inversion on `app.enabled` safely refused mutation due to 22 dynamic value references in untyped JS where `this.enabled` is accessed as a property, remote in-memory pre-flight validation caught invalid JavaScript variable syntax in 0.20s
     - **Full Deep-Dive Report**: [Express Under the Microscope: What 67 AST Tools Found Inside the Node.js Backbone (prod.codes)](https://prod.codes/blog/express-under-the-microscope-67-ast-tools/)
+19. **[redis/redis](https://github.com/redis/redis)** (C)
+    - **Evaluated on**: `booster` (32-core Linux node, `192.168.2.168:9400`) & `ram9`
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 76,566 declarations across 844 files (211,529 lines in `src/`), 650 µs LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: Multiplexed event architecture, Clone Group #382 identified 5 identical 12-line reply parser validation blocks in `deps/hiredis/hiredis.c:190-296`
+    - **Semantic Guards & Refactorings**: Transitive AST slicing of `aeProcessEvents` in `src/ae.c:365` (isolated event dispatch dependencies, traversing to `aeEventLoop` in `src/ae.h` and `aeApiPoll` epoll_wait in `src/ae_epoll.c:89`), structural search captured 454 error reply sites matching `addReplyError($$$)` across 38 files in 4,538 ms, semantic search located `aeProcessEvents` in 196 ms (dense cosine similarity 0.852), AST boolean inversion on `stringmatch` -> `stringmismatch` updated 26 lines across 4 files and safely halted on 1 non-call reference in `src/debug.c:1080` (`stringmatch-test`), remote in-memory pre-flight validation under clangd caught 3 C compilation errors in 0.52s
+    - **Full Deep-Dive Report**: [Redis Under the Microscope: What 67 AST Tools Found Inside the In-Memory Engine (prod.codes)](https://prod.codes/blog/redis-under-the-microscope-67-ast-tools/)
 
 
 
