@@ -235,13 +235,8 @@ fn analyze_crate_dependencies(
                         let t = token.trim();
                         if !t.is_empty() && t != "include" && !t.starts_with("//") && !t.starts_with("/*") {
                             let proj_name = t.trim_matches(':');
-                            if !proj_name.is_empty() {
-                                let sub_rel = proj_name.replace(':', "/");
-                                if workspace_root.join(&sub_rel).exists() {
-                                    if !projects.contains(&proj_name.to_string()) {
-                                        projects.push(proj_name.to_string());
-                                    }
-                                }
+                            if !proj_name.is_empty() && !projects.contains(&proj_name.to_string()) {
+                                projects.push(proj_name.to_string());
                             }
                         }
                     }
@@ -249,6 +244,51 @@ fn analyze_crate_dependencies(
                         in_include = false;
                     } else if trimmed.ends_with(')') {
                         in_include = false;
+                    }
+                }
+
+                // Handle Kotlin unaryPlus DSL: +"foo-bar" or + "foo-bar"
+                if trimmed.starts_with('+') {
+                    let rest = trimmed.trim_start_matches('+').trim();
+                    if (rest.starts_with('"') && rest.len() >= 2) || (rest.starts_with('\'') && rest.len() >= 2) {
+                        let quote = rest.chars().next().unwrap();
+                        if let Some(end_idx) = rest[1..].find(quote) {
+                            let proj_name = &rest[1..1 + end_idx];
+                            let clean = proj_name.trim_matches(':');
+                            if !clean.is_empty() && !projects.contains(&clean.to_string()) {
+                                projects.push(clean.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Index all subdirectories containing build.gradle or build.gradle.kts to map project names to paths
+            let mut dir_by_name: HashMap<String, PathBuf> = HashMap::new();
+            let mut walker = WalkBuilder::new(workspace_root);
+            walker.hidden(true).git_ignore(true);
+            for entry in walker.build().flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if file_name == "build.gradle" || file_name == "build.gradle.kts" {
+                        if let Some(parent) = path.parent() {
+                            let rel_dir = parent.strip_prefix(workspace_root).unwrap_or(parent);
+                            let rel_str = rel_dir.to_string_lossy().to_string();
+                            if !rel_str.is_empty()
+                                && !rel_str.starts_with("build-")
+                                && !rel_str.starts_with(".gradle")
+                                && !rel_str.starts_with("build/")
+                            {
+                                if let Some(folder_name) = parent.file_name().and_then(|n| n.to_str()) {
+                                    dir_by_name.insert(folder_name.to_string(), parent.to_path_buf());
+                                    dir_by_name.insert(rel_str.replace('/', ":"), parent.to_path_buf());
+                                    if projects.is_empty() && !projects.contains(&folder_name.to_string()) {
+                                        projects.push(folder_name.to_string());
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -260,7 +300,20 @@ fn analyze_crate_dependencies(
             let mut project_map = HashMap::new();
             for p in &projects {
                 let sub_rel = p.replace(':', "/");
-                let sub_dir = workspace_root.join(&sub_rel);
+                let sub_dir = if workspace_root.join(&sub_rel).exists() {
+                    workspace_root.join(&sub_rel)
+                } else if let Some(d) = dir_by_name.get(p) {
+                    d.clone()
+                } else if let Some(last) = p.split(':').last() {
+                    if let Some(d) = dir_by_name.get(last) {
+                        d.clone()
+                    } else {
+                        workspace_root.join(&sub_rel)
+                    }
+                } else {
+                    workspace_root.join(&sub_rel)
+                };
+
                 let build_gradle = sub_dir.join("build.gradle");
                 let build_gradle_kts = sub_dir.join("build.gradle.kts");
                 let content = if let Ok(c) = std::fs::read_to_string(&build_gradle) {
@@ -285,7 +338,19 @@ fn analyze_crate_dependencies(
                         let ref3 = format!("project(\"{other}\")");
                         let ref4 = format!("project('{other}')");
                         let ref5 = format!(":{other}");
-                        if content.contains(&ref1) || content.contains(&ref2) || content.contains(&ref3) || content.contains(&ref4) || content.contains(&ref5) {
+                        let camel1 = format!("projects.{}", kebab_to_camel(other));
+                        let camel2 = format!(
+                            "projects.{}",
+                            other.split(':').map(kebab_to_camel).collect::<Vec<_>>().join(".")
+                        );
+                        if content.contains(&ref1)
+                            || content.contains(&ref2)
+                            || content.contains(&ref3)
+                            || content.contains(&ref4)
+                            || content.contains(&ref5)
+                            || content.contains(&camel1)
+                            || content.contains(&camel2)
+                        {
                             deps.insert(other.clone());
                         }
                     }
@@ -433,6 +498,24 @@ fn extract_gradle_project_block(root_content: &str, project_name: &str) -> Optio
 
     end_idx.map(|end| root_content[brace_start..end].to_string())
 }
+
+/// Helper to convert kebab-case or snake_case identifiers to camelCase (for Gradle Type-Safe Project Accessors)
+pub fn kebab_to_camel(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    for c in s.chars() {
+        if c == '-' || c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 
 fn file_to_module_name(rel_path: &str) -> String {
     let p = if let Some(idx) = rel_path.rfind('.') {
@@ -914,5 +997,13 @@ import (
 </project>
 "#;
         assert_eq!(extract_maven_artifact_id(pom_without_parent), Some("my-module".to_string()));
+    }
+
+    #[test]
+    fn test_kebab_to_camel() {
+        assert_eq!(kebab_to_camel("ktor-utils"), "ktorUtils");
+        assert_eq!(kebab_to_camel("ktor-server-test-suites"), "ktorServerTestSuites");
+        assert_eq!(kebab_to_camel("my_module_name"), "myModuleName");
+        assert_eq!(kebab_to_camel("simple"), "simple");
     }
 }
