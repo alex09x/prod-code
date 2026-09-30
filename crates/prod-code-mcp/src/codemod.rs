@@ -407,7 +407,7 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
 
         // Multi-char punctuation
         let p_start = i;
-        if i + 1 < bytes.len() {
+        if i + 1 < bytes.len() && b.is_ascii() && bytes[i + 1].is_ascii() {
             let pair = &source[i..i + 2];
             if matches!(
                 pair,
@@ -423,7 +423,24 @@ pub fn tokenize_source(source: &str) -> Vec<SourceToken> {
             }
         }
 
-        // Single-char punctuation
+        // Non-ASCII Unicode character
+        if !b.is_ascii() {
+            let ch = source[i..].chars().next().unwrap();
+            let ch_len = ch.len_utf8();
+            tokens.push(SourceToken {
+                kind: if ch.is_alphabetic() {
+                    TokenKind::Ident(ch.to_string())
+                } else {
+                    TokenKind::Punct(ch.to_string())
+                },
+                start_byte: p_start,
+                end_byte: p_start + ch_len,
+            });
+            i += ch_len;
+            continue;
+        }
+
+        // Single-char punctuation (ASCII)
         tokens.push(SourceToken {
             kind: TokenKind::Punct((b as char).to_string()),
             start_byte: p_start,
@@ -1153,5 +1170,25 @@ fn run() {
         assert_eq!(matches.len(), 2);
         assert_eq!(matches[0].bindings.get("a").unwrap(), "opt");
         assert_eq!(matches[1].bindings.get("a").unwrap(), "get(&k)");
+    }
+
+    #[test]
+    fn test_structural_search_unicode_multibyte_chars() {
+        // Multi-byte UTF-8 characters like '€' (3 bytes), '✓' (3 bytes), non-ASCII docstrings
+        let pattern = CompiledPattern::parse("$x.price()").expect("valid pattern");
+        let src = r#"
+/// Price in €/kg or £/lb or ¥
+fn test_currency() {
+    let apple = item.price();
+    let label = "Apple Price (€/kg)";
+}
+"#;
+        let matches = find_structural_matches_in_source("test.rs", src, &pattern);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].bindings.get("x").unwrap(), "item");
+
+        let tokens = tokenize_source("let symbol = €; let name = café;");
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Punct(p) if p == "€")));
+        assert!(tokens.iter().any(|t| matches!(&t.kind, TokenKind::Ident(id) if id.contains("caf"))));
     }
 }
