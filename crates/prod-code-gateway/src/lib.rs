@@ -1327,9 +1327,17 @@ impl ManagedLsp<'_> {
                 if let Some(items) = engine.pull_diagnostics(uri).await {
                     return Ok(items);
                 }
-                Ok(engine
-                    .current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT)
-                    .await?)
+                match engine.current_diagnostics_for(uri, CURRENT_DIAGNOSTICS_WAIT).await {
+                    Ok(items) => Ok(items),
+                    Err(err) => {
+                        if engine.is_alive() {
+                            tracing::warn!(uri = %uri, error = %err, "Language server published no diagnostics within wait window; treating as clean document");
+                            Ok(Vec::new())
+                        } else {
+                            Err(err.into())
+                        }
+                    }
+                }
             }
         }
     }

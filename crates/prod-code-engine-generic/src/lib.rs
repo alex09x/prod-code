@@ -3183,7 +3183,7 @@ const SEMANTIC_POLL: Duration = Duration::from_millis(300);
 /// How long [`GenericLspEngine::current_diagnostics_for`] waits for the first publication for a
 /// document no text was sent for: one the server opened by itself, or one it will never
 /// publish for.
-pub const FIRST_PUBLICATION_WAIT: Duration = Duration::from_secs(10);
+pub const FIRST_PUBLICATION_WAIT: Duration = Duration::from_secs(3);
 
 /// What a server last published for one document.
 #[derive(Debug, Clone)]
