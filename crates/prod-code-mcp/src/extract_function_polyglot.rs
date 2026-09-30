@@ -420,34 +420,41 @@ fn find_enclosing_scope(
                             .last()
                             .unwrap_or("")
                             .to_string();
-                        enclosing_fn = Some(fn_name);
+                        let is_control = matches!(
+                            fn_name.as_str(),
+                            "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+                                | "with" | "lock" | "using" | "try" | "else" | "do"
+                        );
+                        if !fn_name.is_empty() && !is_control {
+                            enclosing_fn = Some(fn_name);
 
-                        let after_p = head[last_p + 1..].trim();
-                        if after_p.starts_with("->") {
-                            enclosing_ret = Some(after_p.trim_start_matches("->").trim().to_string());
-                        } else if after_p.starts_with(':') {
-                            enclosing_ret = Some(after_p.trim_start_matches(':').trim().to_string());
-                        } else if !after_p.is_empty() && !after_p.starts_with('{') {
-                            enclosing_ret = Some(after_p.split_whitespace().next().unwrap_or("").to_string());
-                        } else {
-                            let parts: Vec<&str> = before_p.split_whitespace().collect();
-                            if parts.len() >= 2 {
-                                let ty = parts[parts.len() - 2];
-                                if ty != "export" && ty != "static" && ty != "inline" && ty != "virtual" {
-                                    enclosing_ret = Some(ty.to_string());
+                            let after_p = head[last_p + 1..].trim();
+                            if after_p.starts_with("->") {
+                                enclosing_ret = Some(after_p.trim_start_matches("->").trim().to_string());
+                            } else if after_p.starts_with(':') {
+                                enclosing_ret = Some(after_p.trim_start_matches(':').trim().to_string());
+                            } else if !after_p.is_empty() && !after_p.starts_with('{') {
+                                enclosing_ret = Some(after_p.split_whitespace().next().unwrap_or("").to_string());
+                            } else {
+                                let parts: Vec<&str> = before_p.split_whitespace().collect();
+                                if parts.len() >= 2 {
+                                    let ty = parts[parts.len() - 2];
+                                    if ty != "export" && ty != "static" && ty != "inline" && ty != "virtual" {
+                                        enclosing_ret = Some(ty.to_string());
+                                    }
                                 }
                             }
+                            let indent_chars = text[scope_start..]
+                                .chars()
+                                .take_while(|c| *c == ' ' || *c == '\t')
+                                .collect::<String>();
+                            method_indent = indent_chars;
+                            if !method_indent.is_empty() {
+                                is_method = true;
+                            }
+                            break;
                         }
                     }
-                    let indent_chars = text[scope_start..]
-                        .chars()
-                        .take_while(|c| *c == ' ' || *c == '\t')
-                        .collect::<String>();
-                    method_indent = indent_chars;
-                    if method_indent.len() >= 2 {
-                        is_method = true;
-                    }
-                    break;
                 }
                 cur = b_open;
             }
@@ -665,7 +672,7 @@ fn analyze_outputs(
     }
 
     let tokens = tokenize_polyglot(trimmed, lang);
-    let has_semi = trimmed.contains(';') && !trimmed.ends_with(';');
+    let has_semi = trimmed.contains(';');
     let has_stmt_kw = tokens.iter().any(|t| {
         matches!(
             t.text.as_str(),
@@ -686,7 +693,7 @@ fn analyze_outputs(
         .any(|t| matches!(t.text.as_str(), "=" | ":=" | "+=" | "-=" | "*=" | "/="));
 
     if !has_semi && !has_stmt_kw && !has_assign {
-        return OutputKind::Expression(trimmed.trim_end_matches(';').trim().to_string());
+        return OutputKind::Expression(trimmed.to_string());
     }
 
     let mut assigned = Vec::new();
@@ -739,8 +746,9 @@ fn reindent_body(body: &str, target_indent_spaces: usize, lang: Language) -> Str
         .min()
         .unwrap_or(0);
 
-    let target_prefix = if lang == Language::Go {
-        "\t".repeat(target_indent_spaces.div_ceil(4).max(1))
+    let target_prefix = if lang == Language::Go || body.contains('\t') {
+        let tabs = target_indent_spaces.div_ceil(4).max(1);
+        "\t".repeat(tabs)
     } else {
         " ".repeat(target_indent_spaces)
     };
@@ -1020,7 +1028,8 @@ fn generate_function_code(
                 _ => "void",
             };
             let vis = if is_exported { "public " } else { "private " };
-            if is_method {
+            let has_this = selection_body.contains("this.") || selection_body.contains("this ");
+            if is_method || has_this {
                 format!("{method_indent}{vis}{ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
             } else {
                 format!("{method_indent}{vis}static {ret_ann} {name}({p_str}) {{\n{reindented}\n{method_indent}}}\n")
@@ -1205,17 +1214,27 @@ pub async fn extract_function_polyglot(
         .collect();
 
     let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-    let sel_indent = text[line_start..start]
+    let mut sel_indent = text[line_start..start]
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect::<String>();
-    let is_bol = text[..start].ends_with('\n') || start == 0;
+    if sel_indent.is_empty() {
+        sel_indent = text[start..end]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect::<String>();
+    }
+    let is_method = is_method || selection.contains("this.") || selection.contains("this ");
+    let is_bol = text[..start].ends_with('\n') || start == 0 || text[line_start..start].trim().is_empty();
 
-    let call_replacement = if is_bol {
+    let mut call_replacement = if is_bol {
         generate_call_replacement(name, &orig_args, &param_names, &output, lang, is_method, &sel_indent)
     } else {
         generate_call_replacement(name, &orig_args, &param_names, &output, lang, is_method, "")
     };
+    if text[start..end].ends_with('\n') && !call_replacement.ends_with('\n') {
+        call_replacement.push('\n');
+    }
 
     let is_exported = other_files || text.contains("export ");
     let fn_code = generate_function_code(
@@ -1241,7 +1260,7 @@ pub async fn extract_function_polyglot(
             .chars()
             .take_while(|c| *c == ' ' || *c == '\t')
             .collect::<String>();
-        let dup_is_bol = text[..copy.start].ends_with('\n') || copy.start == 0;
+        let dup_is_bol = text[..copy.start].ends_with('\n') || copy.start == 0 || text[dup_line_start..copy.start].trim().is_empty();
         let copy_args: Vec<String> = inputs
             .iter()
             .map(|p| {
@@ -1256,11 +1275,14 @@ pub async fn extract_function_polyglot(
                 }
             })
             .collect();
-        let dup_call = if dup_is_bol {
+        let mut dup_call = if dup_is_bol {
             generate_call_replacement(name, &copy_args, &param_names, &output, lang, is_method, &dup_indent)
         } else {
             generate_call_replacement(name, &copy_args, &param_names, &output, lang, is_method, "")
         };
+        if text[copy.start..copy.end].ends_with('\n') && !dup_call.ends_with('\n') {
+            dup_call.push('\n');
+        }
         file_edits.push((copy.start, copy.end, dup_call));
         duplicate_records.push(Duplicate {
             file: display(root, file),
