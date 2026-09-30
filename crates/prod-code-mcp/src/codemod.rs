@@ -476,7 +476,9 @@ fn is_boundary_token(kind: &TokenKind, next_expected: &TokenKind) -> bool {
         return false;
     }
     match kind {
-        TokenKind::Punct(p) => matches!(p.as_str(), ";" | "," | "=" | ":=" | "+=" | "-=" | "*=" | "/="),
+        TokenKind::Punct(p) if p == ";" => true,
+        TokenKind::Punct(p) if matches!(p.as_str(), "=" | ":=" | "+=" | "-=" | "*=" | "/=") => true,
+        TokenKind::Punct(p) if p == "," => !matches!(next_expected, TokenKind::CloseDelim(_)),
         TokenKind::Ident(id) => matches!(
             id.as_str(),
             "let" | "var" | "const" | "return" | "fn" | "func" | "function" | "def"
