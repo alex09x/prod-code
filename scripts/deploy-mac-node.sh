@@ -13,7 +13,7 @@
 #   PROD_CODE_SERVER_BIN     prebuilt gateway binary to install instead of building on the node
 set -euo pipefail
 HOST=${1:?host}; ADV=${2:?advertise}; PEERS=${3:?peers}; PROFILE=${4:-release}
-IDENTITY=${PROD_CODE_SIGN_IDENTITY:?set to the codesign identity, e.g. "Apple Development: you@example.com (TEAMID)"}
+IDENTITY=${PROD_CODE_SIGN_IDENTITY:-"Apple Development: Alexander Panasenko (alex@prod.codes)"}
 BUNDLE_ID=com.prod-code.gateway
 ENGINES=${PROD_CODE_ENGINES:-swift}
 TMP=$(mktemp -d)

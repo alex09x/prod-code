@@ -233,12 +233,19 @@ pub async fn run_update(
         std::fs::set_permissions(&temp_download, perms)?;
     }
 
-    // On macOS, ad-hoc codesign the binary
+    // On macOS, codesign the binary with official identity or fallback to ad-hoc
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("codesign")
-            .args(["-s", "-", "-f", temp_download.to_str().unwrap()])
+        let identity = std::env::var("PROD_CODE_SIGN_IDENTITY")
+            .unwrap_or_else(|_| "Apple Development: Alexander Panasenko (alex@prod.codes)".to_string());
+        let res = Command::new("codesign")
+            .args(["-s", &identity, "-f", temp_download.to_str().unwrap()])
             .output();
+        if res.is_err() || !res.unwrap().status.success() {
+            let _ = Command::new("codesign")
+                .args(["-s", "-", "-f", temp_download.to_str().unwrap()])
+                .output();
+        }
     }
 
     // Atomic replace via rename
