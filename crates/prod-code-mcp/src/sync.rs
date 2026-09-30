@@ -56,7 +56,7 @@ pub struct SyncCache {
 /// Bump whenever [`is_relevant_code_or_manifest_file`] starts accepting more files. A watermark
 /// recorded under an older version is treated as first contact, which costs one manifest probe
 /// (the gateway then asks only for the files it lacks).
-pub const RELEVANCE_VERSION: u32 = 9;
+pub const RELEVANCE_VERSION: u32 = 10;
 
 /// How a checkout identifies itself to the gateway.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1535,6 +1535,12 @@ pub fn is_relevant_code_or_manifest_file(rel_path: &str) -> bool {
                     | "Tests"
                     | "include"
                     | "lib"
+                    | "examples"
+                    | "example"
+                    | "tests"
+                    | "test"
+                    | "benches"
+                    | "bench"
             ) {
                 under_code_dir = true;
             }
@@ -3512,5 +3518,13 @@ version = "0.2.2"
         let other = tempfile::tempdir().expect("tempdir");
         std::fs::write(other.path().join("project.yml"), "name: docs\n").expect("yml");
         assert_eq!(engine_at(other.path()), None);
+    }
+
+    #[test]
+    fn cargo_examples_and_tests_under_state_and_data_are_relevant() {
+        assert!(is_relevant_code_or_manifest_file("examples/state/computed_states.rs"));
+        assert!(is_relevant_code_or_manifest_file("examples/data/loading.rs"));
+        assert!(is_relevant_code_or_manifest_file("tests/state/test_state.rs"));
+        assert!(is_relevant_code_or_manifest_file("benches/state/bench_state.rs"));
     }
 }
