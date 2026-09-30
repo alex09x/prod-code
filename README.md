@@ -358,6 +358,8 @@ We evaluate `prod-code` against prominent real-world open-source repositories us
 | [`apple/swift-collections`](https://github.com/apple/swift-collections) | Swift (macOS node) | 67 / 67 tools (Deque ring buffer, 1,279 boundary invariants, Clone Group #1165, 130 tests offloaded) | 71.0K lines (391 files) | 5.44 ms RTT | [Swift Collections Under the Microscope →](https://prod.codes/blog/swift-collections-under-the-microscope-67-ast-tools/) |
 | [`google/guava`](https://github.com/google/guava) | Java (32-core node) | 67 / 67 tools (795K lines, 33-occurrence clone analysis, 3,279 files, 545.82 ms search, refactoring guardrails) | 795K lines (3,279 files) | 0.65 ms RTT | [Guava Under the Microscope →](https://prod.codes/blog/guava-under-the-microscope-67-ast-tools/) |
 | [`spring-projects/spring-boot`](https://github.com/spring-projects/spring-boot) | Java (32-core node) | 67 / 67 tools (880K lines, 448 modules, 2,790 deps DAG, 55 autoconfig clones, 982 AST matches, cluster JDTLS 0 errors) | 880K lines (8,696 files) | 0.65 ms RTT | [Spring Boot Under the Microscope →](https://prod.codes/blog/spring-boot-under-the-microscope-67-ast-tools/) |
+| [`apache/kafka`](https://github.com/apache/kafka) | Java/Scala (32-core node) | 67 / 67 tools (1.7M lines, 64-module DAG, 125-occurrence equals() clones, 847 AST matches, cluster JDTLS 0 errors) | 1.72M lines (6,475 files) | 0.49 ms RTT | [Kafka Under the Microscope →](https://prod.codes/blog/kafka-under-the-microscope-67-ast-tools/) |
+
 
 
 ## Reading more

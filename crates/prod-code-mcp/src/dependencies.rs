@@ -180,18 +180,24 @@ fn analyze_crate_dependencies(
             }
 
             let mut module_map = HashMap::new();
+            let mut artifact_to_mod = HashMap::new();
             for m in &modules {
-                let sub_pom = workspace_root.join(m).join("pom.xml");
+                let sub_dir = workspace_root.join(m);
+                let sub_pom = sub_dir.join("pom.xml");
                 if let Ok(content) = std::fs::read_to_string(&sub_pom) {
-                    module_map.insert(m.clone(), (workspace_root.join(m), content));
+                    if let Some(art) = extract_maven_artifact_id(&content) {
+                        artifact_to_mod.insert(art, m.clone());
+                    }
+                    artifact_to_mod.insert(m.clone(), m.clone());
+                    module_map.insert(m.clone(), (sub_dir, content));
                 }
             }
 
             for (mod_name, (dir, content)) in &module_map {
                 let mut deps = BTreeSet::new();
-                for other in module_map.keys() {
-                    if other != mod_name && content.contains(&format!("<artifactId>{other}</artifactId>")) {
-                        deps.insert(other.clone());
+                for (art, target_mod) in &artifact_to_mod {
+                    if target_mod != mod_name && content.contains(&format!("<artifactId>{art}</artifactId>")) {
+                        deps.insert(target_mod.clone());
                     }
                 }
                 adj.insert(mod_name.clone(), (dir.clone(), deps));
@@ -368,6 +374,21 @@ fn analyze_module_dependencies(
     }
 
     build_graph_report("modules", workspace_root, adj)
+}
+
+fn extract_maven_artifact_id(pom_content: &str) -> Option<String> {
+    let search_content = if let Some(parent_end) = pom_content.find("</parent>") {
+        &pom_content[parent_end + "</parent>".len()..]
+    } else {
+        pom_content
+    };
+    if let Some(start) = search_content.find("<artifactId>") {
+        let after_start = &search_content[start + "<artifactId>".len()..];
+        if let Some(end) = after_start.find("</artifactId>") {
+            return Some(after_start[..end].trim().to_string());
+        }
+    }
+    None
 }
 
 fn extract_gradle_project_block(root_content: &str, project_name: &str) -> Option<String> {
@@ -870,5 +891,28 @@ import (
         assert_eq!(c_node.afferent_coupling, 2);
         assert_eq!(c_node.efferent_coupling, 0);
         assert_eq!(c_node.instability, 0.0);
+    }
+
+    #[test]
+    fn test_extract_maven_artifact_id() {
+        let pom_with_parent = r#"
+<project>
+  <parent>
+    <groupId>io.netty</groupId>
+    <artifactId>netty-parent</artifactId>
+    <version>4.2.19</version>
+  </parent>
+  <artifactId>netty-buffer</artifactId>
+</project>
+"#;
+        assert_eq!(extract_maven_artifact_id(pom_with_parent), Some("netty-buffer".to_string()));
+
+        let pom_without_parent = r#"
+<project>
+  <groupId>org.example</groupId>
+  <artifactId>my-module</artifactId>
+</project>
+"#;
+        assert_eq!(extract_maven_artifact_id(pom_without_parent), Some("my-module".to_string()));
     }
 }

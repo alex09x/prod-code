@@ -488,11 +488,10 @@ For every refactoring tool tested:
     - **Semantic Guards & Refactorings**: Structural search scanned 8,897 files in 3,075 ms isolating 982 assertions matching `Assert.notNull($A, $B)` across 398 files. Parameterized AST codemod tested `Assert.notNull($A, $B) ==>> Objects.requireNonNull($A, $B)` yielding 1,965 changed lines across 398 files in dry run. AST refactoring evaluated `prod-code extract-function` on `SpringApplicationShutdownHook.java`, capturing method parameters and instance receiver, verified by remote Eclipse JDTLS with 0 errors.
     - **Full Deep-Dive Report**: [Spring Boot Under the Microscope: What 67 Remote AST Tools Found Inside the Enterprise Java Standard (prod.codes)](https://prod.codes/blog/spring-boot-under-the-microscope-67-ast-tools/)
 
-
-
-
-
-
-
-
-
+29. **[apache/kafka](https://github.com/apache/kafka)** (Java/Scala)
+    - **Evaluated on**: 32-core remote cluster node (`192.168.2.143:9400` / `192.168.2.190:9400`)
+    - **Tool Coverage**: 67 / 67 tools across all 9 suites
+    - **Key Metrics**: 1,717,457 lines across 6,218 Java and 257 Scala files (64 modules, 82 dependencies), 0.49 ms LAN ping, 0% local laptop CPU
+    - **Architectural Findings**: 64-module centralized Gradle build analyzed with `prod-code dependencies`, revealing a completely acyclic DAG (0 circular dependencies). Protocol wire client `clients` sits at the root layer (Ca=6, Ce=0, instability 0.00). Clone analysis (`prod-code duplicates`) scanned 6,653 files (1,748,112 lines) and surfaced 20 clone groups, including Clone Group #60505 (125 occurrences of `equals(Object o)` across protocol and administrative records).
+    - **Semantic Guards & Refactorings**: Structural search scanned 6,653 files in 4,299.86 ms isolating 847 assertion sites matching `Objects.requireNonNull($A, $B)` across 231 files. Parameterized AST codemod tested dry-run migration to lazy supplier closures (`Objects.requireNonNull($A, () -> $B)`) with 1,738 changed lines across 231 files. AST refactoring evaluated `prod-code extract-function` on `Metadata.java` (`validateLeaderEpoch`), verified with 0 analyzer errors by cluster Eclipse JDTLS in 49 ms warm.
+    - **Full Deep-Dive Report**: [Kafka Under the Microscope: What 67 Remote AST Tools Found Inside the Distributed Event Core (prod.codes)](https://prod.codes/blog/kafka-under-the-microscope-67-ast-tools/)
