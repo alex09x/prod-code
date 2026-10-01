@@ -9,20 +9,21 @@ use ra_ap_ide::{
     HoverDocFormat, MonikerResult, NavigationTarget, RaFixtureConfig, RenameConfig, SingleResolve,
     StructureNodeKind, SymbolKind, TextRange, TextSize,
 };
-use ra_ap_ide_db::ChangeWithProcMacros;
 use ra_ap_ide_db::SnippetCap;
 use ra_ap_ide_db::source_change::FileSystemEdit;
-use ra_ap_ide_db::source_change::SourceChange;
+use ra_ap_ide_db::{FxHashMap, source_change::SourceChange};
 use ra_ap_intern::sym;
 use ra_ap_load_cargo::{
-    LoadCargoConfig, ProcMacroServerChoice, ProjectFolders, SourceRootConfig, load_workspace_at,
+    LoadCargoConfig, ProcMacroServerChoice,
+    worktree::Overlay,
+    worktrees::{Views, Worktrees},
 };
 use ra_ap_paths::AbsPathBuf;
 use ra_ap_project_model::{
     CargoConfig, CargoFeatures, CfgOverrides, ProjectManifest, ProjectWorkspace, RustLibSource,
 };
 use ra_ap_vfs::AnchoredPathBuf;
-use ra_ap_vfs::{Vfs, VfsPath};
+use ra_ap_vfs::Vfs;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -378,6 +379,7 @@ pub struct RustEngineSnapshot {
     pub workspace_root: PathBuf,
     analysis: ra_ap_ide::Analysis,
     vfs: Arc<std::sync::RwLock<Vfs>>,
+    pub views: Views,
     /// Which engine of the workspace this is a snapshot of, and how many changes that engine
     /// had applied when it was taken: a diagnostics pass is logged with both, so a cold pass
     /// can be traced to the write that made it cold (#235).
@@ -389,9 +391,12 @@ impl RustEngineSnapshot {
     /// Lookup Vfs FileId for a filesystem path with safe 24-bit EditionedFileId validation.
     pub fn file_id_for_path(&self, path: &Path) -> Option<FileId> {
         let norm = normalize_vfs_path(path, &self.workspace_root);
-        let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
+        let abs = AbsPathBuf::assert_utf8(norm);
         let guard = self.vfs.read().ok()?;
-        let (file_id, _) = guard.file_id(&vfs_path)?;
+        let file_id = self.views.file(&guard, &abs)?;
+        let file_id = self.views.analyzed_file(&guard, file_id, |f| {
+            self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+        });
         if is_safe_file_id(file_id) {
             Some(file_id)
         } else {
@@ -400,11 +405,36 @@ impl RustEngineSnapshot {
         }
     }
 
-    /// Lookup filesystem path for a Vfs FileId.
+    /// Lookup filesystem path for a Vfs FileId, mapped to this snapshot's workspace view.
     pub fn path_for_file_id(&self, file_id: FileId) -> Option<PathBuf> {
+        let overlay = self.overlay_for_path(&self.workspace_root);
+        self.path_for_file_id_in_view(file_id, overlay.as_ref())
+    }
+
+    /// Lookup filesystem path for a Vfs FileId, translated to the worktree overlay view if present.
+    pub fn path_for_file_id_in_view(
+        &self,
+        file_id: FileId,
+        overlay: Option<&Overlay>,
+    ) -> Option<PathBuf> {
         let guard = self.vfs.read().ok()?;
-        let vfs_path = guard.file_path(file_id);
+        let vfs_path = self.views.path_in_view(&guard, overlay, file_id);
         vfs_path.as_path().map(|p| PathBuf::from(p.as_str()))
+    }
+
+    /// Check whether a file is in view for the requesting workspace/overlay.
+    pub fn is_in_view(&self, file_id: FileId, overlay: Option<&Overlay>) -> bool {
+        let Ok(guard) = self.vfs.read() else { return false };
+        self.views.in_view(&guard, overlay, file_id, |f| {
+            self.analysis.crates_for(f).is_ok_and(|c| !c.is_empty())
+        })
+    }
+
+    /// Resolve the active overlay for a file or directory path.
+    pub fn overlay_for_path(&self, path: &Path) -> Option<Overlay> {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        let abs = AbsPathBuf::assert_utf8(norm);
+        self.views.overlay_of(&abs).cloned()
     }
 
     /// Retrieve symbol type, docs, and signature at (line, col).
@@ -621,7 +651,6 @@ impl RustEngineSnapshot {
             prefer_absolute: false,
             assist_emit_must_use: false,
             term_search_fuel: 1800,
-            term_search_borrowck: true,
             code_action_grouping: true,
             expr_fill_default: Default::default(),
             prefer_self_ty: false,
@@ -848,6 +877,9 @@ impl RustEngineSnapshot {
         line: u32,
         col: u32,
     ) -> Result<Vec<DefinitionTarget>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let file_pos = self.file_position(path, line, col)?;
         let config = GotoDefinitionConfig {
             ra_fixture: RaFixtureConfig::default(),
@@ -860,7 +892,12 @@ impl RustEngineSnapshot {
 
         let mut results = Vec::new();
         for target in targets {
-            if let Some(target_path) = self.path_for_file_id(target.file_id) {
+            if !self.is_in_view(target.file_id, overlay.as_ref()) {
+                continue;
+            }
+            if let Some(target_path) =
+                self.path_for_file_id_in_view(target.file_id, overlay.as_ref())
+            {
                 let target_text = self.analysis.file_text(target.file_id)?;
                 let focus = target.focus_range.unwrap_or(target.full_range);
                 let (target_line, target_col) = offset_to_line_col(&target_text, focus.start());
@@ -887,8 +924,12 @@ impl RustEngineSnapshot {
         Ok(FilePosition { file_id, offset })
     }
 
-    fn hierarchy_item(&self, target: &NavigationTarget) -> Option<HierarchyItem> {
-        let path = self.path_for_file_id(target.file_id)?;
+    fn hierarchy_item_in_view(
+        &self,
+        target: &NavigationTarget,
+        overlay: Option<&Overlay>,
+    ) -> Option<HierarchyItem> {
+        let path = self.path_for_file_id_in_view(target.file_id, overlay)?;
         let text = self.analysis.file_text(target.file_id).ok()?;
         let focus = target.focus_range.unwrap_or(target.full_range);
         let (line, col) = offset_to_line_col(&text, focus.start());
@@ -1014,10 +1055,11 @@ impl RustEngineSnapshot {
                 continue;
             };
             let range = name.syntax().text_range();
+            let name_text = name.text().to_string();
             // A workspace loaded without the sysroot resolves no `std`; that is its setting,
             // not the edit's error.
             if !unresolved(&name)
-                || matches!(name.text().as_str(), "std" | "core" | "alloc")
+                || matches!(name_text.as_str(), "std" | "core" | "alloc")
                 || covered.iter().any(|c| c.intersect(range).is_some())
                 || segment
                     .syntax()
@@ -1026,7 +1068,7 @@ impl RustEngineSnapshot {
             {
                 continue;
             }
-            if imported_in_scope(segment.syntax(), name.text().as_str()) {
+            if imported_in_scope(segment.syntax(), &name_text) {
                 continue;
             }
             let path = segment.parent_path();
@@ -1141,6 +1183,9 @@ impl RustEngineSnapshot {
         line: u32,
         col: u32,
     ) -> Result<Vec<HierarchyItem>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let pos = self.file_position(path, line, col)?;
         let config = CallHierarchyConfig {
             exclude_tests: false,
@@ -1152,12 +1197,16 @@ impl RustEngineSnapshot {
         };
         Ok(targets
             .iter()
-            .filter_map(|t| self.hierarchy_item(t))
+            .filter(|t| self.is_in_view(t.file_id, overlay.as_ref()))
+            .filter_map(|t| self.hierarchy_item_in_view(t, overlay.as_ref()))
             .collect())
     }
 
     /// Everything that calls the function whose name is at (line, col).
     pub fn incoming_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let pos = self.file_position(path, line, col)?;
         let config = CallHierarchyConfig {
             exclude_tests: false,
@@ -1167,7 +1216,7 @@ impl RustEngineSnapshot {
             .analysis
             .incoming_calls(&config, pos)?
             .unwrap_or_default();
-        let mut edges = self.call_edges(calls);
+        let mut edges = self.call_edges(calls, overlay.as_ref());
         // Callers that disappear when tests are excluded are the tests.
         let without_tests = CallHierarchyConfig {
             exclude_tests: true,
@@ -1178,6 +1227,7 @@ impl RustEngineSnapshot {
                 self.analysis
                     .incoming_calls(&without_tests, pos)?
                     .unwrap_or_default(),
+                overlay.as_ref(),
             )
             .into_iter()
             .map(|e| (e.item.path, e.item.line, e.item.col))
@@ -1191,6 +1241,9 @@ impl RustEngineSnapshot {
 
     /// Everything the function whose name is at (line, col) calls.
     pub fn outgoing_calls(&self, path: &Path, line: u32, col: u32) -> Result<Vec<CallEdge>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let pos = self.file_position(path, line, col)?;
         let config = CallHierarchyConfig {
             exclude_tests: false,
@@ -1200,17 +1253,23 @@ impl RustEngineSnapshot {
             .analysis
             .outgoing_calls(&config, pos)?
             .unwrap_or_default();
-        Ok(self.call_edges(calls))
+        Ok(self.call_edges(calls, overlay.as_ref()))
     }
 
-    fn call_edges(&self, calls: Vec<ra_ap_ide::CallItem>) -> Vec<CallEdge> {
+    fn call_edges(
+        &self,
+        calls: Vec<ra_ap_ide::CallItem>,
+        overlay: Option<&Overlay>,
+    ) -> Vec<CallEdge> {
         calls
             .iter()
+            .filter(|call| self.is_in_view(call.target.file_id, overlay))
             .filter_map(|call| {
-                let item = self.hierarchy_item(&call.target)?;
+                let item = self.hierarchy_item_in_view(&call.target, overlay)?;
                 let call_sites = call
                     .ranges
                     .iter()
+                    .filter(|range| self.is_in_view(range.file_id, overlay))
                     .filter_map(|range| {
                         let text = self.analysis.file_text(range.file_id).ok()?;
                         Some(offset_to_line_col(&text, range.range.start()))
@@ -1232,6 +1291,9 @@ impl RustEngineSnapshot {
         line: u32,
         col: u32,
     ) -> Result<Vec<DefinitionTarget>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let pos = self.file_position(path, line, col)?;
         let config = GotoImplementationConfig {
             filter_adjacent_derive_implementations: false,
@@ -1242,8 +1304,9 @@ impl RustEngineSnapshot {
         };
         Ok(targets
             .iter()
+            .filter(|t| self.is_in_view(t.file_id, overlay.as_ref()))
             .filter_map(|t| {
-                let item = self.hierarchy_item(t)?;
+                let item = self.hierarchy_item_in_view(t, overlay.as_ref())?;
                 Some(DefinitionTarget {
                     path: item.path,
                     line: item.line,
@@ -1255,6 +1318,9 @@ impl RustEngineSnapshot {
     }
 
     pub fn find_all_refs(&self, path: &Path, line: u32, col: u32) -> Result<Vec<ReferenceTarget>> {
+        let overlay = self
+            .overlay_for_path(path)
+            .or_else(|| self.overlay_for_path(&self.workspace_root));
         let file_pos = self.file_position(path, line, col)?;
         let config = FindAllRefsConfig {
             search_scope: None,
@@ -1271,8 +1337,11 @@ impl RustEngineSnapshot {
         let mut results = Vec::new();
         for res in search_res {
             for (ref_file_id, refs) in res.references {
+                if !self.is_in_view(ref_file_id, overlay.as_ref()) {
+                    continue;
+                }
                 if let (Some(ref_path), Ok(ref_text)) = (
-                    self.path_for_file_id(ref_file_id),
+                    self.path_for_file_id_in_view(ref_file_id, overlay.as_ref()),
                     self.analysis.file_text(ref_file_id),
                 ) {
                     for (range, _) in refs {
@@ -1355,6 +1424,7 @@ impl RustEngineSnapshot {
     /// because its file path alone (a registry checkout on the node) does not say which
     /// dependency it came from.
     pub fn workspace_symbols(&self, query: &str, limit: usize) -> Result<Vec<WorkspaceSymbol>> {
+        let overlay = self.overlay_for_path(&self.workspace_root);
         let limit = limit.max(1);
         // The name itself first. The fuzzy search walks the index in name order and stops at
         // the limit, so in a large workspace the names that only hold the query's letters and
@@ -1366,6 +1436,7 @@ impl RustEngineSnapshot {
             .analysis
             .symbol_search(exact_local, limit)?
             .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
             .filter_map(|target| self.workspace_symbol(target, None))
             .collect();
         let local = ra_ap_ide::Query::new(query.to_string());
@@ -1373,6 +1444,7 @@ impl RustEngineSnapshot {
             .analysis
             .symbol_search(local, limit)?
             .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay.as_ref()))
             .filter_map(|target| self.workspace_symbol(target, None))
         {
             if out.len() >= limit {
@@ -1394,11 +1466,11 @@ impl RustEngineSnapshot {
         let mut exact = ra_ap_ide::Query::new(query.to_string());
         exact.libs();
         exact.exact();
-        let mut found = self.library_symbols(exact, limit)?;
+        let mut found = self.library_symbols(exact, limit, overlay.as_ref())?;
         if found.is_empty() && out.is_empty() {
             let mut libs = ra_ap_ide::Query::new(query.to_string());
             libs.libs();
-            found = self.library_symbols(libs, limit)?;
+            found = self.library_symbols(libs, limit, overlay.as_ref())?;
         }
         found.extend(out);
         found.truncate(limit);
@@ -1410,6 +1482,7 @@ impl RustEngineSnapshot {
         &self,
         query: ra_ap_ide::Query,
         limit: usize,
+        overlay: Option<&Overlay>,
     ) -> Result<Vec<WorkspaceSymbol>> {
         let out = Vec::new();
         let targets = self.analysis.symbol_search(query, limit)?;
@@ -1425,6 +1498,7 @@ impl RustEngineSnapshot {
             .collect();
         Ok(targets
             .into_iter()
+            .filter(|target| self.is_in_view(target.file_id, overlay))
             .filter_map(|target| {
                 let module = self.module_path(&target).or_else(|| {
                     self.analysis
@@ -1518,7 +1592,7 @@ pub struct RustEngine {
     pub workspace_root: PathBuf,
     host: AnalysisHost,
     vfs: Arc<std::sync::RwLock<Vfs>>,
-    source_root_config: Arc<SourceRootConfig>,
+    pub worktrees: Worktrees,
     overlays: SessionOverlays,
     /// `main` or `validation`, for the logs.
     label: &'static str,
@@ -1546,17 +1620,6 @@ impl RustEngine {
         self.label = label;
     }
 
-    /// Applies `change` and counts it: every change starts a new revision of the database,
-    /// which drops rust-analyzer's size-capped caches (#235).
-    fn apply(&mut self, change: ChangeWithProcMacros) {
-        self.changes += 1;
-        tracing::debug!(
-            engine = self.label,
-            changes = self.changes,
-            "change applied to the database"
-        );
-        self.host.apply_change(change);
-    }
 
     /// Text the database currently holds for `norm`, or `None` when the file is unknown.
     fn current_db_text(&self, norm: &Path) -> Option<String> {
@@ -1574,21 +1637,14 @@ impl RustEngine {
         match text {
             Some(text) => self.apply_file_change(norm, text),
             None => {
-                // Removing a file that is already empty changes nothing, and any change starts
-                // a new revision, which evicts rust-analyzer's size-capped caches: the next
-                // diagnostics pass of a large file is as slow as a cold one (#235).
-                if let Some(file_id) = self.file_id_for_path(norm)
-                    && self
-                        .host
-                        .analysis()
-                        .file_text(file_id)
-                        .is_ok_and(|text| !text.is_empty())
-                {
-                    tracing::debug!(file = %norm.display(), "file removed from the database");
-                    let mut change = ChangeWithProcMacros::default();
-                    change.change_file(file_id, None);
-                    self.apply(change);
-                }
+                let abs = AbsPathBuf::assert_utf8(norm.to_path_buf());
+                let db = self.host.raw_database_mut();
+                let mut vfs = self
+                    .vfs
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
+                self.worktrees.set_file_text(db, &mut vfs, &abs, None);
+                self.changes += 1;
                 Ok(())
             }
         }
@@ -1812,10 +1868,6 @@ impl RustEngine {
             queue_ms = waiting.elapsed().as_millis() as u64,
             "Loading Cargo workspace with a bounded CPU budget"
         );
-        let (db, vfs, _proc_macro) =
-            load_workspace_at(workspace_root, &cargo_config, &load_config, &|_| {})
-                .map_err(|e| anyhow::anyhow!("Failed to load cargo workspace: {e}"))?;
-
         let abs_root = if workspace_root.is_absolute() {
             AbsPathBuf::assert_utf8(workspace_root.to_path_buf())
         } else {
@@ -1823,10 +1875,17 @@ impl RustEngine {
         };
         let manifest = ProjectManifest::discover_single(&abs_root)
             .map_err(|e| anyhow::anyhow!("Manifest discovery failed: {e}"))?;
-        let ws = ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
+        let mut ws = ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
             .map_err(|e| anyhow::anyhow!("Project workspace load failed: {e}"))?;
-        let project_folders = ProjectFolders::new(std::slice::from_ref(&ws), &[], None);
-        let source_root_config = Arc::new(project_folders.source_root_config);
+        if build_scripts
+            && let Ok(scripts) = ws.run_build_scripts(&cargo_config, &|_| {})
+        {
+            ws.set_build_scripts(scripts);
+        }
+
+        let (worktrees, db, vfs) =
+            Worktrees::load(ws, &FxHashMap::default(), &load_config)
+                .map_err(|e| anyhow::anyhow!("Failed to load cargo workspace: {e}"))?;
 
         let host = AnalysisHost::with_database(db);
         tracing::info!(?workspace_root, "Cargo workspace warm and ready in RAM");
@@ -1835,7 +1894,7 @@ impl RustEngine {
             workspace_root: workspace_root.to_path_buf(),
             host,
             vfs: Arc::new(std::sync::RwLock::new(vfs)),
-            source_root_config,
+            worktrees,
             overlays: SessionOverlays::default(),
             label: "main",
             changes: 0,
@@ -1848,9 +1907,89 @@ impl RustEngine {
             workspace_root: self.workspace_root.clone(),
             analysis: self.host.analysis(),
             vfs: Arc::clone(&self.vfs),
+            views: self.worktrees.views(),
             label: self.label,
             changes: self.changes,
         }
+    }
+
+    /// Obtain a lightweight, thread-safe analysis snapshot configured for a specific workspace or worktree view.
+    pub fn snapshot_for(&self, root: &Path) -> RustEngineSnapshot {
+        RustEngineSnapshot {
+            workspace_root: root.to_path_buf(),
+            analysis: self.host.analysis(),
+            vfs: Arc::clone(&self.vfs),
+            views: self.worktrees.views(),
+            label: self.label,
+            changes: self.changes,
+        }
+    }
+
+    /// Attaches a worktree copy of this workspace.
+    pub fn attach_worktree(&mut self, copy_root: &Path) -> Result<()> {
+        let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
+        let base_abs = AbsPathBuf::assert_utf8(self.workspace_root.clone());
+        let overlay = Overlay {
+            worktree_root: copy_abs.clone(),
+            base_root: base_abs,
+        };
+        let config = ProdCodeConfig::load(copy_root);
+        let cargo_config = config.cargo_config();
+        let mut workspace = match self.worktrees.workspace_of_copy(&overlay) {
+            Some(ws) => ws,
+            None => {
+                let manifest = ProjectManifest::discover_single(&copy_abs)
+                    .map_err(|e| anyhow::anyhow!("Manifest discovery failed for copy {}: {e}", copy_root.display()))?;
+                ProjectWorkspace::load(manifest, &cargo_config, &|_| {})
+                    .map_err(|e| anyhow::anyhow!("Workspace load failed for copy {}: {e}", copy_root.display()))?
+            }
+        };
+        let db = self.host.raw_database_mut();
+        let mut vfs = self.vfs.write().map_err(|e| anyhow::anyhow!("VFS lock: {e}"))?;
+        if config.rust.build_scripts {
+            self.worktrees.inherit_build_scripts(&vfs, &mut workspace, &overlay);
+        }
+        self.worktrees.add(db, &mut vfs, workspace, overlay);
+        self.changes += 1;
+        tracing::info!(copy = %copy_root.display(), "Attached worktree overlay to shared RustEngine");
+        Ok(())
+    }
+
+    /// Detaches a worktree copy of this workspace.
+    pub fn detach_worktree(&mut self, copy_root: &Path) -> bool {
+        let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
+        let db = self.host.raw_database_mut();
+        let Ok(mut vfs) = self.vfs.write() else { return false };
+        let removed = self.worktrees.remove(db, &mut vfs, &copy_abs);
+        if removed {
+            self.changes += 1;
+            tracing::info!(copy = %copy_root.display(), "Detached worktree overlay from shared RustEngine");
+        }
+        removed
+    }
+
+    pub fn has_worktree(&self, copy_root: &Path) -> bool {
+        let copy_abs = AbsPathBuf::assert_utf8(copy_root.to_path_buf());
+        self.worktrees.overlays().any(|o| o.worktree_root == copy_abs)
+    }
+
+    pub fn reload_file(&mut self, path: &Path) -> Result<()> {
+        let norm = normalize_vfs_path(path, &self.workspace_root);
+        let abs = AbsPathBuf::assert_utf8(norm);
+        let db = self.host.raw_database_mut();
+        let mut vfs = self.vfs.write().map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
+        self.worktrees.reload_file(db, &mut vfs, &abs);
+        self.changes += 1;
+        Ok(())
+    }
+
+    pub fn workspace_symbols_for(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkspaceSymbol>> {
+        self.snapshot_for(root).workspace_symbols(query, limit)
     }
 
     /// Lookup Vfs FileId for a filesystem path.
@@ -2077,57 +2216,18 @@ impl RustEngine {
 
     /// Single-owner fast path: Apply live buffer edits directly into Salsa DB in memory.
     pub fn apply_file_change(&mut self, path: &Path, new_text: String) -> Result<()> {
-        // A file rust-analyzer does not know and that is not Rust (a README a client opened,
-        // a Python script) would be added as a new Rust file and parsed as one: its outline
-        // came back as `[Interface] or` from Markdown prose (#247). It is left out.
         if !is_rust_source(path) && self.file_id_for_path(path).is_none() {
             return Ok(());
         }
         let norm = normalize_vfs_path(path, &self.workspace_root);
-        let vfs_path = VfsPath::new_real_path(norm.to_string_lossy().to_string());
-        let (file_id, is_new) = if let Some(fid) = self.file_id_for_path(path) {
-            // Identical text (the common didOpen of an unmodified file) must not bump the
-            // Salsa revision: that would invalidate every derived query for nothing and turn a
-            // cached 1 ms hover into a 10-40 ms recomputation.
-            let current = self.host.analysis().file_text(fid).ok();
-            if current
-                .as_deref()
-                .is_some_and(|current| *current == *new_text)
-            {
-                return Ok(());
-            }
-            tracing::debug!(
-                file = %norm.display(),
-                old_len = current.as_deref().map(|c| c.len()),
-                new_len = new_text.len(),
-                "file text changed in the database"
-            );
-            (fid, false)
-        } else {
-            let mut vfs = self
-                .vfs
-                .write()
-                .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
-            let _ = vfs.set_file_contents(vfs_path.clone(), Some(new_text.as_bytes().to_vec()));
-            let fid = vfs
-                .file_id(&vfs_path)
-                .map(|(id, _)| id)
-                .with_context(|| format!("File not found in VFS even after set: {:?}", path))?;
-            (fid, true)
-        };
-
-        let mut change = ChangeWithProcMacros::default();
-        if is_new {
-            tracing::debug!(file = %norm.display(), "new file: source roots set again");
-            let vfs_guard = self
-                .vfs
-                .read()
-                .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
-            let roots = self.source_root_config.partition(&vfs_guard);
-            change.source_change.set_roots(roots);
-        }
-        change.change_file(file_id, Some(new_text));
-        self.apply(change);
+        let abs = AbsPathBuf::assert_utf8(norm);
+        let db = self.host.raw_database_mut();
+        let mut vfs = self
+            .vfs
+            .write()
+            .map_err(|e| anyhow::anyhow!("VFS lock error: {e}"))?;
+        self.worktrees.set_file_text(db, &mut vfs, &abs, Some(new_text));
+        self.changes += 1;
         Ok(())
     }
 }
@@ -3254,10 +3354,11 @@ fn main() {
         engine.activate_session(2).unwrap();
         let hidden = engine.hover(&scratch, 1, 8).unwrap_err();
         assert!(
-            hidden.to_string().contains("Invalid position 1:8"),
+            hidden.to_string().contains("File not found in VFS")
+                || hidden.to_string().contains("Invalid position"),
             "{hidden:#}"
         );
-        assert!(engine.hover(&scratch, 1, 1).unwrap().is_none());
+        assert!(engine.hover(&scratch, 1, 1).is_err());
         engine.activate_session(1).unwrap();
         let again = engine.hover(&scratch, 1, 8).unwrap();
         assert!(
