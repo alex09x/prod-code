@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+"""PreToolUse hook for Bash: heavy builds, tests and lints run on the build nodes through
+prod-code, not on this Mac. Denies the command with a pointer to code_check / code_test /
+code_lint / code_exec. Allowed as is: anything through `prod-code exec` or over ssh (a node
+does the work), the dev build of the prod-code client, and any command carrying
+PROD_CODE_LOCAL=1 when it really must run here.
+
+It also denies looking a symbol up with grep/rg inside a git repository: a pattern that is a
+code identifier (snake_case, camelCase, Type::method, .Method( ) or a definition (fn/func/def/
+class/struct/type Name) searched over source files. code_definition / code_references /
+code_symbols answer that exactly. Text searches (plain words, phrases, regexes), searches over
+logs, docs or configs, and grep as a filter on a pipe stay allowed. PROD_CODE_GREP=1 in the
+command lets a symbol grep through; every such override is logged, because it marks a place
+where prod-code did not serve (and should get a code_report_issue)."""
+import json
+import os
+import re
+import shlex
+import sys
+import time
+
+LOG = os.environ.get("PROD_CODE_GUARD_LOG") or os.path.expanduser("~/.claude/hooks/prod-code-guard.jsonl")
+
+REASON = (
+    "Run it on a build node: code_check / code_test / code_lint / code_exec "
+    "(CLI: prod-code exec -- <command>). If it truly must run on this Mac, "
+    "prefix it with PROD_CODE_LOCAL=1."
+)
+
+HEAVY = [
+    re.compile(r"^(\S*/)?cargo(\s+\+\S+)?\s+(test|check|clippy|build|bench|llvm-cov|nextest)\b"),
+    # go test / go vet stay local for now: a Go module with macOS-only cgo (the prod repo) has no
+    # node to run on until a macOS node serves Go, and blocking them left its workers no way at all.
+    re.compile(r"^(\S*/)?pytest\b"),
+    re.compile(r"^(\S*/)?python3?\s+-m\s+pytest\b"),
+    re.compile(r"^(\S*/)?(npm|pnpm|yarn|bun)\s+(run\s+)?test\b"),
+    re.compile(r"^(\S*/)?xcodebuild\b.*\b(build|test)\b"),
+    re.compile(r"^(\S*/)?swift\s+(build|test)\b"),
+]
+
+ALLOWED_ANYWHERE = [
+    re.compile(r"PROD_CODE_LOCAL=1"),
+    re.compile(r"\bprod-code\s+exec\b"),
+    re.compile(r"(^|[\s;&|(])ssh\s"),
+]
+
+
+HEREDOC = re.compile(r"<<-?\s*(['\"])(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
+
+
+def without_heredocs(command):
+    """The command with every quoted here-document body removed (`<<'EOF'`, `<<"EOF"`): such a
+    body is data (an issue text, a script fed to python), and a `swift build` quoted in it is
+    not a command. An unquoted `<<EOF` body is kept: the shell runs its `$(...)` and backticks."""
+    # An escaped backtick is a literal character, not a command substitution.
+    return HEREDOC.sub("<<heredoc", command).replace("\\`", "")
+
+
+def segments(command):
+    """The simple commands of a shell line, each without leading VAR=value assignments."""
+    for part in re.split(r"&&|\|\||[;|\n()]|\$\(|`", without_heredocs(command)):
+        words = part.strip().split()
+        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]
+        while words and words[0] in ("time", "exec", "nice", "env", "command", "sudo"):
+            words = words[1:]
+        if words:
+            yield " ".join(words)
+
+
+SHELL_C = re.compile(r"^(\S*/)?(bash|sh|zsh|fish)(\s+-\w+)*\s+-l?c\s+(?P<script>.+)$", re.S)
+
+
+def verdict(command, depth=0):
+    if any(p.search(command) for p in ALLOWED_ANYWHERE):
+        return None
+    for seg in segments(command):
+        nested = SHELL_C.match(seg)
+        if nested and depth < 3:
+            script = nested.group("script").strip()
+            if len(script) >= 2 and script[0] == script[-1] and script[0] in "'\"":
+                script = script[1:-1]
+            if verdict(script, depth + 1):
+                return REASON
+            continue
+        if re.match(r"^(\S*/)?cargo\s+build\b", seg) and re.search(r"-p\s+prod-code-client\b", seg):
+            continue
+        if any(p.match(seg) for p in HEAVY):
+            return REASON
+    return None
+
+
+CODE_EXT = re.compile(
+    r"\.(rs|go|ts|tsx|js|jsx|mjs|cjs|py|pyi|c|cc|cpp|cxx|h|hh|hpp|hxx|swift|m|mm|kt|java|cs|rb|php|scala)$"
+)
+NOT_CODE_EXT = re.compile(r"\.(md|txt|log|jsonl?|ya?ml|toml|lock|csv|html?|xml|ini|cfg|conf|env|sql|sh)$")
+IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
+DEFINITION = re.compile(
+    r"^(pub(\(crate\))?\s+)?(async\s+)?(export\s+)?"
+    r"(fn|func|def|class|struct|enum|trait|interface|type|impl|protocol|extension)\s+(\([^)]*\)\s*)?"
+    r"(?P<name>" + IDENT + r")"
+)
+GREP_OPTS_WITH_ARG = {"-e", "-f", "-A", "-B", "-C", "-m", "-g", "-t", "-T", "--glob", "--type",
+                      "--type-not", "--regexp", "--file", "--max-count", "--context",
+                      "--after-context", "--before-context", "--include", "--exclude"}
+
+RESOURCE_EXTENSIONS = {
+    # Data & config formats
+    "json", "jsonl", "yaml", "yml", "toml", "xml", "csv", "tsv", "sql", "graphql", "gql", "proto",
+    # Text, documentation & logs
+    "md", "markdown", "txt", "rst", "adoc", "pdf", "log", "diff", "patch",
+    # Config & lockfiles
+    "lock", "ini", "cfg", "conf", "env", "plist", "properties", "map", "snap",
+    # Web & styles
+    "html", "htm", "css", "scss", "sass", "less", "svg",
+    # Images & media
+    "png", "jpg", "jpeg", "gif", "ico", "webp", "bmp", "tiff",
+    # Archives & binaries
+    "zip", "tar", "gz", "tgz", "bz2", "xz", "wasm", "bin", "dat", "data", "out",
+    # Shell & scripts
+    "sh", "bash", "zsh", "fish", "bat", "ps1",
+    # Source code files
+    "rs", "go", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi", "c", "cc", "cpp", "cxx",
+    "h", "hh", "hpp", "hxx", "swift", "kt", "kts", "java", "cs", "rb", "php", "scala", "zig",
+    "lua", "r", "dart", "ex", "exs", "erl", "hs", "clj", "jl", "asm", "s",
+}
+
+SPECIAL_FILENAMES = {
+    "makefile", "dockerfile", "containerfile", "license", "readme",
+    "cargo.lock", "gemfile", "procfile", "vagrantfile",
+}
+
+
+def looks_like_symbol(name):
+    """A code identifier rather than a word: snake_case, camelCase or PascalCase with an inner
+    capital, or qualified (Type::method, pkg.Func). `error`, `TODO` and `Price` stay words.
+    Filenames, extensions, and resource references (meta.json, Cargo.lock, README.md) stay words."""
+    if not re.fullmatch(IDENT + r"((::|\.)" + IDENT + r")*", name) or len(name) < 3:
+        return False
+    if "/" in name or "\\" in name:
+        return False
+    if name.lower() in SPECIAL_FILENAMES:
+        return False
+    if "::" in name:
+        return True
+    if "." in name:
+        parts = name.split(".")
+        ext = parts[-1].lower()
+        if ext in RESOURCE_EXTENSIONS:
+            return False
+        if any(p.lower() in RESOURCE_EXTENSIONS for p in parts[1:]):
+            return False
+        return any("_" in p.strip("_") or bool(re.search(r"[a-z][A-Z]", p)) or p[:1].isupper() for p in parts[1:])
+    if name.isupper():
+        return False
+    return "_" in name.strip("_") or bool(re.search(r"[a-z][A-Z]", name))
+
+
+def symbol_in(pattern):
+    """The symbol a grep pattern looks up, or None for a text search."""
+    p = pattern.strip()
+    for token in (r"\b", r"\<", r"\>", "^", "$", r"\s+", r"\s*"):
+        p = p.replace(token, " " if token in (r"\s+", r"\s*") else "")
+    p = re.sub(r"\s+", " ", p).strip()
+    d = DEFINITION.match(p)
+    if d and len(p) - d.end() <= 12:
+        return d.group("name")
+    q = re.sub(r"^(\\?\.|->)", "", p)
+    q = re.sub(r"(\\\(|\()$", "", q)
+    return q if looks_like_symbol(q) else None
+
+
+def in_git_repo(cwd):
+    d = os.path.abspath(cwd or ".")
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+def symbol_grep(command, cwd):
+    """(symbol, pattern) when the command looks a symbol up over source files with grep/rg."""
+    if "PROD_CODE_GREP=1" in command:
+        return None
+    body = without_heredocs(command)
+    for pipeline in re.split(r"&&|\|\||;|\n", body):
+        first = pipeline.split("|")[0].strip()
+        try:
+            words = shlex.split(first)
+        except ValueError:
+            continue
+        while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+            words = words[1:]
+        if not words:
+            continue
+        tool = os.path.basename(words[0])
+        args = words[1:]
+        if tool in ("bash", "sh", "zsh", "fish"):
+            # Codex sends its shell calls as `bash -lc '<script>'`.
+            for j, a in enumerate(args[:-1]):
+                if re.fullmatch(r"-[a-z]*c", a):
+                    inner = symbol_grep(args[j + 1], cwd)
+                    if inner:
+                        return inner
+            continue
+        if tool == "git" and args[:1] == ["grep"]:
+            tool, args = "git-grep", args[1:]
+        if tool not in ("grep", "egrep", "fgrep", "rg", "ag", "git-grep"):
+            continue
+        recursive = tool != "grep" and tool != "egrep"
+        fixed_strings = tool == "fgrep"
+        patterns, rest, i = [], [], 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-e", "--regexp") and i + 1 < len(args):
+                patterns.append(args[i + 1]); i += 2; continue
+            if a in GREP_OPTS_WITH_ARG and i + 1 < len(args):
+                i += 2; continue
+            if a == "--":
+                rest.extend(args[i + 1:])
+                break
+            if a.startswith("-") and len(a) > 1:
+                if re.search(r"[rR]", a) or a == "--recursive":
+                    recursive = True
+                if "F" in a or a == "--fixed-strings":
+                    fixed_strings = True
+                i += 1; continue
+            rest.append(a); i += 1
+        if not patterns and rest:
+            patterns, rest = [rest[0]], rest[1:]
+        if not patterns:
+            continue
+        paths = rest
+        if paths:
+            code = [x for x in paths if CODE_EXT.search(x) or (os.path.isdir(os.path.join(cwd or ".", os.path.expanduser(x))) and not re.search(r"(^|/)(\.claude|node_modules|target|\.build|logs?|tmp)(/|$)", x))]
+            if not code or all(NOT_CODE_EXT.search(x) for x in paths):
+                continue
+            if not recursive and not any(CODE_EXT.search(x) for x in paths):
+                continue
+        elif not recursive:
+            continue
+        if not in_git_repo(cwd):
+            continue
+        for pat in patterns:
+            if fixed_strings:
+                if "/" in pat or "\\" in pat or pat.lower() in SPECIAL_FILENAMES:
+                    continue
+                if "." in pat:
+                    ext = pat.rsplit(".", 1)[-1].lower()
+                    if ext in RESOURCE_EXTENSIONS or re.fullmatch(r"[a-z0-9_-]{1,8}", ext):
+                        continue
+                if cwd and (os.path.exists(os.path.join(cwd, pat)) or os.path.exists(os.path.join(cwd, "tests", "fixtures", pat)) or os.path.exists(os.path.join(cwd, "fixtures", pat))):
+                    continue
+            sym = symbol_in(pat)
+            if sym:
+                return sym, pat
+    return None
+
+
+def asked_prod_code(transcript, symbol):
+    """Whether this session already asked prod-code about `symbol`: a line of its transcript
+    that is a prod-code call (MCP code_* tool or the prod-code CLI) and names the symbol. Only
+    the last 2 MB are read. Without a transcript nothing can be shown, so the answer is yes."""
+    if not transcript or not os.path.isfile(transcript):
+        return True
+    bare = symbol.split("::")[-1].split(".")[-1]
+    try:
+        with open(transcript, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 2_000_000))
+            tail = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return True
+    for line in tail.splitlines():
+        if bare in line and re.search(r"prod-code__code_|prod_code__code_|\"code_(definition|references|symbols|search|hover|callers|slice|outline)\"|prod-code\s+(def|refs|symbols|search|hover|callers|slice|outline)\b", line):
+            return True
+    return False
+
+
+def log(entry):
+    try:
+        with open(LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def shell_command(payload):
+    """The shell command a tool call runs, whichever agent sent it: Claude Code's Bash
+    (`command`), Gemini CLI's run_shell_command (`command`), Codex's shell tools (`command` as a
+    string or an argv list, or `cmd`). None for a tool that runs no command."""
+    call = payload.get("toolCall")
+    if isinstance(call, dict):
+        # Antigravity: {"toolCall": {"name": "run_command", "args": {"CommandLine": "..."}}}
+        command = (call.get("args") or {}).get("CommandLine")
+        return command if isinstance(command, str) and command.strip() else None
+    tool_input = payload.get("tool_input") or {}
+    if not isinstance(tool_input, dict):
+        return None
+    command = tool_input.get("command", tool_input.get("cmd"))
+    if isinstance(command, list):
+        command = " ".join(shlex.quote(str(c)) for c in command)
+    return command if isinstance(command, str) and command.strip() else None
+
+
+def main():
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return 0
+    agy = isinstance(payload.get("toolCall"), dict)
+    command = shell_command(payload)
+    if command is None:
+        if agy:
+            pass
+        return 0
+    if agy:
+        args = payload["toolCall"].get("args") or {}
+        paths = payload.get("workspacePaths") or []
+        cwd = args.get("Cwd") or (paths[0] if paths else os.getcwd())
+        agent = "antigravity"
+    else:
+        cwd = payload.get("cwd") or os.getcwd()
+        agent = "gemini" if payload.get("hook_event_name") == "BeforeTool" else payload.get("tool_name", "")
+    reason = verdict(command)
+    if reason:
+        log({"ts": int(time.time()), "agent": agent, "rule": "local-build", "decision": "deny", "cwd": cwd, "cmd": command[:300]})
+    transcript = payload.get("transcript_path") or payload.get("transcriptPath")
+    if not reason:
+        found = symbol_grep(command, cwd)
+        if found is None and "PROD_CODE_GREP=1" in command:
+            again = symbol_grep(command.replace("PROD_CODE_GREP=1", ""), cwd)
+            if again and not asked_prod_code(transcript, again[0]):
+                # An override is for a place where prod-code failed: it has to have been asked.
+                log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override-refused", "cwd": cwd, "symbol": again[0], "cmd": command[:300]})
+                sym = again[0]
+                reason = (
+                    f"PROD_CODE_GREP=1 is accepted only after prod-code was asked about `{sym}` in this session, and "
+                    f"it was not. Ask it first: code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}} "
+                    f"or code_symbols {{query: \"{sym}\"}} (CLI: prod-code def|refs --symbol {sym}). To read the whole "
+                    f"definition, use code_definition and then read the file at the position it gives. If prod-code is "
+                    f"wrong or empty, report it with code_report_issue; then the override works."
+                )
+            elif again:
+                log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "override", "cwd": cwd, "symbol": again[0], "cmd": command[:300]})
+        if found:
+            sym, pat = found
+            log({"ts": int(time.time()), "agent": agent, "rule": "symbol-grep", "decision": "deny", "cwd": cwd, "symbol": sym, "pattern": pat, "cmd": command[:300]})
+            reason = (
+                f"`{pat}` looks up the symbol `{sym}`. Use prod-code, which resolves the symbol instead of matching text: "
+                f"code_definition {{symbol: \"{sym}\"}}, code_references {{symbol: \"{sym}\"}}, or code_symbols {{query: \"{sym}\"}} "
+                f"(CLI: prod-code def|refs --symbol {sym}, prod-code symbols {sym}). "
+                "If prod-code answers wrong, empty or not at all, report it with code_report_issue; after prod-code "
+                "has been asked about this symbol, PROD_CODE_GREP=1 in front of the grep lets it through."
+            )
+    if not reason and agy:
+        # No decision at all: "allow" would skip Antigravity's own permission prompt.
+        pass
+    if reason:
+        if agent in ("gemini", "antigravity"):
+            print(json.dumps({"decision": "deny", "reason": reason}))
+        else:
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
